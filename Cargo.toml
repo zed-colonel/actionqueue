@@ -48,7 +48,7 @@ actionqueue-runtime = { path = "crates/actionqueue-runtime" }
 actionqueue-workflow = { path = "crates/actionqueue-workflow" }
 actionqueue-budget = "0.1.0"
 actionqueue-actor = "0.1.0"
-actionqueue-platform = { path = "crates/actionqueue-platform" }
+actionqueue-platform = "0.1.0"
 actionqueue-daemon = { path = "crates/actionqueue-daemon" }
 actionqueue-cli = { path = "crates/actionqueue-cli" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
