@@ -16,7 +16,7 @@ dependencies = [
  "actionqueue-platform 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "actionqueue-runtime",
  "actionqueue-storage 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "actionqueue-workflow",
+ "actionqueue-workflow 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "axum",
  "http-body-util",
  "proptest",
@@ -195,7 +195,7 @@ dependencies = [
  "actionqueue-executor-local 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "actionqueue-platform 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "actionqueue-storage 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "actionqueue-workflow",
+ "actionqueue-workflow 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "tempfile",
  "tokio",
  "tracing",
@@ -206,7 +206,7 @@ name = "actionqueue-storage"
 version = "0.1.0"
 dependencies = [
  "actionqueue-core 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "actionqueue-engine 0.1.0",
+ "actionqueue-engine 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "actionqueue-executor-local 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "crc32fast",
  "postcard",
@@ -243,6 +243,19 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "actionqueue-workflow"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e03b5cc26744d10ff6c0dd73675343755e93ee83e79e6d756aae0e98d0c9803d"
+dependencies = [
+ "actionqueue-core 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "actionqueue-executor-local 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "actionqueue-storage 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

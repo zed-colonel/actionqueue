@@ -18,7 +18,7 @@ actionqueue-executor-local = "0.1.0"
 # actionqueue-workflow provides DependencyGate, HierarchyTracker, and SubmissionChannel
 # used unconditionally by the dispatch loop. The `workflow` feature gates only
 # cron scheduling and related acceptance tests.
-actionqueue-workflow = { path = "../actionqueue-workflow" }
+actionqueue-workflow = "0.1.0"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
 tracing = "0.1"
 

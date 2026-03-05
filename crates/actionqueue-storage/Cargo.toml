@@ -22,7 +22,7 @@ tracing = "0.1"
 uuid = { version = "1.0", features = ["v4"] }
 tempfile = "3.0"
 proptest = "1.4"
-actionqueue-engine = { path = "../actionqueue-engine" }
+actionqueue-engine = "0.1.0"
 actionqueue-executor-local = "0.1.0"
 
 [features]

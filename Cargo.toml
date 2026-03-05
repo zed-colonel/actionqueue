@@ -45,7 +45,7 @@ actionqueue-storage = "0.1.0"
 actionqueue-engine = "0.1.0"
 actionqueue-executor-local = "0.1.0"
 actionqueue-runtime = { path = "crates/actionqueue-runtime" }
-actionqueue-workflow = { path = "crates/actionqueue-workflow" }
+actionqueue-workflow = "0.1.0"
 actionqueue-budget = "0.1.0"
 actionqueue-actor = "0.1.0"
 actionqueue-platform = "0.1.0"
