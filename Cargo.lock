@@ -10,7 +10,7 @@ dependencies = [
  "actionqueue-budget 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "actionqueue-cli",
  "actionqueue-core 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "actionqueue-daemon",
+ "actionqueue-daemon 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "actionqueue-engine 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "actionqueue-executor-local 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "actionqueue-platform 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -67,7 +67,7 @@ name = "actionqueue-cli"
 version = "0.1.0"
 dependencies = [
  "actionqueue-core 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "actionqueue-daemon",
+ "actionqueue-daemon 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "actionqueue-engine 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "actionqueue-storage 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde",
@@ -116,6 +116,22 @@ dependencies = [
  "serde_json",
  "tokio",
  "tower 0.4.13",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "actionqueue-daemon"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "51026ab5ba6918352e07bc89d5fc1d795bd657c395f99009b54441f0b88afee1"
+dependencies = [
+ "actionqueue-core 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "actionqueue-storage 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "axum",
+ "prometheus",
+ "serde",
+ "serde_json",
  "tracing",
  "tracing-subscriber",
 ]
