@@ -11,7 +11,7 @@ keywords = ["workflow", "dag", "cron", "task-queue", "hierarchy"]
 categories = ["concurrency"]
 
 [dependencies]
-actionqueue-core = { path = "../actionqueue-core" }
+actionqueue-core = "0.1.0"
 actionqueue-storage = { path = "../actionqueue-storage" }
 actionqueue-executor-local = { path = "../actionqueue-executor-local" }
 tokio = { version = "1", features = ["sync"] }

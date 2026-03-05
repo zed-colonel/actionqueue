@@ -9,7 +9,7 @@ dependencies = [
  "actionqueue-actor",
  "actionqueue-budget",
  "actionqueue-cli",
- "actionqueue-core",
+ "actionqueue-core 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "actionqueue-daemon",
  "actionqueue-engine",
  "actionqueue-executor-local",
@@ -30,7 +30,7 @@ dependencies = [
 name = "actionqueue-actor"
 version = "0.1.0"
 dependencies = [
- "actionqueue-core",
+ "actionqueue-core 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "tracing",
 ]
 
@@ -38,7 +38,7 @@ dependencies = [
 name = "actionqueue-budget"
 version = "0.1.0"
 dependencies = [
- "actionqueue-core",
+ "actionqueue-core 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "tracing",
 ]
 
@@ -46,7 +46,7 @@ dependencies = [
 name = "actionqueue-cli"
 version = "0.1.0"
 dependencies = [
- "actionqueue-core",
+ "actionqueue-core 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "actionqueue-daemon",
  "actionqueue-engine",
  "actionqueue-storage",
@@ -69,11 +69,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "actionqueue-core"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "caba4134b881c95f8c3b7823ec1604b7010129c12e4b118310e30cf742013530"
+dependencies = [
+ "chrono",
+ "cron",
+ "serde",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "actionqueue-daemon"
 version = "0.1.0"
 dependencies = [
  "actionqueue-actor",
- "actionqueue-core",
+ "actionqueue-core 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "actionqueue-platform",
  "actionqueue-storage",
  "axum",
@@ -91,7 +104,7 @@ dependencies = [
 name = "actionqueue-engine"
 version = "0.1.0"
 dependencies = [
- "actionqueue-core",
+ "actionqueue-core 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "actionqueue-executor-local",
  "chrono",
  "cron",
@@ -103,7 +116,7 @@ dependencies = [
 name = "actionqueue-executor-local"
 version = "0.1.0"
 dependencies = [
- "actionqueue-core",
+ "actionqueue-core 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "proptest",
  "tracing",
 ]
@@ -113,7 +126,7 @@ name = "actionqueue-platform"
 version = "0.1.0"
 dependencies = [
  "actionqueue-actor",
- "actionqueue-core",
+ "actionqueue-core 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "tracing",
 ]
 
@@ -123,7 +136,7 @@ version = "0.1.0"
 dependencies = [
  "actionqueue-actor",
  "actionqueue-budget",
- "actionqueue-core",
+ "actionqueue-core 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "actionqueue-engine",
  "actionqueue-executor-local",
  "actionqueue-platform",
@@ -138,7 +151,7 @@ dependencies = [
 name = "actionqueue-storage"
 version = "0.1.0"
 dependencies = [
- "actionqueue-core",
+ "actionqueue-core 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "actionqueue-engine",
  "actionqueue-executor-local",
  "crc32fast",
@@ -155,7 +168,7 @@ dependencies = [
 name = "actionqueue-workflow"
 version = "0.1.0"
 dependencies = [
- "actionqueue-core",
+ "actionqueue-core 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "actionqueue-executor-local",
  "actionqueue-runtime",
  "actionqueue-storage",

@@ -11,7 +11,7 @@ keywords = ["runtime", "dispatch", "async", "task-queue", "engine"]
 categories = ["asynchronous", "concurrency"]
 
 [dependencies]
-actionqueue-core = { path = "../actionqueue-core" }
+actionqueue-core = "0.1.0"
 actionqueue-storage = { path = "../actionqueue-storage" }
 actionqueue-engine = { path = "../actionqueue-engine" }
 actionqueue-executor-local = { path = "../actionqueue-executor-local" }

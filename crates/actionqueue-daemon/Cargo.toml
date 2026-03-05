@@ -11,7 +11,7 @@ keywords = ["http", "daemon", "api", "metrics", "task-queue"]
 categories = ["web-programming::http-server"]
 
 [dependencies]
-actionqueue-core = { path = "../actionqueue-core" }
+actionqueue-core = "0.1.0"
 actionqueue-storage = { path = "../actionqueue-storage" }
 serde = { version = "1.0", features = ["derive"], optional = true }
 axum = "0.7"

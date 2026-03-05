@@ -11,5 +11,5 @@ keywords = ["budget", "rate-limiting", "subscription", "task-queue", "resource"]
 categories = ["concurrency"]
 
 [dependencies]
-actionqueue-core = { path = "../actionqueue-core" }
+actionqueue-core = "0.1.0"
 tracing = "0.1"

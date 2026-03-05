@@ -11,5 +11,5 @@ keywords = ["actor", "heartbeat", "capability", "task-queue", "routing"]
 categories = ["concurrency"]
 
 [dependencies]
-actionqueue-core = { path = "../actionqueue-core" }
+actionqueue-core = "0.1.0"
 tracing = "0.1"

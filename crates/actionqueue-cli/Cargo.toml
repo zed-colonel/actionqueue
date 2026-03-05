@@ -20,7 +20,7 @@ serde = ["actionqueue-core/serde"]
 workflow = ["actionqueue-core/workflow", "actionqueue-engine/workflow"]
 
 [dependencies]
-actionqueue-core = { path = "../actionqueue-core", features = ["serde"] }
+actionqueue-core = { version = "0.1.0", features = ["serde"] }
 actionqueue-daemon = { path = "../actionqueue-daemon" }
 actionqueue-engine = { path = "../actionqueue-engine" }
 actionqueue-storage = { path = "../actionqueue-storage" }

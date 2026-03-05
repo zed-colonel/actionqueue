@@ -11,9 +11,9 @@ keywords = ["executor", "retry", "backoff", "timeout", "task-queue"]
 categories = ["concurrency"]
 
 [dependencies]
-actionqueue-core = { path = "../actionqueue-core" }
+actionqueue-core = "0.1.0"
 tracing = "0.1"
 
 [dev-dependencies]
-actionqueue-core = { path = "../actionqueue-core", features = ["testing"] }
+actionqueue-core = { version = "0.1.0", features = ["testing"] }
 proptest = "1.4"

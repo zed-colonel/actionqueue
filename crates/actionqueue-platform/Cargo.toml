@@ -11,6 +11,6 @@ keywords = ["multi-tenant", "rbac", "ledger", "task-queue", "platform"]
 categories = ["concurrency"]
 
 [dependencies]
-actionqueue-core = { path = "../actionqueue-core" }
+actionqueue-core = "0.1.0"
 actionqueue-actor = { path = "../actionqueue-actor" }
 tracing = "0.1"

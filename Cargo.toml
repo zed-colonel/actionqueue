@@ -40,7 +40,7 @@ platform = [
 ]
 
 [dev-dependencies]
-actionqueue-core = { path = "crates/actionqueue-core" }
+actionqueue-core = "0.1.0"
 actionqueue-storage = { path = "crates/actionqueue-storage" }
 actionqueue-engine = { path = "crates/actionqueue-engine" }
 actionqueue-executor-local = { path = "crates/actionqueue-executor-local" }
