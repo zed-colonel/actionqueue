@@ -50,7 +50,7 @@ actionqueue-budget = "0.1.0"
 actionqueue-actor = "0.1.0"
 actionqueue-platform = "0.1.0"
 actionqueue-daemon = "0.1.0"
-actionqueue-cli = { path = "crates/actionqueue-cli" }
+actionqueue-cli = "0.1.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 axum = "0.7"
 tower = { version = "0.4", features = ["util"] }

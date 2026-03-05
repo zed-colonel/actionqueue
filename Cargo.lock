@@ -8,7 +8,7 @@ version = "0.1.0"
 dependencies = [
  "actionqueue-actor 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "actionqueue-budget 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "actionqueue-cli",
+ "actionqueue-cli 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "actionqueue-core 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "actionqueue-daemon 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "actionqueue-engine 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -65,6 +65,21 @@ dependencies = [
 [[package]]
 name = "actionqueue-cli"
 version = "0.1.0"
+dependencies = [
+ "actionqueue-core 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "actionqueue-daemon 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "actionqueue-engine 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "actionqueue-storage 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "serde",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
+name = "actionqueue-cli"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "571b93428516490afe3fc642152676c9502c725444795788f40019feb25e544c"
 dependencies = [
  "actionqueue-core 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "actionqueue-daemon 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
