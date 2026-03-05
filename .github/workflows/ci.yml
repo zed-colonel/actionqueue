@@ -1,0 +1,109 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+    branches:
+      - main
+      - master
+
+jobs:
+  test:
+    name: Test Suite
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.89.0
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-index-
+
+      - name: Cache cargo target
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-target-
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy
+        run: cargo clippy --all --all-targets -- -D warnings
+
+      # Tests use spawn_blocking with thread::sleep handlers. On CI runners
+      # (2 vCPUs), parallel test execution saturates the blocking thread pool
+      # and causes intermittent hangs. Serialize tests within each binary.
+      - name: Run tests
+        run: cargo test --workspace --no-fail-fast -- --test-threads=1
+
+      - name: Run actionqueue-core serde roundtrip tests
+        run: cargo test -p actionqueue-core --features serde
+
+      - name: Run clippy with workflow feature
+        run: cargo clippy --all --all-targets --features workflow -- -D warnings
+
+      - name: Run tests with workflow feature
+        run: cargo test --workspace --features workflow --no-fail-fast -- --test-threads=1
+
+      - name: Run clippy with budget feature
+        run: cargo clippy --all --all-targets --features budget -- -D warnings
+
+      - name: Run tests with budget feature
+        run: cargo test --workspace --features budget --no-fail-fast -- --test-threads=1
+
+      - name: Run clippy with workflow and budget features
+        run: cargo clippy --all --all-targets --features workflow,budget -- -D warnings
+
+      - name: Run tests with workflow and budget features
+        run: cargo test --workspace --features workflow,budget --no-fail-fast -- --test-threads=1
+
+      - name: Run clippy with actor feature
+        run: cargo clippy --all --all-targets --features actor -- -D warnings
+
+      - name: Run tests with actor feature
+        run: cargo test --workspace --features actor --no-fail-fast -- --test-threads=1
+
+      - name: Run clippy with platform feature
+        run: cargo clippy --all --all-targets --features platform -- -D warnings
+
+      - name: Run tests with platform feature
+        run: cargo test --workspace --features platform --no-fail-fast -- --test-threads=1
+
+      - name: Run clippy with actor and platform features
+        run: cargo clippy --all --all-targets --features actor,platform -- -D warnings
+
+      - name: Run tests with actor and platform features
+        run: cargo test --workspace --features actor,platform --no-fail-fast -- --test-threads=1
+
+      - name: Run clippy with all features
+        run: cargo clippy --all --all-targets --features workflow,budget,actor,platform -- -D warnings
+
+      - name: Run tests with all features
+        run: cargo test --workspace --features workflow,budget,actor,platform --no-fail-fast -- --test-threads=1
+
+      - name: Run actionqueue-storage serde roundtrip tests
+        run: cargo test -p actionqueue-storage --features serde

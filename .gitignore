@@ -1,0 +1,26 @@
+# ── Build artifacts ──────────────────────────────────────────────
+target/
+**/*.rs.bk
+
+# ── Local runtime data ──────────────────────────────────────────
+data/
+
+# ── Editor / IDE ────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.iml
+
+# ── OS junk ─────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Environment / secrets ───────────────────────────────────────
+.env
+.env.*
+
+# ── AI coding tool configs (user-local) ─────────────────────────
+.claude/
+CLAUDE.md

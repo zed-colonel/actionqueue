@@ -1,0 +1,286 @@
+[package]
+name = "actionqueue-acceptance-harness"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+members = [
+    "crates/actionqueue-core",
+    "crates/actionqueue-storage",
+    "crates/actionqueue-engine",
+    "crates/actionqueue-executor-local",
+    "crates/actionqueue-runtime",
+    "crates/actionqueue-daemon",
+    "crates/actionqueue-cli",
+    "crates/actionqueue-workflow",
+    "crates/actionqueue-budget",
+    "crates/actionqueue-actor",
+    "crates/actionqueue-platform",
+]
+resolver = "2"
+
+[features]
+workflow = [
+    "actionqueue-core/workflow",
+    "actionqueue-storage/workflow",
+    "actionqueue-engine/workflow",
+    "actionqueue-runtime/workflow",
+    "actionqueue-daemon/workflow",
+    "actionqueue-cli/workflow",
+]
+budget = [
+    "actionqueue-runtime/budget",
+]
+actor = [
+    "actionqueue-runtime/actor",
+]
+platform = [
+    "actionqueue-runtime/platform",
+]
+
+[dev-dependencies]
+actionqueue-core = { path = "crates/actionqueue-core" }
+actionqueue-storage = { path = "crates/actionqueue-storage" }
+actionqueue-engine = { path = "crates/actionqueue-engine" }
+actionqueue-executor-local = { path = "crates/actionqueue-executor-local" }
+actionqueue-runtime = { path = "crates/actionqueue-runtime" }
+actionqueue-workflow = { path = "crates/actionqueue-workflow" }
+actionqueue-budget = { path = "crates/actionqueue-budget" }
+actionqueue-actor = { path = "crates/actionqueue-actor" }
+actionqueue-platform = { path = "crates/actionqueue-platform" }
+actionqueue-daemon = { path = "crates/actionqueue-daemon" }
+actionqueue-cli = { path = "crates/actionqueue-cli" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+axum = "0.7"
+tower = { version = "0.4", features = ["util"] }
+http-body-util = "0.1"
+serde_json = "1.0"
+tempfile = "3.10"
+proptest = "1.4"
+
+[[test]]
+name = "acceptance_once_accounting"
+path = "tests/acceptance/once_accounting.rs"
+
+[[test]]
+name = "acceptance_repeat_accounting"
+path = "tests/acceptance/repeat_accounting.rs"
+
+[[test]]
+name = "acceptance_retry_cap"
+path = "tests/acceptance/retry_cap.rs"
+
+[[test]]
+name = "acceptance_crash_recovery"
+path = "tests/acceptance/crash_recovery.rs"
+
+[[test]]
+name = "acceptance_concurrency_key"
+path = "tests/acceptance/concurrency_key.rs"
+
+[[test]]
+name = "acceptance_observability"
+path = "tests/acceptance/observability.rs"
+
+[[test]]
+name = "acceptance_cancellation"
+path = "tests/acceptance/cancellation.rs"
+
+[[test]]
+name = "acceptance_negative_transitions"
+path = "tests/acceptance/negative_transitions.rs"
+
+[[test]]
+name = "acceptance_lease_expiry"
+path = "tests/acceptance/lease_expiry.rs"
+
+[[test]]
+name = "acceptance_wal_corruption_recovery"
+path = "tests/acceptance/wal_corruption_recovery.rs"
+
+[[test]]
+name = "acceptance_misfire"
+path = "tests/acceptance/misfire.rs"
+
+[[test]]
+name = "acceptance_dispatch_invariants"
+path = "tests/acceptance/dispatch_invariants.rs"
+
+[[test]]
+name = "acceptance_concurrent_dispatch_stress"
+path = "tests/acceptance/concurrent_dispatch_stress.rs"
+
+[[test]]
+name = "acceptance_snapshot_corruption_recovery"
+path = "tests/acceptance/snapshot_corruption_recovery.rs"
+
+[[test]]
+name = "acceptance_concurrent_mutation_boundary"
+path = "tests/acceptance/concurrent_mutation_boundary.rs"
+
+[[test]]
+name = "acceptance_mixed_attempt_outcomes"
+path = "tests/acceptance/mixed_attempt_outcomes.rs"
+
+[[test]]
+name = "acceptance_crash_during_promotion"
+path = "tests/acceptance/crash_during_promotion.rs"
+
+[[test]]
+name = "acceptance_multi_mutation_session"
+path = "tests/acceptance/multi_mutation_session.rs"
+
+[[test]]
+name = "chaos_kill_recovery"
+path = "tests/chaos/kill_recovery.rs"
+
+[[test]]
+name = "acceptance_handler_output_roundtrip"
+path = "tests/acceptance/handler_output_roundtrip.rs"
+required-features = ["workflow"]
+
+[[test]]
+name = "acceptance_dag_ordering"
+path = "tests/acceptance/dag_ordering.rs"
+required-features = ["workflow"]
+
+[[test]]
+name = "acceptance_dag_failure_propagation"
+path = "tests/acceptance/dag_failure_propagation.rs"
+required-features = ["workflow"]
+
+[[test]]
+name = "acceptance_dag_cycle_rejection"
+path = "tests/acceptance/dag_cycle_rejection.rs"
+required-features = ["workflow"]
+
+[[test]]
+name = "acceptance_hierarchy_lifecycle"
+path = "tests/acceptance/hierarchy_lifecycle.rs"
+required-features = ["workflow"]
+
+[[test]]
+name = "acceptance_dynamic_submission"
+path = "tests/acceptance/dynamic_submission.rs"
+required-features = ["workflow"]
+
+[[test]]
+name = "acceptance_coordinator_multi_attempt"
+path = "tests/acceptance/coordinator_multi_attempt.rs"
+required-features = ["workflow"]
+
+[[test]]
+name = "acceptance_cron_scheduling"
+path = "tests/acceptance/cron_scheduling.rs"
+required-features = ["workflow"]
+
+[[test]]
+name = "acceptance_workflow_crash_recovery"
+path = "tests/acceptance/workflow_crash_recovery.rs"
+required-features = ["workflow"]
+
+[[test]]
+name = "acceptance_dag_snapshot_recovery"
+path = "tests/acceptance/dag_snapshot_recovery.rs"
+required-features = ["workflow"]
+
+[[test]]
+name = "acceptance_attempt_lineage"
+path = "tests/acceptance/attempt_lineage.rs"
+required-features = ["workflow"]
+
+[[test]]
+name = "acceptance_budget_enforcement"
+path = "tests/acceptance/budget_enforcement.rs"
+required-features = ["budget"]
+
+[[test]]
+name = "acceptance_budget_replenishment"
+path = "tests/acceptance/budget_replenishment.rs"
+required-features = ["budget"]
+
+[[test]]
+name = "acceptance_suspend_resume"
+path = "tests/acceptance/suspend_resume.rs"
+required-features = ["budget"]
+
+[[test]]
+name = "acceptance_budget_recovery"
+path = "tests/acceptance/budget_recovery.rs"
+required-features = ["budget"]
+
+[[test]]
+name = "acceptance_suspended_concurrency_key"
+path = "tests/acceptance/suspended_concurrency_key.rs"
+required-features = ["budget"]
+
+[[test]]
+name = "acceptance_budget_threshold_suspension"
+path = "tests/acceptance/budget_threshold_suspension.rs"
+required-features = ["budget"]
+
+[[test]]
+name = "acceptance_subscription_triggered_promotion"
+path = "tests/acceptance/subscription_triggered_promotion.rs"
+required-features = ["budget"]
+
+[[test]]
+name = "acceptance_budget_threshold_subscription"
+path = "tests/acceptance/budget_threshold_subscription.rs"
+required-features = ["budget"]
+
+[[test]]
+name = "acceptance_cascading_budget"
+path = "tests/acceptance/cascading_budget.rs"
+required-features = ["budget", "workflow"]
+
+[[test]]
+name = "acceptance_custom_event_subscription"
+path = "tests/acceptance/custom_event_subscription.rs"
+required-features = ["budget"]
+
+[[test]]
+name = "acceptance_actor_registration"
+path = "tests/acceptance/actor_registration.rs"
+required-features = ["actor"]
+
+[[test]]
+name = "acceptance_capability_matching"
+path = "tests/acceptance/capability_matching.rs"
+required-features = ["actor"]
+
+[[test]]
+name = "acceptance_remote_actor_crash"
+path = "tests/acceptance/remote_actor_crash.rs"
+required-features = ["actor"]
+
+[[test]]
+name = "acceptance_department_routing"
+path = "tests/acceptance/department_routing.rs"
+required-features = ["actor"]
+
+[[test]]
+name = "acceptance_multi_tenant_isolation"
+path = "tests/acceptance/multi_tenant_isolation.rs"
+required-features = ["platform"]
+
+[[test]]
+name = "acceptance_rbac_enforcement"
+path = "tests/acceptance/rbac_enforcement.rs"
+required-features = ["platform"]
+
+[[test]]
+name = "acceptance_approval_workflow"
+path = "tests/acceptance/approval_workflow.rs"
+required-features = ["platform", "workflow"]
+
+[[test]]
+name = "acceptance_ledger_recovery"
+path = "tests/acceptance/ledger_recovery.rs"
+required-features = ["platform"]
+
+[[test]]
+name = "acceptance_triad_mvp"
+path = "tests/acceptance/triad_mvp.rs"
+required-features = ["platform", "workflow"]

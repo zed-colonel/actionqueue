@@ -1,0 +1,19 @@
+[package]
+name = "actionqueue-executor-local"
+authors = ["Keith <zed.colonel@gmail.com>"]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Local executor with dispatch queue, retry, backoff, and timeout for the ActionQueue task queue engine."
+readme = "README.md"
+repository = "https://github.com/zed-colonel/actionqueue"
+keywords = ["executor", "retry", "backoff", "timeout", "task-queue"]
+categories = ["concurrency"]
+
+[dependencies]
+actionqueue-core = { path = "../actionqueue-core" }
+tracing = "0.1"
+
+[dev-dependencies]
+actionqueue-core = { path = "../actionqueue-core", features = ["testing"] }
+proptest = "1.4"

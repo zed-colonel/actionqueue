@@ -1,0 +1,32 @@
+[package]
+name = "actionqueue-engine"
+authors = ["Keith <zed.colonel@gmail.com>"]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Scheduling, derivation, and concurrency primitives for the ActionQueue task queue engine."
+readme = "README.md"
+repository = "https://github.com/zed-colonel/actionqueue"
+keywords = ["scheduling", "concurrency", "lease", "task-queue", "derivation"]
+categories = ["concurrency"]
+
+[features]
+default = []
+workflow = ["actionqueue-core/workflow", "dep:cron", "dep:chrono"]
+
+[dependencies.cron]
+version = "0.12"
+optional = true
+
+[dependencies.chrono]
+version = "0.4"
+optional = true
+default-features = false
+
+[dependencies]
+actionqueue-core = { path = "../actionqueue-core" }
+actionqueue-executor-local = { path = "../actionqueue-executor-local" }
+tracing = "0.1"
+
+[dev-dependencies]
+proptest = "1.4"

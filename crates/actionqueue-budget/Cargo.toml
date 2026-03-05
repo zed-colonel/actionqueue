@@ -1,0 +1,15 @@
+[package]
+name = "actionqueue-budget"
+authors = ["Keith <zed.colonel@gmail.com>"]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Budget enforcement, suspend/resume, and event subscriptions for the ActionQueue task queue engine."
+readme = "README.md"
+repository = "https://github.com/zed-colonel/actionqueue"
+keywords = ["budget", "rate-limiting", "subscription", "task-queue", "resource"]
+categories = ["concurrency"]
+
+[dependencies]
+actionqueue-core = { path = "../actionqueue-core" }
+tracing = "0.1"

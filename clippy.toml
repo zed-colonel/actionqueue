@@ -1,0 +1,11 @@
+# Clippy configuration for ActionQueue v0.1
+# Baseline lint policy for consistent code quality
+
+# Threshold for lints like `too_many_arguments`
+too-many-arguments-threshold = 5
+
+# Threshold for lints like `too_many_lines`
+too-many-lines-threshold = 80
+
+# Threshold for lints like `cognitive_complexity`
+cognitive-complexity-threshold = 15
