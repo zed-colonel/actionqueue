@@ -14,7 +14,7 @@ dependencies = [
  "actionqueue-engine 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "actionqueue-executor-local 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "actionqueue-platform 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "actionqueue-runtime",
+ "actionqueue-runtime 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "actionqueue-storage 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "actionqueue-workflow 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "axum",
@@ -202,6 +202,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "actionqueue-runtime"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3bbd6ac1a86c774bf7e6937b03bf9b2e9b573e2d1500cb24909eb9fab4549eb"
+dependencies = [
+ "actionqueue-actor 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "actionqueue-budget 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "actionqueue-core 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "actionqueue-engine 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "actionqueue-executor-local 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "actionqueue-platform 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "actionqueue-storage 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "actionqueue-workflow 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "actionqueue-storage"
 version = "0.1.0"
 dependencies = [
@@ -238,7 +256,7 @@ version = "0.1.0"
 dependencies = [
  "actionqueue-core 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "actionqueue-executor-local 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "actionqueue-runtime",
+ "actionqueue-runtime 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "actionqueue-storage 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "tokio",
  "tracing",
