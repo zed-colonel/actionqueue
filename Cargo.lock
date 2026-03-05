@@ -12,7 +12,7 @@ dependencies = [
  "actionqueue-core 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "actionqueue-daemon",
  "actionqueue-engine",
- "actionqueue-executor-local",
+ "actionqueue-executor-local 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "actionqueue-platform",
  "actionqueue-runtime",
  "actionqueue-storage",
@@ -105,7 +105,7 @@ name = "actionqueue-engine"
 version = "0.1.0"
 dependencies = [
  "actionqueue-core 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "actionqueue-executor-local",
+ "actionqueue-executor-local 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "chrono",
  "cron",
  "proptest",
@@ -118,6 +118,16 @@ version = "0.1.0"
 dependencies = [
  "actionqueue-core 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "proptest",
+ "tracing",
+]
+
+[[package]]
+name = "actionqueue-executor-local"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ce1ab1347ec876a2fbe86601e801cf19c27ad6cec1636d433146c6c320916027"
+dependencies = [
+ "actionqueue-core 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "tracing",
 ]
 
@@ -138,7 +148,7 @@ dependencies = [
  "actionqueue-budget",
  "actionqueue-core 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "actionqueue-engine",
- "actionqueue-executor-local",
+ "actionqueue-executor-local 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "actionqueue-platform",
  "actionqueue-storage",
  "actionqueue-workflow",
@@ -153,7 +163,7 @@ version = "0.1.0"
 dependencies = [
  "actionqueue-core 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "actionqueue-engine",
- "actionqueue-executor-local",
+ "actionqueue-executor-local 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "crc32fast",
  "postcard",
  "proptest",
@@ -169,7 +179,7 @@ name = "actionqueue-workflow"
 version = "0.1.0"
 dependencies = [
  "actionqueue-core 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "actionqueue-executor-local",
+ "actionqueue-executor-local 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "actionqueue-runtime",
  "actionqueue-storage",
  "tokio",

@@ -25,7 +25,7 @@ default-features = false
 
 [dependencies]
 actionqueue-core = "0.1.0"
-actionqueue-executor-local = { path = "../actionqueue-executor-local" }
+actionqueue-executor-local = "0.1.0"
 tracing = "0.1"
 
 [dev-dependencies]

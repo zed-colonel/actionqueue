@@ -14,7 +14,7 @@ categories = ["asynchronous", "concurrency"]
 actionqueue-core = "0.1.0"
 actionqueue-storage = { path = "../actionqueue-storage" }
 actionqueue-engine = { path = "../actionqueue-engine" }
-actionqueue-executor-local = { path = "../actionqueue-executor-local" }
+actionqueue-executor-local = "0.1.0"
 # actionqueue-workflow provides DependencyGate, HierarchyTracker, and SubmissionChannel
 # used unconditionally by the dispatch loop. The `workflow` feature gates only
 # cron scheduling and related acceptance tests.

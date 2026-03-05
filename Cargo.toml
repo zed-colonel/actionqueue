@@ -43,7 +43,7 @@ platform = [
 actionqueue-core = "0.1.0"
 actionqueue-storage = { path = "crates/actionqueue-storage" }
 actionqueue-engine = { path = "crates/actionqueue-engine" }
-actionqueue-executor-local = { path = "crates/actionqueue-executor-local" }
+actionqueue-executor-local = "0.1.0"
 actionqueue-runtime = { path = "crates/actionqueue-runtime" }
 actionqueue-workflow = { path = "crates/actionqueue-workflow" }
 actionqueue-budget = { path = "crates/actionqueue-budget" }
