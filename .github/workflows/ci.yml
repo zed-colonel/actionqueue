@@ -18,11 +18,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
+      - name: Install Rust toolchain for clippy
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: 1.89.0, nightly
-          components: rustfmt, clippy
+          toolchain: 1.89.0
+          components: clippy
+
+      - name: Install nightly Rust toolchain for rustfmt
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+          components: rustfmt
 
       - name: Cache cargo registry
         uses: actions/cache@v4
