@@ -12,7 +12,7 @@ categories = ["asynchronous", "concurrency"]
 
 [dependencies]
 actionqueue-core = "0.1.0"
-actionqueue-storage = { path = "../actionqueue-storage" }
+actionqueue-storage = "0.1.0"
 actionqueue-engine = { path = "../actionqueue-engine" }
 actionqueue-executor-local = "0.1.0"
 # actionqueue-workflow provides DependencyGate, HierarchyTracker, and SubmissionChannel

@@ -12,7 +12,7 @@ categories = ["concurrency"]
 
 [dependencies]
 actionqueue-core = "0.1.0"
-actionqueue-storage = { path = "../actionqueue-storage" }
+actionqueue-storage = "0.1.0"
 actionqueue-executor-local = "0.1.0"
 tokio = { version = "1", features = ["sync"] }
 tracing = "0.1"

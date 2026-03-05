@@ -23,7 +23,7 @@ workflow = ["actionqueue-core/workflow", "actionqueue-engine/workflow"]
 actionqueue-core = { version = "0.1.0", features = ["serde"] }
 actionqueue-daemon = { path = "../actionqueue-daemon" }
 actionqueue-engine = { path = "../actionqueue-engine" }
-actionqueue-storage = { path = "../actionqueue-storage" }
+actionqueue-storage = "0.1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tracing = "0.1"
