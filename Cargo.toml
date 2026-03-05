@@ -46,7 +46,7 @@ actionqueue-engine = { path = "crates/actionqueue-engine" }
 actionqueue-executor-local = "0.1.0"
 actionqueue-runtime = { path = "crates/actionqueue-runtime" }
 actionqueue-workflow = { path = "crates/actionqueue-workflow" }
-actionqueue-budget = { path = "crates/actionqueue-budget" }
+actionqueue-budget = "0.1.0"
 actionqueue-actor = "0.1.0"
 actionqueue-platform = { path = "crates/actionqueue-platform" }
 actionqueue-daemon = { path = "crates/actionqueue-daemon" }

@@ -7,7 +7,7 @@ name = "actionqueue-acceptance-harness"
 version = "0.1.0"
 dependencies = [
  "actionqueue-actor 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "actionqueue-budget",
+ "actionqueue-budget 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "actionqueue-cli",
  "actionqueue-core 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "actionqueue-daemon",
@@ -47,6 +47,16 @@ dependencies = [
 [[package]]
 name = "actionqueue-budget"
 version = "0.1.0"
+dependencies = [
+ "actionqueue-core 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "tracing",
+]
+
+[[package]]
+name = "actionqueue-budget"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6da119d2f3bd1ccd3f368151c8faec4e89ade1f052edbee9949d941bc8bdae7e"
 dependencies = [
  "actionqueue-core 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "tracing",
@@ -155,7 +165,7 @@ name = "actionqueue-runtime"
 version = "0.1.0"
 dependencies = [
  "actionqueue-actor 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "actionqueue-budget",
+ "actionqueue-budget 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "actionqueue-core 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "actionqueue-engine",
  "actionqueue-executor-local 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
