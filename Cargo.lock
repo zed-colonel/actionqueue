@@ -11,7 +11,7 @@ dependencies = [
  "actionqueue-cli",
  "actionqueue-core 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "actionqueue-daemon",
- "actionqueue-engine",
+ "actionqueue-engine 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "actionqueue-executor-local 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "actionqueue-platform",
  "actionqueue-runtime",
@@ -68,7 +68,7 @@ version = "0.1.0"
 dependencies = [
  "actionqueue-core 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "actionqueue-daemon",
- "actionqueue-engine",
+ "actionqueue-engine 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "actionqueue-storage 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde",
  "serde_json",
@@ -133,6 +133,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "actionqueue-engine"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "854dc5d53710350fa1d2ce483662b81ebaaf4ad2e021261b7aa3be3698e7d7a0"
+dependencies = [
+ "actionqueue-core 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "actionqueue-executor-local 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "chrono",
+ "cron",
+ "tracing",
+]
+
+[[package]]
 name = "actionqueue-executor-local"
 version = "0.1.0"
 dependencies = [
@@ -167,7 +180,7 @@ dependencies = [
  "actionqueue-actor 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "actionqueue-budget 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "actionqueue-core 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "actionqueue-engine",
+ "actionqueue-engine 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "actionqueue-executor-local 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "actionqueue-platform",
  "actionqueue-storage 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -182,7 +195,7 @@ name = "actionqueue-storage"
 version = "0.1.0"
 dependencies = [
  "actionqueue-core 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "actionqueue-engine",
+ "actionqueue-engine 0.1.0",
  "actionqueue-executor-local 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "crc32fast",
  "postcard",
