@@ -30,7 +30,7 @@ path = "../actionqueue-budget"
 optional = true
 
 [dependencies.actionqueue-actor]
-path = "../actionqueue-actor"
+version = "0.1.0"
 optional = true
 
 [dependencies.actionqueue-platform]

@@ -12,5 +12,5 @@ categories = ["concurrency"]
 
 [dependencies]
 actionqueue-core = "0.1.0"
-actionqueue-actor = { path = "../actionqueue-actor" }
+actionqueue-actor = "0.1.0"
 tracing = "0.1"
