@@ -1,7 +1,7 @@
 [package]
 name = "actionqueue-executor-local"
 authors = ["Keith <zed.colonel@gmail.com>"]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "MIT"
 description = "Local executor with dispatch queue, retry, backoff, and timeout for the ActionQueue task queue engine."

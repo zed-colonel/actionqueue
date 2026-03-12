@@ -1,7 +1,7 @@
 [package]
 name = "actionqueue-runtime"
 authors = ["Keith <zed.colonel@gmail.com>"]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "MIT"
 description = "Async dispatch loop, embedded API, and runtime configuration for the ActionQueue task queue engine."
