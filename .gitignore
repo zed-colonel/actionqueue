@@ -24,3 +24,6 @@ Thumbs.db
 # ── AI coding tool configs (user-local) ─────────────────────────
 .claude/
 CLAUDE.md
+
+# ── Development Plans (user-local) ─────────────────────────
+plans/

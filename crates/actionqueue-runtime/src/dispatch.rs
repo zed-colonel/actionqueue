@@ -2174,6 +2174,30 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         Ok(())
     }
 
+    /// Query remaining budget for a task on a specific dimension.
+    ///
+    /// Returns `None` if no budget is allocated for this task+dimension.
+    #[cfg(feature = "budget")]
+    pub fn budget_remaining(
+        &self,
+        task_id: TaskId,
+        dimension: actionqueue_core::budget::BudgetDimension,
+    ) -> Option<u64> {
+        self.budget_tracker.remaining(task_id, dimension)
+    }
+
+    /// Check if a budget dimension is exhausted for a task.
+    ///
+    /// Returns `false` if no budget is allocated (no budget = no limit).
+    #[cfg(feature = "budget")]
+    pub fn is_budget_exhausted(
+        &self,
+        task_id: TaskId,
+        dimension: actionqueue_core::budget::BudgetDimension,
+    ) -> bool {
+        self.budget_tracker.is_exhausted(task_id, dimension)
+    }
+
     /// Resumes a suspended run by WAL-appending a `RunResume` command.
     ///
     /// Transitions the run from `Suspended → Ready` so it will be dispatched

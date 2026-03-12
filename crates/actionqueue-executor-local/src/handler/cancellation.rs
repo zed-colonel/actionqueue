@@ -61,6 +61,15 @@ impl CancellationToken {
         self.observed_cancelled.load(Ordering::SeqCst)
     }
 
+    /// Returns a clone of the inner cancellation flag.
+    ///
+    /// This allows external systems (e.g. Universal Interface connectors) to
+    /// share the same `AtomicBool` via their own cancellation token type,
+    /// providing zero-overhead live propagation of cancellation signals.
+    pub fn cancelled_flag(&self) -> std::sync::Arc<AtomicBool> {
+        std::sync::Arc::clone(&self.cancelled)
+    }
+
     /// Returns the first observed cancellation-poll latency from request to observation.
     pub fn cancellation_observation_latency(&self) -> Option<Duration> {
         let requested = self.cancellation_requested_at.get().copied()?;

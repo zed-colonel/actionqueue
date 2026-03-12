@@ -196,6 +196,30 @@ impl<H: ExecutorHandler + 'static, C: Clock> BootstrappedEngine<H, C> {
         self.dispatch.replenish_budget(task_id, dimension, new_limit).map_err(EngineError::Dispatch)
     }
 
+    /// Query remaining budget for a task on a specific dimension.
+    ///
+    /// Returns `None` if no budget is allocated for this task+dimension.
+    #[cfg(feature = "budget")]
+    pub fn budget_remaining(
+        &self,
+        task_id: actionqueue_core::ids::TaskId,
+        dimension: actionqueue_core::budget::BudgetDimension,
+    ) -> Option<u64> {
+        self.dispatch.budget_remaining(task_id, dimension)
+    }
+
+    /// Check if a budget dimension is exhausted for a task.
+    ///
+    /// Returns `false` if no budget is allocated (no budget = no limit).
+    #[cfg(feature = "budget")]
+    pub fn is_budget_exhausted(
+        &self,
+        task_id: actionqueue_core::ids::TaskId,
+        dimension: actionqueue_core::budget::BudgetDimension,
+    ) -> bool {
+        self.dispatch.is_budget_exhausted(task_id, dimension)
+    }
+
     /// Resumes a suspended run (transitions Suspended → Ready).
     #[cfg(feature = "budget")]
     pub fn resume_run(&mut self, run_id: actionqueue_core::ids::RunId) -> Result<(), EngineError> {

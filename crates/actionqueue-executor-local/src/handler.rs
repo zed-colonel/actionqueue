@@ -112,6 +112,14 @@ impl HandlerOutput {
         Self::Success { output: Some(output), consumption: vec![] }
     }
 
+    /// Creates a success output with output bytes and consumption records.
+    pub fn success_with_consumption(
+        output: Option<Vec<u8>>,
+        consumption: Vec<BudgetConsumption>,
+    ) -> Self {
+        Self::Success { output, consumption }
+    }
+
     /// Creates a retryable failure with no consumption.
     pub fn retryable_failure(error: impl Into<String>) -> Self {
         Self::RetryableFailure { error: error.into(), consumption: vec![] }
