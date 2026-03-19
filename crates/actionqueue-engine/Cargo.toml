@@ -1,7 +1,7 @@
 [package]
 name = "actionqueue-engine"
 authors = ["Keith <zed.colonel@gmail.com>"]
-version = "0.1.0"
+version = "0.1.2"
 edition = "2021"
 license = "Apache-2.0"
 description = "Scheduling, derivation, and concurrency primitives for the ActionQueue task queue engine."
@@ -24,8 +24,8 @@ optional = true
 default-features = false
 
 [dependencies]
-actionqueue-core = "0.1.0"
-actionqueue-executor-local = "0.1.0"
+actionqueue-core = "0.1.2"
+actionqueue-executor-local = "0.1.2"
 tracing = "0.1"
 
 [dev-dependencies]

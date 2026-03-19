@@ -40,17 +40,17 @@ platform = [
 ]
 
 [dev-dependencies]
-actionqueue-core = "0.1.0"
-actionqueue-storage = "0.1.0"
-actionqueue-engine = "0.1.0"
-actionqueue-executor-local = "0.1.0"
-actionqueue-runtime = "0.1.0"
-actionqueue-workflow = "0.1.0"
-actionqueue-budget = "0.1.0"
-actionqueue-actor = "0.1.0"
-actionqueue-platform = "0.1.0"
-actionqueue-daemon = "0.1.0"
-actionqueue-cli = "0.1.0"
+actionqueue-core = "0.1.2"
+actionqueue-storage = "0.1.2"
+actionqueue-engine = "0.1.2"
+actionqueue-executor-local = "0.1.2"
+actionqueue-runtime = "0.1.2"
+actionqueue-workflow = "0.1.2"
+actionqueue-budget = "0.1.2"
+actionqueue-actor = "0.1.2"
+actionqueue-platform = "0.1.2"
+actionqueue-daemon = "0.1.2"
+actionqueue-cli = "0.1.2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 axum = "0.7"
 tower = { version = "0.4", features = ["util"] }
@@ -284,3 +284,16 @@ required-features = ["platform"]
 name = "acceptance_triad_mvp"
 path = "tests/acceptance/triad_mvp.rs"
 required-features = ["platform", "workflow"]
+
+[patch.crates-io]
+actionqueue-core = { path = "crates/actionqueue-core" }
+actionqueue-storage = { path = "crates/actionqueue-storage" }
+actionqueue-engine = { path = "crates/actionqueue-engine" }
+actionqueue-executor-local = { path = "crates/actionqueue-executor-local" }
+actionqueue-runtime = { path = "crates/actionqueue-runtime" }
+actionqueue-workflow = { path = "crates/actionqueue-workflow" }
+actionqueue-budget = { path = "crates/actionqueue-budget" }
+actionqueue-actor = { path = "crates/actionqueue-actor" }
+actionqueue-platform = { path = "crates/actionqueue-platform" }
+actionqueue-daemon = { path = "crates/actionqueue-daemon" }
+actionqueue-cli = { path = "crates/actionqueue-cli" }

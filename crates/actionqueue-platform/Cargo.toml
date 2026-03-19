@@ -1,7 +1,7 @@
 [package]
 name = "actionqueue-platform"
 authors = ["Keith <zed.colonel@gmail.com>"]
-version = "0.1.0"
+version = "0.1.2"
 edition = "2021"
 license = "Apache-2.0"
 description = "Multi-tenant isolation, RBAC, and append-only ledgers for the ActionQueue task queue engine."
@@ -11,6 +11,6 @@ keywords = ["multi-tenant", "rbac", "ledger", "task-queue", "platform"]
 categories = ["concurrency"]
 
 [dependencies]
-actionqueue-core = "0.1.0"
-actionqueue-actor = "0.1.0"
+actionqueue-core = "0.1.2"
+actionqueue-actor = "0.1.2"
 tracing = "0.1"
