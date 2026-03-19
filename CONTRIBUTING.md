@@ -79,4 +79,4 @@ See `invariant-boundaries-v0.1.md` for the full invariant specification.
 ## License
 
 By contributing, you agree that your contributions will be licensed under the
-MIT License that covers this project.
+Apache License, Version 2.0 that covers this project.

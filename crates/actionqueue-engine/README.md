@@ -20,4 +20,4 @@ See the [workspace root](https://github.com/zed-colonel/actionqueue) for full do
 
 ## License
 
-MIT
+Apache-2.0
