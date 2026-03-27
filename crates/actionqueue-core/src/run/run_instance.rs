@@ -264,12 +264,13 @@ impl RunInstance {
         if self.state == RunState::Running
             && new_state != RunState::Running
             && new_state != RunState::Canceled
-            && self.current_attempt_id.is_some()
         {
-            return Err(RunInstanceError::AttemptInProgress {
-                run_id: self.id,
-                active_attempt_id: self.current_attempt_id.expect("checked is_some above"),
-            });
+            if let Some(id) = self.current_attempt_id {
+                return Err(RunInstanceError::AttemptInProgress {
+                    run_id: self.id,
+                    active_attempt_id: id,
+                });
+            }
         }
 
         if new_state != RunState::Running {
@@ -319,10 +320,10 @@ impl RunInstance {
             });
         }
 
-        if self.current_attempt_id.is_some() {
+        if let Some(id) = self.current_attempt_id {
             return Err(RunInstanceError::AttemptAlreadyActive {
                 run_id: self.id,
-                active_attempt_id: self.current_attempt_id.expect("checked is_some above"),
+                active_attempt_id: id,
             });
         }
 
