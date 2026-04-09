@@ -487,15 +487,11 @@ fn validate_core_run_payload(run_instance: &CoreRunInstance) -> Result<(), Snaps
         return Err(SnapshotMappingError::InvalidTaskId { run_id, task_id });
     }
 
-    if run_instance.state() == RunState::Ready
-        && run_instance.scheduled_at() > run_instance.created_at()
-    {
-        return Err(SnapshotMappingError::InvalidReadyScheduleCausality {
-            run_id,
-            scheduled_at: run_instance.scheduled_at(),
-            created_at: run_instance.created_at(),
-        });
-    }
+    // NOTE: We do NOT check scheduled_at > created_at for Ready runs here.
+    // Repeat-policy and cron-policy runs are derived as Scheduled with future
+    // scheduled_at times and later promoted to Ready. Their scheduled_at
+    // legitimately exceeds created_at. The construction-time check in
+    // RunInstance::new_ready_with_id() guards direct Ready creation.
 
     if run_instance.current_attempt_id().is_some()
         && !matches!(run_instance.state(), RunState::Running | RunState::Canceled)
