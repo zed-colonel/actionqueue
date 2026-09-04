@@ -1,0 +1,45 @@
+# AQ-ADR-004 — Signal matching grammar
+
+- **Status:** Proposed. The recommended default below is the working implementation choice
+  until code review produces a concrete counterexample (implementation plan, Section 3).
+- **Decide before:** `AQ-05`
+- **Contract:** `AQ-CONT-1`
+- **Invariants:** AQ-H3, AQ-H5
+- **Architecture references:** §9.4, §9.5, §10.3, §25.4, §28.5 of
+  [`actionqueue-hardening-implementation-ready.md`](../contracts/actionqueue-hardening-implementation-ready.md)
+
+## Context
+
+Durable waits must match durable signals deterministically at registration time, at
+signal arrival, and during replay. Arbitrary predicates make replay and security analysis
+intractable.
+
+## Recommended decision
+
+Match on exact tenant plus exact namespace and kind, with optional exact
+`correlation_id` and exact `source` filters. No wildcards, regex, ranges, or payload
+predicates in `AQ-CONT-1`. Absence of a filter is represented structurally, never by an empty
+string. Broad filters (no correlation) are permitted but explicit and inspectable.
+
+## Alternatives considered
+
+Predicate language or JSONPath over payload (rejected: replay non-determinism,
+broker drift, §29.1); regex on kind (rejected: unbounded matching cost).
+
+## Consequences
+
+Correlation-first design; applications carry meaning in payload references, not
+in matchers. Matching is index-friendly (§26.1).
+
+## Verification required
+
+Exhaustive matcher table; constructor rejection of empty/unbounded filters; cross-tenant
+non-match; replay-equivalence of match decisions.
+
+## Acceptance record
+
+| Field | Value |
+|---|---|
+| Accepted in PR | _pending_ |
+| Accepted on | _pending_ |
+| Superseded by | — |

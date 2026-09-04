@@ -1,0 +1,60 @@
+# AQ-CONT-1 conformance package manifest.
+#
+# This file pins the contract revision that target pull requests implement and
+# inventories the fixtures and acceptance matrices that make the contract executable.
+# It is verified by `tests/conformance/frozen_evidence.rs`. Additive coverage
+# increments `package_revision`; normative change requires a contract amendment.
+schema_version: 1
+package: conformance/aq-cont-1
+package_revision: 0
+status: scaffold
+contract: AQ-CONT-1
+contract_revision: STACK-2026-07-20-CLEAN-1
+planning_profile: AQ-PLAN-2
+developmental_profile_revision: STACK-DEVELOPMENTAL-DIAGNOSTICS-1
+established_by: AQ-01
+baseline_commit: 97c9dc26c19c697dbfb204ed503e82c5f053394f
+baseline_tag: actionqueue/pre-aq-cont-1
+integration_branch: aq-cont-1
+normative_documents:
+- path: docs/contracts/actionqueue-hardening-implementation-ready.md
+  sha256: 1b80afa27e57c0ebe95eb456dcb490357187df23aa9b144970a69df1ba8f4cb0
+- path: docs/contracts/aq-cont-1-developmental-campaign-execution-profile.md
+  sha256: 2a7a4ecc6dd4b30551e7fcb8d72a863333564c7fdba191d899db4a5bf30d3499
+- path: docs/contracts/constitutional-stack-implementation-contracts.yaml
+  sha256: 842d5ae8bfbd4b8c3767f7b589267ab26de1b40a2bf722b0ab1d182768d48922
+- path: docs/contracts/developmental-diagnostics-cross-stack-profile.yaml
+  sha256: 5214651327d1aa0c688eb20a404de5a5f692387b193ee747ac79d3e4e1380f2d
+# Minimum feature set a conforming implementation must enable. Fixed by AQ-13.
+minimum_feature_set: []
+# Fixture record schema. Every fixture added by later PRs must carry these fields.
+fixture_schema:
+  version: 1
+  fields:
+    id: stable identifier, prefix AQ-CF-
+    title: one-line description
+    invariants: list of AQ-H identifiers proven
+    driver: black-box driver name (embedded, daemon, or cli)
+    path: package-relative fixture path
+    sha256: content hash of the fixture file
+    variants: subset of [replay, crash, race]
+    introduced_by: pull request identifier
+# Fixture inventory. Intentionally empty at AQ-01; populated from AQ-04 onward.
+fixtures: []
+# Black-box drivers. Intentionally empty at AQ-01; populated by AQ-13.
+drivers: []
+acceptance_matrices:
+- id: developmental-campaign
+  path: aq-cont-1-developmental-campaign-acceptance-matrix.yaml
+  sha256: 4bd682ab29d64394e64f56cd0c5f2b944eddfc137fcd5b6e3e035b50218617c6
+  profile_revision: STACK-DEVELOPMENTAL-DIAGNOSTICS-1
+  case_count: 18
+  case_id_prefix: AQ-DD-
+  required_variants:
+  - replay
+  - crash
+  executed_by: AQ-13
+  normative_protocol_change: false
+boundary_policy:
+  path: contract-boundaries.json
+  enforced_by: tests/conformance/contract_boundaries.rs
