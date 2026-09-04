@@ -1,0 +1,50 @@
+{
+  "baseline_commit": "97c9dc26c19c697dbfb204ed503e82c5f053394f",
+  "generator": "archive/pre-aq-cont-1/tools/capture_fixtures.rs",
+  "scenario": {
+    "canceled_task_ids": [
+      "0b000000-0000-4000-8000-00000000000b"
+    ],
+    "engine_paused": false,
+    "latest_sequence": 26,
+    "run_count": 3,
+    "runs": [
+      {
+        "attempts": [
+          {
+            "attempt_id": "2a000000-0000-4000-8000-0000000000a1",
+            "error": "transient failure",
+            "output_len": null,
+            "result": "Failure"
+          },
+          {
+            "attempt_id": "2a000000-0000-4000-8000-0000000000a2",
+            "error": null,
+            "output_len": 2,
+            "result": "Success"
+          }
+        ],
+        "run_id": "1a000000-0000-4000-8000-00000000001a",
+        "state": "completed"
+      },
+      {
+        "attempts": [],
+        "run_id": "1b000000-0000-4000-8000-00000000001b",
+        "state": "ready"
+      },
+      {
+        "attempts": [],
+        "run_id": "1c000000-0000-4000-8000-00000000001c",
+        "state": "scheduled"
+      }
+    ],
+    "task_count": 3,
+    "task_ids": [
+      "0a000000-0000-4000-8000-00000000000a",
+      "0b000000-0000-4000-8000-00000000000b",
+      "0c000000-0000-4000-8000-00000000000c"
+    ]
+  },
+  "snapshot_schema_version": 8,
+  "wal_format_version": 5
+}
