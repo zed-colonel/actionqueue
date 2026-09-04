@@ -17,7 +17,7 @@ pins, and summarizes them.
 
 ## 1. Normative documents
 
-All files in this directory are verbatim copies of the planning package. Their hashes are
+All other files in this directory are verbatim copies of the planning package. Their hashes are
 recorded in [`SHA256SUMS`](SHA256SUMS) and verified by the repository conformance tests.
 Editing a frozen document requires a contract amendment, a new package revision, and an
 updated hash.

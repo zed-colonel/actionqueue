@@ -170,6 +170,22 @@ See [`docs/acceptance-test-taxonomy.md`](docs/acceptance-test-taxonomy.md) for d
 
 ---
 
+## AQ-CONT-1 development contract
+
+The repository is under a clean-break hardening programme, contract `AQ-CONT-1`. The
+frozen experimental baseline is tagged `actionqueue/pre-aq-cont-1`; implementation lands on
+the `aq-cont-1` integration branch in fourteen ordered pull requests.
+
+- [`docs/contracts/AQ-CONT-1.md`](docs/contracts/AQ-CONT-1.md) — contract index: invariants,
+  clean-break posture, staged legacy-symbol removal, neutrality rules, downstream freeze
+- [`conformance/aq-cont-1/`](conformance/aq-cont-1/README.md) — conformance manifest, boundary
+  policy, and the eighteen-case developmental-neutrality acceptance matrix
+- [`docs/adrs/`](docs/adrs/README.md) — architectural decision queue
+- [`archive/pre-aq-cont-1/`](archive/pre-aq-cont-1/README.md) — frozen evidence (fixtures,
+  characterization results, crash catalogue, known failure cases); never a runtime dependency
+- `scripts/check_contract_boundaries.sh` — runs the boundary and frozen-evidence checks and
+  prints the pinned contract revision
+
 ## Documentation
 
 - [Getting started guide](docs/getting-started.md)
