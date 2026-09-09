@@ -1,5 +1,8 @@
 # Acceptance Test Taxonomy
 
+> `AQ-CONT-1` classifies every test below as retain, replace, or reject; see
+> [`planning/aq-cont-1/acceptance-test-classification.md`](planning/aq-cont-1/acceptance-test-classification.md).
+
 Reference document for ActionQueue's acceptance test suite. Each entry lists the test name,
 invariants verified, run policy/scenario exercised, and key assertions.
 

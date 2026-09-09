@@ -5,10 +5,12 @@ on:
     branches:
       - main
       - master
+      - aq-cont-1
   pull_request:
     branches:
       - main
       - master
+      - aq-cont-1
 
 permissions:
   contents: read
@@ -68,6 +70,9 @@ jobs:
       # and causes intermittent hangs. Serialize tests within each binary.
       - name: Run tests
         run: cargo test --workspace --no-fail-fast -- --test-threads=1
+
+      - name: AQ-CONT-1 contract boundary and frozen-evidence checks
+        run: cargo aq-conformance
 
       - name: Run actionqueue-core serde roundtrip tests
         run: cargo test -p actionqueue-core --features serde

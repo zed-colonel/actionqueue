@@ -1,0 +1,206 @@
+version: 2
+status: implementation-ready-clean-break
+date: '2026-07-20'
+contract_revision: STACK-2026-07-20-CLEAN-1
+reference_syntax: ref://<system>/<kind>/<id> (illustrative, opaque, non-normative)
+dependency_direction:
+- AQ-CONT-1
+- WI-FABRIC-2
+- EXO-V3
+clean_break:
+  pre_contract_code: evidence-not-runtime-dependency
+  authoritative_paths: 1
+  live_dual_authority: false
+  old_format_runtime_readers: false
+  silent_semantic_migration: false
+  offline_fixture_comparison: true
+  future_stability_begins_at_target_release: true
+optional_adjacent_foundation:
+  name: portable-identity-foundation
+  examples:
+  - EntityID
+  - KERI
+  - W3C Controlled Identifier profile
+  - certificate or organizational identity
+  integration_owner: WI-FABRIC-2
+  required: false
+  claims:
+  - control-lineage-and-provenance
+  - not-unique-personhood
+  - not-semantic-truth
+  - not-automatic-authority
+contracts:
+  AQ-CONT-1:
+    repository: zed-colonel/actionqueue
+    responsibility: Durable opaque execution, compound idempotent admission, run/attempt
+      lifecycle, Awaiting, durable signals, checkpoints, opaque causal-reference propagation,
+      and recovery.
+    depends_on: []
+    conformance_path: conformance/aq-cont-1
+    owns:
+    - task/run/attempt lifecycle
+    - compound admission
+    - Awaiting
+    - durable signals
+    - checkpoints
+    - opaque causal references
+    - WAL replay and recovery
+    must_not_own:
+    - Vessel semantics
+    - external identity resolution
+    - effect or receipt meaning
+    - authorization over external resources
+    - narrative or relationship meaning
+  WI-FABRIC-2:
+    repository: zed-colonel/worldinterface
+    responsibility: Verified operational agency, portable-identity bindings, canonical
+      resource and audience resolution, authorized ingress bindings, final executable
+      authorization, accountable observations and effects, proof bundles, delivery,
+      reconciliation, receipts, and deterministic boundary workflows.
+    depends_on:
+    - AQ-CONT-1
+    conformance_path: conformance/wi-fabric-2
+    owns:
+    - verified operational agency
+    - identity bindings
+    - resource/audience resolution
+    - final authorization
+    - ingress observations
+    - effect intents
+    - receipts
+    - uncertainty and reconciliation
+    - Flow
+    - worker controls
+    must_not_own:
+    - cognitive arbitration
+    - commitments
+    - initiative admission
+    - semantic truth
+    - autobiographical or collective narrative
+    - mandatory EntityID/blockchain/token/global reputation
+  EXO-V3:
+    repository: zed-colonel/exoskeleton
+    responsibility: Vessel identity, mission, governed initiative, interaction, communication,
+      cognitive faculties, constitutions, commitments, planning, narrative continuity,
+      external personas, delegation, verification, and epistemic acceptance.
+    depends_on:
+    - WI-FABRIC-2
+    - AQ-CONT-1
+    conformance_path: conformance/exo-v3
+    owns:
+    - Vessel identity and continuity
+    - mission and initiative
+    - communication and attention
+    - faculties and constitutions
+    - commitments/goals/plans
+    - relationships/memory/self-model/narrative
+    - external personas
+    - delegation/verification/skills/acceptance
+    must_not_own:
+    - root key custody
+    - final WorldInterface authorization
+    - specialist backend process outside Agent Host
+    - collective narrative in v3
+handoff_rule:
+- source authoritative record plus outbox
+- idempotent downstream admission
+- downstream authoritative record plus signal outbox
+- opaque ActionQueue wake-up or task reference
+removed_target_paths:
+  ActionQueue:
+  - HandlerOutput
+  - fire-and-forget TaskSubmissionPort
+  - transient custom external events
+  - ActorCapabilities
+  - pre-AQ-CONT-1 runtime readers
+  WorldInterface:
+  - signal.await
+  - signal.emit
+  - SignalRegistry
+  - blocking delay connector
+  - coding-specific Fabric connectors
+  - old receipt path
+  - anonymous compatibility principal
+  Exoskeleton:
+  - Decide sovereignty
+  - Align
+  - SessionApprovals
+  - caelum.wake
+  - local reply-as-sent
+  - native coding thread/tools
+  - live v1/v3 shadow authority
+  - pre-v3 store readers
+conformance:
+  package_ownership:
+    AQ-CONT-1: actionqueue/conformance/aq-cont-1
+    WI-FABRIC-2: worldinterface/conformance/wi-fabric-2
+    EXO-V3: exoskeleton/conformance/exo-v3
+  revision_policy: additive coverage increments package revision; normative semantic
+    change requires explicit contract amendment
+  pinning: downstream release manifests pin exact upstream implementation and conformance
+    revisions
+  release_order:
+  - ActionQueue AQ-CONT-1
+  - WorldInterface WI-FABRIC-2
+  - Exoskeleton EXO-V3
+invariant_crossrefs:
+- rule: store-before-wake
+  AQ:
+  - AQ-H3
+  - AQ-H4
+  - AQ-H5
+  WI:
+  - W26
+  EXO:
+  - C36
+- rule: attribution-not-authorization
+  AQ:
+  - AQ-H10
+  - AQ-H11
+  WI:
+  - W4
+  - W5
+  EXO:
+  - C13
+  - C14
+- rule: routing-not-authority
+  AQ:
+  - AQ-H12
+  WI:
+  - W15
+  EXO:
+  - C4
+  - C5
+- rule: unknown-effects-fail-closed
+  AQ: []
+  WI:
+  - W12
+  EXO:
+  - C6
+- rule: intent-before-dispatch
+  AQ: []
+  WI:
+  - W3
+  EXO:
+  - C16
+- rule: uncertainty-first-class
+  AQ:
+  - AQ-H13
+  - AQ-H14
+  WI:
+  - W13
+  EXO:
+  - C17
+- rule: generated-content-not-delivery
+  AQ: []
+  WI:
+  - W29
+  EXO:
+  - C31
+- rule: endogenous-origin-no-authority
+  AQ:
+  - AQ-H11
+  WI:
+  - W41
+  EXO:
+  - C43

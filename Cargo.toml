@@ -58,6 +58,11 @@ http-body-util = "0.1"
 serde_json = "1.0"
 tempfile = "3.10"
 proptest = "1.4"
+# AQ-CONT-1 boundary checks parse target sources instead of lexing them; these are already
+# transitive dependencies of the workspace (serde_derive, tokio-macros, async-trait).
+syn = { version = "2", features = ["full", "visit"] }
+proc-macro2 = { version = "1", features = ["span-locations"] }
+quote = "1"
 
 [[test]]
 name = "acceptance_once_accounting"
@@ -134,6 +139,18 @@ path = "tests/acceptance/multi_mutation_session.rs"
 [[test]]
 name = "chaos_kill_recovery"
 path = "tests/chaos/kill_recovery.rs"
+
+[[test]]
+name = "conformance_contract_boundaries"
+path = "tests/conformance/contract_boundaries.rs"
+
+[[test]]
+name = "conformance_frozen_evidence"
+path = "tests/conformance/frozen_evidence.rs"
+
+[[test]]
+name = "conformance_pre_contract_store"
+path = "tests/conformance/pre_contract_store.rs"
 
 [[test]]
 name = "acceptance_handler_output_roundtrip"
@@ -297,3 +314,9 @@ actionqueue-actor = { path = "crates/actionqueue-actor" }
 actionqueue-platform = { path = "crates/actionqueue-platform" }
 actionqueue-daemon = { path = "crates/actionqueue-daemon" }
 actionqueue-cli = { path = "crates/actionqueue-cli" }
+
+# Evidence tooling for the frozen pre-AQ-CONT-1 archive. Not runtime code; target
+# crates must not depend on the archive. See archive/pre-aq-cont-1/README.md.
+[[example]]
+name = "capture_pre_aq_cont_1_fixtures"
+path = "archive/pre-aq-cont-1/tools/capture_fixtures.rs"

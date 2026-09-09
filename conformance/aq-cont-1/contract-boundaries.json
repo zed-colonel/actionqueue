@@ -1,0 +1,101 @@
+{
+  "schema_version": 1,
+  "contract": "AQ-CONT-1",
+  "contract_revision": "STACK-2026-07-20-CLEAN-1",
+  "planning_profile": "AQ-PLAN-2",
+  "developmental_profile_revision": "STACK-DEVELOPMENTAL-DIAGNOSTICS-1",
+  "description": "Policy for the repository boundary checks enforced by tests/conformance/contract_boundaries.rs. The file universe is the git-tracked tree; untracked and ignored files never affect a result. Rules over target code apply to tracked Rust sources under crates/, parsed with syn: identifiers and string literals are taken from the token stream with doc attributes dropped, and public positions are read from the AST. Legacy-symbol rules apply to every tracked text file outside legacy_scan_exempt_roots. An allow entry names a path prefix, a non-empty reason, and optionally the declaration (Type::member or fn name) it covers.",
+  "target_code_roots": ["crates"],
+  "legacy_scan_exempt_roots": ["archive", "docs/contracts", "docs/planning", "docs/adrs"],
+  "legacy_scan_exempt_roots_note": "Roots exempt from the legacy-symbol scan only. Hash pinning is separate: docs/contracts, docs/planning/aq-cont-1, and archive are pinned by their SHA256SUMS via tests/conformance/frozen_evidence.rs; docs/adrs is a living decision queue and is not pinned.",
+  "always_excluded": ["conformance/aq-cont-1/contract-boundaries.json"],
+  "always_excluded_note": "Tracked files skipped by every scan. The policy itself names the symbols it forbids.",
+  "domain_ownership": {
+    "invariants": ["AQ-H1", "AQ-H17", "AQ-H18"],
+    "description": "Downstream ontology must not appear as identifiers in target crate code. Explanatory comments and archived evidence are exempt.",
+    "identifiers": [
+      "Vessel", "Faculty", "Commitment", "DelegatedAgent", "WorkOrder", "EffectIntent",
+      "Receipt", "Constitution", "ApprovalMeaning", "Relationship", "Conversation",
+      "AttentionDemand", "ResponseObligation", "Belief", "Narrative", "EntityID",
+      "AuthorizationEnvelope"
+    ],
+    "allow": []
+  },
+  "developmental_ontology": {
+    "invariants": ["AQ-H19", "AQ-H20"],
+    "description": "No queue-owned campaign, arm, benchmark, evaluation, binding-constraint, saturation, sample, or acceptance concept may exist as an identifier fragment in target crate code. Matching is case-insensitive over identifier tokens and string literals.",
+    "identifier_fragments": [
+      "campaign", "interventionarm", "intervention_arm", "arm_id", "armid", "arm_name",
+      "armname", "winningarm", "winning_arm", "bindingconstraint", "binding_constraint",
+      "saturation", "benchmark", "experiment", "evaluationplan", "evaluation_plan",
+      "taskdistribution", "task_distribution", "componentfingerprint", "component_fingerprint",
+      "replication", "candidateacceptance", "candidate_acceptance", "activationrecommendation",
+      "activation_recommendation", "performancegain", "performance_gain", "intervention_gain",
+      "arm_score", "armscore", "benchmarkscore"
+    ],
+    "allow": []
+  },
+  "free_form_metadata": {
+    "invariants": ["AQ-H10", "AQ-H19"],
+    "description": "No public position in a target crate may carry a string-keyed free-form map or a JSON value, and no experiment/scheduler-hint metadata channel may exist. CausalContext stays fixed and bounded. Exceptions require an allow entry naming the declaration and a reason.",
+    "public_type_fragments": [
+      "HashMap<String, String>", "BTreeMap<String, String>", "HashMap<String, Vec<u8>>",
+      "BTreeMap<String, Vec<u8>>", "serde_json::Value", "serde_json::Map"
+    ],
+    "public_type_fragments_note": "Matched against the whitespace-normalized type of every public field, enum-variant field of a pub enum, pub fn parameter and return type, pub trait method, pub type alias, and pub const/static. Any non-inherited visibility counts as public, including pub(crate) and pub(super): a crate-internal map is still a metadata channel between modules, so the rule is deliberately stricter than the crate's external API. Before matching, use-aliases are expanded to full paths (so a bare Value imported from serde_json matches serde_json::Value) and non-generic type aliases declared in the same file are expanded to their target (so a private `type Meta = HashMap<String, String>` does not launder a public field). Known limit: an alias declared in another file is not expanded.",
+    "identifiers": [
+      "experiment_metadata", "campaign_metadata", "metadata_map", "extra_metadata",
+      "custom_metadata", "scheduler_hint", "scheduler_hints", "extensions", "annotations",
+      "custom_fields", "extra_fields"
+    ],
+    "allow": [
+      {
+        "path": "crates/actionqueue-cli/src/cmd/mod.rs",
+        "item": "CommandOutput::Json",
+        "reason": "CLI rendering sink only: the --json output of a command is serialized to stdout and never stored, matched, scheduled on, or read back by a target crate. It carries no metadata into the queue (AQ-H10). Revisit if CommandOutput ever becomes an input type."
+      }
+    ]
+  },
+  "scheduler_backchannel": {
+    "invariants": ["AQ-H11", "AQ-H19"],
+    "description": "Scheduling, budget, and platform-authority code must not read, parse, or branch on attribution references. Any exception requires an allow entry with a reason and an ADR.",
+    "scope_paths": [
+      "crates/actionqueue-engine/src", "crates/actionqueue-budget/src",
+      "crates/actionqueue-platform/src"
+    ],
+    "identifiers": [
+      "origin_ref", "correlation_id", "purpose_ref", "campaign", "intervention_arm", "arm_id",
+      "arm_name"
+    ],
+    "allow": []
+  },
+  "metric_labels": {
+    "invariants": ["AQ-H20"],
+    "description": "High-cardinality or developmental identifiers must never be metric label names. Applies to string literals in the daemon metrics module.",
+    "scope_paths": ["crates/actionqueue-daemon/src/metrics"],
+    "forbidden_label_tokens": [
+      "trace_id", "correlation_id", "origin_ref", "campaign", "arm", "fingerprint",
+      "task_distribution", "task_id", "run_id", "attempt_id", "tenant_id", "winner", "score"
+    ],
+    "allow": []
+  },
+  "archive_isolation": {
+    "invariants": ["AQ-H16"],
+    "description": "Target crates must not reference the frozen archive in any file, including Cargo manifests, build scripts, and tests.",
+    "substrings": ["archive/pre-aq-cont-1", "../archive", "pre-aq-cont-1/selected-"],
+    "allow": []
+  },
+  "legacy_symbols": {
+    "description": "Symbols slated for removal, scanned over git-tracked text files outside legacy_scan_exempt_roots. Stage 'report' fails only if the number of tracked files containing the symbol grows beyond max_files (a tight ratchet: max_files equals the baseline footprint, so any new file that names the symbol is a conscious policy bump); stage 'forbid' fails on any occurrence. A removal PR sets its symbols to 'forbid'.",
+    "symbols": [
+      { "symbol": "ActorCapabilities", "replacement": "ExecutorTraits", "removal_pr": "AQ-02", "stage": "report", "max_files": 11 },
+      { "symbol": "required_capabilities", "replacement": "required_executor_traits", "removal_pr": "AQ-02", "stage": "report", "max_files": 6 },
+      { "symbol": "with_capabilities", "replacement": "executor-trait constructors", "removal_pr": "AQ-02", "stage": "report", "max_files": 1 },
+      { "symbol": "HandlerOutput", "replacement": "AttemptDisposition", "removal_pr": "AQ-08", "stage": "report", "max_files": 43 },
+      { "symbol": "TaskSubmissionPort", "replacement": "compound child admission", "removal_pr": "AQ-09", "stage": "report", "max_files": 5 },
+      { "symbol": "SubmissionChannel", "replacement": "compound child admission", "removal_pr": "AQ-09", "stage": "report", "max_files": 8 },
+      { "symbol": "EventFilter::Custom", "replacement": "durable SignalEnvelope / WaitSpec", "removal_pr": "AQ-10", "stage": "report", "max_files": 6 },
+      { "symbol": "ActionQueueEvent::CustomEvent", "replacement": "durable SignalEnvelope / WaitSpec", "removal_pr": "AQ-10", "stage": "report", "max_files": 3 }
+    ]
+  }
+}

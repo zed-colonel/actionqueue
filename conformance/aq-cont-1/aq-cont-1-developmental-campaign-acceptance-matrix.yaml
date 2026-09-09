@@ -1,0 +1,102 @@
+schema_version: 1
+profile_revision: STACK-DEVELOPMENTAL-DIAGNOSTICS-1
+date: '2026-08-10'
+base_contract: AQ-CONT-1
+case_count: 18
+groups:
+- attribution_neutrality
+- durable_execution
+- recovery_and_idempotency
+- semantic_non_ownership
+- privacy_and_observability
+cases:
+- id: AQ-DD-001
+  group: attribution_neutrality
+  title: Campaign reference is opaque
+  setup: A task is admitted with an origin_ref pointing to an immutable application-owned developmental campaign context.
+  expected: ActionQueue preserves and returns the bounded reference without dereferencing or validating campaign meaning.
+- id: AQ-DD-002
+  group: attribution_neutrality
+  title: Campaign label grants no priority
+  setup: Two otherwise identical tasks differ only in origin_ref and correlation_id, with one labeled as protected research.
+  expected: Admission, scheduling, priority, budget, executor eligibility, deadlines, and retention are identical.
+- id: AQ-DD-003
+  group: attribution_neutrality
+  title: Campaign label grants no authority
+  setup: A caller presents a self-improvement or benchmark reference without the ordinary authenticated control authorization.
+  expected: The mutation is denied; the reference creates no admission, signal, cancellation, resume, or reprioritization authority.
+- id: AQ-DD-004
+  group: attribution_neutrality
+  title: Free-form experiment metadata is absent
+  setup: An implementation attempts to add a metadata map for arm names, scores, scheduler hints, and benchmark policy.
+  expected: Contract and API checks fail; rich campaign state remains in an application-owned record behind one bounded reference.
+- id: AQ-DD-005
+  group: durable_execution
+  title: Arm fan-out is atomic where required
+  setup: A coordinator disposition admits a bounded child batch for multiple intervention arms and awaits their completion.
+  expected: The parent wait and required child admissions commit according to ordinary compound-disposition guarantees, with no partial required fan-out.
+- id: AQ-DD-006
+  group: durable_execution
+  title: Asynchronous arm resumes once
+  setup: A build or external callback signal arrives before or after an arm establishes its wait.
+  expected: The run resumes exactly once with preserved signal, wait, checkpoint, correlation, and causal lineage.
+- id: AQ-DD-007
+  group: durable_execution
+  title: Explicit scheduling differences remain visible
+  setup: One arm intentionally uses a different priority, budget, deadline, constraint, or executor trait.
+  expected: Inspection exposes the ordinary queue-field difference; ActionQueue does not hide or normalize it.
+- id: AQ-DD-008
+  group: durable_execution
+  title: Bounded campaign cancellation is ordinary control
+  setup: A higher layer stops a stagnant campaign and cancels outstanding work.
+  expected: Authorized cancellation follows ordinary queue semantics and preserves control attribution; ActionQueue does not infer saturation.
+- id: AQ-DD-009
+  group: recovery_and_idempotency
+  title: Lost admission response does not duplicate an arm
+  setup: The caller loses the response after a durable arm admission and retries with the same key and digest.
+  expected: ensure_task returns AlreadyExists and one logical queue task remains.
+- id: AQ-DD-010
+  group: recovery_and_idempotency
+  title: Changed arm under stable key conflicts
+  setup: A caller changes payload, constraints, dependencies, or causal context while reusing an arm admission key.
+  expected: Admission returns a stable digest conflict and preserves the original task.
+- id: AQ-DD-011
+  group: recovery_and_idempotency
+  title: Retry is not declared a replication
+  setup: A handler crashes and a new physical attempt resumes the same run.
+  expected: ActionQueue records attempt lineage and resume context but exposes no sample, replication, or statistical-independence judgment.
+- id: AQ-DD-012
+  group: recovery_and_idempotency
+  title: Restart preserves campaign lineage
+  setup: The engine restarts with active developmental tasks, waits, and unmatched signals.
+  expected: Replay reconstructs exact trace, correlation, origin, causation, wait, signal, and attempt lineage before dispatch opens.
+- id: AQ-DD-013
+  group: semantic_non_ownership
+  title: Completed is not correct
+  setup: A handler completes successfully but a higher-layer verifier rejects the produced answer.
+  expected: ActionQueue preserves Completed as an execution fact and does not expose task correctness or candidate acceptance.
+- id: AQ-DD-014
+  group: semantic_non_ownership
+  title: Failed is not a binding-constraint diagnosis
+  setup: An arm fails because of an application-level evaluator, tool, or data issue.
+  expected: ActionQueue reports structural failure evidence only and does not label intelligence, representation, or harness as binding.
+- id: AQ-DD-015
+  group: semantic_non_ownership
+  title: Queue does not select a winning arm
+  setup: Multiple arms reach different terminal states and durations.
+  expected: No queue API, projection, metric, or inspector field declares a winner, gain, saturation state, or activation recommendation.
+- id: AQ-DD-016
+  group: privacy_and_observability
+  title: Sensitive benchmark data stays referenced
+  setup: A legacy ERP evaluation uses protected fixtures and customer-derived artifacts.
+  expected: Queue records contain admitted bounded references or hashes rather than raw campaign ontology or fixture content unless the ordinary task payload contract explicitly requires it.
+- id: AQ-DD-017
+  group: privacy_and_observability
+  title: Campaign IDs are not metric labels
+  setup: High-cardinality campaign, arm, task-distribution, or fingerprint identifiers are present.
+  expected: They appear only in authorized inspection or traces under redaction policy, not in metric labels.
+- id: AQ-DD-018
+  group: privacy_and_observability
+  title: Origin filtering remains structural
+  setup: An operator filters task history by correlation_id or origin_ref.
+  expected: The inspector returns structural execution history and an explicit non-interpretation notice, not benchmark or acceptance semantics.

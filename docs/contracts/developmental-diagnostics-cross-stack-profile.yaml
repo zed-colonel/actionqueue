@@ -1,0 +1,104 @@
+schema_version: 1
+profile_revision: STACK-DEVELOPMENTAL-DIAGNOSTICS-1
+date: '2026-08-10'
+status: planning-and-conformance-clarification
+base_contracts:
+  actionqueue_package: STACK-2026-07-20-CLEAN-1
+  foundational_stack: STACK-2026-07-25-FOUNDATIONAL-2
+normative_lower_layer_contract_change: false
+compatibility:
+  AQ-CONT-1: unchanged
+  WI-FABRIC-2: unchanged
+  EXO-V3: additive developmental-diagnostics profile
+source_lens:
+  name: OHIO loop
+  characterization: colleague-provided intelligence/ontology/harness moving-saturation-frontier model
+  use: diagnostic inspiration for governed developmental campaigns
+  exclusions:
+  - not a replacement architecture
+  - not a new runtime plane or master cognition loop
+  - not a universal scalar performance equation
+  - not a transfer of semantic ownership to WorldInterface or ActionQueue
+  - not an authority source
+  - not a requirement to embed a specialized business ontology in the Vessel kernel
+terminology:
+  intelligence:
+    preferred_stack_term: capability profile
+    stack_meaning: replaceable model, faculty, verifier, modality, specialist, or composite capability under a fixed envelope
+    not_meaning:
+    - Vessel identity
+    - constitutional authority
+    - permission to act
+  ontology:
+    preferred_stack_term: working representation
+    stack_meaning: task- and faculty-scoped projection of canonical state, schemas, evidence, and context
+    not_meaning:
+    - permission to rewrite canonical history
+    - a universal world ontology
+    - domain-specific concepts forced into the kernel
+  harness:
+    stack_meaning: operationalization across Exoskeleton orchestration, WorldInterface boundary execution, and ActionQueue durability
+    not_meaning:
+    - one new component
+    - one repository's exclusive ownership
+scope_key:
+- task_distribution_ref
+- environment_ref
+- authority_envelope_ref
+- information_use_envelope_ref
+- resource_budget_ref
+- component_fingerprint_ref
+- evaluation_plan_ref
+rules:
+- binding-constraint claims are scoped, evidence-backed, calibrated, and provisional
+- canonical state may be rich while episode context remains selectively projected
+- controlled probes hold non-target dimensions fixed within declared tolerance where feasible
+- unavoidable differences are recorded as confounds rather than silently ignored
+- protected invariants and authority ceilings are never traded for benchmark gain
+- campaign and intervention-arm correlation is attribution, not authorization, routing eligibility, scheduler priority, or acceptance
+- boundary receipts and queue history are evidence inputs, not improvement acceptance or task-quality judgments
+- saturation expires when relevant capability, representation, harness, workload, evaluator, budget, or environment changes
+- stagnant campaigns switch lever, redesign evaluation, defer, or stop instead of churning indefinitely
+ownership:
+  Exoskeleton:
+  - task-distribution and metric semantics
+  - capability and representation profiles
+  - component fingerprints
+  - binding-constraint assessment
+  - evaluation-plan freeze
+  - performance-vector interpretation
+  - campaign admission, stop policy, acceptance, and continuity
+  WorldInterface:
+  - accountable experimental boundary operations
+  - exact resource and audience resolution
+  - ordinary authorization and information-use enforcement for every arm
+  - environment, connector, policy, artifact, timing, resource, uncertainty, and reconciliation evidence
+  ActionQueue:
+  - durable opaque campaign work
+  - trace, correlation, and causation preservation
+  - waits, deadlines, retries, fan-out, backpressure, checkpoints, and recovery
+  - execution facts without interpretation of experiment meaning
+existing_seams_only:
+  ActionQueue:
+  - CausalContext trace_id and correlation_id
+  - CausationLink
+  - bounded opaque origin_ref to an immutable application-owned campaign execution context
+  - ordinary task constraints, priorities, budgets, waits, signals, and checkpoints
+  WorldInterface:
+  - ordinary causal references
+  - EffectIntent, BoundaryObservation, Receipt, Evidence, Uncertain, and Reconciliation lifecycles
+  - lifecycle, candidate, build, trial, activation, rollback, and provenance capabilities
+new_primitives:
+  ActionQueue: []
+  WorldInterface: []
+new_authority_paths: []
+conformance_examples:
+- intelligence-only probe with fixed representation, harness, budget, workload, and authority envelope
+- representation-only probe with fixed capability, harness, budget, workload, and authority envelope
+- harness-only probe with fixed capability, representation, budget, workload, and authority envelope
+- small factorial campaign that records interaction effects and explicit confounds
+- saturation record invalidated after capability, evaluator, budget, or environment change
+- richer representation rejected when protected utility falls despite greater structural detail
+- campaign stopped after bounded stagnation and preserved as developmental history
+- queue completion preserved as execution fact while verification records an incorrect result
+- successful boundary receipt preserved as crossing evidence without implying intervention acceptance
