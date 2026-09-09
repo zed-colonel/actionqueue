@@ -352,14 +352,50 @@ fn collect_use_aliases(prefix: &str, tree: &syn::UseTree, out: &mut BTreeMap<Str
     }
 }
 
-struct UseCollector(BTreeMap<String, String>);
+/// Collects the names a file binds to other types: `use` imports and non-generic `type`
+/// aliases of any visibility. Both are expanded before matching, so a private
+/// `type Meta = HashMap<String, String>` cannot launder a public field.
+#[derive(Default)]
+struct AliasCollector {
+    uses: BTreeMap<String, String>,
+    type_aliases: BTreeMap<String, String>,
+}
 
-impl<'ast> Visit<'ast> for UseCollector {
-    fn visit_item_use(&mut self, item: &'ast syn::ItemUse) {
-        collect_use_aliases("", &item.tree, &mut self.0);
+impl AliasCollector {
+    /// Merges both maps, rendering alias targets through the `use` map (and once more
+    /// through the merged map so an alias of an alias expands one level further).
+    fn into_map(self) -> BTreeMap<String, String> {
+        let mut map = self.uses;
+        let mut expanded: BTreeMap<String, String> = self
+            .type_aliases
+            .iter()
+            .map(|(name, target)| (name.clone(), canonicalize_type(target, &map)))
+            .collect();
+        let first_pass = expanded.clone();
+        for target in expanded.values_mut() {
+            *target = canonicalize_type(target, &first_pass);
+        }
+        map.extend(expanded);
+        map
     }
 }
 
+impl<'ast> Visit<'ast> for AliasCollector {
+    fn visit_item_use(&mut self, item: &'ast syn::ItemUse) {
+        collect_use_aliases("", &item.tree, &mut self.uses);
+    }
+
+    fn visit_item_type(&mut self, item: &'ast syn::ItemType) {
+        if item.generics.params.is_empty() {
+            let target = compact_type(&item.ty.to_token_stream().to_string());
+            self.type_aliases.insert(item.ident.to_string(), target);
+        }
+    }
+}
+
+/// Any non-inherited visibility counts as public: `pub(crate)` and `pub(super)` positions
+/// are still channels between modules, so the metadata rule is deliberately stricter than
+/// the crate's external API (see `public_type_fragments_note` in the policy).
 fn is_pub(vis: &syn::Visibility) -> bool {
     !matches!(vis, syn::Visibility::Inherited)
 }
@@ -506,12 +542,12 @@ impl<'ast> Visit<'ast> for PublicTypeVisitor<'_> {
 }
 
 fn public_type_violations(source: &RustSource, fragments: &[String]) -> Vec<Violation> {
-    let mut uses = UseCollector(BTreeMap::new());
-    uses.visit_file(&source.file);
+    let mut aliases = AliasCollector::default();
+    aliases.visit_file(&source.file);
     let mut visitor = PublicTypeVisitor {
         rel: &source.rel,
         fragments,
-        aliases: uses.0,
+        aliases: aliases.into_map(),
         impl_stack: Vec::new(),
         violations: Vec::new(),
     };
@@ -984,6 +1020,26 @@ mod unit {
             rendered[1].contains("`serde_json::Map<String,serde_json::Value>`"),
             "{rendered:?}"
         );
+    }
+
+    #[test]
+    fn private_type_aliases_do_not_launder_public_positions() {
+        let src = "use std::collections::HashMap;\ntype Meta = HashMap<String, String>;\ntype \
+                   Meta2 = Option<Meta>;\ntype Generic<T> = HashMap<String, T>;\npub struct A { \
+                   pub m: Meta, pub n: Meta2, pub g: Generic<u8> }\npub fn f() -> Meta { \
+                   unreachable!() }\n";
+        let violations = public_type_violations(&source(src), &fragments());
+        let items: Vec<&str> = violations.iter().map(|v| v.item.as_deref().unwrap()).collect();
+        assert_eq!(items, vec!["A::m", "A::n", "f"], "{violations:?}");
+        assert!(violations[1].detail.contains("Option<std::collections::HashMap<String,String>>"));
+    }
+
+    #[test]
+    fn pub_crate_positions_count_as_public() {
+        let src =
+            "use serde_json::Value;\npub(crate) struct S { pub(crate) v: Value }\npub(super) \
+                   fn f(v: Value) {}\nstruct P { v: Value }\n";
+        assert_eq!(public_items(src), vec!["S::v", "f"]);
     }
 
     #[test]

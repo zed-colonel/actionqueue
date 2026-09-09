@@ -8,11 +8,10 @@
 mod support;
 
 use std::collections::BTreeSet;
-use std::path::Path;
 
 use support::{
-    parse_sha256sums, read_repo_text, repo_root, sha256, sha256_file, tracked_files_under,
-    yaml_scalar,
+    parse_sha256sums, read_repo_text, repo_root, sha256, sha256_file, tracked_files,
+    tracked_files_under, yaml_scalar,
 };
 
 const MANIFEST_PATH: &str = "conformance/aq-cont-1/manifest.yaml";
@@ -209,17 +208,19 @@ fn developmental_matrix_has_eighteen_cases_in_five_groups() {
     }
 }
 
+/// The ADR queue is read from the tracked tree, like every other check, so an untracked
+/// draft cannot satisfy or break it.
 #[test]
 fn adr_queue_is_complete() {
-    let dir = repo_root().join("docs/adrs");
+    let tracked: Vec<String> = tracked_files_under("docs/adrs")
+        .into_iter()
+        .map(|rel| rel["docs/adrs/".len()..].to_string())
+        .collect();
     let index = read_repo_text("docs/adrs/README.md");
     for n in 1..=18 {
         let prefix = format!("AQ-ADR-{n:03}-");
-        let found = std::fs::read_dir(&dir)
-            .expect("adrs dir")
-            .flatten()
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .find(|name| name.starts_with(&prefix) && name.ends_with(".md"));
+        let found =
+            tracked.iter().find(|name| name.starts_with(&prefix) && name.ends_with(".md")).cloned();
         let name = found.unwrap_or_else(|| panic!("missing ADR file for {prefix}*"));
         assert!(index.contains(&name), "docs/adrs/README.md does not link {name}");
         let body = read_repo_text(&format!("docs/adrs/{name}"));
@@ -242,7 +243,7 @@ fn contract_index_and_profile_are_committed() {
         "conformance/aq-cont-1/README.md",
         POLICY_PATH,
     ] {
-        assert!(Path::new(&repo_root().join(rel)).is_file(), "{rel} must exist");
+        assert!(tracked_files().contains(&rel.to_string()), "{rel} must be tracked");
     }
     let architecture =
         read_repo_text("docs/contracts/actionqueue-hardening-implementation-ready.md");

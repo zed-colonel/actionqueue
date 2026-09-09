@@ -42,7 +42,7 @@
       "HashMap<String, String>", "BTreeMap<String, String>", "HashMap<String, Vec<u8>>",
       "BTreeMap<String, Vec<u8>>", "serde_json::Value", "serde_json::Map"
     ],
-    "public_type_fragments_note": "Matched against the whitespace-normalized type of every public field, enum-variant field of a pub enum, pub fn parameter and return type, pub trait method, pub type alias, and pub const/static, after use-aliases are expanded to full paths (so a bare Value imported from serde_json matches serde_json::Value).",
+    "public_type_fragments_note": "Matched against the whitespace-normalized type of every public field, enum-variant field of a pub enum, pub fn parameter and return type, pub trait method, pub type alias, and pub const/static. Any non-inherited visibility counts as public, including pub(crate) and pub(super): a crate-internal map is still a metadata channel between modules, so the rule is deliberately stricter than the crate's external API. Before matching, use-aliases are expanded to full paths (so a bare Value imported from serde_json matches serde_json::Value) and non-generic type aliases declared in the same file are expanded to their target (so a private `type Meta = HashMap<String, String>` does not launder a public field). Known limit: an alias declared in another file is not expanded.",
     "identifiers": [
       "experiment_metadata", "campaign_metadata", "metadata_map", "extra_metadata",
       "custom_metadata", "scheduler_hint", "scheduler_hints", "extensions", "annotations",

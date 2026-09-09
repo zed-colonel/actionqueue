@@ -30,8 +30,10 @@ workflow, budget, actor, and platform layers.
 - The repository implements contract `AQ-CONT-1` (see `docs/contracts/AQ-CONT-1.md`). Do not
   add campaign, arm, benchmark, evaluation, or free-form metadata concepts to `crates/`; the
   boundary policy in `conformance/aq-cont-1/contract-boundaries.json` fails the build.
-- Frozen documents under `docs/contracts/`, `docs/planning/`, and `archive/` are hash-pinned;
-  changing them requires updating the matching `SHA256SUMS` and a contract amendment.
+- Every file under `docs/contracts/` and `archive/`, and the four planning-package documents
+  listed in `docs/planning/aq-cont-1/SHA256SUMS`, are hash-pinned; changing them requires
+  updating the matching `SHA256SUMS` and a contract amendment. The acceptance-test
+  classification table in `docs/planning/aq-cont-1/` is living and is updated by removal PRs.
 - When a removal PR deletes a legacy symbol, flip its stage to `forbid` in the boundary policy.
 - Treat feature flags as first-class architecture boundaries.
 - Run Rust commands from the repo root so workspace features resolve correctly.
