@@ -107,6 +107,9 @@ heartbeat and tenant isolation where semantics remain valid.
 These symbols exist in the baseline. Each is reported by the boundary check today and becomes
 a hard failure once its removal PR lands (see
 [`conformance/aq-cont-1/contract-boundaries.json`](../../conformance/aq-cont-1/contract-boundaries.json)).
+The scan covers git-tracked files outside `archive/`, `docs/contracts/`, `docs/planning/`, and
+`docs/adrs/`, and its per-symbol file-count ratchet has no headroom: a new tracked file that
+names a legacy symbol is a conscious policy bump in the same pull request.
 
 | Symbol | Replaced by | Removal PR |
 |---|---|---|
@@ -186,7 +189,7 @@ and `AQ-14` complete. Exoskeleton may rely on the developmental profile only aft
 | Check | Location | Gate |
 |---|---|---|
 | Contract, planning, archive, and matrix hash verification | `tests/conformance/frozen_evidence.rs` | every `cargo test --workspace` |
-| Domain-leakage, developmental-neutrality, metadata, backchannel, archive-isolation, and staged legacy-symbol checks | `tests/conformance/contract_boundaries.rs` driven by `conformance/aq-cont-1/contract-boundaries.json` | every `cargo test --workspace`; CI reports revisions via `scripts/check_contract_boundaries.sh` |
+| Domain-leakage, developmental-neutrality, metadata, backchannel, archive-isolation, and staged legacy-symbol checks | `tests/conformance/contract_boundaries.rs` driven by `conformance/aq-cont-1/contract-boundaries.json` | every `cargo test --workspace`; CI reports revisions via `cargo aq-conformance` |
 | Pre-contract store rejection scaffold | `tests/conformance/pre_contract_store.rs` | activated by `AQ-03` |
 
 ## 9. Revision policy

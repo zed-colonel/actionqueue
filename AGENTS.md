@@ -43,7 +43,7 @@ workflow, budget, actor, and platform layers.
 - Default validation from the repo root:
   - `cargo test --workspace`
   - `cargo fmt --all -- --check`
-  - `scripts/check_contract_boundaries.sh` (also part of `cargo test --workspace`)
+  - `cargo aq-conformance` (the conformance binaries alone; also part of `cargo test --workspace`)
 - When changing feature-gated code, run the relevant expanded matrix:
   - `cargo test --workspace --features workflow`
   - `cargo test --workspace --features workflow,budget,actor,platform`

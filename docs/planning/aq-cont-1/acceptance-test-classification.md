@@ -11,8 +11,8 @@ acceptance and chaos test is classified per Section 1.3 of the
 - **Reject** — the expectation contradicts the target contract; the test is deleted in the
   named PR and its scenario becomes a negative test.
 
-This file lives under the frozen planning root so it may keep naming legacy symbols after
-their removal PRs land. Baseline sources are frozen at tag `actionqueue/pre-aq-cont-1`; the frozen pass/fail record is
+This file lives under a root the legacy-symbol scan exempts (`legacy_scan_exempt_roots` in the
+boundary policy) so it may keep naming legacy symbols after their removal PRs land. Baseline sources are frozen at tag `actionqueue/pre-aq-cont-1`; the frozen pass/fail record is
 in [`archive/pre-aq-cont-1/characterization-results/`](../../../archive/pre-aq-cont-1/characterization-results/summary.json).
 
 ## Core contract tests (no features)

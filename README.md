@@ -183,8 +183,8 @@ the `aq-cont-1` integration branch in fourteen ordered pull requests.
 - [`docs/adrs/`](docs/adrs/README.md) — architectural decision queue
 - [`archive/pre-aq-cont-1/`](archive/pre-aq-cont-1/README.md) — frozen evidence (fixtures,
   characterization results, crash catalogue, known failure cases); never a runtime dependency
-- `scripts/check_contract_boundaries.sh` — runs the boundary and frozen-evidence checks and
-  prints the pinned contract revision
+- `cargo aq-conformance` — runs the boundary and frozen-evidence checks alone and prints the
+  pinned contract revision (alias in `.cargo/config.toml`)
 
 ## Documentation
 

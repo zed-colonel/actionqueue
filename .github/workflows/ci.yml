@@ -72,7 +72,7 @@ jobs:
         run: cargo test --workspace --no-fail-fast -- --test-threads=1
 
       - name: AQ-CONT-1 contract boundary and frozen-evidence checks
-        run: scripts/check_contract_boundaries.sh
+        run: cargo aq-conformance
 
       - name: Run actionqueue-core serde roundtrip tests
         run: cargo test -p actionqueue-core --features serde

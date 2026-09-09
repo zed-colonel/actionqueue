@@ -7,6 +7,8 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::OnceLock;
 
 /// Returns the repository root (the acceptance-harness manifest directory).
 pub fn repo_root() -> PathBuf {
@@ -27,6 +29,42 @@ pub fn rel_path(path: &Path) -> String {
         .map(|c| c.as_os_str().to_string_lossy().into_owned())
         .collect::<Vec<_>>()
         .join("/")
+}
+
+/// Repo-relative paths (forward slashes) of every file git tracks that still exists in
+/// the working tree. This is the hermetic file universe for the conformance checks:
+/// ignored build output, editor swap files, local notes, and other untracked content
+/// never influence a result, so a check passes or fails on the committed tree alone.
+pub fn tracked_files() -> &'static [String] {
+    static FILES: OnceLock<Vec<String>> = OnceLock::new();
+    FILES.get_or_init(|| {
+        let output = Command::new("git")
+            .args(["ls-files", "-z", "--cached", "--full-name"])
+            .current_dir(repo_root())
+            .output()
+            .expect("git must be available to enumerate tracked files");
+        assert!(
+            output.status.success(),
+            "git ls-files failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let root = repo_root();
+        let mut files: Vec<String> = output
+            .stdout
+            .split(|b| *b == 0)
+            .filter(|entry| !entry.is_empty())
+            .map(|entry| String::from_utf8(entry.to_vec()).expect("tracked path is UTF-8"))
+            .filter(|rel| root.join(rel).is_file())
+            .collect();
+        files.sort();
+        files.dedup();
+        files
+    })
+}
+
+/// Tracked files whose repo-relative path equals `prefix` or lies underneath it.
+pub fn tracked_files_under(prefix: &str) -> Vec<String> {
+    tracked_files().iter().filter(|rel| under(rel, prefix)).cloned().collect()
 }
 
 /// Returns true if `rel` equals `prefix` or lies underneath it.

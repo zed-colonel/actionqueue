@@ -75,8 +75,9 @@ See `invariant-boundaries-v0.1.md` for the full invariant specification.
 `tests/conformance/`. They fail if target crates gain downstream domain types, developmental
 (campaign/arm/benchmark) concepts, free-form metadata maps, attribution reads in scheduling or
 authority code, developmental metric labels, archive references, or new uses of legacy symbols
-slated for removal. Run them alone with `scripts/check_contract_boundaries.sh`. The policy lives
-in `conformance/aq-cont-1/contract-boundaries.json`; see `docs/contracts/AQ-CONT-1.md`.
+slated for removal. Run them alone with `cargo aq-conformance`. The checks read only
+git-tracked files, so untracked notes cannot affect them. The policy lives in
+`conformance/aq-cont-1/contract-boundaries.json`; see `docs/contracts/AQ-CONT-1.md`.
 
 ## Submitting Changes
 

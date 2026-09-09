@@ -16,9 +16,14 @@ Rules:
 - A test under `tests/` may load an archived fixture for offline, read-only diagnostic
   comparison (implementation plan, Section 2.1 and architecture Section 27.4). It must not feed
   archived bytes into a target store.
-- Files here are immutable. `SHA256SUMS` pins every artifact and is verified by
-  `tests/conformance/frozen_evidence.rs`. Re-running the capture tool after `AQ-03` will not
-  reproduce these bytes; that is expected and is why they are frozen now.
+- Files here are immutable. `SHA256SUMS` pins every file in this directory (fixtures, results,
+  catalogues, the READMEs, and the capture tool source) and is verified by
+  `tests/conformance/frozen_evidence.rs`, which also fails if a tracked file is added here
+  without a pin. Re-running the capture tool after `AQ-03` will not reproduce these bytes;
+  that is expected and is why they are frozen now.
+- When a later pull request makes `tools/capture_fixtures.rs` stop compiling against the
+  target crates, deregister the `capture_pre_aq_cont_1_fixtures` example in `Cargo.toml`
+  rather than editing the frozen source.
 
 ## Layout
 
@@ -34,7 +39,7 @@ Rules:
 | `performance-baseline/` | Environment description and a small reproducible WAL append/replay measurement |
 | `known-failure-cases/` | Baseline seams classified as reject or replace, with the PR that removes each |
 | `tools/capture_fixtures.rs` | The capture tool (root-harness example `capture_pre_aq_cont_1_fixtures`) |
-| `SHA256SUMS` | Hashes of every artifact above except this README and the tool source |
+| `SHA256SUMS` | Hashes of every file in this directory, this README and the tool source included |
 
 ## Lifecycle scenario captured in the fixtures
 

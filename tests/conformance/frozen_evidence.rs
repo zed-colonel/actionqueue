@@ -10,7 +10,10 @@ mod support;
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use support::{parse_sha256sums, read_repo_text, repo_root, sha256, sha256_file, yaml_scalar};
+use support::{
+    parse_sha256sums, read_repo_text, repo_root, sha256, sha256_file, tracked_files_under,
+    yaml_scalar,
+};
 
 const MANIFEST_PATH: &str = "conformance/aq-cont-1/manifest.yaml";
 const MATRIX_PATH: &str =
@@ -62,23 +65,61 @@ fn planning_package_matches_pinned_hashes() {
     verify_sha256sums("docs/planning/aq-cont-1");
 }
 
+/// The plan bundle ships its own validation manifest for the two plan documents. It must
+/// agree with the files as committed and with the package's SHA256SUMS, so the committed
+/// plan is provably the one the work breakdown was cut from.
 #[test]
-fn archive_matches_pinned_hashes_and_lists_every_artifact() {
-    verify_sha256sums("archive/pre-aq-cont-1");
-    let listed: BTreeSet<String> =
-        parse_sha256sums(&read_repo_text("archive/pre-aq-cont-1/SHA256SUMS"))
+fn planning_validation_manifest_matches_committed_plan() {
+    const DIR: &str = "docs/planning/aq-cont-1";
+    let validation =
+        parse_sha256sums(&read_repo_text(&format!("{DIR}/aq-cont-1-implementation-plan.sha256")));
+    let pinned: std::collections::BTreeMap<String, String> =
+        parse_sha256sums(&read_repo_text(&format!("{DIR}/SHA256SUMS")))
             .into_iter()
-            .map(|(_, rel)| rel)
+            .map(|(hash, rel)| (rel, hash))
             .collect();
-    let root = repo_root().join("archive/pre-aq-cont-1");
-    for path in support::walk_files(&root, &[]) {
-        let rel =
-            path.strip_prefix(&root).expect("under archive").to_string_lossy().replace('\\', "/");
-        let exempt = rel == "SHA256SUMS" || rel.ends_with("README.md") || rel.starts_with("tools/");
-        assert!(
-            exempt || listed.contains(&rel),
-            "archive artifact `{rel}` is not pinned in SHA256SUMS"
+    let names: BTreeSet<&str> = validation.iter().map(|(_, rel)| rel.as_str()).collect();
+    assert_eq!(
+        names,
+        ["aq-cont-1-implementation-plan.md", "aq-cont-1-work-breakdown.yaml"].into_iter().collect()
+    );
+    for (expected, rel) in &validation {
+        assert_eq!(
+            &sha256_file(&repo_root().join(DIR).join(rel)),
+            expected,
+            "{rel} differs from the plan bundle's validation manifest"
         );
+        assert_eq!(pinned.get(rel), Some(expected), "{rel}: SHA256SUMS disagrees with .sha256");
+    }
+}
+
+/// Every tracked file in the archive except the checksum list itself is hash-pinned, so a
+/// catalogue or README cannot drift without an explicit re-pin.
+#[test]
+fn archive_matches_pinned_hashes_and_pins_every_tracked_file() {
+    const DIR: &str = "archive/pre-aq-cont-1";
+    verify_sha256sums(DIR);
+    let listed: BTreeSet<String> = parse_sha256sums(&read_repo_text(&format!("{DIR}/SHA256SUMS")))
+        .into_iter()
+        .map(|(_, rel)| rel)
+        .collect();
+    let tracked: BTreeSet<String> = tracked_files_under(DIR)
+        .into_iter()
+        .map(|rel| rel[DIR.len() + 1..].to_string())
+        .filter(|rel| rel != "SHA256SUMS")
+        .collect();
+    assert!(!tracked.is_empty(), "archive has no tracked files");
+    let unpinned: Vec<&String> = tracked.difference(&listed).collect();
+    assert!(unpinned.is_empty(), "archive files not pinned in SHA256SUMS: {unpinned:?}");
+    for catalogue in [
+        "known-failure-cases/README.md",
+        "crash-scenarios/catalogue.json",
+        "crash-scenarios/README.md",
+        "performance-baseline/README.md",
+        "README.md",
+        "tools/capture_fixtures.rs",
+    ] {
+        assert!(listed.contains(catalogue), "{catalogue} must be pinned");
     }
 }
 

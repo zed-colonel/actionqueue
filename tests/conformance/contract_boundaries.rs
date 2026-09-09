@@ -4,44 +4,56 @@
 //!
 //! - no downstream domain ownership in target crate code (`AQ-H1`, `AQ-H17`, `AQ-H18`);
 //! - no queue-owned developmental ontology (`AQ-H19`, `AQ-H20`);
-//! - no free-form metadata backchannel (`AQ-H10`);
+//! - no free-form metadata backchannel in any public position (`AQ-H10`);
 //! - no scheduler, budget, or authority branching on attribution (`AQ-H11`, `AQ-H19`);
 //! - no developmental or high-cardinality identifiers as metric labels;
 //! - no target-crate reference to the frozen archive;
 //! - staged removal of forbidden legacy symbols.
 //!
-//! Rust sources are scanned with comments stripped so explanatory prose is exempt while
-//! identifiers and string literals are not.
+//! The file universe is the git-tracked tree (see `support::tracked_files`), so ignored
+//! build output and local notes can neither cause nor hide a failure. Rust sources are
+//! parsed with `syn`; identifiers and string literals come from the token stream with
+//! documentation attributes dropped, so explanatory prose is exempt while code is not,
+//! and public positions (fields, variants, signatures, aliases, constants) are checked
+//! from the AST rather than from line prefixes.
 
 mod support;
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
 
+use proc_macro2::{Delimiter, TokenStream, TokenTree};
+use quote::ToTokens;
 use serde_json::Value;
-use support::{read_text_if_text, rel_path, repo_root, under, walk_files};
+use support::{read_repo_text, repo_root, tracked_files, under};
+use syn::spanned::Spanned;
+use syn::visit::Visit;
 
 const POLICY_PATH: &str = "conformance/aq-cont-1/contract-boundaries.json";
 const MANIFEST_PATH: &str = "conformance/aq-cont-1/manifest.yaml";
 
-/// One rule violation with enough context to locate it.
+/// One rule violation with enough context to locate and, if policy permits, allow it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Violation {
     rule: &'static str,
     path: String,
     line: usize,
+    /// Declaration the violation belongs to (`Type::member`, `fn_name`), when known.
+    item: Option<String>,
     detail: String,
 }
 
 impl std::fmt::Display for Violation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "[{}] {}:{}: {}", self.rule, self.path, self.line, self.detail)
+        write!(f, "[{}] {}:{}: ", self.rule, self.path, self.line)?;
+        if let Some(item) = &self.item {
+            write!(f, "{item}: ")?;
+        }
+        write!(f, "{}", self.detail)
     }
 }
 
 fn load_policy() -> Value {
-    let text = support::read_repo_text(POLICY_PATH);
-    serde_json::from_str(&text).expect("contract-boundaries.json parses")
+    serde_json::from_str(&read_repo_text(POLICY_PATH)).expect("contract-boundaries.json parses")
 }
 
 fn strings(value: &Value, key: &str) -> Vec<String> {
@@ -53,16 +65,24 @@ fn strings(value: &Value, key: &str) -> Vec<String> {
         .collect()
 }
 
-fn allowed(rule: &Value, rel: &str) -> bool {
-    rule["allow"]
-        .as_array()
-        .map(|entries| {
-            entries.iter().any(|entry| {
-                let prefix = entry["path"].as_str().unwrap_or("");
-                entry["reason"].as_str().is_some_and(|r| !r.is_empty()) && under(rel, prefix)
-            })
+/// True when an allow entry with a non-empty reason covers the violation. An entry
+/// matches by path prefix and, when it names an `item`, only that declaration.
+fn allowed(rule: &Value, violation: &Violation) -> bool {
+    rule["allow"].as_array().is_some_and(|entries| {
+        entries.iter().any(|entry| {
+            let prefix = entry["path"].as_str().unwrap_or("");
+            let reasoned = entry["reason"].as_str().is_some_and(|r| !r.is_empty());
+            let item_matches = match entry["item"].as_str() {
+                None => true,
+                Some(item) => violation.item.as_deref() == Some(item),
+            };
+            reasoned && under(&violation.path, prefix) && item_matches
         })
-        .unwrap_or(false)
+    })
+}
+
+fn disallowed(rule: &Value, violations: Vec<Violation>) -> Vec<Violation> {
+    violations.into_iter().filter(|v| !allowed(rule, v)).collect()
 }
 
 fn is_ident_char(c: char) -> bool {
@@ -85,144 +105,158 @@ fn contains_identifier(haystack: &str, needle: &str) -> bool {
     false
 }
 
-/// Splits a line into identifier tokens.
-fn identifier_tokens(line: &str) -> Vec<&str> {
-    line.split(|c: char| !is_ident_char(c)).filter(|t| !t.is_empty()).collect()
+/// Splits text into identifier tokens.
+fn identifier_tokens(text: &str) -> Vec<&str> {
+    text.split(|c: char| !is_ident_char(c)).filter(|t| !t.is_empty()).collect()
 }
 
-/// Extracts the contents of ordinary `"..."` string literals on a line.
-fn string_literals(line: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut current: Option<String> = None;
-    let mut escaped = false;
-    for c in line.chars() {
-        match (&mut current, c) {
-            (Some(buf), '\\') if !escaped => {
-                escaped = true;
-                buf.push(c);
-            }
-            (Some(buf), '"') if !escaped => {
-                out.push(std::mem::take(buf));
-                current = None;
-            }
-            (Some(buf), _) => {
-                escaped = false;
-                buf.push(c);
-            }
-            (None, '"') => current = Some(String::new()),
-            (None, _) => {}
-        }
-    }
-    out
+// ---------------------------------------------------------------------------
+// Token-level scanning
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TokenKind {
+    Ident,
+    Str,
 }
 
-/// Removes `//` line comments and `/* */` block comments while preserving line
-/// numbers and string literal contents.
-fn strip_rust_comments(source: &str) -> String {
-    let chars: Vec<char> = source.chars().collect();
-    let mut out = String::with_capacity(source.len());
+/// An identifier or string literal from a source file, with its line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Token {
+    kind: TokenKind,
+    text: String,
+    line: usize,
+}
+
+fn is_doc_attribute(group: &proc_macro2::Group) -> bool {
+    group.delimiter() == Delimiter::Bracket
+        && matches!(group.stream().into_iter().next(), Some(TokenTree::Ident(id)) if id == "doc")
+}
+
+/// Collects identifiers and string literals from a token stream, descending into every
+/// group (including macro invocations) and skipping `#[doc]` / `#![doc]` attributes, which
+/// is how the lexer represents `///` and `//!` comments.
+fn collect_tokens(stream: TokenStream, out: &mut Vec<Token>) {
+    let trees: Vec<TokenTree> = stream.into_iter().collect();
     let mut i = 0;
-    let mut in_block = false;
-    let mut in_string = false;
-    while i < chars.len() {
-        let c = chars[i];
-        let next = chars.get(i + 1).copied();
-        if in_block {
-            if c == '*' && next == Some('/') {
-                in_block = false;
-                i += 2;
-                continue;
-            }
-            if c == '\n' {
-                out.push('\n');
-            }
-        } else if in_string {
-            out.push(c);
-            if c == '\\' {
-                if let Some(n) = next {
-                    out.push(n);
-                    i += 1;
+    while i < trees.len() {
+        match &trees[i] {
+            TokenTree::Punct(p) if p.as_char() == '#' => {
+                let mut j = i + 1;
+                if matches!(trees.get(j), Some(TokenTree::Punct(bang)) if bang.as_char() == '!') {
+                    j += 1;
                 }
-            } else if c == '"' {
-                in_string = false;
+                if let Some(TokenTree::Group(group)) = trees.get(j) {
+                    if is_doc_attribute(group) {
+                        i = j + 1;
+                        continue;
+                    }
+                }
             }
-        } else if c == '/' && next == Some('/') {
-            while i < chars.len() && chars[i] != '\n' {
-                i += 1;
+            TokenTree::Ident(ident) => out.push(Token {
+                kind: TokenKind::Ident,
+                text: ident.to_string(),
+                line: ident.span().start().line,
+            }),
+            TokenTree::Literal(literal) => {
+                if let syn::Lit::Str(s) = syn::Lit::new(literal.clone()) {
+                    out.push(Token {
+                        kind: TokenKind::Str,
+                        text: s.value(),
+                        line: literal.span().start().line,
+                    });
+                }
             }
-            continue;
-        } else if c == '/' && next == Some('*') {
-            in_block = true;
-            i += 2;
-            continue;
-        } else if c == '\'' && chars.get(i + 2) == Some(&'\'') {
-            out.extend(&chars[i..i + 3]);
-            i += 3;
-            continue;
-        } else {
-            if c == '"' {
-                in_string = true;
-            }
-            out.push(c);
+            TokenTree::Group(group) => collect_tokens(group.stream(), out),
+            TokenTree::Punct(_) => {}
         }
         i += 1;
     }
-    out
 }
 
-/// A Rust source file with comments stripped.
+/// A parsed Rust source file.
 struct RustSource {
     rel: String,
-    lines: Vec<String>,
+    tokens: Vec<Token>,
+    file: syn::File,
 }
 
+impl RustSource {
+    fn parse(rel: &str, text: &str) -> Self {
+        let stream: TokenStream =
+            text.parse().unwrap_or_else(|e| panic!("{rel}: cannot tokenize as Rust: {e}"));
+        let file: syn::File =
+            syn::parse2(stream.clone()).unwrap_or_else(|e| panic!("{rel}: cannot parse: {e}"));
+        let mut tokens = Vec::new();
+        collect_tokens(stream, &mut tokens);
+        Self { rel: rel.to_string(), tokens, file }
+    }
+
+    /// Identifier tokens, including identifiers embedded in string literals.
+    fn identifiers(&self) -> impl Iterator<Item = (usize, &str)> {
+        self.tokens.iter().flat_map(|token| match token.kind {
+            TokenKind::Ident => vec![(token.line, token.text.as_str())],
+            TokenKind::Str => {
+                identifier_tokens(&token.text).into_iter().map(|t| (token.line, t)).collect()
+            }
+        })
+    }
+
+    fn string_literals(&self) -> impl Iterator<Item = &Token> {
+        self.tokens.iter().filter(|token| token.kind == TokenKind::Str)
+    }
+}
+
+/// Parses every tracked `.rs` file under the given roots.
 fn rust_sources(policy: &Value, roots: &[String]) -> Vec<RustSource> {
     let excluded = strings(policy, "always_excluded");
-    let mut out = Vec::new();
-    for root in roots {
-        for path in walk_files(&repo_root().join(root), &excluded) {
-            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
-                continue;
-            }
-            let Some(text) = read_text_if_text(&path) else {
-                continue;
-            };
-            let stripped = strip_rust_comments(&text);
-            out.push(RustSource {
-                rel: rel_path(&path),
-                lines: stripped.lines().map(str::to_string).collect(),
-            });
-        }
-    }
-    out
+    tracked_files()
+        .iter()
+        .filter(|rel| rel.ends_with(".rs"))
+        .filter(|rel| roots.iter().any(|root| under(rel, root)))
+        .filter(|rel| !excluded.iter().any(|ex| under(rel, ex)))
+        .map(|rel| RustSource::parse(rel, &read_repo_text(rel)))
+        .collect()
 }
 
 fn target_sources(policy: &Value) -> Vec<RustSource> {
     rust_sources(policy, &strings(policy, "target_code_roots"))
 }
 
-fn check_domain_ownership(policy: &Value) -> Vec<Violation> {
-    let rule = &policy["domain_ownership"];
-    let identifiers = strings(rule, "identifiers");
+/// Reports every identifier (including those inside string literals) that equals one of
+/// `identifiers`.
+fn scan_identifiers(
+    rule: &'static str,
+    sources: &[RustSource],
+    identifiers: &[String],
+    describe: impl Fn(&str) -> String,
+) -> Vec<Violation> {
     let mut violations = Vec::new();
-    for source in target_sources(policy) {
-        if allowed(rule, &source.rel) {
-            continue;
-        }
-        for (index, line) in source.lines.iter().enumerate() {
-            for token in identifier_tokens(line) {
-                if identifiers.iter().any(|id| id == token) {
-                    violations.push(Violation {
-                        rule: "domain_ownership",
-                        path: source.rel.clone(),
-                        line: index + 1,
-                        detail: format!("downstream domain identifier `{token}`"),
-                    });
-                }
+    for source in sources {
+        for (line, token) in source.identifiers() {
+            if identifiers.iter().any(|id| id == token) {
+                violations.push(Violation {
+                    rule,
+                    path: source.rel.clone(),
+                    line,
+                    item: None,
+                    detail: describe(token),
+                });
             }
         }
     }
     violations
+}
+
+fn check_domain_ownership(policy: &Value) -> Vec<Violation> {
+    let rule = &policy["domain_ownership"];
+    let violations = scan_identifiers(
+        "domain_ownership",
+        &target_sources(policy),
+        &strings(rule, "identifiers"),
+        |token| format!("downstream domain identifier `{token}`"),
+    );
+    disallowed(rule, violations)
 }
 
 fn check_developmental_ontology(policy: &Value) -> Vec<Violation> {
@@ -230,100 +264,288 @@ fn check_developmental_ontology(policy: &Value) -> Vec<Violation> {
     let fragments = strings(rule, "identifier_fragments");
     let mut violations = Vec::new();
     for source in target_sources(policy) {
-        if allowed(rule, &source.rel) {
-            continue;
-        }
-        for (index, line) in source.lines.iter().enumerate() {
-            for token in identifier_tokens(line) {
-                let lower = token.to_ascii_lowercase();
-                if let Some(fragment) = fragments.iter().find(|f| lower.contains(f.as_str())) {
-                    violations.push(Violation {
-                        rule: "developmental_ontology",
-                        path: source.rel.clone(),
-                        line: index + 1,
-                        detail: format!(
-                            "token `{token}` contains developmental fragment `{fragment}`"
-                        ),
-                    });
-                }
+        for (line, token) in source.identifiers() {
+            let lower = token.to_ascii_lowercase();
+            if let Some(fragment) = fragments.iter().find(|f| lower.contains(f.as_str())) {
+                violations.push(Violation {
+                    rule: "developmental_ontology",
+                    path: source.rel.clone(),
+                    line,
+                    item: None,
+                    detail: format!("token `{token}` contains developmental fragment `{fragment}`"),
+                });
             }
         }
     }
-    violations
+    disallowed(rule, violations)
 }
 
-fn normalize_type_spacing(line: &str) -> String {
-    line.split_whitespace().collect::<Vec<_>>().join(" ")
+// ---------------------------------------------------------------------------
+// Public-position type checks (free-form metadata)
+// ---------------------------------------------------------------------------
+
+/// Renders a type with whitespace removed except where it separates two identifiers.
+fn compact_type(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut pending_space = false;
+    for c in text.chars() {
+        if c.is_whitespace() {
+            pending_space = true;
+            continue;
+        }
+        if pending_space && is_ident_char(c) && out.ends_with(is_ident_char) {
+            out.push(' ');
+        }
+        pending_space = false;
+        out.push(c);
+    }
+    out
 }
 
-fn is_public_declaration(line: &str) -> bool {
-    let trimmed = line.trim_start();
-    (trimmed.starts_with("pub ") || trimmed.starts_with("pub(")) && trimmed.contains(':')
+/// Rewrites leading path segments that are `use` aliases to their full paths, so
+/// `Value` imported from `serde_json` renders as `serde_json::Value`.
+fn canonicalize_type(compact: &str, aliases: &BTreeMap<String, String>) -> String {
+    let mut out = String::with_capacity(compact.len());
+    let mut rest = compact;
+    while !rest.is_empty() {
+        let ident_len = rest.chars().take_while(|c| is_ident_char(*c)).map(char::len_utf8).sum();
+        if ident_len == 0 {
+            let c = rest.chars().next().expect("non-empty");
+            out.push(c);
+            rest = &rest[c.len_utf8()..];
+            continue;
+        }
+        let ident = &rest[..ident_len];
+        let leading_segment = !out.ends_with("::") && !out.ends_with('\'');
+        match aliases.get(ident) {
+            Some(full) if leading_segment => out.push_str(full),
+            _ => out.push_str(ident),
+        }
+        rest = &rest[ident_len..];
+    }
+    out
+}
+
+/// Flattens a `use` tree into `(local name, full path)` pairs.
+fn collect_use_aliases(prefix: &str, tree: &syn::UseTree, out: &mut BTreeMap<String, String>) {
+    match tree {
+        syn::UseTree::Path(path) => {
+            let next = if prefix.is_empty() {
+                path.ident.to_string()
+            } else {
+                format!("{prefix}::{}", path.ident)
+            };
+            collect_use_aliases(&next, &path.tree, out);
+        }
+        syn::UseTree::Name(name) if name.ident != "self" => {
+            out.insert(name.ident.to_string(), format!("{prefix}::{}", name.ident));
+        }
+        syn::UseTree::Rename(rename) => {
+            out.insert(rename.rename.to_string(), format!("{prefix}::{}", rename.ident));
+        }
+        syn::UseTree::Group(group) => {
+            for item in &group.items {
+                collect_use_aliases(prefix, item, out);
+            }
+        }
+        syn::UseTree::Name(_) | syn::UseTree::Glob(_) => {}
+    }
+}
+
+struct UseCollector(BTreeMap<String, String>);
+
+impl<'ast> Visit<'ast> for UseCollector {
+    fn visit_item_use(&mut self, item: &'ast syn::ItemUse) {
+        collect_use_aliases("", &item.tree, &mut self.0);
+    }
+}
+
+fn is_pub(vis: &syn::Visibility) -> bool {
+    !matches!(vis, syn::Visibility::Inherited)
+}
+
+fn type_name(ty: &syn::Type) -> String {
+    match ty {
+        syn::Type::Path(path) => {
+            path.path.segments.last().map(|s| s.ident.to_string()).unwrap_or_default()
+        }
+        other => compact_type(&other.to_token_stream().to_string()),
+    }
+}
+
+/// Visits every public position that carries a type and reports forbidden fragments.
+struct PublicTypeVisitor<'p> {
+    rel: &'p str,
+    fragments: &'p [String],
+    aliases: BTreeMap<String, String>,
+    impl_stack: Vec<String>,
+    violations: Vec<Violation>,
+}
+
+impl PublicTypeVisitor<'_> {
+    fn check(&mut self, ty: &syn::Type, item: String, position: &str) {
+        let rendered =
+            canonicalize_type(&compact_type(&ty.to_token_stream().to_string()), &self.aliases);
+        if let Some(fragment) = self.fragments.iter().find(|f| rendered.contains(f.as_str())) {
+            self.violations.push(Violation {
+                rule: "free_form_metadata",
+                path: self.rel.to_string(),
+                line: ty.span().start().line,
+                item: Some(item),
+                detail: format!(
+                    "public {position} type `{rendered}` carries free-form `{fragment}`"
+                ),
+            });
+        }
+    }
+
+    /// Checks struct fields (`Type::field`, public ones only) or the fields of an enum
+    /// variant (`Enum::Variant`, all of them, since variant fields are as public as the enum).
+    fn check_fields(&mut self, owner: &str, fields: &syn::Fields, struct_fields: bool) {
+        for (index, field) in fields.iter().enumerate() {
+            if struct_fields && !is_pub(&field.vis) {
+                continue;
+            }
+            let item = if struct_fields {
+                let name =
+                    field.ident.as_ref().map_or_else(|| index.to_string(), |i| i.to_string());
+                format!("{owner}::{name}")
+            } else {
+                owner.to_string()
+            };
+            self.check(&field.ty, item, "field");
+        }
+    }
+
+    fn check_signature(&mut self, item: &str, sig: &syn::Signature) {
+        for input in &sig.inputs {
+            if let syn::FnArg::Typed(typed) = input {
+                self.check(&typed.ty, item.to_string(), "parameter");
+            }
+        }
+        if let syn::ReturnType::Type(_, ty) = &sig.output {
+            self.check(ty, item.to_string(), "return");
+        }
+    }
+}
+
+impl<'ast> Visit<'ast> for PublicTypeVisitor<'_> {
+    fn visit_item_struct(&mut self, item: &'ast syn::ItemStruct) {
+        self.check_fields(&item.ident.to_string(), &item.fields, true);
+    }
+
+    fn visit_item_union(&mut self, item: &'ast syn::ItemUnion) {
+        let fields = syn::Fields::Named(item.fields.clone());
+        self.check_fields(&item.ident.to_string(), &fields, true);
+    }
+
+    fn visit_item_enum(&mut self, item: &'ast syn::ItemEnum) {
+        if is_pub(&item.vis) {
+            for variant in &item.variants {
+                let owner = format!("{}::{}", item.ident, variant.ident);
+                self.check_fields(&owner, &variant.fields, false);
+            }
+        }
+    }
+
+    fn visit_item_fn(&mut self, item: &'ast syn::ItemFn) {
+        if is_pub(&item.vis) {
+            self.check_signature(&item.sig.ident.to_string(), &item.sig);
+        }
+        syn::visit::visit_item_fn(self, item);
+    }
+
+    fn visit_item_impl(&mut self, item: &'ast syn::ItemImpl) {
+        self.impl_stack.push(type_name(&item.self_ty));
+        syn::visit::visit_item_impl(self, item);
+        self.impl_stack.pop();
+    }
+
+    fn visit_impl_item_fn(&mut self, item: &'ast syn::ImplItemFn) {
+        if is_pub(&item.vis) {
+            let owner = self.impl_stack.last().cloned().unwrap_or_default();
+            self.check_signature(&format!("{owner}::{}", item.sig.ident), &item.sig);
+        }
+        syn::visit::visit_impl_item_fn(self, item);
+    }
+
+    fn visit_item_trait(&mut self, item: &'ast syn::ItemTrait) {
+        if is_pub(&item.vis) {
+            for trait_item in &item.items {
+                match trait_item {
+                    syn::TraitItem::Fn(f) => {
+                        self.check_signature(&format!("{}::{}", item.ident, f.sig.ident), &f.sig);
+                    }
+                    syn::TraitItem::Const(c) => {
+                        self.check(&c.ty, format!("{}::{}", item.ident, c.ident), "const");
+                    }
+                    _ => {}
+                }
+            }
+        }
+        syn::visit::visit_item_trait(self, item);
+    }
+
+    fn visit_item_type(&mut self, item: &'ast syn::ItemType) {
+        if is_pub(&item.vis) {
+            self.check(&item.ty, item.ident.to_string(), "alias");
+        }
+    }
+
+    fn visit_item_const(&mut self, item: &'ast syn::ItemConst) {
+        if is_pub(&item.vis) {
+            self.check(&item.ty, item.ident.to_string(), "const");
+        }
+    }
+
+    fn visit_item_static(&mut self, item: &'ast syn::ItemStatic) {
+        if is_pub(&item.vis) {
+            self.check(&item.ty, item.ident.to_string(), "static");
+        }
+    }
+}
+
+fn public_type_violations(source: &RustSource, fragments: &[String]) -> Vec<Violation> {
+    let mut uses = UseCollector(BTreeMap::new());
+    uses.visit_file(&source.file);
+    let mut visitor = PublicTypeVisitor {
+        rel: &source.rel,
+        fragments,
+        aliases: uses.0,
+        impl_stack: Vec::new(),
+        violations: Vec::new(),
+    };
+    visitor.visit_file(&source.file);
+    visitor.violations
 }
 
 fn check_free_form_metadata(policy: &Value) -> Vec<Violation> {
     let rule = &policy["free_form_metadata"];
-    let type_fragments: Vec<String> = strings(rule, "pub_field_type_fragments")
-        .iter()
-        .map(|f| normalize_type_spacing(f))
-        .collect();
-    let identifiers = strings(rule, "identifiers");
+    let fragments: Vec<String> =
+        strings(rule, "public_type_fragments").iter().map(|f| compact_type(f)).collect();
+    let sources = target_sources(policy);
     let mut violations = Vec::new();
-    for source in target_sources(policy) {
-        if allowed(rule, &source.rel) {
-            continue;
-        }
-        for (index, line) in source.lines.iter().enumerate() {
-            if is_public_declaration(line) {
-                let normalized = normalize_type_spacing(line);
-                if let Some(fragment) =
-                    type_fragments.iter().find(|f| normalized.contains(f.as_str()))
-                {
-                    violations.push(Violation {
-                        rule: "free_form_metadata",
-                        path: source.rel.clone(),
-                        line: index + 1,
-                        detail: format!("public declaration carries free-form type `{fragment}`"),
-                    });
-                }
-            }
-            for token in identifier_tokens(line) {
-                if identifiers.iter().any(|id| id == token) {
-                    violations.push(Violation {
-                        rule: "free_form_metadata",
-                        path: source.rel.clone(),
-                        line: index + 1,
-                        detail: format!("metadata channel identifier `{token}`"),
-                    });
-                }
-            }
-        }
+    for source in &sources {
+        violations.extend(public_type_violations(source, &fragments));
     }
-    violations
+    violations.extend(scan_identifiers(
+        "free_form_metadata",
+        &sources,
+        &strings(rule, "identifiers"),
+        |token| format!("metadata channel identifier `{token}`"),
+    ));
+    disallowed(rule, violations)
 }
 
 fn check_scheduler_backchannel(policy: &Value) -> Vec<Violation> {
     let rule = &policy["scheduler_backchannel"];
-    let identifiers = strings(rule, "identifiers");
-    let mut violations = Vec::new();
-    for source in rust_sources(policy, &strings(rule, "scope_paths")) {
-        if allowed(rule, &source.rel) {
-            continue;
-        }
-        for (index, line) in source.lines.iter().enumerate() {
-            for token in identifier_tokens(line) {
-                if identifiers.iter().any(|id| id == token) {
-                    violations.push(Violation {
-                        rule: "scheduler_backchannel",
-                        path: source.rel.clone(),
-                        line: index + 1,
-                        detail: format!("scheduling/authority code reads attribution `{token}`"),
-                    });
-                }
-            }
-        }
-    }
-    violations
+    let violations = scan_identifiers(
+        "scheduler_backchannel",
+        &rust_sources(policy, &strings(rule, "scope_paths")),
+        &strings(rule, "identifiers"),
+        |token| format!("scheduling/authority code reads attribution `{token}`"),
+    );
+    disallowed(rule, violations)
 }
 
 fn check_metric_labels(policy: &Value) -> Vec<Violation> {
@@ -331,68 +553,70 @@ fn check_metric_labels(policy: &Value) -> Vec<Violation> {
     let forbidden = strings(rule, "forbidden_label_tokens");
     let mut violations = Vec::new();
     for source in rust_sources(policy, &strings(rule, "scope_paths")) {
-        if allowed(rule, &source.rel) {
-            continue;
-        }
-        for (index, line) in source.lines.iter().enumerate() {
-            for literal in string_literals(line) {
-                for token in identifier_tokens(&literal) {
-                    if forbidden.iter().any(|f| f == token) {
-                        violations.push(Violation {
-                            rule: "metric_labels",
-                            path: source.rel.clone(),
-                            line: index + 1,
-                            detail: format!(
-                                "string literal `{literal}` names forbidden label `{token}`"
-                            ),
-                        });
-                    }
-                }
-            }
-        }
-    }
-    violations
-}
-
-fn check_archive_isolation(policy: &Value) -> Vec<Violation> {
-    let rule = &policy["archive_isolation"];
-    let substrings = strings(rule, "substrings");
-    let excluded = strings(policy, "always_excluded");
-    let mut violations = Vec::new();
-    for root in strings(policy, "target_code_roots") {
-        for path in walk_files(&repo_root().join(root), &excluded) {
-            let rel = rel_path(&path);
-            let Some(text) = read_text_if_text(&path) else {
-                continue;
-            };
-            if allowed(rule, &rel) {
-                continue;
-            }
-            for (index, line) in text.lines().enumerate() {
-                if let Some(needle) = substrings.iter().find(|s| line.contains(s.as_str())) {
+        for literal in source.string_literals() {
+            for token in identifier_tokens(&literal.text) {
+                if forbidden.iter().any(|f| f == token) {
                     violations.push(Violation {
-                        rule: "archive_isolation",
-                        path: rel.clone(),
-                        line: index + 1,
+                        rule: "metric_labels",
+                        path: source.rel.clone(),
+                        line: literal.line,
+                        item: None,
                         detail: format!(
-                            "target crate references the frozen archive via `{needle}`"
+                            "string literal `{}` names forbidden label `{token}`",
+                            literal.text
                         ),
                     });
                 }
             }
         }
     }
-    violations
+    disallowed(rule, violations)
 }
 
-/// Files outside the frozen roots that are subject to the legacy-symbol scan.
-fn legacy_scan_files(policy: &Value) -> Vec<PathBuf> {
+fn check_archive_isolation(policy: &Value) -> Vec<Violation> {
+    let rule = &policy["archive_isolation"];
+    let substrings = strings(rule, "substrings");
+    let excluded = strings(policy, "always_excluded");
+    let roots = strings(policy, "target_code_roots");
+    let mut violations = Vec::new();
+    for rel in tracked_files() {
+        if !roots.iter().any(|root| under(rel, root)) || excluded.iter().any(|ex| under(rel, ex)) {
+            continue;
+        }
+        let Some(text) = support::read_text_if_text(&repo_root().join(rel)) else {
+            continue;
+        };
+        for (index, line) in text.lines().enumerate() {
+            if let Some(needle) = substrings.iter().find(|s| line.contains(s.as_str())) {
+                violations.push(Violation {
+                    rule: "archive_isolation",
+                    path: rel.clone(),
+                    line: index + 1,
+                    item: None,
+                    detail: format!("target crate references the frozen archive via `{needle}`"),
+                });
+            }
+        }
+    }
+    disallowed(rule, violations)
+}
+
+// ---------------------------------------------------------------------------
+// Legacy symbols
+// ---------------------------------------------------------------------------
+
+/// Tracked files outside the exempt roots that are subject to the legacy-symbol scan.
+fn legacy_scan_files(policy: &Value) -> Vec<String> {
     let mut excluded = strings(policy, "always_excluded");
-    excluded.extend(strings(policy, "frozen_roots"));
-    walk_files(&repo_root(), &excluded)
+    excluded.extend(strings(policy, "legacy_scan_exempt_roots"));
+    tracked_files()
+        .iter()
+        .filter(|rel| !excluded.iter().any(|ex| under(rel, ex)))
+        .cloned()
+        .collect()
 }
 
-/// Counts, per legacy symbol, the files that still contain it.
+/// Lists, per legacy symbol, the tracked text files that still contain it.
 fn legacy_symbol_files(policy: &Value) -> BTreeMap<String, Vec<String>> {
     let symbols: Vec<String> = policy["legacy_symbols"]["symbols"]
         .as_array()
@@ -402,13 +626,13 @@ fn legacy_symbol_files(policy: &Value) -> BTreeMap<String, Vec<String>> {
         .collect();
     let mut found: BTreeMap<String, Vec<String>> =
         symbols.iter().map(|s| (s.clone(), Vec::new())).collect();
-    for path in legacy_scan_files(policy) {
-        let Some(text) = read_text_if_text(&path) else {
+    for rel in legacy_scan_files(policy) {
+        let Some(text) = support::read_text_if_text(&repo_root().join(&rel)) else {
             continue;
         };
         for symbol in &symbols {
             if contains_identifier(&text, symbol) {
-                found.get_mut(symbol).expect("symbol entry").push(rel_path(&path));
+                found.get_mut(symbol).expect("symbol entry").push(rel.clone());
             }
         }
     }
@@ -454,10 +678,14 @@ fn assert_no_violations(rule: &str, violations: &[Violation]) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
 #[test]
 fn policy_matches_conformance_manifest_revisions() {
     let policy = load_policy();
-    let manifest = support::read_repo_text(MANIFEST_PATH);
+    let manifest = read_repo_text(MANIFEST_PATH);
     for key in
         ["contract", "contract_revision", "planning_profile", "developmental_profile_revision"]
     {
@@ -471,6 +699,28 @@ fn policy_matches_conformance_manifest_revisions() {
         policy["contract_revision"].as_str().unwrap_or("?"),
         policy["developmental_profile_revision"].as_str().unwrap_or("?")
     );
+}
+
+#[test]
+fn every_allow_entry_names_a_path_and_a_reason() {
+    let policy = load_policy();
+    for (rule_name, rule) in policy.as_object().expect("policy object") {
+        let Some(entries) = rule.get("allow").and_then(Value::as_array) else {
+            continue;
+        };
+        for entry in entries {
+            let path = entry["path"].as_str().unwrap_or("");
+            assert!(!path.is_empty(), "{rule_name}: allow entry without a path: {entry}");
+            assert!(
+                !support::tracked_files_under(path).is_empty(),
+                "{rule_name}: allow entry path `{path}` matches no tracked file"
+            );
+            assert!(
+                entry["reason"].as_str().is_some_and(|r| !r.trim().is_empty()),
+                "{rule_name}: allow entry for `{path}` lacks a reason"
+            );
+        }
+    }
 }
 
 #[test]
@@ -489,6 +739,28 @@ fn target_code_contains_no_developmental_ontology() {
 fn target_code_has_no_free_form_metadata_channel() {
     let policy = load_policy();
     assert_no_violations("free_form_metadata", &check_free_form_metadata(&policy));
+}
+
+/// The allow entry for the CLI's JSON output variant must stay necessary: if the variant
+/// disappears, the entry must be removed rather than silently outliving its purpose.
+#[test]
+fn free_form_metadata_allow_entries_are_still_exercised() {
+    let policy = load_policy();
+    let rule = &policy["free_form_metadata"];
+    let fragments: Vec<String> =
+        strings(rule, "public_type_fragments").iter().map(|f| compact_type(f)).collect();
+    let raw: Vec<Violation> = target_sources(&policy)
+        .iter()
+        .flat_map(|source| public_type_violations(source, &fragments))
+        .collect();
+    for entry in rule["allow"].as_array().expect("allow array") {
+        let path = entry["path"].as_str().expect("path");
+        let item = entry["item"].as_str();
+        let exercised = raw
+            .iter()
+            .any(|v| under(&v.path, path) && item.is_none_or(|i| v.item.as_deref() == Some(i)));
+        assert!(exercised, "allow entry {entry} no longer matches any public declaration");
+    }
 }
 
 #[test]
@@ -527,7 +799,7 @@ fn legacy_symbols_respect_their_removal_stage() {
 }
 
 #[test]
-fn scanned_target_roots_are_nonempty() {
+fn scans_cover_only_tracked_files_and_every_target_crate() {
     let policy = load_policy();
     let sources = target_sources(&policy);
     assert!(
@@ -535,13 +807,74 @@ fn scanned_target_roots_are_nonempty() {
         "expected the eleven crates to yield many sources, got {}",
         sources.len()
     );
-    assert!(!legacy_scan_files(&policy).is_empty());
-    assert!(!Path::new(&repo_root().join(POLICY_PATH)).as_os_str().is_empty());
+    for member in [
+        "core",
+        "storage",
+        "engine",
+        "executor-local",
+        "runtime",
+        "daemon",
+        "cli",
+        "workflow",
+        "budget",
+        "actor",
+        "platform",
+    ] {
+        let prefix = format!("crates/actionqueue-{member}/src/");
+        assert!(sources.iter().any(|s| s.rel.starts_with(&prefix)), "no sources under {prefix}");
+    }
+    let scanned = legacy_scan_files(&policy);
+    assert!(!scanned.is_empty());
+    for rel in &scanned {
+        assert!(repo_root().join(rel).is_file(), "{rel} listed but missing");
+        assert!(!rel.starts_with("target/") && !rel.starts_with("archive/"), "{rel} scanned");
+    }
+}
+
+/// Removes a scratch file when dropped, even if an assertion fails first.
+struct Untracked(std::path::PathBuf);
+
+impl Drop for Untracked {
+    fn drop(&mut self) {
+        std::fs::remove_file(&self.0).ok();
+    }
+}
+
+/// An untracked file inside the repository (local notes, editor backups, ignored build
+/// output) must never enter any scan, so the ratchet counts depend only on the tree.
+#[test]
+fn untracked_files_inside_the_repository_are_invisible_to_every_scan() {
+    let policy = load_policy();
+    let legacy = policy["legacy_symbols"]["symbols"][0]["symbol"].as_str().expect("symbol");
+    let nonce = std::process::id();
+    let name = format!("aq-conformance-scratch-{nonce}.rs");
+    let guard = Untracked(repo_root().join("crates").join(&name));
+    std::fs::write(
+        &guard.0,
+        format!("pub struct Vessel {{ pub campaign: HashMap<String, String> }} // {legacy}\n"),
+    )
+    .expect("write scratch file");
+    let rel = format!("crates/{name}");
+    assert!(!tracked_files().contains(&rel));
+    assert!(!legacy_scan_files(&policy).contains(&rel));
+    assert!(!target_sources(&policy).iter().any(|s| s.rel == rel));
+    let found = legacy_symbol_files(&policy);
+    assert!(!found[legacy].contains(&rel));
+    assert!(check_domain_ownership(&policy).iter().all(|v| v.path != rel));
+    drop(guard);
 }
 
 #[cfg(test)]
 mod unit {
     use super::*;
+
+    fn source(text: &str) -> RustSource {
+        RustSource::parse("crates/x/src/lib.rs", text)
+    }
+
+    fn idents(text: &str) -> Vec<String> {
+        source(text).identifiers().map(|(_, t)| t.to_string()).collect()
+    }
 
     #[test]
     fn identifier_matching_respects_boundaries() {
@@ -554,37 +887,110 @@ mod unit {
     }
 
     #[test]
-    fn comment_stripping_keeps_code_and_strings() {
-        let src = "//! Vesselish doc\nfn a() { /* Vesselish */ let s = \"keep // this\"; } // \
+    fn comments_and_doc_attributes_are_exempt_but_code_and_strings_are_not() {
+        let src = "//! Vesselish crate doc\n/// Vesselish item doc\n#[doc = \"Vesselish explicit \
+                   doc\"]\nfn a() { /* Vesselish */ let s = \"keep // Receiptish\"; } // \
                    Vesselish\n";
-        let stripped = strip_rust_comments(src);
-        assert_eq!(stripped.lines().count(), 2, "line numbers must be preserved");
-        assert!(!stripped.contains("Vesselish"));
-        assert!(stripped.contains("\"keep // this\""));
+        let found = idents(src);
+        assert!(!found.iter().any(|t| t == "Vesselish"), "{found:?}");
+        assert!(found.iter().any(|t| t == "Receiptish"), "{found:?}");
+        assert!(found.iter().any(|t| t == "keep"));
+        let parsed = source(src);
+        let receipt = parsed.identifiers().find(|(_, t)| *t == "Receiptish").expect("found");
+        assert_eq!(receipt.0, 4, "line numbers come from spans");
     }
 
     #[test]
-    fn comment_stripping_handles_char_literals() {
-        let src = "let q = '\"'; let s = \"x\"; // tail\n";
-        let stripped = strip_rust_comments(src);
-        assert_eq!(stripped.trim_end(), "let q = '\"'; let s = \"x\";");
+    fn raw_strings_with_odd_quote_counts_do_not_desynchronize_the_scan() {
+        let src = "const A: &str = r#\"one \" quote\"#;\n/// Vesselish doc after an odd raw \
+                   string\nfn later() { let campaign_id = 1; }\nconst B: &str = r##\"three \" \" \
+                   \" quotes\"##;\nfn end() { let arm_id = 2; }\n";
+        let found = idents(src);
+        assert!(!found.iter().any(|t| t == "Vesselish"), "{found:?}");
+        assert!(found.iter().any(|t| t == "campaign_id"), "{found:?}");
+        assert!(found.iter().any(|t| t == "arm_id"), "{found:?}");
+        let parsed = source(src);
+        let literals: Vec<&str> = parsed.string_literals().map(|t| t.text.as_str()).collect();
+        assert_eq!(literals, vec!["one \" quote", "three \" \" \" quotes"]);
     }
 
     #[test]
-    fn string_literal_extraction() {
-        assert_eq!(string_literals("a(\"one\", \"two\\\"x\")"), vec!["one", "two\\\"x"]);
-        assert!(string_literals("no strings here").is_empty());
+    fn char_literals_and_macro_bodies_are_scanned_correctly() {
+        let src = "fn a() { let q = '\"'; let s = \"x\"; println!(\"campaign {}\", q); }\n";
+        let found = idents(src);
+        assert!(found.iter().any(|t| t == "campaign"), "{found:?}");
+        let parsed = source(src);
+        let literals: Vec<&str> = parsed.string_literals().map(|t| t.text.as_str()).collect();
+        assert_eq!(literals, vec!["x", "campaign {}"]);
+    }
+
+    fn fragments() -> Vec<String> {
+        [
+            "HashMap<String, String>",
+            "BTreeMap<String, String>",
+            "serde_json::Value",
+            "serde_json::Map",
+        ]
+        .iter()
+        .map(|f| compact_type(f))
+        .collect()
+    }
+
+    fn public_items(text: &str) -> Vec<String> {
+        public_type_violations(&source(text), &fragments())
+            .into_iter()
+            .map(|v| v.item.expect("item"))
+            .collect()
     }
 
     #[test]
-    fn public_free_form_map_declarations_are_detected() {
-        let fragment = normalize_type_spacing("HashMap<String, String>");
-        let bad = normalize_type_spacing("    pub extra: HashMap<String,   String>,");
-        assert!(is_public_declaration(&bad) && bad.contains(&fragment));
-        let private = "    extra: HashMap<String, String>,";
-        assert!(!is_public_declaration(private));
-        let typed = "    pub tags: Vec<String>,";
-        assert!(is_public_declaration(typed) && !normalize_type_spacing(typed).contains(&fragment));
+    fn public_positions_of_every_kind_are_checked() {
+        let src = "use serde_json::Value;\nuse std::collections::{BTreeMap, HashMap};\npub struct \
+                   S { pub extra: HashMap<String,   String>, hidden: HashMap<String, String> \
+                   }\npub struct T(pub BTreeMap<String, String>);\npub enum Out { Text(String), \
+                   Json(Value), Named { v: serde_json::Value } }\nenum Private { Json(Value) \
+                   }\npub fn f(v: Value) -> Option<Value> { None }\nfn private(v: Value) -> Value \
+                   { v }\npub type Alias = Vec<Value>;\npub const C: Option<Value> = None;\npub \
+                   trait Tr { fn m(&self) -> Value; }\nimpl S { pub fn get(&self) -> &Value { \
+                   unreachable!() } fn p(&self) -> Value { unreachable!() } }\n";
+        let items = public_items(src);
+        assert_eq!(
+            items,
+            vec![
+                "S::extra",
+                "T::0",
+                "Out::Json",
+                "Out::Named",
+                "f",
+                "f",
+                "Alias",
+                "C",
+                "Tr::m",
+                "S::get",
+            ]
+        );
+    }
+
+    #[test]
+    fn use_aliases_are_canonicalized_before_matching() {
+        let src = "use serde_json::{Map, Value as Json};\npub struct A { pub a: Json, pub b: \
+                   Map<String, Json> }\nmod other { pub struct Value; }\npub struct B { pub \
+                   not_json: other::Value }\n";
+        let violations = public_type_violations(&source(src), &fragments());
+        let rendered: Vec<String> = violations.iter().map(|v| v.detail.clone()).collect();
+        assert_eq!(violations.len(), 2, "{rendered:?}");
+        assert!(rendered[0].contains("`serde_json::Value`"), "{rendered:?}");
+        assert!(
+            rendered[1].contains("`serde_json::Map<String,serde_json::Value>`"),
+            "{rendered:?}"
+        );
+    }
+
+    #[test]
+    fn compact_type_keeps_identifier_separation() {
+        assert_eq!(compact_type("HashMap<String,   String>"), "HashMap<String,String>");
+        assert_eq!(compact_type("impl Fn() -> Value + Send"), "impl Fn()->Value+Send");
+        assert_eq!(compact_type("& 'a str"), "&'a str");
     }
 
     #[test]
@@ -616,13 +1022,24 @@ mod unit {
     }
 
     #[test]
-    fn allow_entries_require_a_reason() {
+    fn allow_entries_require_a_reason_and_honour_item_scope() {
         let rule: Value = serde_json::json!({ "allow": [
             { "path": "crates/x", "reason": "" },
-            { "path": "crates/y", "reason": "bench fixture" }
+            { "path": "crates/y", "reason": "bench fixture" },
+            { "path": "crates/z/src/lib.rs", "item": "Out::Json", "reason": "cli rendering" }
         ]});
-        assert!(!allowed(&rule, "crates/x/src/lib.rs"));
-        assert!(allowed(&rule, "crates/y/benches/b.rs"));
-        assert!(!allowed(&rule, "crates/yy/src/lib.rs"));
+        let v = |path: &str, item: Option<&str>| Violation {
+            rule: "free_form_metadata",
+            path: path.to_string(),
+            line: 1,
+            item: item.map(str::to_string),
+            detail: String::new(),
+        };
+        assert!(!allowed(&rule, &v("crates/x/src/lib.rs", None)));
+        assert!(allowed(&rule, &v("crates/y/benches/b.rs", None)));
+        assert!(!allowed(&rule, &v("crates/yy/src/lib.rs", None)));
+        assert!(allowed(&rule, &v("crates/z/src/lib.rs", Some("Out::Json"))));
+        assert!(!allowed(&rule, &v("crates/z/src/lib.rs", Some("Out::Other"))));
+        assert!(!allowed(&rule, &v("crates/z/src/lib.rs", None)));
     }
 }

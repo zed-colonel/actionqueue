@@ -30,6 +30,5 @@ CLAUDE.md
 plans/
 dev-output/
 
-# ── Local scripts (tracked repo checks are re-included) ─────
-scripts/*
-!scripts/check_contract_boundaries.sh
+# ── Local scripts ───────────────────────────────────────────
+scripts/
