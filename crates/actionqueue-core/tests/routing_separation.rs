@@ -30,6 +30,18 @@ assert_no_conversion!(CausalContext, Role);
 assert_no_conversion!(ControlMutationContext, Capability);
 assert_no_conversion!(ControlMutationContext, Role);
 
+// Routing traits and opaque attribution must not become authorization objects.
+assert_no_conversion!(Capability, ExecutorTrait);
+assert_no_conversion!(Role, ExecutorTrait);
+assert_no_conversion!(Capability, ExecutorTraits);
+assert_no_conversion!(Role, ExecutorTraits);
+assert_no_conversion!(Capability, OpaqueRef);
+assert_no_conversion!(Role, OpaqueRef);
+assert_no_conversion!(Capability, CausalContext);
+assert_no_conversion!(Role, CausalContext);
+assert_no_conversion!(Capability, ControlMutationContext);
+assert_no_conversion!(Role, ControlMutationContext);
+
 #[test]
 fn constraint_setter_is_atomic_and_wait_policy_defaults_to_release() {
     let mut constraints =
