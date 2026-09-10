@@ -40,3 +40,4 @@ run always has exactly one active wait after replay.
 | Accepted in PR | `AQ-02` |
 | Accepted on | 2026-09-09 |
 | Superseded by | — |
+| Deferred verification | Verified in `AQ-02`: `WaitSpec` and `ResumeContext` carry exactly one `WaitId`, and resume identifies its wait for every wake kind (`continuation_vocabulary.rs`). Deferred to `AQ-06`: rejection of a second wait registration for a run, and the replay property that an `Awaiting` run has exactly one active wait. |

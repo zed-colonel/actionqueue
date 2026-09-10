@@ -41,3 +41,4 @@ context delivery under crash (§28.6).
 | Accepted in PR | `AQ-02` |
 | Accepted on | 2026-09-09 |
 | Superseded by | — |
+| Deferred verification | Verified in `AQ-02`: inline limit rejection at construction and decode (`continuation_vocabulary.rs`, `target_serde.rs`). Deferred to `AQ-07`: hash mismatch detection on external refs and exactly-once resume-context delivery under crash (§28.6). |

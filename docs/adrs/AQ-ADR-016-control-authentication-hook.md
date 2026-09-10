@@ -39,3 +39,4 @@ platform tests prove references do not widen permissions.
 | Accepted in PR | `AQ-02` |
 | Accepted on | 2026-09-09 |
 | Superseded by | — |
+| Deferred verification | Verified in `AQ-02`: `ControlMutationContext` round trip, and the acceptance proof that executor traits grant no RBAC permission (`tests/acceptance/executor_trait_matching.rs`). Deferred to `AQ-11`: rejection of control mutations without context, and verbatim replay of context. |

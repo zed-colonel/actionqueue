@@ -40,3 +40,4 @@ re-acquires in order; suspended and awaiting runs do not deadlock the key.
 | Accepted in PR | `AQ-02` |
 | Accepted on | 2026-09-09 |
 | Superseded by | — |
+| Deferred verification | Verified in `AQ-02`: the default is `ReleaseWhileAwaiting`; the dispatch loop and the engine evaluator release on `Awaiting` by default, hold under `HoldWhileAwaiting`, and release a held key when the awaiting run terminates (`crates/actionqueue-engine/src/concurrency/lifecycle.rs`). Deferred to `AQ-03`: persisted per-task policy selection. Deferred to `AQ-06`: a resumed run re-acquires in order, and suspended and awaiting runs do not deadlock the key under live continuation. |

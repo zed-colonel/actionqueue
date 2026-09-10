@@ -40,3 +40,4 @@ preserves inherited context.
 | Accepted in PR | `AQ-02` |
 | Accepted on | 2026-09-09 |
 | Superseded by | — |
+| Deferred verification | Verified in `AQ-02`: `CausalContext` construction, override, and JSON/postcard round trip; causation-link ancestry consistency (`continuation_vocabulary.rs`, `target_serde.rs`). Deferred to `AQ-09`: inheritance table tests, override rejection for non-overridable fields, and replay preservation of inherited context. |

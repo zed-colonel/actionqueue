@@ -128,6 +128,16 @@ value domain from disk corruption. AQ-03 must reject nonempty pre-contract store
 without modifying their bytes, before this decode/repair path, and report the
 missing/unsupported target lineage explicitly. AQ-02 does not provide a migration.
 
+JSON snapshots break in two different ways, and only one of them is loud. The
+routing key under task constraints and the actor executor-trait key were renamed
+without aliases or a schema bump. A pre-contract snapshot that contains actors
+fails to decode and falls back to full WAL replay, which is visible. A pre-contract
+snapshot whose tasks carry the old routing key still decodes, because unknown keys
+are ignored, so the executor-trait requirement is **silently dropped** and those
+tasks become routable to any executor until a later WAL replay rebuilds them. AQ-03
+must therefore reject pre-contract snapshots by lineage or manifest before decoding
+them; the decode failure alone does not catch the routing-key case.
+
 The claim in finding 13 that `TruncatePartial` can cut only a trailing record is
 **disagreed with for the current implementation**. Although its rustdoc promises
 that restriction, `WalFsWriter::load_current_sequence_lenient` returns a truncation
@@ -205,6 +215,49 @@ The first matrix/conformance runs caught the new test fixture's legacy-symbol
 footprint increase. All affected checks were rerun successfully after the explicit
 policy adjustment described above. The ignored test remains the existing AQ-03
 pre-contract-store rejection scaffold. No frozen contracts or evidence were edited.
+
+## Mergeable-review dispositions
+
+The final review returned a mergeable verdict with thirteen non-blocking findings.
+None of the changes below alters a durable layout or a contract surface.
+
+| Finding | Disposition | Change or follow-up |
+|---|---|---|
+| 1 | Fixed | Every cancellation cascade now goes through `cancel_run_and_release_key`, which releases only when `KeyGate::key_holder` names the canceled run. Scheduled and Ready runs release nothing and emit no warning. A dispatch test captures WARN output and proves the spurious "key not held" line is gone. |
+| 2 | Fixed | The helper keeps the key for a run still present in `in_flight`, so a cascade cannot let a competitor start under the same key while a worker executes. A dispatch test cancels a Running run with a blocked worker and asserts the key is still held. The helper's rustdoc records the pre-existing gap: today the worker's later result is rejected by the authority's previous-state check, so the slot is freed on restart from the projection. Reconciling in-flight workers with cascade cancellation is shared with the hierarchy cascade and stays outside AQ-02. |
+| 3 | Fixed | `KeyLifecycleContext` carries a `ConcurrencyKeyWaitPolicy` (`with_wait_policy`, default release). Running to Awaiting consults it; Awaiting to a terminal state releases unconditionally, matching the dispatch rule. Four evaluator unit tests cover default release, hold, terminal release, and Awaiting to Ready. Having dispatch consume the evaluator is a larger refactor with no behaviour defect behind it; the two sites now cross-reference each other. |
+| 4 | Fixed | The actor registry rebuild logs a warning naming the actor and the grammar error before substituting the placeholder trait. Typing the WAL and record fields as `ExecutorTraits` waits for AQ-03 because the WAL layout is frozen until then. |
+| 5 | Fixed | `AdmissionPlan::new` rejects a repeated `RunId` with the new `AdmissionRejection::DuplicateRun`; the serde mirror routes through the same constructor, and the test covers construction and JSON decode. |
+| 6 | Fixed | The dispatch Awaiting arm now states that the accessor returns the default until AQ-03 adds the persisted field, so `HoldWhileAwaiting` is not selectable there yet. |
+| 7 | Fixed | The AQ-03 handoff above now names the silent-drop case for pre-contract JSON snapshots with the old routing key and requires lineage rejection before decode. |
+| 8 | Fixed | `AttemptOutcome::awaiting()` exists and the replay reducer uses it instead of the validating constructor with an `expect`. |
+| 9 | Fixed | Core gains `RunState::ALL` and `RunState::label()`; `Display` uses the label. The Prometheus label set is derived from `RunState::ALL` at compile time, so `suspended` is now pre-seeded. The HTTP and CLI stats breakdowns count `suspended` and `awaiting` (additive JSON fields; the CLI text output gains two lines), and their state matches are exhaustive with no discard arm. The daemon parity test and the acceptance observability test derive the expected set from the same constant. |
+| 10 | No change (agreed) | Awaiting is unreachable until AQ-06, which owns cancelling active waits durably and mapping the authority guard; the handler comments and initial finding 6 track it. |
+| 11 | Fixed | Each of the six Accepted ADRs has a "Deferred verification" row in its acceptance record naming what AQ-02 verified and which work item owns the rest. |
+| 12 | Fixed | `crates/actionqueue-core/tests/common/mod.rs` holds `hash`, `hash_filled`, and the JSON/postcard `round` helper; the three test files use it. |
+| 13 | Fixed | See finding 1. The helper makes release inseparable from cancellation on all three cascade paths. |
+
+### Mergeable-review verification
+
+Checks run on 2026-09-09 on the final tree:
+
+| Check | Result |
+|---|---|
+| `cargo test --workspace` | 949 passed, 1 ignored |
+| `cargo test --workspace --features workflow` | 983 passed, 1 ignored |
+| `cargo test --workspace --all-features` | 1,019 passed, 1 ignored |
+| `cargo test -p actionqueue-core --no-default-features` | 88 passed, no warnings |
+| `cargo aq-conformance` | 39 passed, 1 ignored |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | Passed |
+| `cargo fmt --all -- --check` | Passed |
+| `git diff --check 8bc7a2b` | Passed |
+
+The first full run failed the daemon metrics parity test and the acceptance
+observability suite: both hardcoded the nine-label set and its sample count. They
+now derive the expected set from `RUN_STATE_LABEL_VALUES`, so `suspended` is
+checked alongside the other states. The ignored test remains the AQ-03
+pre-contract-store scaffold. No frozen contract, planning-package, or archive file
+was changed; this log is not hash-pinned.
 
 ## Follow-up verification
 
