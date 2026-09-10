@@ -107,7 +107,7 @@ fn submit_repeat_json_success_creates_repeat_runs() {
 }
 
 #[test]
-fn stats_json_success_returns_deterministic_shape() {
+fn stats_formats_return_consistent_deterministic_fields() {
     let data_dir = unique_data_dir("smoke-stats-json");
 
     let output = cli()
@@ -131,6 +131,34 @@ fn stats_json_success_returns_deterministic_shape() {
     assert!(parsed["summary"]["total_runs"].is_u64());
     assert!(parsed["summary"]["latest_sequence"].is_u64());
     assert!(parsed["summary"]["runs_by_state"].is_object());
+
+    let text_output = cli()
+        .args(["stats", "--data-dir", data_dir.to_str().unwrap(), "--format", "text"])
+        .output()
+        .expect("stats text command should execute");
+    assert!(text_output.status.success());
+    let text = String::from_utf8(text_output.stdout).unwrap();
+    let mut expected =
+        vec!["command=stats".to_string(), format!("data_dir={}", data_dir.display())];
+    for key in ["total_tasks", "total_runs", "latest_sequence"] {
+        expected.push(format!("{key}={}", parsed["summary"][key]));
+    }
+    for state in [
+        "scheduled",
+        "ready",
+        "leased",
+        "running",
+        "retry_wait",
+        "suspended",
+        "awaiting",
+        "completed",
+        "failed",
+        "canceled",
+    ] {
+        expected.push(format!("runs_{state}={}", parsed["summary"]["runs_by_state"][state]));
+    }
+    expected.push(format!("attempts_total={}", parsed["summary"]["attempts_total"]));
+    assert_eq!(text.lines().collect::<Vec<_>>(), expected);
 }
 
 #[test]

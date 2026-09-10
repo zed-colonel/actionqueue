@@ -435,21 +435,22 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
             let mut registry = actionqueue_actor::ActorRegistry::new();
             for (actor_id, record) in authority.projection().actors() {
                 if record.deregistered_at.is_none() {
-                    let caps = actionqueue_core::actor::ExecutorTraits::new(
+                    let caps = match actionqueue_core::actor::ExecutorTraits::new(
                         record.executor_traits.clone(),
-                    )
-                    .unwrap_or_else(|error| {
-                        // Only pre-contract stores can reach this; AQ-03 rejects
-                        // them before decode. Until then, make the routing
-                        // change visible rather than silently narrowing the actor.
-                        tracing::warn!(
-                            %actor_id, %error,
-                            "persisted actor executor traits fail the current grammar; \
-                             registering the placeholder trait \"_\" instead"
-                        );
-                        actionqueue_core::actor::ExecutorTraits::new(vec!["_".to_string()])
-                            .expect("fallback executor trait")
-                    });
+                    ) {
+                        Ok(traits) => traits,
+                        Err(error) => {
+                            // AQ-03 rejects pre-contract stores before decode.
+                            // Until then, do not invent a routable trait for an
+                            // actor whose persisted traits are invalid.
+                            tracing::warn!(
+                                %actor_id, %error,
+                                "persisted actor executor traits fail the current grammar; \
+                                 skipping actor registration"
+                            );
+                            continue;
+                        }
+                    };
                     let mut reg = actionqueue_core::actor::ActorRegistration::new(
                         *actor_id,
                         record.identity.clone(),
@@ -1341,7 +1342,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
     /// Durably cancels a non-terminal run, then releases its concurrency key.
     ///
     /// Every cancellation cascade goes through this method so that release is
-    /// inseparable from cancellation and no path can leak a held key slot. The
+    /// inseparable from cancellation for runs without an executing worker. The
     /// key is released only when this run actually holds it: Scheduled and
     /// Ready runs never acquired one, so they release nothing and emit no
     /// warning.
@@ -1352,9 +1353,12 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
     /// exists for. Today the worker's eventual result is rejected by the
     /// authority's previous-state check. `process_worker_result` propagates
     /// that rejection as a tick error before releasing the key, leaving the
-    /// slot held until restart. Restart rebuilds the key gate from the
-    /// projection, where a Canceled run holds nothing. AQ-08 owns reconciling
-    /// in-flight worker results after dependency or hierarchy cancellation;
+    /// slot held until restart. The canceled entry also remains in `in_flight`:
+    /// its next lease heartbeat is rejected and can fail every subsequent tick
+    /// before worker results are drained. Restart creates an empty key gate;
+    /// it does not rebuild ownership from the projection, so even keys held
+    /// under HoldDuringRetry are lost. AQ-08 owns reconciling in-flight workers
+    /// and their heartbeats after dependency or hierarchy cancellation;
     /// see the AQ-08 handoff in docs/planning/aq-cont-1/aq-02-review-remediation.md.
     fn cancel_run_and_release_key(
         &mut self,
@@ -2776,21 +2780,7 @@ mod tests {
 
     async fn dependency_cancellation_releases_held_key(catch_up: bool) {
         let dir = tempfile::tempdir().unwrap();
-        let recovery = load_projection_from_storage(dir.path()).unwrap();
-        let authority = StorageMutationAuthority::new(recovery.wal_writer, recovery.projection);
-        let mut dispatch = DispatchLoop::new(
-            authority,
-            DependencyHandler,
-            MockClock::new(1000),
-            DispatchConfig::new(
-                BackoffStrategyConfig::Fixed { interval: Duration::ZERO },
-                1,
-                30,
-                None,
-                None,
-            ),
-        )
-        .unwrap();
+        let mut dispatch = new_dispatch(dir.path(), DependencyHandler);
 
         let suspended = task(b"suspend", Some("shared"));
         let suspended_id = suspended.id();
@@ -2892,6 +2882,48 @@ mod tests {
             ),
         )
         .unwrap()
+    }
+
+    #[cfg(feature = "actor")]
+    #[test]
+    fn recovery_skips_actors_with_invalid_traits_without_inventing_a_label() {
+        use actionqueue_core::ids::ActorId;
+        use actionqueue_storage::wal::event::{WalEvent, WalEventType};
+        use actionqueue_storage::wal::writer::WalWriter;
+
+        let (log, _guard) = capture_warnings();
+        let dir = tempfile::tempdir().unwrap();
+        let invalid_id = ActorId::new();
+        let valid_id = ActorId::new();
+        {
+            let mut recovery = load_projection_from_storage(dir.path()).unwrap();
+            for (sequence, actor_id, label) in [(1, invalid_id, "bad trait"), (2, valid_id, "_")] {
+                recovery
+                    .wal_writer
+                    .append(&WalEvent::new(
+                        sequence,
+                        WalEventType::ActorRegistered {
+                            actor_id,
+                            identity: "persisted-actor".into(),
+                            executor_traits: vec![label.into()],
+                            department: None,
+                            heartbeat_interval_secs: 30,
+                            tenant_id: None,
+                            timestamp: 1000,
+                        },
+                    ))
+                    .unwrap();
+            }
+            recovery.wal_writer.flush().unwrap();
+        }
+
+        let dispatch = new_dispatch(dir.path(), DependencyHandler);
+        assert!(dispatch.projection().get_actor(&invalid_id).is_some());
+        assert!(dispatch.actor_registry().get(invalid_id).is_none());
+        assert!(dispatch.actor_registry().is_active(valid_id));
+        let contents = log.contents();
+        assert!(contents.contains("skipping actor registration"), "{contents}");
+        assert!(contents.contains(&invalid_id.to_string()), "{contents}");
     }
 
     #[tokio::test]

@@ -29,10 +29,13 @@ pub fn run(args: StatsArgs) -> Result<CommandOutput, CliError> {
             "summary": summary,
         }))),
         StatsOutputFormat::Text => Ok(CommandOutput::Text(format!(
-            "command=stats\ndata_dir={}\ntotal_tasks={}\ntotal_runs={}\nlatest_sequence={}\\
-             nruns_scheduled={}\nruns_ready={}\nruns_leased={}\nruns_running={}\\
-             nruns_retry_wait={}\nruns_suspended={}\nruns_awaiting={}\nruns_completed={}\\
-             nruns_failed={}\nruns_canceled={}\nattempts_total={}",
+            concat!(
+                "command=stats\ndata_dir={}\ntotal_tasks={}\ntotal_runs={}\n",
+                "latest_sequence={}\nruns_scheduled={}\nruns_ready={}\n",
+                "runs_leased={}\nruns_running={}\nruns_retry_wait={}\n",
+                "runs_suspended={}\nruns_awaiting={}\nruns_completed={}\n",
+                "runs_failed={}\nruns_canceled={}\nattempts_total={}",
+            ),
             data_dir.display(),
             summary.total_tasks,
             summary.total_runs,

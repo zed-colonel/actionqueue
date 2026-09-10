@@ -129,15 +129,8 @@ impl RunGetResponse {
 
         let block_reason = match run_instance.state() {
             actionqueue_core::run::state::RunState::Ready => None,
-            actionqueue_core::run::state::RunState::Scheduled => Some("scheduled"),
-            actionqueue_core::run::state::RunState::Leased => Some("leased"),
-            actionqueue_core::run::state::RunState::Running => Some("running"),
-            actionqueue_core::run::state::RunState::RetryWait => Some("retry_wait"),
-            actionqueue_core::run::state::RunState::Suspended => Some("suspended"),
-            actionqueue_core::run::state::RunState::Awaiting => Some("awaiting"),
-            actionqueue_core::run::state::RunState::Completed
-            | actionqueue_core::run::state::RunState::Failed
-            | actionqueue_core::run::state::RunState::Canceled => Some("terminal"),
+            state if state.is_terminal() => Some("terminal"),
+            state => Some(state.label()),
         };
 
         Self {

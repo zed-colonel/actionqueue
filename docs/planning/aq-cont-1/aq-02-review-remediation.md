@@ -47,10 +47,51 @@ are recorded below.
 
 ## Review dispositions
 
+### Latest mergeable review (ten findings)
+
+This section addresses the ten findings supplied for the current remediation.
+Earlier tables retain their historical numbering and describe earlier changes.
+
+| Finding | Disposition | Change or follow-up |
+|---|---|---|
+| 1 | Fixed | Cancellation rustdoc and the AQ-08 handoff now state that restart creates an empty gate and loses held retry keys; no projection-based ownership rebuild exists. |
+| 2 | Fixed (handoff) | The AQ-08 handoff names repeated heartbeat tick errors before result draining, the retained in-flight entry, and both heartbeat/result orderings required in regression coverage. Worker reconciliation remains with the planned lease-fenced disposition cutover; early key release would break mutual exclusion. |
+| 3 | Fixed | Text stats uses short `concat!` literals with explicit newline escapes. The requested single-backslash continuation was tried, but the repository's nightly `format_strings` setting rewrites it back into the defective literal. Short literals survive formatting. The CLI smoke test compares all text fields and line boundaries with JSON output. |
+| 4 | Fixed | Invalid persisted actor traits warn and skip actor registration instead of substituting an ordinary routable label. Recovery coverage verifies the invalid actor remains inspectable in the projection but absent from the routing registry, while a valid `_` actor registers normally. AQ-03 still owns rejection of old stores before decode. |
+| 5 | Fixed | RetryWait joins Suspended and Awaiting in terminal key release. Coverage exercises Running → RetryWait under HoldDuringRetry, followed by Canceled or Failed, and verifies the key becomes free. |
+| 6 | Deferred to AQ-08 | Retain the previously disclosed HandlerOutput ceiling of 44 for the existing regression fixture. This remediation adds no uses and does not change the boundary policy. AQ-08 removes the handler API and flips the symbol to forbid. |
+| 7 | Fixed in part; counters deferred to AQ-12 | Run inspection uses `RunState::label()` for nonterminal block reasons. The shared per-state counter representation remains an AQ-12 surface consolidation, with existing parity coverage retained. |
+| 8 | Deferred to AQ-06 | Awaiting remains unreachable through generic authority transitions. Before enabling it, AQ-06 must commit active-wait cancellation and map authority guard errors on both control surfaces, as already tracked in handler comments. |
+| 9 | Deferred to AQ-04 | AQ-04 derives runs and validates complete admission plans. It must settle whether any supported run policy permits an empty initial plan; if none does, reject empty plans in the constructor and both serde paths with a typed error before commit. AQ-02 currently enforces the maximum count, ownership, and uniqueness only. |
+| 10 | Fixed | The dependency cancellation fixture uses `new_dispatch`; optional signal attribution round trips use the shared `round` helper. |
+
+#### Latest mergeable-review verification
+
+Checks passed on 2026-09-09:
+
+| Check | Result |
+|---|---|
+| Focused actor recovery, RetryWait terminal release, and CLI stats tests | Passed |
+| `cargo test --workspace` | 951 passed, 1 ignored |
+| `cargo test --workspace --features workflow` | 985 passed, 1 ignored |
+| `cargo test --workspace --features workflow,budget,actor,platform` | 1,022 passed, 1 ignored |
+| `cargo test -p actionqueue-core --no-default-features` | 88 passed |
+| `cargo aq-conformance` | 39 passed, 1 ignored |
+| `cargo build --workspace` | Passed |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | Passed |
+| `cargo +nightly fmt --all -- --check` | Passed |
+| `cargo fmt --all -- --check` | Passed (existing nightly-only option warnings) |
+| `git diff --check` | Passed |
+
+The first workspace run caught a missing qualifier on the consolidated round-trip
+helper; it was corrected to `common::round` before rerunning the complete matrix.
+The ignored test remains the AQ-03 pre-contract-store rejection scaffold. No
+frozen documents or boundary-policy ceilings changed in this remediation.
+
 ### Changes-requested review (eight findings)
 
-This section addresses the review supplied for this remediation run. Numbering
-in the historical review tables below belongs to earlier reviews.
+This section records the earlier changes-requested review. Numbering in each
+historical review table is independent.
 
 | Finding | Disposition | Change or follow-up |
 |---|---|---|
@@ -81,7 +122,12 @@ AQ-08 owns reconciliation of in-flight workers after dependency and hierarchy
 cancellation as part of the lease-fenced disposition cutover. Today a worker's
 eventual result fails the authority's previous-state check; `process_worker_result`
 propagates that failure from the tick before releasing the concurrency key. The
-key remains held until restart rebuilds the gate from the canceled projection.
+canceled entry remains in `in_flight`. Its next lease heartbeat is also rejected
+by the authority: heartbeat processing precedes result draining, so it can fail
+every subsequent tick without reaching the pending worker result. The key remains
+held until restart creates an empty gate. Restart does **not** seed that gate from
+the projection; keys held under `HoldDuringRetry` are lost as well. AQ-08 must not
+rely on restart reconstructing key ownership.
 
 Required regression coverage: cancel a Running run whose worker is blocked, prove
 that a competing run cannot start while that worker is still active, then deliver
@@ -90,6 +136,11 @@ mutations. Once the worker is reconciled, the competitor must proceed without a
 restart. Cover dependency and hierarchy cascades and preserve the durable Canceled
 state. Implement this alongside stale-result fencing; merely releasing the key at
 cancellation would violate mutual exclusion while the worker still executes.
+Advance the mock clock into the heartbeat window before delivering the result and
+assert repeated ticks continue without authority errors, then deliver the result
+and verify the canceled entry is drained. Exercise result-before-heartbeat and
+heartbeat-before-result orderings. The current regression stops while the worker
+is blocked and proves only key retention, not reconciliation or heartbeat safety.
 
 #### Changes-requested review verification
 

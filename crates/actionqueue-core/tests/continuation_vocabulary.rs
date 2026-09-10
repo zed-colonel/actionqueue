@@ -234,12 +234,7 @@ fn optional_signal_attribution_matches_only_present_exact_values() {
             assert_eq!(expected.matches(&signal), has_correlation && has_source);
 
             #[cfg(feature = "serde")]
-            {
-                let json = serde_json::to_value(&signal).unwrap();
-                assert_eq!(serde_json::from_value::<SignalEnvelope>(json).unwrap(), signal);
-                let bytes = postcard::to_allocvec(&signal).unwrap();
-                assert_eq!(postcard::from_bytes::<SignalEnvelope>(&bytes).unwrap(), signal);
-            }
+            common::round(signal);
         }
     }
     #[cfg(feature = "serde")]
