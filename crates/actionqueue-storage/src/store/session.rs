@@ -129,6 +129,7 @@ impl Staging {
         }
         sync_dir(&self.0)?;
         fs::rename(&self.0, dest)?; // Directory rename cannot replace a populated winner.
+        super::fault::checkpoint("publish_before_parent_sync")?;
         sync_dir(dest.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new(".")))
     }
 }
@@ -161,9 +162,16 @@ fn initialize(root: &Path, features: Vec<String>) -> Result<(), StoreError> {
     match staging.publish(root) {
         Ok(()) => Ok(()),
         Err(e) => {
-            // Initialization losers validate the winner, never overwrite it.
+            // Initialization losers validate the winner, never overwrite it. Our own
+            // published identity means rename succeeded but parent sync failed: keep
+            // that durability error visible instead of treating ourselves as a loser.
             if root.join("manifest.json").exists() {
-                StoreManifest::read(root).map(|_| ())
+                let winner = StoreManifest::read(root)?;
+                if winner.store_id == manifest.store_id {
+                    Err(e)
+                } else {
+                    Ok(())
+                }
             } else {
                 Err(e)
             }

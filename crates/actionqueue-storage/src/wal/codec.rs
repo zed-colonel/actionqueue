@@ -19,7 +19,7 @@ impl std::fmt::Display for EncodeError {
 impl std::error::Error for EncodeError {}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DecodeError {
-    UnsupportedVersion(String),
+    UnsupportedVersion { supported: u32, found: u32 },
     InvalidLength(String),
     CrcMismatch { expected: u32, actual: u32 },
     Decode(String),
@@ -32,7 +32,15 @@ pub enum DecodeError {
 }
 impl std::fmt::Display for DecodeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "WAL decode: {self:?}")
+        match self {
+            Self::UnsupportedVersion { supported, found } => {
+                write!(f, "wal_format: supported {supported}, found {found}")
+            }
+            Self::UnsupportedRecordSchema { kind, found } => {
+                write!(f, "wal_record_schema (kind {kind}): supported 1, found {found}")
+            }
+            _ => write!(f, "WAL decode: {self:?}"),
+        }
     }
 }
 impl std::error::Error for DecodeError {}
@@ -53,9 +61,7 @@ pub(crate) fn header(bytes: &[u8]) -> Result<Header, DecodeError> {
     }
     let version = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
     if version != VERSION {
-        return Err(DecodeError::UnsupportedVersion(format!(
-            "wal_format: supported {VERSION}, found {version}"
-        )));
+        return Err(DecodeError::UnsupportedVersion { supported: VERSION, found: version });
     }
     if crc32fast::hash(&bytes[..48]) != u32::from_le_bytes(bytes[48..52].try_into().unwrap()) {
         return Err(DecodeError::HeaderIntegrity);

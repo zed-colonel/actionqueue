@@ -392,6 +392,29 @@ fn sync_failure_fences_writer_and_recovery_resolves_uncertain_append() {
     assert_eq!(inspected.sequence, 2);
 }
 #[test]
+fn post_rename_sync_failure_is_reported_and_published_store_remains_recoverable() {
+    use actionqueue_storage::store::fault::fail_once;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("source");
+    fail_once("publish_before_parent_sync");
+    let error = open_store(&root, OpenOptions::Initialize { features: vec![] }).unwrap_err();
+    assert!(error.to_string().contains("publish_before_parent_sync"), "{error}");
+    let source = inspect_store(&root).unwrap();
+    assert_eq!(source.sequence, 1);
+    let before = tree(&root);
+    let backup = dir.path().join("backup");
+    fail_once("publish_before_parent_sync");
+    assert!(backup_store(&root, &backup).is_err());
+    let destination = dir.path().join("restored");
+    fail_once("publish_before_parent_sync");
+    assert!(restore_store(&backup, &destination).is_err());
+    let restored = inspect_store(&destination).unwrap();
+    assert_eq!(restored.manifest, source.manifest);
+    assert_eq!(restored.projection_digest, source.projection_digest);
+    assert_eq!(tree(&root), before);
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 3);
+}
+#[test]
 fn incomplete_and_corrupt_snapshots_fall_back_but_future_schema_and_legacy_keys_halt() {
     let dir = tempfile::tempdir().unwrap();
     let session = init(dir.path());
@@ -429,6 +452,49 @@ fn incomplete_and_corrupt_snapshots_fall_back_but_future_schema_and_legacy_keys_
         let before = tree(dir.path());
         assert!(recover_read_only(&session, RepairPolicy::TruncatePartial).is_err());
         assert_eq!(tree(dir.path()), before);
+    }
+}
+#[test]
+fn future_frame_versions_report_components_and_never_become_repairable() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = init(dir.path());
+    let projection = recover_read_only(&session, RepairPolicy::Strict).unwrap().projection;
+    snapshot(&session, &projection);
+    let original_snapshot = fs::read(session.snapshot_path()).unwrap();
+    let mut future_snapshot = original_snapshot.clone();
+    future_snapshot[8..12].copy_from_slice(&99u32.to_le_bytes());
+    for length in [12, 19, future_snapshot.len()] {
+        fs::write(session.snapshot_path(), &future_snapshot[..length]).unwrap();
+        let before = tree(dir.path());
+        let error = recover_read_only(&session, RepairPolicy::TruncatePartial).unwrap_err();
+        assert!(error.to_string().contains("snapshot_frame: supported 1, found 99"), "{error}");
+        assert_eq!(tree(dir.path()), before);
+    }
+    fs::write(session.snapshot_path(), original_snapshot).unwrap();
+    let original_wal = fs::read(session.wal_path()).unwrap();
+    let frame = codec::encode_for_store(
+        &WalEvent::new(2, E::EnginePaused { timestamp: 1 }),
+        session.manifest().store_id,
+    )
+    .unwrap();
+    for (offset, width, component) in [(8, 4, "wal_format"), (14, 2, "wal_record_schema")] {
+        let mut future = frame.clone();
+        future[offset..offset + width].copy_from_slice(&99u32.to_le_bytes()[..width]);
+        let checksum = crc32(&future[..48]);
+        future[48..52].copy_from_slice(&checksum.to_le_bytes());
+        for length in [offset + width, codec::HEADER_LEN, future.len()] {
+            let mut bytes = original_wal.clone();
+            bytes.extend_from_slice(&future[..length]);
+            fs::write(session.wal_path(), bytes).unwrap();
+            let before = tree(dir.path());
+            let error = recover_read_only(&session, RepairPolicy::TruncatePartial).unwrap_err();
+            let diagnostic = error.to_string();
+            assert!(diagnostic.contains(component), "{diagnostic}");
+            assert!(diagnostic.contains("supported 1, found 99"), "{diagnostic}");
+            assert!(WalFsWriter::new_with_repair(session.clone(), RepairPolicy::TruncatePartial)
+                .is_err());
+            assert_eq!(tree(dir.path()), before);
+        }
     }
 }
 fn crc32(bytes: &[u8]) -> u32 {

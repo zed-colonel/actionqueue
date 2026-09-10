@@ -9,20 +9,28 @@ use std::io::{Read, Seek};
 pub enum WalCorruptionReasonCode {
     IncompleteHeader,
     IncompletePayload,
-    UnsupportedVersion,
+    UnsupportedVersion { supported: u32, found: u32 },
     DecodeFailure,
     CrcMismatch,
     InvalidMagic,
     HeaderIntegrity,
     UnsupportedRecordKind,
-    UnsupportedRecordSchema,
+    UnsupportedRecordSchema { kind: u16, supported: u16, found: u16 },
     StoreIdentityMismatch,
     SequenceViolation,
     OversizedPayload,
 }
 impl std::fmt::Display for WalCorruptionReasonCode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{self:?}")
+        match self {
+            Self::UnsupportedVersion { supported, found } => {
+                write!(f, "wal_format: supported {supported}, found {found}")
+            }
+            Self::UnsupportedRecordSchema { kind, supported, found } => {
+                write!(f, "wal_record_schema (kind {kind}): supported {supported}, found {found}")
+            }
+            _ => write!(f, "{self:?}"),
+        }
     }
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,12 +58,16 @@ impl std::error::Error for WalCorruption {}
 fn reason(e: DecodeError) -> WalCorruptionReasonCode {
     use WalCorruptionReasonCode as R;
     match e {
-        DecodeError::UnsupportedVersion(_) => R::UnsupportedVersion,
+        DecodeError::UnsupportedVersion { supported, found } => {
+            R::UnsupportedVersion { supported, found }
+        }
         DecodeError::CrcMismatch { .. } => R::CrcMismatch,
         DecodeError::InvalidMagic => R::InvalidMagic,
         DecodeError::HeaderIntegrity => R::HeaderIntegrity,
         DecodeError::UnsupportedRecordKind(_) => R::UnsupportedRecordKind,
-        DecodeError::UnsupportedRecordSchema { .. } => R::UnsupportedRecordSchema,
+        DecodeError::UnsupportedRecordSchema { kind, found } => {
+            R::UnsupportedRecordSchema { kind, supported: 1, found }
+        }
         DecodeError::StoreIdentityMismatch => R::StoreIdentityMismatch,
         DecodeError::SequenceViolation => R::SequenceViolation,
         DecodeError::InvalidLength(_) => R::OversizedPayload,
@@ -87,7 +99,10 @@ pub(crate) fn read_record<R: Read + Seek>(
                 }
                 // Reject every incompatibility identifiable even in a partial header.
                 if count >= 12 && bytes[8..12] != codec::VERSION.to_le_bytes() {
-                    return Err(fail(WalCorruptionReasonCode::UnsupportedVersion));
+                    return Err(fail(WalCorruptionReasonCode::UnsupportedVersion {
+                        supported: codec::VERSION,
+                        found: u32::from_le_bytes(bytes[8..12].try_into().unwrap()),
+                    }));
                 }
                 if count >= 14 {
                     super::wire_v1::check_kind(u16::from_le_bytes(
@@ -96,7 +111,11 @@ pub(crate) fn read_record<R: Read + Seek>(
                     .map_err(|e| fail(reason(e)))?;
                 }
                 if count >= 16 && bytes[14..16] != 1u16.to_le_bytes() {
-                    return Err(fail(WalCorruptionReasonCode::UnsupportedRecordSchema));
+                    return Err(fail(WalCorruptionReasonCode::UnsupportedRecordSchema {
+                        kind: u16::from_le_bytes(bytes[12..14].try_into().unwrap()),
+                        supported: 1,
+                        found: u16::from_le_bytes(bytes[14..16].try_into().unwrap()),
+                    }));
                 }
                 if count >= 32 && store_id.is_some_and(|id| bytes[16..32] != *id.as_bytes()) {
                     return Err(fail(WalCorruptionReasonCode::StoreIdentityMismatch));

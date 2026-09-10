@@ -9,7 +9,7 @@ pub enum SnapshotLoaderError {
     IoError(String),
     DecodeError(String),
     MappingError(SnapshotMappingError),
-    IncompatibleVersion { expected: u32, found: u32 },
+    IncompatibleVersion { component: &'static str, expected: u32, found: u32 },
     CrcMismatch { expected: u32, actual: u32 },
     NotFound,
     PhysicalDamage,
@@ -21,7 +21,12 @@ impl SnapshotLoaderError {
 }
 impl std::fmt::Display for SnapshotLoaderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "snapshot load: {self:?}")
+        match self {
+            Self::IncompatibleVersion { component, expected, found } => {
+                write!(f, "{component}: supported {expected}, found {found}")
+            }
+            _ => write!(f, "snapshot load: {self:?}"),
+        }
     }
 }
 impl std::error::Error for SnapshotLoaderError {}
@@ -72,7 +77,7 @@ impl SnapshotLoader for SnapshotFsLoader {
             return Err(SnapshotLoaderError::DecodeError("unsupported snapshot magic".into()));
         }
         let mut header = [0u8; 12];
-        file.read_exact(&mut header).map_err(|e| {
+        file.read_exact(&mut header[..4]).map_err(|e| {
             if e.kind() == std::io::ErrorKind::UnexpectedEof {
                 SnapshotLoaderError::PhysicalDamage
             } else {
@@ -81,8 +86,19 @@ impl SnapshotLoader for SnapshotFsLoader {
         })?;
         let version = u32::from_le_bytes(header[..4].try_into().unwrap());
         if version != 1 || version != self.version {
-            return Err(SnapshotLoaderError::IncompatibleVersion { expected: 1, found: version });
+            return Err(SnapshotLoaderError::IncompatibleVersion {
+                component: "snapshot_frame",
+                expected: 1,
+                found: version,
+            });
         }
+        file.read_exact(&mut header[4..]).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::UnexpectedEof {
+                SnapshotLoaderError::PhysicalDamage
+            } else {
+                SnapshotLoaderError::IoError(e.to_string())
+            }
+        })?;
         let len = u32::from_le_bytes(header[4..8].try_into().unwrap()) as usize;
         if len > envelope::MAX_SNAPSHOT_BYTES {
             return Err(SnapshotLoaderError::DecodeError("snapshot size bound exceeded".into()));

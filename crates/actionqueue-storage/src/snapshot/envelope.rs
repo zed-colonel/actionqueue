@@ -67,22 +67,31 @@ pub(crate) fn decode(
     }
     if envelope.snapshot_schema != 1 {
         return Err(SnapshotLoaderError::IncompatibleVersion {
+            component: "snapshot_schema",
             expected: 1,
             found: envelope.snapshot_schema,
         });
     }
     if envelope.projection_version != 1 {
-        return Err(invalid(format!(
-            "unsupported projection version: supported 1, found {}",
-            envelope.projection_version
-        )));
+        return Err(SnapshotLoaderError::IncompatibleVersion {
+            component: "projection_version",
+            expected: 1,
+            found: envelope.projection_version,
+        });
     }
     if !envelope.reserved.is_empty() {
         return Err(invalid("unsupported projection section".into()));
     }
     let snapshot: Snapshot =
         serde_json::from_value(envelope.projection).map_err(|e| invalid(e.to_string()))?;
-    if snapshot.version != 1 || snapshot.metadata.wal_sequence != envelope.wal_sequence {
+    if snapshot.version != 1 {
+        return Err(SnapshotLoaderError::IncompatibleVersion {
+            component: "projection_image",
+            expected: 1,
+            found: snapshot.version,
+        });
+    }
+    if snapshot.metadata.wal_sequence != envelope.wal_sequence {
         return Err(invalid("snapshot envelope mismatch".into()));
     }
     super::mapping::validate_snapshot(&snapshot).map_err(SnapshotLoaderError::MappingError)?;
