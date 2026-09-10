@@ -171,7 +171,7 @@ async fn subscription_promoted_ready_run_survives_snapshot_restart_and_backup() 
         .find(|run| run.scheduled_at() == 11000)
         .unwrap()
         .id();
-    boot.run_until_idle().await.unwrap();
+    let _ = boot.run_until_idle().await.unwrap();
     assert!(boot.is_budget_exhausted(task_id, BudgetDimension::Token));
     boot.fire_custom_event("promote".into()).unwrap();
     assert_eq!(boot.tick().await.unwrap().dispatched, 0);
