@@ -2,7 +2,52 @@
 //! `platform::Capability` and from downstream resource capabilities. A routing
 //! trait grants no queue permission or downstream resource authority.
 use crate::bounded::BoundedValueError;
-pub use crate::bounded::BoundedValueError as ExecutorTraitError;
+use crate::limits::{MAX_EXECUTOR_TRAITS, MAX_EXECUTOR_TRAIT_BYTES};
+
+/// Distinguishes invalid input collections from invalid individual routing labels.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExecutorTraitError {
+    /// The supplied collection is empty or exceeds the entry ceiling before deduplication.
+    Collection {
+        /// Number of supplied entries, including duplicates.
+        count: usize,
+    },
+    /// An entry violates the label's byte-length or character constraints.
+    Label {
+        /// Zero-based index in the supplied collection, before sorting.
+        index: usize,
+        /// Underlying label validation failure.
+        source: BoundedValueError,
+    },
+}
+
+impl std::fmt::Display for ExecutorTraitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Collection { count: 0 } => {
+                f.write_str("executor trait collection must not be empty")
+            }
+            Self::Collection { count } => write!(
+                f,
+                "executor trait collection must contain 1..={MAX_EXECUTOR_TRAITS} entries before deduplication (received {count})"
+            ),
+            Self::Label { index, source } => write!(
+                f,
+                "executor trait label at index {index}: {source} (maximum {MAX_EXECUTOR_TRAIT_BYTES} bytes; no whitespace or control characters)"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ExecutorTraitError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Collection { .. } => None,
+            Self::Label { source, .. } => Some(source),
+        }
+    }
+}
+
 crate::bounded::bounded_text!(/// A bounded executor routing label.
     ExecutorTrait, crate::limits::MAX_EXECUTOR_TRAIT_BYTES, crate::bounded::TextGrammar::RoutingLabel);
 
@@ -15,16 +60,20 @@ crate::bounded::bounded_text!(/// A bounded executor routing label.
 #[cfg_attr(feature = "serde", serde(transparent))]
 pub struct ExecutorTraits(Vec<ExecutorTrait>);
 impl ExecutorTraits {
-    /// Validates labels and the supplied count, then canonicalizes the set.
+    /// Bounds the supplied count (including duplicates), validates labels, then
+    /// canonicalizes the set. Deduplication does not bypass the input ceiling.
     pub fn new(values: Vec<String>) -> Result<Self, ExecutorTraitError> {
-        if values.is_empty() {
-            return Err(BoundedValueError::Empty);
+        if values.is_empty() || values.len() > MAX_EXECUTOR_TRAITS {
+            return Err(ExecutorTraitError::Collection { count: values.len() });
         }
-        if values.len() > crate::limits::MAX_EXECUTOR_TRAITS {
-            return Err(BoundedValueError::TooLarge);
-        }
-        let mut values =
-            values.into_iter().map(ExecutorTrait::new).collect::<Result<Vec<_>, _>>()?;
+        let mut values = values
+            .into_iter()
+            .enumerate()
+            .map(|(index, value)| {
+                ExecutorTrait::new(value)
+                    .map_err(|source| ExecutorTraitError::Label { index, source })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         values.sort();
         values.dedup();
         Ok(Self(values))

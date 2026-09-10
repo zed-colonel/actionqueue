@@ -288,7 +288,7 @@ pub enum AttemptResultKind {
     /// Attempt was preempted (e.g. budget exhaustion) and the run is now Suspended.
     /// Does not count toward the max_attempts retry cap.
     Suspended,
-    /// Attempt yielded to a continuation; excluded from the failure count (ADR-012).
+    /// Attempt yielded to a continuation; excluded from the failure count (AQ-H13).
     /// Appended to preserve WAL v5 postcard discriminants until AQ-03.
     Awaiting,
 }

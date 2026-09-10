@@ -2,19 +2,48 @@
 
 ## PR description
 
-The AQ-02 core shapes now accept absent signal correlation/source attribution,
-bound every disposition collection, and permit opaque content types with parameters
-and resolver schemes containing URI punctuation. Awaiting transition errors identify
-the invalid outgoing edge precisely, and runtime key release reads the continuation
-policy accessor. Focused tests cover optional matching, JSON/postcard validation,
-collection ceilings, text domains, and both wait policy decisions.
+AQ-02 establishes pure identifiers, bounded values, causal attribution, admission
+and continuation shapes, exact `Awaiting` transitions, and executor-trait routing
+terminology across dependent crates. Collection and label failures now have distinct
+executor-trait errors. Dependency cancellation releases held concurrency keys only
+after the durable cancellation succeeds; regression tests cover both cancellation
+paths. Continuation execution remains gated on later persistence/runtime work.
 
 Compatibility is limited to the legacy executor-trait vector's postcard field
 layout. Deserialization applies new grammar and count/length ceilings, so formerly
 accepted WAL and snapshot values can fail. Snapshot JSON routing keys changed
-without aliases or a schema bump. This is a clean break, not a migration guarantee;
-AQ-03 establishes the fresh store lineage. The snapshot version history now describes
-v5's legacy capability requirements rather than attributing the AQ-02 rename to v5.
+without aliases or a schema bump. AQ-03 establishes the fresh store lineage; AQ-02
+provides no migration guarantee. The representation decisions and remaining gates
+are recorded below.
+
+- **Contract clauses implemented:** `AQ-CONT-1` §§2–4 and §6 neutrality boundaries;
+  normative architecture §§7–8 (vocabulary/lifecycle), §§9.2 and 10.3 (pure signal
+  and wait shapes), §13.1 (pure admission plan), §§15–16 (causal attribution and
+  routing). These are type-level foundations, not completed durable protocols.
+- **Invariant IDs covered:** AQ-H1, AQ-H10–AQ-H13, AQ-H15, AQ-H17, AQ-H19, AQ-H20;
+  structural foundations for AQ-H4 and AQ-H6–AQ-H9. Atomic admission, wait
+  establishment, wake-up, and disposition enforcement remain downstream work.
+- **Persistence records added or changed:** no new compound WAL record family;
+  append-only `Awaiting` state/result enum additions and routing terminology in
+  existing task constraints. JSON field/value domains change as described above.
+  ADR-001 owns the fresh lineage; ADR-007/009 record wait/key choices. Target
+  records and persisted wait-policy selection arrive in AQ-03/AQ-06.
+- **Crash points tested:** existing workspace recovery, replay, and chaos suites;
+  no new continuation crash protocol is claimed. New dependency-cancellation
+  tests verify durable cancellation precedes observable key reuse without restart;
+  they do not inject a crash. AQ-03/AQ-06 must add the new protocol crash matrix.
+- **Public APIs added or removed:** target IDs, bounded values, `CausalContext`,
+  `ControlMutationContext`, signal/wait/checkpoint/resume types, admission and
+  disposition shapes, `ConcurrencyKeyWaitPolicy`, and `RunState::Awaiting`;
+  executor-trait routing replaces the legacy routing symbols. `ExecutorTraitError`
+  now distinguishes collection count from indexed label validation failures.
+- **Forbidden domain concepts checked:** conformance checks enforce absence of
+  queue-owned campaign, intervention-arm, benchmark, evaluation, binding-constraint,
+  saturation, and free-form metadata concepts; attribution does not affect
+  scheduling or authority. Routing traits grant no permission.
+- **Downstream contract unlocked:** AQ-03 can establish the fresh durable lineage
+  using these types; AQ-04/AQ-05/AQ-06 can implement admission, signals, and waits.
+  No external consumer is promised working continuation execution yet.
 
 ## Review dispositions
 
@@ -51,24 +80,41 @@ by this remediation.
 
 ## Final cross-file addendum dispositions
 
-The supplied addendum contains findings 13 and 14. Follow-up findings 1–4 are
-recorded immediately above. Findings 5–12 from that follow-up report were not
-included in the work-item brief or found in this worktree; their text has been
-requested from the operator. The initial review's separate 1–15 numbering above
-must not be mistaken for the missing follow-up findings.
+The operator supplied the missing follow-up findings 5–12 after the addendum
+remediation commit. This section and the follow-up table above now account for
+all 14 findings. The initial review has a separate 1–15 numbering sequence.
 
 | Finding | Disposition | Change or follow-up |
 |---|---|---|
-| 5 | Deferred: review text unavailable | Requires the follow-up report to identify and assess this finding. |
-| 6 | Deferred: review text unavailable | Requires the follow-up report to identify and assess this finding. |
-| 7 | Deferred: review text unavailable | Requires the follow-up report to identify and assess this finding. |
-| 8 | Deferred: review text unavailable | Requires the follow-up report to identify and assess this finding. |
-| 9 | Deferred: review text unavailable | Requires the follow-up report to identify and assess this finding. |
-| 10 | Deferred: review text unavailable | Requires the follow-up report to identify and assess this finding. |
-| 11 | Deferred: review text unavailable | Requires the follow-up report to identify and assess this finding. |
-| 12 | Deferred: review text unavailable | Requires the follow-up report to identify and assess this finding. |
+| 5 | Fixed (tracking already present) | AQ-06 must cancel active waits durably and map the authority guard before Awaiting becomes reachable, including preflight before the task path commits `TaskCancel`. Existing handler comments and initial finding 6 track this gate; no further behavior is enabled now. |
+| 6 | Fixed | The representation decisions below document `CausationLink`, `WaitDeadline`, and the single structural parent source for AQ-04/AQ-05/AQ-06. |
+| 7 | Fixed | Replaced the bare error alias with `Collection { count }` and `Label { index, source }`. Constructor, TaskConstraints display, and JSON errors identify the failing domain. Input count deliberately remains bounded before deduplication; boundary tests and documentation make this explicit. |
+| 8 | Fixed | Replaced the Proposed ADR-012 citation with normative invariant AQ-H13. Runtime accounting already explains the rule without that citation. ADR-012 remains Proposed for AQ-08. |
+| 9 | Fixed | The `matches!` table is now the sole production eligibility source; rejection reasons classify only table misses. The independent exhaustive test oracle is retained to detect changes to the allowed edge set. |
+| 10 | Fixed | Moved the wait policy above the test module and the integration paragraphs into their own README section before License. |
+| 11 | Deferred: optional refactor | Keep the explicit UUID wrappers, OpaqueRef redaction/accessor implementation, and validating Wire mirrors in this remediation. Their APIs are not identical, and a shared macro must preserve serde field order, redaction, and constructor validation. A dedicated refactor can address duplication with focused compatibility tests; no behavior defect requires it here. |
+| 12 | Fixed | The PR description above now uses every field from implementation-plan §2.3 and is ready to copy when the operator opens the PR. |
 | 13 | Deferred to AQ-03 as recommended; interim behavior documented | Reject pre-contract stores before decoding or repair, with a store-format/value-domain diagnostic rather than a disk-corruption diagnosis. See the qualification below concerning `TruncatePartial`. |
 | 14 | Fixed | Both live dependency-failure propagation and the catch-up cancellation path now release concurrency keys after durable cancellation succeeds. Two dispatch regression tests prove that a competing run completes without restarting after a `HoldDuringRetry` run is canceled from `Suspended`. |
+
+### Type representation decisions (follow-up finding 6)
+
+These are intentional deviations from the normative architecture's example Rust
+shapes, recorded here without changing the hash-pinned contract documents:
+
+| Normative shape | AQ-02 representation and rationale | Downstream obligation |
+|---|---|---|
+| §9.2 `SignalEnvelope::causation_id: Option<CausationId>` | `causation: Option<CausationLink>` embeds the same validated structural task/run/attempt ancestry or bounded external reference used by `CausalContext`. No standalone `CausationId` or causal-object lookup is introduced. Empty links and inconsistent ancestry are rejected. This changes the field name and representation, not just an alias. | AQ-05 persists the validated link as immutable, non-authorizing attribution; it must not invent a separate causation registry or silently serialize the old field name. |
+| §10.3 `deadline_at: Option<u64>` plus `timeout_policy` | `deadline: Option<WaitDeadline>` holds `at` and `policy` together. No deadline means no timeout action; an active deadline always has an explicit policy. This excludes meaningless detached timeout policies. | AQ-06 persists the optional pair and applies that recorded policy on timeout. No default deadline or timeout action is inferred for `None`. |
+| §13.1 `AdmissionPlan::parent_task_id` alongside `task_spec` | The structural parent is read from `plan.task_spec().parent_task_id()`. A second field could disagree with the task specification. Causal ancestry is attribution and does not replace the structural parent. | AQ-04 uses the task specification's parent for validation and canonical admission hashing; AQ-06 uses the durably admitted structure when establishing parent/child waits. |
+
+The executor-trait count limit is likewise an **input** limit: at most 64 entries
+are validated and then sorted/deduplicated. Sixty-four copies of one valid label
+produce a singleton set; 65 copies fail with `Collection { count: 65 }`. Keeping
+this bound avoids allowing duplicate-heavy inputs to bypass the collection ceiling
+and preserves the current value domain. JSON and postcard decoding use the same
+constructor. Labels still have an independent 128-byte ceiling, and indexed label
+errors never echo the supplied label.
 
 ### Interim persistence behavior and AQ-03 handoff
 
@@ -113,6 +159,31 @@ file-count ceiling is consciously raised from 43 to 44 for that one file. Its
 removal stage remains `report` with AQ-08 responsible for replacement. The new
 tests fail on both cancellation paths without the two release calls (the competing
 run stays `Ready`) and pass with them.
+
+### Findings 5–12 verification
+
+Final checks on 2026-09-09:
+
+| Check | Result |
+|---|---|
+| `cargo test --workspace` | 943 passed, 1 ignored |
+| `cargo test --workspace --features workflow` | 977 passed, 1 ignored |
+| `cargo test --workspace --features workflow,budget,actor,platform` | 1,013 passed, 1 ignored |
+| `cargo test -p actionqueue-core --no-default-features` | 88 passed |
+| `cargo aq-conformance` | 39 passed, 1 ignored |
+| `cargo build --workspace` | Passed |
+| `cargo fmt --all -- --check` | Passed |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | Passed |
+| `git diff --check 8bc7a2b` | Passed |
+
+The first default/workflow runs caught an existing serde assertion that an empty
+collection's diagnostic must include "empty". The new collection error now retains
+that wording while distinguishing it from an empty label; both matrices passed on
+rerun. The new test exercises collection/label classification through construction,
+TaskConstraints, JSON diagnostics, and postcard rejection, including the raw-input
+deduplication ceiling. Existing exhaustive transitions and serialization tests
+remain green. The ignored test is still the AQ-03 pre-contract-store scaffold.
+No frozen contract/evidence files or ADR acceptance records were changed.
 
 ### Addendum verification
 

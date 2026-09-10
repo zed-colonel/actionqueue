@@ -1,7 +1,8 @@
 use actionqueue_core::bounded::{
-    BoundedCode, BoundedMessage, ContentHash, ContentType, DataScheme, HashAlgorithm, OpaqueRef,
+    BoundedCode, BoundedMessage, BoundedValueError, ContentHash, ContentType, DataScheme,
+    HashAlgorithm, OpaqueRef,
 };
-use actionqueue_core::executor::{ExecutorTrait, ExecutorTraits};
+use actionqueue_core::executor::{ExecutorTrait, ExecutorTraitError, ExecutorTraits};
 use actionqueue_core::ids::{
     AdmissionKey, CheckpointId, CorrelationId, SignalId, SignalSequence, TraceId, WaitId,
 };
@@ -52,6 +53,61 @@ fn executor_traits_are_bounded_canonical_sets() {
     assert_eq!(traits.as_slice().iter().map(ExecutorTrait::as_str).collect::<Vec<_>>(), ["a", "z"]);
     assert!(traits.satisfies(&ExecutorTraits::new(vec!["a".into()]).unwrap()));
     assert!(!traits.satisfies(&ExecutorTraits::new(vec!["b".into()]).unwrap()));
+}
+
+#[test]
+fn executor_trait_errors_identify_collection_and_label_failures() {
+    use actionqueue_core::task::constraints::{TaskConstraints, TaskConstraintsError};
+
+    let cases = [
+        (vec![], ExecutorTraitError::Collection { count: 0 }, "collection must not be empty"),
+        (
+            (0..65).map(|i| i.to_string()).collect(),
+            ExecutorTraitError::Collection { count: 65 },
+            "received 65",
+        ),
+        (
+            vec!["same".into(); 65],
+            ExecutorTraitError::Collection { count: 65 },
+            "before deduplication",
+        ),
+        (
+            vec!["valid".into(), String::new()],
+            ExecutorTraitError::Label { index: 1, source: BoundedValueError::Empty },
+            "label at index 1",
+        ),
+        (
+            vec!["x".repeat(129)],
+            ExecutorTraitError::Label { index: 0, source: BoundedValueError::TooLarge },
+            "maximum 128 bytes",
+        ),
+        (
+            vec!["valid".into(), "invalid label".into()],
+            ExecutorTraitError::Label { index: 1, source: BoundedValueError::InvalidCharacter },
+            "no whitespace or control characters",
+        ),
+    ];
+    for (values, expected, diagnostic) in cases {
+        let error = ExecutorTraits::new(values.clone()).unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(diagnostic));
+        let constraints_error =
+            TaskConstraints::default().with_required_executor_traits(values.clone()).unwrap_err();
+        assert_eq!(constraints_error, TaskConstraintsError::InvalidExecutorTrait(expected));
+        assert!(constraints_error.to_string().contains(&error.to_string()));
+
+        #[cfg(feature = "serde")]
+        {
+            let json = serde_json::to_string(&values).unwrap();
+            let decode_error = serde_json::from_str::<ExecutorTraits>(&json).unwrap_err();
+            assert!(decode_error.to_string().contains(&error.to_string()));
+            let bytes = postcard::to_allocvec(&values).unwrap();
+            assert!(postcard::from_bytes::<ExecutorTraits>(&bytes).is_err());
+        }
+    }
+    // The input ceiling includes duplicates, but a bounded input is canonicalized.
+    let traits = ExecutorTraits::new(vec!["same".into(); 64]).unwrap();
+    assert_eq!(traits.as_slice().len(), 1);
 }
 
 #[test]

@@ -87,25 +87,7 @@ impl Transition {
 ///
 /// Terminal states (Completed, Failed, Canceled) have no valid transitions.
 pub fn is_valid_transition(from: RunState, to: RunState) -> bool {
-    transition_rejection(from, to).is_none()
-}
-
-/// Classifies invalid transitions, with terminal finality taking precedence.
-pub fn transition_rejection(from: RunState, to: RunState) -> Option<RunTransitionRejection> {
-    // Terminal states cannot transition to any other state
-    if from.is_terminal() {
-        return Some(RunTransitionRejection::TerminalStateIsFinal);
-    }
-
-    if from == RunState::Awaiting
-        && !matches!(to, RunState::Ready | RunState::Failed | RunState::Canceled)
-    {
-        return Some(RunTransitionRejection::AwaitingResolvesOnlyToReadyFailedCanceled);
-    }
-    if to == RunState::Awaiting && from != RunState::Running {
-        return Some(RunTransitionRejection::AwaitingRequiresRunning);
-    }
-    let valid = matches!(
+    matches!(
         (from, to),
         (RunState::Scheduled, RunState::Ready)
             | (RunState::Scheduled, RunState::Canceled)
@@ -128,12 +110,24 @@ pub fn transition_rejection(from: RunState, to: RunState) -> Option<RunTransitio
             | (RunState::Awaiting, RunState::Ready)
             | (RunState::Awaiting, RunState::Failed)
             | (RunState::Awaiting, RunState::Canceled)
-    );
-    if valid {
-        None
-    } else {
-        Some(RunTransitionRejection::NotInTransitionTable)
+    )
+}
+
+/// Classifies invalid transitions, with terminal finality taking precedence.
+/// Eligibility comes only from the canonical table; reasons classify table misses.
+pub fn transition_rejection(from: RunState, to: RunState) -> Option<RunTransitionRejection> {
+    if is_valid_transition(from, to) {
+        return None;
     }
+    Some(if from.is_terminal() {
+        RunTransitionRejection::TerminalStateIsFinal
+    } else if from == RunState::Awaiting {
+        RunTransitionRejection::AwaitingResolvesOnlyToReadyFailedCanceled
+    } else if to == RunState::Awaiting {
+        RunTransitionRejection::AwaitingRequiresRunning
+    } else {
+        RunTransitionRejection::NotInTransitionTable
+    })
 }
 
 /// Returns all valid transitions from a given state.

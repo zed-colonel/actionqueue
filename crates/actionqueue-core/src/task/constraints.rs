@@ -32,7 +32,7 @@ impl std::fmt::Display for TaskConstraintsError {
                 write!(f, "timeout_secs must not be zero")
             }
             TaskConstraintsError::InvalidExecutorTrait(error) => {
-                write!(f, "invalid executor trait: {error}")
+                write!(f, "invalid executor traits: {error}")
             }
         }
     }
@@ -294,6 +294,28 @@ impl Default for TaskConstraints {
     }
 }
 
+/// Concurrency-key policy for a continuation wait (ADR-009).
+/// Its TaskConstraints field is deferred to AQ-03 to preserve WAL v5 layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum ConcurrencyKeyWaitPolicy {
+    /// Release at Awaiting and reacquire through ordinary eligibility on wake.
+    #[default]
+    ReleaseWhileAwaiting,
+    /// Keep the key until the continuation resolves.
+    HoldWhileAwaiting,
+}
+
+impl ConcurrencyKeyWaitPolicy {
+    /// Whether entering Awaiting releases the held concurrency key.
+    pub fn releases_while_awaiting(self) -> bool {
+        match self {
+            Self::ReleaseWhileAwaiting => true,
+            Self::HoldWhileAwaiting => false,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{TaskConstraints, TaskConstraintsError};
@@ -397,7 +419,7 @@ mod tests {
         assert_eq!(
             result,
             Err(TaskConstraintsError::InvalidExecutorTrait(
-                crate::executor::ExecutorTraitError::Empty
+                crate::executor::ExecutorTraitError::Collection { count: 0 }
             ))
         );
     }
@@ -431,30 +453,11 @@ mod tests {
         assert_eq!(
             result,
             Err(TaskConstraintsError::InvalidExecutorTrait(
-                crate::executor::ExecutorTraitError::Empty
+                crate::executor::ExecutorTraitError::Label {
+                    index: 1,
+                    source: crate::bounded::BoundedValueError::Empty,
+                }
             ))
         );
-    }
-}
-
-/// Concurrency-key policy for a continuation wait (ADR-009).
-/// Its TaskConstraints field is deferred to AQ-03 to preserve WAL v5 layout.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum ConcurrencyKeyWaitPolicy {
-    /// Release at Awaiting and reacquire through ordinary eligibility on wake.
-    #[default]
-    ReleaseWhileAwaiting,
-    /// Keep the key until the continuation resolves.
-    HoldWhileAwaiting,
-}
-
-impl ConcurrencyKeyWaitPolicy {
-    /// Whether entering Awaiting releases the held concurrency key.
-    pub fn releases_while_awaiting(self) -> bool {
-        match self {
-            Self::ReleaseWhileAwaiting => true,
-            Self::HoldWhileAwaiting => false,
-        }
     }
 }

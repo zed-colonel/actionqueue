@@ -33,13 +33,7 @@ Scheduled -> Ready -> Leased -> Running -> Completed
                                        -> Canceled
 ```
 
-## Part of the ActionQueue workspace
-
-See the [workspace root](https://github.com/zed-colonel/actionqueue) for full documentation.
-
-## License
-
-Apache-2.0
+## AQ-CONT-1 integration
 
 `Awaiting` is non-terminal and may originate only from `Running`, after the active
 attempt is finished. Generic mutation commands reject Awaiting transitions until
@@ -51,3 +45,11 @@ Caller references are attribution only. Core neither dereferences them nor compu
 content hashes. Canonical admission hashing is an AQ-04 obligation; inline hash
 verification is an AQ-07 obligation. New command types are not yet members of
 `MutationCommand`.
+
+## Part of the ActionQueue workspace
+
+See the [workspace root](https://github.com/zed-colonel/actionqueue) for full documentation.
+
+## License
+
+Apache-2.0
