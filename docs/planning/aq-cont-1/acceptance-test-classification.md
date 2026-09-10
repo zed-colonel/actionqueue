@@ -105,8 +105,10 @@ baseline. Tests whose classification is "Retain" with a qualifier are counted as
 
 The old-store baseline characterization is replaced by executable no-write rejection.
 `conformance_target_persistence` covers initialized stores, snapshot cuts, independent
-expected state and canonical digest, failure injection, process-kill ownership recovery,
-and backup/restore. The conformance alias includes it. Raw codec/reducer fixture tests
+expected state and canonical digest, failure injection, and backup/restore.
+`conformance_store_process_lock` isolates process-kill ownership recovery from parallel
+close/reopen tests, avoiding transient inherited-lock contention during process spawning.
+The conformance alias includes both binaries. Raw codec/reducer fixture tests
 retain their narrower role via explicitly test-only constructors. Acceptance read-router
 helpers now capture detached checkpoint projections; production daemons retain ownership.
 Crash simulations drop unbuffered WAL handles to release OS locks without syncing; a

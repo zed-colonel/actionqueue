@@ -327,3 +327,7 @@ actionqueue-cli = { path = "crates/actionqueue-cli" }
 [[test]]
 name = "conformance_target_persistence"
 path = "tests/conformance/target_persistence.rs"
+
+[[test]]
+name = "conformance_store_process_lock"
+path = "tests/conformance/store_process_lock.rs"

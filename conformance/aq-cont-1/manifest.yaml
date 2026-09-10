@@ -65,6 +65,7 @@ target_persistence:
   tests:
   - tests/conformance/pre_contract_store.rs
   - tests/conformance/target_persistence.rs
+  - tests/conformance/store_process_lock.rs
   - tests/acceptance/wal_corruption_recovery.rs
   cross_build_driver: conformance/aq-cont-1/cross-feature-persistence.sh
   canonical_vector: conformance/aq-cont-1/projection-v1-vector.json

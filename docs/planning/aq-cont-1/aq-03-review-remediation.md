@@ -75,3 +75,42 @@ validation and immutable feature-profile policy remain in place.
 
 This remediation adds no format migration, feature-profile upgrade, or new durable
 record family. Nothing was pushed.
+
+## F-005 follow-up: isolate process spawning
+
+Review source: `9d168477-c88c-4837-b070-682892d162c9`, dated 2026-09-10.
+That review verified F-001 through F-004 as resolved and retained only F-005.
+
+**F-005 disposition: Fixed.** The process-kill lock test and its child helper now
+live in the separate `conformance_store_process_lock` test executable. Spawning a
+child can briefly inherit descriptors belonging to concurrent tests before exec,
+extending lock lifetime past their final session drop. Separating the executables
+removes that interaction with the rapid close/reopen loops in
+`conformance_target_persistence`.
+
+The moved test preserves its readiness handshake, live-child `StoreInUse`
+assertion, kill/wait sequence, and successful recovery at WAL sequence 2. Both
+executables are registered in Cargo and the conformance alias and inventory.
+Comments and the living acceptance classification document the isolation boundary.
+Production locking and the configured four test threads are unchanged.
+
+Verification after the split:
+
+- 50 quiet four-thread repetitions of both executables passed in each of default,
+  workflow, and workflow/budget/actor/platform configurations: 150/150 total.
+  Each repetition includes all persistence tests and the subprocess lock test.
+- All three quiet workspace test configurations passed with the configured four
+  threads, as did `cargo aq-conformance`, `cargo build --workspace`,
+  `conformance/aq-cont-1/cross-feature-persistence.sh`, formatting and whitespace
+  checks. The exit gate remains satisfied.
+- Base conformance now runs 25 persistence tests and 2 process-lock tests; the
+  full-feature configuration runs 27 persistence tests and 2 process-lock tests.
+  The original test cases and assertions remain covered.
+
+The intermittent failure did not reproduce in the 20 pre-change workflow
+repetitions run here; the reviewer recorded the earlier failures. The fix follows
+the recommended process isolation, with the stress results as supporting evidence.
+Logs are in `.aq-checks/f005-before.log`, `.aq-checks/f005-stress-*.log`, and
+`.aq-checks/f005-*.log`; exit summaries are in `.aq-checks/f005-stress-results.txt`
+and `.aq-checks/f005-results.txt`. Cargo cache, test scratch files, and logs stayed
+inside this worktree. No findings are deferred.
