@@ -90,7 +90,7 @@ macro_rules! bounded_text {
 }
 pub(crate) use bounded_text;
 
-bounded_text!(/// A lowercase machine-readable error code.
+bounded_text!(/// A lowercase machine-readable code.
     BoundedCode, crate::limits::MAX_CODE_BYTES, TextGrammar::LowercaseCode);
 bounded_text!(/// A bounded human-readable error message (may be empty).
     BoundedMessage, crate::limits::MAX_ERROR_MESSAGE_BYTES, TextGrammar::Message);
@@ -98,7 +98,7 @@ bounded_text!(/// Opaque content type, including parameters, without control cha
     ContentType, crate::limits::MAX_CONTENT_TYPE_BYTES, TextGrammar::Opaque);
 
 bounded_text!(/// Opaque resolver scheme without control characters; core does not parse URI syntax.
-    DataScheme, crate::limits::MAX_CODE_BYTES, TextGrammar::Opaque);
+    DataScheme, crate::limits::MAX_DATA_SCHEME_BYTES, TextGrammar::Opaque);
 
 /// Bounded, equality-only opaque attribution. Never dereferenced by core.
 ///

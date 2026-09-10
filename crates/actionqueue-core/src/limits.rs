@@ -16,6 +16,8 @@ pub const MAX_SIGNAL_NAMESPACE_BYTES: usize = 64;
 pub const MAX_SIGNAL_KIND_BYTES: usize = 64;
 /// Maximum code bytes.
 pub const MAX_CODE_BYTES: usize = 64;
+/// Maximum opaque data resolver scheme bytes.
+pub const MAX_DATA_SCHEME_BYTES: usize = 64;
 /// Maximum error message bytes.
 pub const MAX_ERROR_MESSAGE_BYTES: usize = 2048;
 /// Maximum executor trait bytes.

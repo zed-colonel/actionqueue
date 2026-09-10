@@ -40,7 +40,40 @@ The AQ-03 persistence field and AQ-06 cancellation behavior remain downstream wo
 as in the implementation plan. No currently reachable continuation behavior is enabled
 by this remediation.
 
-## Verification
+## Follow-up review dispositions
+
+| Finding | Disposition | Change or follow-up |
+|---|---|---|
+| 1 | Deferred to AQ-03 | Back `TaskConstraints::concurrency_key_wait_policy` with the persisted per-task field and add a runtime test that `try_release_concurrency_key` retains the key for `HoldWhileAwaiting`. AQ-02 establishes pure vocabulary; AQ-03 establishes the fresh durable lineage. Storage still rejects generic Awaiting edges, so the default-only accessor does not expose reachable continuation behavior. |
+| 2 | Fixed | `BoundedCode` rustdoc now says "machine-readable code", covering non-error uses. |
+| 3 | Fixed | `DataScheme` uses its own `MAX_DATA_SCHEME_BYTES` constant, retaining the existing 64-byte ceiling. |
+| 4 | Fixed | Moved this log under `docs/planning/aq-cont-1/` alongside the work-item planning artifacts. |
+
+## Follow-up verification
+
+Checks rerun on 2026-09-09 for the follow-up changes:
+
+| Check | Result |
+|---|---|
+| `cargo test --workspace` | 940 passed, 1 ignored |
+| `cargo test --workspace --features workflow` | 974 passed, 1 ignored |
+| `cargo test --workspace --features workflow,budget,actor,platform` | 1,010 passed, 1 ignored on rerun |
+| `cargo test -p actionqueue-core --no-default-features` | 87 passed |
+| `cargo aq-conformance` | 39 passed, 1 ignored |
+| `cargo fmt --all -- --check` | Passed |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | Passed |
+| `git diff --check 8bc7a2b` | Passed |
+
+The first full-feature run failed `triad_mvp_full_workflow`: its PID-based fixture
+directory already existed from an earlier run, and the recovered audit ledger
+contained four entries instead of two. The existing WAL doubled in size during
+that run. The complete full-feature matrix passed on rerun without code changes.
+The fixture-isolation issue remains outside this vocabulary review's scope.
+
+Existing scheme boundary tests cover the unchanged 64-byte ceiling. No additional
+tests were needed for the documentation and constant extraction.
+
+## Prior remediation verification
 
 All checks passed on 2026-09-09:
 
