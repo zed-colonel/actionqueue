@@ -271,6 +271,7 @@ pub fn bootstrap(config: DaemonConfig) -> Result<BootstrapState, BootstrapError>
     let wal_append_telemetry = recovery.wal_append_telemetry.clone();
     let recovery_observations = recovery.recovery_observations;
 
+    let store_session = recovery.wal_writer.inner().session().cloned();
     let control_authority = if config.enable_control {
         Some(std::sync::Arc::new(std::sync::Mutex::new(StorageMutationAuthority::new(
             recovery.wal_writer,
@@ -302,7 +303,7 @@ pub fn bootstrap(config: DaemonConfig) -> Result<BootstrapState, BootstrapError>
         recovery_observations,
     };
     let shared_projection = std::sync::Arc::new(std::sync::RwLock::new(projection.clone()));
-    let router_state_inner = if let Some(authority) = control_authority {
+    let mut router_state_inner = if let Some(authority) = control_authority {
         crate::http::RouterStateInner::with_control_authority(
             router_config,
             shared_projection,
@@ -318,6 +319,7 @@ pub fn bootstrap(config: DaemonConfig) -> Result<BootstrapState, BootstrapError>
             ready_status,
         )
     };
+    router_state_inner.store_session = store_session;
     let router_state = std::sync::Arc::new(router_state_inner);
 
     // Build the concrete HTTP router using the assembly entry

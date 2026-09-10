@@ -28,11 +28,11 @@ in [`archive/pre-aq-cont-1/characterization-results/`](../../../archive/pre-aq-c
 | `cancellation` | Retain (attribution added) | Terminal finality retained; control mutations gain `ControlMutationContext` | `AQ-11` |
 | `negative_transitions` | Retained and extended (AQ-02) | Invalid Awaiting edges and generic continuation-record guard asserted | `AQ-02` |
 | `lease_expiry` | Retain | Lease fencing and expiry | `AQ-03`, `AQ-08` |
-| `wal_corruption_recovery` | Retain | Trailing-corruption repair policy carries into the target WAL format | `AQ-03` |
+| `wal_corruption_recovery` | Replace (AQ-03 complete) | Target bounded framing, reserved kind/schema rejection, and semantic-prefix-before-repair proof; full cut coverage in target persistence conformance | `AQ-03` |
 | `misfire` | Retain | Misfire policy for scheduled runs | `AQ-04` |
 | `dispatch_invariants` | Retain (expanded) | Property-based dispatch invariants gain `Awaiting` | `AQ-06` |
 | `concurrent_dispatch_stress` | Retain | Stress under concurrent dispatch | `AQ-13` |
-| `snapshot_corruption_recovery` | Retain | Snapshot-as-acceleration fallback | `AQ-03` |
+| `snapshot_corruption_recovery` | Retain (ported AQ-03) | Target physical-damage-only fallback; incompatibility and semantics refuse | `AQ-03` |
 | `concurrent_mutation_boundary` | Retain | Sequence monotonicity in the authority lane | `AQ-03` |
 | `mixed_attempt_outcomes` | Replace | Outcome kinds are superseded by `AttemptDisposition` | `AQ-08` |
 | `crash_during_promotion` | Retain | Promotion durability | `AQ-03` |
@@ -100,3 +100,15 @@ in [`archive/pre-aq-cont-1/characterization-results/`](../../../archive/pre-aq-c
 
 Counts cover the 48 acceptance tests plus the chaos test registered in `Cargo.toml` at the
 baseline. Tests whose classification is "Retain" with a qualifier are counted as Retain.
+
+### AQ-03 persistence evidence
+
+The old-store baseline characterization is replaced by executable no-write rejection.
+`conformance_target_persistence` covers initialized stores, snapshot cuts, independent
+expected state and canonical digest, failure injection, process-kill ownership recovery,
+and backup/restore. The conformance alias includes it. Raw codec/reducer fixture tests
+retain their narrower role via explicitly test-only constructors. Acceptance read-router
+helpers now capture detached checkpoint projections; production daemons retain ownership.
+Crash simulations drop unbuffered WAL handles to release OS locks without syncing; a
+separate child-process kill test proves real process lock release. Initialization adds
+sequence one, and mutation accounting assertions include that durable record.

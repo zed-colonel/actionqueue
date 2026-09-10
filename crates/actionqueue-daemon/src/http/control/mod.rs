@@ -128,7 +128,8 @@ mod tests {
                 .as_nanos()
         );
         let wal_path = std::env::temp_dir().join(unique);
-        let wal_writer = WalFsWriter::new(wal_path).expect("test wal writer should initialize");
+        let wal_writer =
+            WalFsWriter::new_raw_for_test(wal_path).expect("test wal writer should initialize");
         let wal_writer = InstrumentedWalWriter::new(wal_writer, WalAppendTelemetry::new());
         let authority = StorageMutationAuthority::new(wal_writer, ReplayReducer::new());
         std::sync::Arc::new(std::sync::Mutex::new(authority))

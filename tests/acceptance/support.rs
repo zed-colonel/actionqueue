@@ -769,7 +769,34 @@ pub fn bootstrap_http_router(data_dir: &Path, metrics_enabled: bool) -> axum::Ro
 
     let state =
         actionqueue_daemon::bootstrap::bootstrap(config).expect("daemon bootstrap should succeed");
-    state.http_router().clone().with_state(())
+    // These acceptance queries inspect a fixed recovered projection between mutations.
+    // Build a detached read router so later offline mutation helpers can acquire ownership.
+    // Full daemon lifetime-lock behavior is exercised separately.
+    let projection = state.projection().clone();
+    let clock = state.clock().clone();
+    let metrics = std::sync::Arc::new(
+        actionqueue_daemon::metrics::registry::MetricsRegistry::new(if metrics_enabled {
+            Some(std::net::SocketAddr::from(([127, 0, 0, 1], 9090)))
+        } else {
+            None
+        })
+        .expect("metrics"),
+    );
+    let observability = actionqueue_daemon::http::RouterObservability {
+        metrics,
+        clock,
+        wal_append_telemetry: actionqueue_storage::wal::WalAppendTelemetry::new(),
+        recovery_observations: actionqueue_storage::recovery::bootstrap::RecoveryObservations::zero(
+        ),
+    };
+    drop(state);
+    let inner = actionqueue_daemon::http::RouterStateInner::new(
+        actionqueue_daemon::bootstrap::RouterConfig { control_enabled: false, metrics_enabled },
+        std::sync::Arc::new(std::sync::RwLock::new(projection)),
+        observability,
+        actionqueue_daemon::bootstrap::ReadyStatus::ready(),
+    );
+    actionqueue_daemon::http::build_router(std::sync::Arc::new(inner)).with_state(())
 }
 
 /// Executes an in-process GET request and parses a JSON response payload.

@@ -109,6 +109,13 @@ fn submit_repeat_json_success_creates_repeat_runs() {
 #[test]
 fn stats_formats_return_consistent_deterministic_fields() {
     let data_dir = unique_data_dir("smoke-stats-json");
+    drop(
+        actionqueue_storage::store::open_store(
+            &data_dir,
+            actionqueue_storage::store::OpenOptions::Initialize { features: vec![] },
+        )
+        .unwrap(),
+    );
 
     let output = cli()
         .args([

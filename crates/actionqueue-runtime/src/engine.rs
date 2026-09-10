@@ -94,10 +94,6 @@ impl<H: ExecutorHandler + 'static> ActionQueueEngine<H> {
         let data_dir = self.config.data_dir.display().to_string();
         tracing::info!(data_dir, "bootstrapping engine");
 
-        // Ensure data directory exists
-        std::fs::create_dir_all(&self.config.data_dir)
-            .map_err(|e| BootstrapError::Io(e.to_string()))?;
-
         // Recover from storage
         let recovery = load_projection_from_storage(&self.config.data_dir)
             .map_err(BootstrapError::Recovery)?;

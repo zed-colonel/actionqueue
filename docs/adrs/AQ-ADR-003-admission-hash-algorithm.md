@@ -17,8 +17,7 @@ needs a broadly implemented, collision-resistant algorithm and room for future a
 
 Use SHA-256 over the canonical admission bytes. Store an algorithm identifier alongside
 the digest (`AdmissionDigest { algorithm, bytes }`) so a future algorithm can coexist without
-reinterpreting old records. Introduce the hash dependency only in this PR, after `AQ-ADR-002` is
-accepted.
+reinterpreting old records. Admission canonicalization remains in AQ-04 after `AQ-ADR-002` is accepted.
 
 ## Alternatives considered
 
@@ -42,3 +41,12 @@ payload bytes.
 | Accepted in PR | _pending_ |
 | Accepted on | _pending_ |
 | Superseded by | — |
+
+## AQ-03 sequencing clarification (2026-09-10)
+
+Introduce the RustCrypto `sha2` dependency in `actionqueue-storage` now, narrowly for
+projection SHA-256, immutable manifest binding, and backup file verification. Persist
+algorithm identifiers alongside digests. This does not implement admission digesting
+or change the AQ-04 ownership of admission normalization/canonicalization. The target
+projection known-answer vector is independently generated with Python `hashlib` and
+the documented canonical tree encoding, then checked against storage output.

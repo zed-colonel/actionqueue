@@ -442,7 +442,8 @@ fn seeded_wal_append_telemetry(successes: u64, failures: u64) -> WalAppendTeleme
             .as_nanos()
     );
     let wal_path = std::env::temp_dir().join(unique);
-    let wal_writer = WalFsWriter::new(wal_path.clone()).expect("test wal writer should initialize");
+    let wal_writer =
+        WalFsWriter::new_raw_for_test(wal_path.clone()).expect("test wal writer should initialize");
     let mut writer = InstrumentedWalWriter::new(wal_writer, telemetry.clone());
 
     let mut sequence = 1u64;

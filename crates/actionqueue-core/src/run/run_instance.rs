@@ -485,6 +485,7 @@ impl<'de> serde::Deserialize<'de> for RunInstance {
         D: serde::Deserializer<'de>,
     {
         #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
         struct RunInstanceWire {
             id: RunId,
             task_id: TaskId,
@@ -519,7 +520,9 @@ impl<'de> serde::Deserialize<'de> for RunInstance {
         }
 
         // Validate schedule causality for Ready state
-        if wire.state == RunState::Ready && wire.scheduled_at > wire.created_at {
+        if wire.state == RunState::Ready
+            && wire.scheduled_at > wire.last_state_change_at.max(wire.created_at)
+        {
             return Err(serde::de::Error::custom(format!(
                 "Ready state requires scheduled_at ({}) <= created_at ({})",
                 wire.scheduled_at, wire.created_at,

@@ -30,18 +30,24 @@ workflow = [
     "actionqueue-cli/workflow",
 ]
 budget = [
+    "actionqueue-cli/budget",
+    "actionqueue-daemon/budget",
     "actionqueue-runtime/budget",
 ]
 actor = [
+    "actionqueue-cli/actor",
+    "actionqueue-daemon/actor",
     "actionqueue-runtime/actor",
 ]
 platform = [
+    "actionqueue-cli/platform",
+    "actionqueue-daemon/platform",
     "actionqueue-runtime/platform",
 ]
 
 [dev-dependencies]
 actionqueue-core = "0.1.2"
-actionqueue-storage = "0.1.2"
+actionqueue-storage = { version = "0.1.2", features = ["testing"] }
 actionqueue-engine = "0.1.2"
 actionqueue-executor-local = "0.1.2"
 actionqueue-runtime = "0.1.2"
@@ -317,6 +323,7 @@ actionqueue-cli = { path = "crates/actionqueue-cli" }
 
 # Evidence tooling for the frozen pre-AQ-CONT-1 archive. Not runtime code; target
 # crates must not depend on the archive. See archive/pre-aq-cont-1/README.md.
-[[example]]
-name = "capture_pre_aq_cont_1_fixtures"
-path = "archive/pre-aq-cont-1/tools/capture_fixtures.rs"
+
+[[test]]
+name = "conformance_target_persistence"
+path = "tests/conformance/target_persistence.rs"

@@ -126,3 +126,5 @@ pub fn resolve_data_dir(override_dir: Option<&std::path::Path>) -> std::path::Pa
             .unwrap_or_else(|_| std::path::PathBuf::from(".actionqueue/data"))
     })
 }
+
+pub mod storage;

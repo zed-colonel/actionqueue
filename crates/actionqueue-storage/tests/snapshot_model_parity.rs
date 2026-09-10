@@ -209,16 +209,28 @@ fn snapshot_state_history_for_run(run: &RunInstance) -> Vec<SnapshotRunStateHist
     entries
 }
 
-fn write_framed_snapshot(path: &PathBuf, frame_version: u32, snapshot: &Snapshot) {
-    let payload = serde_json::to_vec(snapshot).expect("snapshot should serialize");
-    let mut file = std::fs::File::create(path).expect("snapshot file should be creatable");
-    file.write_all(&frame_version.to_le_bytes()).expect("version frame write should succeed");
-    file.write_all(&(payload.len() as u32).to_le_bytes())
-        .expect("length frame write should succeed");
-    let crc = crc32fast::hash(&payload);
-    file.write_all(&crc.to_le_bytes()).expect("crc frame write should succeed");
-    file.write_all(&payload).expect("payload frame write should succeed");
-    file.flush().expect("snapshot file flush should succeed");
+fn write_framed_snapshot(path: &std::path::Path, _version: u32, snapshot: &Snapshot) {
+    let envelope = serde_json::json!({
+        "store_id": uuid::Uuid::nil(), "snapshot_schema": 1, "projection_version": 1,
+        "wal_sequence": snapshot.metadata.wal_sequence,
+        "digest": {"algorithm":"sha256", "version":1,"hex":"unused for invalid schema"},
+        "reserved": {"admissions":[],"signals":[],"waits":[],"checkpoints":[],"resume_assignments":[],"causal_control":[]},
+        "projection":snapshot
+    });
+    if snapshot.metadata.schema_version == SNAPSHOT_SCHEMA_VERSION {
+        use actionqueue_storage::snapshot::writer::{SnapshotFsWriter, SnapshotWriter};
+        let mut writer = SnapshotFsWriter::new_raw_for_test(path.to_path_buf()).unwrap();
+        writer.write(snapshot).unwrap();
+        writer.close().unwrap();
+    } else {
+        let payload = serde_json::to_vec(&envelope).unwrap();
+        let mut bytes = b"AQCONT1S".to_vec();
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&crc32fast::hash(&payload).to_le_bytes());
+        bytes.extend_from_slice(&payload);
+        fs::write(path, bytes).unwrap();
+    }
 }
 
 #[test]
@@ -258,7 +270,7 @@ fn d06_t_n1_mapping_boundary_rejects_duplicate_run_ids() {
         .expect("run should build");
 
     let snapshot = Snapshot {
-        version: 4,
+        version: 1,
         timestamp: 1,
         metadata: SnapshotMetadata {
             schema_version: SNAPSHOT_SCHEMA_VERSION,
@@ -394,7 +406,7 @@ fn d06_t_n3_schema_migration_guard_rejects_unknown_schema_version() {
     let run = run_with_state(task_id, 0xB300, RunState::Scheduled);
 
     let snapshot = Snapshot {
-        version: 4,
+        version: 1,
         timestamp: 3,
         metadata: SnapshotMetadata {
             schema_version: SNAPSHOT_SCHEMA_VERSION + 1,
@@ -520,7 +532,7 @@ fn d06_t_n6_mapping_rejects_attempt_history_count_mismatch() {
 fn p6_011_t_n3_mapping_rejects_task_canceled_at_before_created_at() {
     let task_id = TaskId::from_uuid(uuid::Uuid::from_u128(0xA700));
     let snapshot = Snapshot {
-        version: 4,
+        version: 1,
         timestamp: 7,
         metadata: SnapshotMetadata {
             schema_version: SNAPSHOT_SCHEMA_VERSION,
@@ -560,7 +572,7 @@ fn p6_011_t_n3_mapping_rejects_task_canceled_at_before_created_at() {
 fn p6_013_t_n5_mapping_rejects_engine_paused_without_paused_at() {
     let task_id = TaskId::from_uuid(uuid::Uuid::from_u128(0xA800));
     let snapshot = Snapshot {
-        version: 4,
+        version: 1,
         timestamp: 8,
         metadata: SnapshotMetadata {
             schema_version: SNAPSHOT_SCHEMA_VERSION,
@@ -589,7 +601,7 @@ fn p6_013_t_n5_mapping_rejects_engine_paused_without_paused_at() {
 fn p6_013_t_n6_mapping_rejects_engine_pause_resume_ordering() {
     let task_id = TaskId::from_uuid(uuid::Uuid::from_u128(0xA801));
     let snapshot = Snapshot {
-        version: 4,
+        version: 1,
         timestamp: 9,
         metadata: SnapshotMetadata {
             schema_version: SNAPSHOT_SCHEMA_VERSION,
@@ -673,7 +685,7 @@ fn dependency_declarations_survive_snapshot_roundtrip() {
     let path = temp_snapshot_path();
 
     let snapshot = Snapshot {
-        version: 4,
+        version: 1,
         timestamp: 100,
         metadata: SnapshotMetadata {
             schema_version: SNAPSHOT_SCHEMA_VERSION,
@@ -734,7 +746,7 @@ fn budget_entries_roundtrip_through_snapshot() {
     let path = temp_snapshot_path();
 
     let snapshot = Snapshot {
-        version: 4,
+        version: 1,
         timestamp: 100,
         metadata: SnapshotMetadata {
             schema_version: SNAPSHOT_SCHEMA_VERSION,
@@ -791,7 +803,7 @@ fn subscription_entries_roundtrip_through_snapshot() {
     let path = temp_snapshot_path();
 
     let snapshot = Snapshot {
-        version: 4,
+        version: 1,
         timestamp: 100,
         metadata: SnapshotMetadata {
             schema_version: SNAPSHOT_SCHEMA_VERSION,
@@ -877,7 +889,7 @@ fn suspended_run_state_in_snapshot_history() {
     };
 
     let snapshot = Snapshot {
-        version: 4,
+        version: 1,
         timestamp: 100,
         metadata: SnapshotMetadata {
             schema_version: SNAPSHOT_SCHEMA_VERSION,

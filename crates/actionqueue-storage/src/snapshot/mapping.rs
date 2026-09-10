@@ -26,7 +26,7 @@ use crate::snapshot::model::{
 ///   required_executor_traits in AQ-02)
 /// - v6: Sprint 2 review — dependency declarations persisted in snapshots
 /// - v7: Sprint 3 — budgets, subscriptions, Suspended run state
-pub const SNAPSHOT_SCHEMA_VERSION: u32 = 8;
+pub const SNAPSHOT_SCHEMA_VERSION: u32 = 1;
 
 /// Typed mapping and validation errors for snapshot/core parity enforcement.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -576,7 +576,11 @@ fn validate_snapshot_run_details(snapshot_run: &SnapshotRun) -> Result<(), Snaps
     if snapshot_run.lease.is_some()
         && !matches!(
             snapshot_run.run_instance.state(),
-            RunState::Ready | RunState::Leased | RunState::Running
+            RunState::Ready
+                | RunState::Leased
+                | RunState::Running
+                | RunState::RetryWait
+                | RunState::Suspended
         )
     {
         return Err(SnapshotMappingError::InvalidLeasePresence {

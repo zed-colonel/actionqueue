@@ -240,6 +240,7 @@ impl<'de> serde::Deserialize<'de> for TaskConstraints {
         D: serde::Deserializer<'de>,
     {
         #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
         struct TaskConstraintsWire {
             max_attempts: u32,
             timeout_secs: Option<u64>,

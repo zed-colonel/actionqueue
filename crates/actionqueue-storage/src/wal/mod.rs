@@ -10,3 +10,9 @@ pub mod tail_validation;
 pub mod writer;
 
 pub use writer::{InstrumentedWalWriter, WalAppendTelemetry, WalAppendTelemetrySnapshot};
+
+pub(crate) mod wire_v1;
+
+mod task_v1;
+
+pub use wire_v1::RESERVED_KINDS;

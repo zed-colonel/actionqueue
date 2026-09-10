@@ -8,6 +8,8 @@ use std::path::PathBuf;
 /// Root CLI command being invoked.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
+    /// Offline target persistence operations.
+    Storage(StorageArgs),
     /// Start daemon runtime bootstrap flow.
     Daemon(DaemonArgs),
     /// Submit a task through CLI control-plane semantics.
@@ -78,11 +80,59 @@ pub fn parse_args(args: &[String]) -> Result<Command, String> {
 
     let command = &args[0];
     match command.as_str() {
+        "storage" => parse_storage(&args[1..]),
         "daemon" => parse_daemon(&args[1..]),
         "submit" => parse_submit(&args[1..]),
         "stats" => parse_stats(&args[1..]),
         _ => Err(format!("Unknown command: {command}. Use 'daemon', 'submit', or 'stats'.")),
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StorageArgs {
+    pub operation: String,
+    pub data_dir: PathBuf,
+    pub input: Option<PathBuf>,
+    pub output: Option<PathBuf>,
+    pub json: bool,
+}
+fn parse_storage(args: &[String]) -> Result<Command, String> {
+    let operation = args
+        .first()
+        .filter(|s| ["inspect", "backup", "restore"].contains(&s.as_str()))
+        .ok_or("storage requires inspect, backup, or restore")?
+        .clone();
+    let (mut data_dir, mut input, mut output) = (None, None, None);
+    let mut json = false;
+    let mut iter = args[1..].iter();
+    while let Some(flag) = iter.next() {
+        match flag.as_str() {
+            "--data-dir" if data_dir.is_none() => {
+                data_dir = Some(PathBuf::from(require_value(&mut iter, flag)?))
+            }
+            "--input" if input.is_none() && operation == "restore" => {
+                input = Some(PathBuf::from(require_value(&mut iter, flag)?))
+            }
+            "--output" if output.is_none() && operation == "backup" => {
+                output = Some(PathBuf::from(require_value(&mut iter, flag)?))
+            }
+            "--json" if !json => json = true,
+            _ => return Err(format!("unexpected storage argument: {flag}")),
+        }
+    }
+    if operation == "backup" && output.is_none() {
+        return Err("backup requires --output".into());
+    }
+    if operation == "restore" && input.is_none() {
+        return Err("restore requires --input".into());
+    }
+    Ok(Command::Storage(StorageArgs {
+        operation,
+        data_dir: data_dir.ok_or("storage requires --data-dir")?,
+        input,
+        output,
+        json,
+    }))
 }
 
 fn require_value(iter: &mut std::slice::Iter<'_, String>, flag: &str) -> Result<String, String> {

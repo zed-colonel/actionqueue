@@ -99,7 +99,8 @@ fn next_seq(
 fn simulate_kill9(
     authority: StorageMutationAuthority<InstrumentedWalWriter<WalFsWriter>, ReplayReducer>,
 ) {
-    std::mem::forget(authority);
+    // WAL writes are unbuffered; dropping releases the OS lock without a sync.
+    drop(authority);
 }
 
 // ---------------------------------------------------------------------------
@@ -818,7 +819,7 @@ fn wal_sequence_monotonicity_across_crashes() {
         let spec1 = make_task_spec(&[0xE1]);
         task_id_1 = spec1.id();
         let seq = next_seq(&authority);
-        assert_eq!(seq, 1, "first event should get sequence 1");
+        assert_eq!(seq, 2, "StoreInitialized precedes the first mutation");
         let _ = authority
             .submit_command(
                 MutationCommand::TaskCreate(TaskCreateCommand::new(seq, spec1, seq)),
@@ -829,7 +830,7 @@ fn wal_sequence_monotonicity_across_crashes() {
         let spec2 = make_task_spec(&[0xE2]);
         task_id_2 = spec2.id();
         let seq = next_seq(&authority);
-        assert_eq!(seq, 2, "second event should get sequence 2");
+        assert_eq!(seq, 3, "second mutation follows initialization");
         let _ = authority
             .submit_command(
                 MutationCommand::TaskCreate(TaskCreateCommand::new(seq, spec2, seq)),
@@ -845,8 +846,8 @@ fn wal_sequence_monotonicity_across_crashes() {
         let recovery = load_projection_from_storage(&data_dir).expect("recovery 1");
         assert_eq!(
             recovery.projection.latest_sequence(),
-            2,
-            "latest sequence must be 2 after 2 events + crash"
+            3,
+            "initialization plus two mutations survive crash"
         );
     }
 
@@ -855,7 +856,7 @@ fn wal_sequence_monotonicity_across_crashes() {
         let mut authority = open_authority(&data_dir);
 
         let seq = next_seq(&authority);
-        assert_eq!(seq, 3, "post-crash-1 event should get sequence 3");
+        assert_eq!(seq, 4, "post-crash mutation is contiguous");
         let spec3 = make_task_spec(&[0xE3]);
         let _ = authority
             .submit_command(
@@ -872,8 +873,8 @@ fn wal_sequence_monotonicity_across_crashes() {
         let recovery = load_projection_from_storage(&data_dir).expect("recovery 2");
         assert_eq!(
             recovery.projection.latest_sequence(),
-            3,
-            "latest sequence must be 3 after 3 events across 2 crashes"
+            4,
+            "initialization plus three mutations survive crashes"
         );
         assert_eq!(recovery.projection.task_count(), 3);
         assert!(recovery.projection.get_task(&task_id_1).is_some());
@@ -1095,7 +1096,7 @@ fn high_volume_tasks_survive_crash() {
     {
         let recovery = load_projection_from_storage(&data_dir).expect("bulk recovery");
         assert_eq!(recovery.projection.task_count(), 50, "all 50 tasks must survive kill -9");
-        assert_eq!(recovery.projection.latest_sequence(), 50);
+        assert_eq!(recovery.projection.latest_sequence(), 51);
 
         for task_id in &task_ids {
             assert!(

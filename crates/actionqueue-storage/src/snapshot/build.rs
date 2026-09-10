@@ -10,7 +10,7 @@ use crate::snapshot::model::{
 };
 
 /// The snapshot format version written by this implementation.
-const SNAPSHOT_FORMAT_VERSION: u32 = 4;
+const SNAPSHOT_FORMAT_VERSION: u32 = 1;
 
 /// Builds a validated [`Snapshot`] from the current state of a [`ReplayReducer`].
 ///
@@ -87,7 +87,7 @@ pub fn build_snapshot_from_projection(
                 deps.sort_by_key(|id| *id.as_uuid());
                 deps
             },
-            declared_at: timestamp,
+            declared_at: reducer.dependency_declared_at.get(&task_id).copied().unwrap_or(0),
         })
         .collect();
 

@@ -26,7 +26,7 @@ use crate::wal::event::{WalEvent, WalEventType};
 use crate::wal::writer::{WalWriter, WalWriterError};
 
 /// Projection behavior required by the mutation authority.
-pub trait MutationProjection {
+pub trait MutationProjection: Clone {
     /// Typed projection apply error.
     type Error;
 
@@ -131,12 +131,18 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
         Self { wal_writer, projection }
     }
 
-    /// Returns the projection used by this authority.
+    /// Returns the lifetime store session for session-bound operations.
+    pub fn store_session(&self) -> Option<&crate::store::StoreSession> {
+        self.wal_writer.store_session()
+    }
+
+    /// Returns the authoritative projection.
     pub fn projection(&self) -> &P {
         &self.projection
     }
 
     /// Returns the mutable projection used by this authority.
+    #[cfg(any(test, feature = "testing"))]
     pub fn projection_mut(&mut self) -> &mut P {
         &mut self.projection
     }
@@ -1178,6 +1184,13 @@ impl<W: WalWriter, P: MutationProjection> MutationAuthority for StorageMutationA
         // Stage 2: map validated command to canonical WAL event.
         let (event, applied) = Self::build_event_and_applied(validated);
 
+        // Prepare the complete affected projection before any durable write.
+        let mut prepared = self.projection.clone();
+        prepared.apply_event(&event).map_err(|source| MutationAuthorityError::Apply {
+            sequence: event.sequence(),
+            source,
+        })?;
+
         // Stage 3: append WAL event.
         self.wal_writer.append(&event).map_err(MutationAuthorityError::Append)?;
 
@@ -1191,11 +1204,15 @@ impl<W: WalWriter, P: MutationProjection> MutationAuthority for StorageMutationA
             }
         }
 
-        // Stage 5: apply in-memory projection.
-        self.projection.apply_event(&event).map_err(|source| MutationAuthorityError::Apply {
-            sequence: event.sequence(),
-            source,
+        crate::store::fault::checkpoint("authority_before_publish").map_err(|error| {
+            MutationAuthorityError::PartialDurability {
+                sequence: event.sequence(),
+                flush_error: WalWriterError::IoError(error.to_string()),
+            }
         })?;
+
+        // Publish the already validated state only after durability succeeds.
+        self.projection = prepared;
 
         tracing::debug!(sequence = event.sequence(), "command submitted");
         Ok(MutationOutcome::new(event.sequence(), applied))
@@ -1732,7 +1749,7 @@ mod tests {
 
     use super::*;
 
-    #[derive(Debug, Default)]
+    #[derive(Debug, Default, Clone)]
     struct ProjectionStub {
         latest_sequence: u64,
         tasks: std::collections::HashSet<TaskId>,

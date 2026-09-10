@@ -1,5 +1,7 @@
 # ── Build artifacts ──────────────────────────────────────────────
 target/
+.aq-cargo/
+.aq-checks/
 **/*.rs.bk
 
 # ── Local runtime data ──────────────────────────────────────────

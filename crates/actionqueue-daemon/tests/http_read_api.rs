@@ -215,7 +215,8 @@ fn build_router_with_feature_settings(
                 .as_nanos()
         );
         let wal_path = std::env::temp_dir().join(unique);
-        let wal_writer = WalFsWriter::new(wal_path).expect("test wal writer should initialize");
+        let wal_writer =
+            WalFsWriter::new_raw_for_test(wal_path).expect("test wal writer should initialize");
         let wal_writer = InstrumentedWalWriter::new(wal_writer, wal_append_telemetry.clone());
         let authority = StorageMutationAuthority::new(wal_writer, projection);
         actionqueue_daemon::http::RouterStateInner::with_control_authority(

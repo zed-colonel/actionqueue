@@ -105,6 +105,10 @@ impl<W: WalWriter> InstrumentedWalWriter<W> {
 }
 
 impl<W: WalWriter> WalWriter for InstrumentedWalWriter<W> {
+    fn store_session(&self) -> Option<&crate::store::StoreSession> {
+        self.inner.store_session()
+    }
+
     fn append(&mut self, event: &WalEvent) -> Result<(), WalWriterError> {
         match self.inner.append(event) {
             Ok(()) => {
@@ -129,6 +133,11 @@ impl<W: WalWriter> WalWriter for InstrumentedWalWriter<W> {
 
 /// A writer that can append events to the WAL.
 pub trait WalWriter {
+    /// Returns the lifetime store session when backed by target storage.
+    fn store_session(&self) -> Option<&crate::store::StoreSession> {
+        None
+    }
+
     /// Append an event to the WAL.
     fn append(&mut self, event: &WalEvent) -> Result<(), WalWriterError>;
 

@@ -31,7 +31,7 @@ use actionqueue_storage::wal::fs_reader::WalFsReader;
 use actionqueue_storage::wal::fs_writer::WalFsWriter;
 use actionqueue_storage::wal::writer::{WalWriter, WalWriterError};
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct InMemoryProjection {
     latest_sequence: u64,
     tasks: std::collections::HashSet<TaskId>,
@@ -353,7 +353,7 @@ fn d04_t_n3_flush_failure_reports_durability_stage() {
 }
 
 #[test]
-fn d04_t_n4_append_success_apply_failure_exposes_replay_recovery_semantics() {
+fn d04_t_n4_prepare_failure_rejects_before_durable_append() {
     let task_id = TaskId::new();
     let run = scheduled_run(task_id, 100, 100);
 
@@ -380,21 +380,9 @@ fn d04_t_n4_append_success_apply_failure_exposes_replay_recovery_semantics() {
     assert!(matches!(result, Err(MutationAuthorityError::Apply { sequence: 3, .. })));
 
     let (writer, projection) = authority.into_parts();
-    assert_eq!(writer.events.len(), 1);
+    assert!(writer.events.is_empty());
+    assert_eq!(projection.latest_sequence, 2);
     assert_eq!(projection.run_state(&run.id()), Some(RunState::Scheduled));
-
-    let mut replay = ReplayReducer::new();
-    replay
-        .apply(&WalEvent::new(
-            1,
-            WalEventType::TaskCreated { task_spec: task_spec(task_id), timestamp: 10 },
-        ))
-        .expect("task apply should succeed");
-    replay
-        .apply(&WalEvent::new(2, WalEventType::RunCreated { run_instance: run.clone() }))
-        .expect("run apply should succeed");
-    replay.apply(&writer.events[0]).expect("replay apply should converge with durable event");
-    assert_eq!(replay.get_run_state(&run.id()), Some(&RunState::Ready));
 }
 
 #[test]
@@ -526,7 +514,7 @@ fn d04_t_p2_replay_driver_converges_with_authority_written_wal() {
     let temp_dir = tempfile::TempDir::new().expect("temp dir should be created");
     let wal_path = temp_dir.path().join("d04-authority-converge.wal");
 
-    let writer = WalFsWriter::new(wal_path.clone()).expect("wal writer should open");
+    let writer = WalFsWriter::new_raw_for_test(wal_path.clone()).expect("wal writer should open");
     let projection = ReplayReducer::new();
     let mut authority = StorageMutationAuthority::new(writer, projection);
 
@@ -576,7 +564,7 @@ fn d04_t_p3_engine_scheduler_path_uses_storage_authority_end_to_end() {
     let temp_dir = tempfile::TempDir::new().expect("temp dir should be created");
     let wal_path = temp_dir.path().join("d04-engine-authority-path.wal");
 
-    let writer = WalFsWriter::new(wal_path.clone()).expect("wal writer should open");
+    let writer = WalFsWriter::new_raw_for_test(wal_path.clone()).expect("wal writer should open");
     let projection = ReplayReducer::new();
     let mut authority = StorageMutationAuthority::new(writer, projection);
 
@@ -635,7 +623,7 @@ fn d04_t_n6_non_authority_scheduler_path_does_not_persist_mutation() {
     let temp_dir = tempfile::TempDir::new().expect("temp dir should be created");
     let wal_path = temp_dir.path().join("d04-n6-no-authority-submit.wal");
 
-    let writer = WalFsWriter::new(wal_path.clone()).expect("wal writer should open");
+    let writer = WalFsWriter::new_raw_for_test(wal_path.clone()).expect("wal writer should open");
     let projection = ReplayReducer::new();
     let mut authority = StorageMutationAuthority::new(writer, projection);
 
@@ -722,7 +710,7 @@ fn f002_t_p2_authority_attempt_finish_converges_with_replay_attempt_lineage() {
     let temp_dir = tempfile::TempDir::new().expect("temp dir should be created");
     let wal_path = temp_dir.path().join("f002-attempt-lineage-converge.wal");
 
-    let writer = WalFsWriter::new(wal_path.clone()).expect("wal writer should open");
+    let writer = WalFsWriter::new_raw_for_test(wal_path.clone()).expect("wal writer should open");
     let projection = ReplayReducer::new();
     let mut authority = StorageMutationAuthority::new(writer, projection);
 
@@ -832,7 +820,7 @@ fn p6_017_t_p1_authority_attempt_finish_timeout_persists_in_projection_and_repla
     let temp_dir = tempfile::TempDir::new().expect("temp dir should be created");
     let wal_path = temp_dir.path().join("p6-017-attempt-timeout-parity.wal");
 
-    let writer = WalFsWriter::new(wal_path.clone()).expect("wal writer should open");
+    let writer = WalFsWriter::new_raw_for_test(wal_path.clone()).expect("wal writer should open");
     let projection = ReplayReducer::new();
     let mut authority = StorageMutationAuthority::new(writer, projection);
 
@@ -952,7 +940,7 @@ fn f002_t_p3_authority_lease_lifecycle_chain_converges_with_replay() {
     let temp_dir = tempfile::TempDir::new().expect("temp dir should be created");
     let wal_path = temp_dir.path().join("f002-lease-lifecycle-converge.wal");
 
-    let writer = WalFsWriter::new(wal_path.clone()).expect("wal writer should open");
+    let writer = WalFsWriter::new_raw_for_test(wal_path.clone()).expect("wal writer should open");
     let projection = ReplayReducer::new();
     let mut authority = StorageMutationAuthority::new(writer, projection);
 
@@ -1225,7 +1213,7 @@ fn f002_t_n5_non_authority_projection_apply_cannot_persist_attempt_or_lease_muta
     let temp_dir = tempfile::TempDir::new().expect("temp dir should be created");
     let wal_path = temp_dir.path().join("f002-non-authority-ephemeral-attempt-lease.wal");
 
-    let writer = WalFsWriter::new(wal_path.clone()).expect("wal writer should open");
+    let writer = WalFsWriter::new_raw_for_test(wal_path.clone()).expect("wal writer should open");
     let projection = ReplayReducer::new();
     let mut authority = StorageMutationAuthority::new(writer, projection);
 

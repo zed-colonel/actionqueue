@@ -202,6 +202,16 @@ mod wf {
             let recovery = load_projection_from_storage(&data_dir).expect("recovery must succeed");
             let mut auth = StorageMutationAuthority::new(recovery.wal_writer, recovery.projection);
 
+            // Submit coordinator task (scheduled later so children run first).
+            let coordinator_spec = make_spec(coordinator_id, b"coordinator");
+            let seq = auth.projection().latest_sequence() + 1;
+            let _ = auth
+                .submit_command(
+                    MutationCommand::TaskCreate(TaskCreateCommand::new(seq, coordinator_spec, ts)),
+                    DurabilityPolicy::Immediate,
+                )
+                .expect("create coordinator");
+
             // Submit child1 with parent_task_id = coordinator_id.
             let child1_spec = make_spec(child1_id, b"child").with_parent(coordinator_id);
             let seq = auth.projection().latest_sequence() + 1;
@@ -238,15 +248,6 @@ mod wf {
                 )
                 .expect("create child2 run");
 
-            // Submit coordinator task (scheduled later so children run first).
-            let coordinator_spec = make_spec(coordinator_id, b"coordinator");
-            let seq = auth.projection().latest_sequence() + 1;
-            let _ = auth
-                .submit_command(
-                    MutationCommand::TaskCreate(TaskCreateCommand::new(seq, coordinator_spec, ts)),
-                    DurabilityPolicy::Immediate,
-                )
-                .expect("create coordinator");
             let coord_run =
                 RunInstance::new_scheduled(coordinator_id, ts + 100, ts).expect("valid run");
             let seq = auth.projection().latest_sequence() + 1;

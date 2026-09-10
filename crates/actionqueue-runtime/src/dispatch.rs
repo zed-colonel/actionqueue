@@ -176,6 +176,8 @@ pub type AuthorityError = MutationAuthorityError<ReplayReducerError>;
 /// Errors that can occur during dispatch.
 #[derive(Debug)]
 pub enum DispatchError {
+    /// Persisted state cannot be reconciled without changing its meaning.
+    RecoveryInvariant(String),
     /// WAL sequence counter overflow.
     SequenceOverflow,
     /// A mutation command submitted to the storage authority failed.
@@ -217,6 +219,7 @@ pub enum DispatchError {
 impl std::fmt::Display for DispatchError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            DispatchError::RecoveryInvariant(message) => write!(f, "recovery invariant: {message}"),
             DispatchError::SequenceOverflow => write!(f, "WAL sequence counter overflow"),
             DispatchError::Authority(e) => write!(f, "authority error: {e}"),
             DispatchError::ScheduledPromotion(e) => {
@@ -435,22 +438,10 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
             let mut registry = actionqueue_actor::ActorRegistry::new();
             for (actor_id, record) in authority.projection().actors() {
                 if record.deregistered_at.is_none() {
-                    let caps = match actionqueue_core::actor::ExecutorTraits::new(
+                    let caps = actionqueue_core::actor::ExecutorTraits::new(
                         record.executor_traits.clone(),
-                    ) {
-                        Ok(traits) => traits,
-                        Err(error) => {
-                            // AQ-03 rejects pre-contract stores before decode.
-                            // Until then, do not invent a routable trait for an
-                            // actor whose persisted traits are invalid.
-                            tracing::warn!(
-                                %actor_id, %error,
-                                "persisted actor executor traits fail the current grammar; \
-                                 skipping actor registration"
-                            );
-                            continue;
-                        }
-                    };
+                    )
+                    .map_err(|e| DispatchError::RecoveryInvariant(e.to_string()))?;
                     let mut reg = actionqueue_core::actor::ActorRegistration::new(
                         *actor_id,
                         record.identity.clone(),
@@ -1887,7 +1878,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
             Some(t) => t,
             None => return Ok(()),
         };
-        let path = match &self.snapshot_path {
+        let _path = match &self.snapshot_path {
             Some(p) => p.clone(),
             None => return Ok(()),
         };
@@ -1899,7 +1890,10 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
             .map_err(DispatchError::SnapshotBuild)?;
 
         let mut writer =
-            SnapshotFsWriter::new(path).map_err(|e| DispatchError::SnapshotInit(format!("{e}")))?;
+            SnapshotFsWriter::new(self.authority.store_session().ok_or_else(|| {
+                DispatchError::SnapshotInit("snapshot requires a store session".into())
+            })?)
+            .map_err(|e| DispatchError::SnapshotInit(format!("{e}")))?;
         writer.write(&snapshot).map_err(DispatchError::SnapshotWrite)?;
         writer.close().map_err(DispatchError::SnapshotWrite)?;
 
@@ -2886,44 +2880,39 @@ mod tests {
 
     #[cfg(feature = "actor")]
     #[test]
-    fn recovery_skips_actors_with_invalid_traits_without_inventing_a_label() {
+    fn recovery_rejects_invalid_persisted_actor_traits_without_modifying_store() {
         use actionqueue_core::ids::ActorId;
-        use actionqueue_storage::wal::event::{WalEvent, WalEventType};
-        use actionqueue_storage::wal::writer::WalWriter;
-
-        let (log, _guard) = capture_warnings();
+        use actionqueue_storage::wal::{
+            codec,
+            event::{WalEvent, WalEventType},
+        };
         let dir = tempfile::tempdir().unwrap();
-        let invalid_id = ActorId::new();
-        let valid_id = ActorId::new();
-        {
-            let mut recovery = load_projection_from_storage(dir.path()).unwrap();
-            for (sequence, actor_id, label) in [(1, invalid_id, "bad trait"), (2, valid_id, "_")] {
-                recovery
-                    .wal_writer
-                    .append(&WalEvent::new(
-                        sequence,
-                        WalEventType::ActorRegistered {
-                            actor_id,
-                            identity: "persisted-actor".into(),
-                            executor_traits: vec![label.into()],
-                            department: None,
-                            heartbeat_interval_secs: 30,
-                            tenant_id: None,
-                            timestamp: 1000,
-                        },
-                    ))
-                    .unwrap();
-            }
-            recovery.wal_writer.flush().unwrap();
-        }
-
-        let dispatch = new_dispatch(dir.path(), DependencyHandler);
-        assert!(dispatch.projection().get_actor(&invalid_id).is_some());
-        assert!(dispatch.actor_registry().get(invalid_id).is_none());
-        assert!(dispatch.actor_registry().is_active(valid_id));
-        let contents = log.contents();
-        assert!(contents.contains("skipping actor registration"), "{contents}");
-        assert!(contents.contains(&invalid_id.to_string()), "{contents}");
+        let recovery = load_projection_from_storage(dir.path()).unwrap();
+        let manifest = recovery.wal_writer.inner().session().unwrap().manifest().clone();
+        let path = recovery.wal_path.clone();
+        drop(recovery);
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes.extend_from_slice(
+            &codec::encode_for_store(
+                &WalEvent::new(
+                    2,
+                    WalEventType::ActorRegistered {
+                        actor_id: ActorId::new(),
+                        identity: "persisted-actor".into(),
+                        executor_traits: vec!["bad trait".into()],
+                        department: None,
+                        heartbeat_interval_secs: 30,
+                        tenant_id: None,
+                        timestamp: 1000,
+                    },
+                ),
+                manifest.store_id,
+            )
+            .unwrap(),
+        );
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(load_projection_from_storage(dir.path()).is_err());
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
     }
 
     #[tokio::test]

@@ -62,8 +62,8 @@ async fn once_accounting_proves_one_run_and_no_redispatch_after_restart() {
     // Once policy: task_create(1) + run_create(2) + promote(3) + lease(4) +
     // running(5) + attempt_start(6) + attempt_finish(7) + completed(8)
     assert_eq!(
-        completion.final_sequence, 8,
-        "Once policy completion should produce exactly 8 WAL events"
+        completion.final_sequence, 9,
+        "Once policy completion should produce 8 mutations plus StoreInitialized"
     );
 
     // 4) Pre-restart readback assertions + metrics parity

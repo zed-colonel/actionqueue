@@ -27,8 +27,8 @@ fn write_valid_snapshot(data_dir: &std::path::Path) {
     let snapshot_path = data_dir.join("snapshots").join("snapshot.bin");
     std::fs::create_dir_all(snapshot_path.parent().expect("snapshot dir parent should exist"))
         .expect("snapshot directory should be creatable");
-    let mut writer =
-        SnapshotFsWriter::new(snapshot_path).expect("snapshot writer creation should succeed");
+    let mut writer = SnapshotFsWriter::new_raw_for_test(snapshot_path)
+        .expect("snapshot writer creation should succeed");
     writer.write(&snapshot).expect("snapshot write should succeed");
     writer.flush().expect("snapshot flush should succeed");
     writer.close().expect("snapshot close should succeed");
@@ -134,7 +134,7 @@ fn sc_b_truncated_snapshot_falls_back_to_wal_replay() {
         let mut bytes = std::fs::read(&snapshot_path).expect("snapshot file should be readable");
         assert!(bytes.len() > 12, "snapshot must have at least a full header");
         // Flip a byte in the CRC-32 region (byte index 8 is the first CRC byte).
-        bytes[8] ^= 0xFF;
+        bytes[16] ^= 0xFF;
         std::fs::write(&snapshot_path, &bytes).expect("corrupted snapshot should be writable");
     }
 
