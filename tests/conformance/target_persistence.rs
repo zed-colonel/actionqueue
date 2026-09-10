@@ -269,6 +269,155 @@ fn exact_projection_survives_every_snapshot_cut_backup_restore_and_next_append()
     assert_eq!(inspect_store(&dest).unwrap().sequence, next);
 }
 #[test]
+fn early_ready_snapshot_survives_tail_restart_and_backup() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source");
+    let session = init(&source);
+    let mut p = recover_read_only(&session, RepairPolicy::Strict).unwrap().projection;
+    let mut w = WalFsWriter::new(session.clone()).unwrap();
+    let t = TaskId::new();
+    let r = RunId::new();
+    append(&mut w, &mut p, E::TaskCreated { task_spec: task(t), timestamp: 1000 });
+    append(
+        &mut w,
+        &mut p,
+        E::RunCreated {
+            run_instance: RunInstance::new_scheduled_with_id(r, t, 11000, 1000).unwrap(),
+        },
+    );
+    append(
+        &mut w,
+        &mut p,
+        E::RunStateChanged {
+            run_id: r,
+            previous_state: RunState::Scheduled,
+            new_state: RunState::Ready,
+            timestamp: 1000,
+        },
+    );
+    let wal_only = recover_read_only(&session, RepairPolicy::Strict).unwrap();
+    assert!(!wal_only.snapshot_loaded);
+    assert_eq!(wal_only.projection.projection_digest().unwrap(), p.projection_digest().unwrap());
+    snapshot(&session, &p);
+    let cut = p.latest_sequence();
+    append(&mut w, &mut p, E::EnginePaused { timestamp: 1001 });
+    let expected = p.projection_digest().unwrap();
+    drop((w, session));
+    let restarted =
+        actionqueue_storage::recovery::bootstrap::load_projection_from_storage(&source).unwrap();
+    assert!(restarted.snapshot_loaded);
+    assert_eq!(restarted.snapshot_sequence, cut);
+    let run = restarted.projection.get_run_instance(&r).unwrap();
+    assert_eq!(run.state(), RunState::Ready);
+    assert_eq!(run.scheduled_at(), 11000);
+    assert_eq!(run.last_state_change_at(), 1000);
+    assert_eq!(run.effective_priority(), 37);
+    assert_eq!(restarted.projection.projection_digest().unwrap(), expected);
+    drop(restarted);
+    let before = tree(&source);
+    let backup = dir.path().join("backup");
+    let restored = dir.path().join("restored");
+    assert_eq!(backup_store(&source, &backup).unwrap().projection_digest, expected);
+    assert_eq!(restore_store(&backup, &restored).unwrap().projection_digest, expected);
+    assert_eq!(inspect_store(&restored).unwrap().projection_digest, expected);
+    assert_eq!(tree(&source), before);
+}
+
+#[test]
+fn cancellation_preserves_unfinished_attempt_through_snapshot_tail_and_restore() {
+    for use_transition in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source");
+        let session = init(&source);
+        let mut p = recover_read_only(&session, RepairPolicy::Strict).unwrap().projection;
+        let mut w = WalFsWriter::new(session.clone()).unwrap();
+        let t = TaskId::new();
+        let r = RunId::new();
+        let a = AttemptId::new();
+        append(&mut w, &mut p, E::TaskCreated { task_spec: task(t), timestamp: 10 });
+        append(
+            &mut w,
+            &mut p,
+            E::RunCreated {
+                run_instance: RunInstance::new_scheduled_with_id(r, t, 10, 10).unwrap(),
+            },
+        );
+        for (previous_state, new_state) in
+            [(RunState::Scheduled, RunState::Ready), (RunState::Ready, RunState::Leased)]
+        {
+            append(
+                &mut w,
+                &mut p,
+                E::RunStateChanged { run_id: r, previous_state, new_state, timestamp: 11 },
+            );
+        }
+        append(
+            &mut w,
+            &mut p,
+            E::LeaseAcquired { run_id: r, owner: "worker".into(), expiry: 100, timestamp: 11 },
+        );
+        append(
+            &mut w,
+            &mut p,
+            E::RunStateChanged {
+                run_id: r,
+                previous_state: RunState::Leased,
+                new_state: RunState::Running,
+                timestamp: 12,
+            },
+        );
+        append(&mut w, &mut p, E::AttemptStarted { run_id: r, attempt_id: a, timestamp: 12 });
+        append(
+            &mut w,
+            &mut p,
+            if use_transition {
+                E::RunStateChanged {
+                    run_id: r,
+                    previous_state: RunState::Running,
+                    new_state: RunState::Canceled,
+                    timestamp: 13,
+                }
+            } else {
+                E::RunCanceled { run_id: r, timestamp: 13 }
+            },
+        );
+        let wal_only = recover_read_only(&session, RepairPolicy::Strict).unwrap();
+        assert!(!wal_only.snapshot_loaded);
+        assert_eq!(
+            wal_only.projection.projection_digest().unwrap(),
+            p.projection_digest().unwrap()
+        );
+        snapshot(&session, &p);
+        let cut = p.latest_sequence();
+        append(&mut w, &mut p, E::EnginePaused { timestamp: 14 });
+        let expected = p.projection_digest().unwrap();
+        drop((w, session));
+        let backup = dir.path().join("backup");
+        let restored = dir.path().join("restored");
+        assert_eq!(backup_store(&source, &backup).unwrap().projection_digest, expected);
+        assert_eq!(restore_store(&backup, &restored).unwrap().projection_digest, expected);
+        let session = open_store(&restored, OpenOptions::ReadOnly).unwrap();
+        let recovered = recover_read_only(&session, RepairPolicy::Strict).unwrap();
+        assert!(recovered.snapshot_loaded);
+        assert_eq!(recovered.snapshot_sequence, cut);
+        assert_eq!(recovered.projection.projection_digest().unwrap(), expected);
+        let run = recovered.projection.get_run_instance(&r).unwrap();
+        assert_eq!(run.state(), RunState::Canceled);
+        assert_eq!(run.current_attempt_id(), None);
+        assert_eq!(run.attempt_count(), 1);
+        assert!(recovered.projection.get_lease(&r).is_none());
+        let history = recovered.projection.get_attempt_history(&r).unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].attempt_id(), a);
+        assert_eq!(history[0].started_at(), 12);
+        assert_eq!(history[0].finished_at(), None);
+        assert_eq!(history[0].result(), None);
+        assert_eq!(history[0].error(), None);
+        assert_eq!(history[0].output(), None);
+    }
+}
+
+#[test]
 fn only_incomplete_final_target_frames_are_repairable() {
     let dir = tempfile::tempdir().unwrap();
     let session = init(dir.path());

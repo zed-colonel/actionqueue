@@ -489,14 +489,10 @@ fn validate_core_run_payload(run_instance: &CoreRunInstance) -> Result<(), Snaps
     }
 
     // NOTE: We do NOT check scheduled_at > created_at for Ready runs here.
-    // Repeat-policy and cron-policy runs are derived as Scheduled with future
-    // scheduled_at times and later promoted to Ready. Their scheduled_at
-    // legitimately exceeds created_at. The construction-time check in
-    // RunInstance::new_ready_with_id() guards direct Ready creation.
+    // Runs can be promoted by subscriptions even before scheduled_at. The check
+    // in RunInstance::new_ready_with_id() guards direct Ready creation.
 
-    if run_instance.current_attempt_id().is_some()
-        && !matches!(run_instance.state(), RunState::Running | RunState::Canceled)
-    {
+    if run_instance.current_attempt_id().is_some() && run_instance.state() != RunState::Running {
         return Err(SnapshotMappingError::InvalidAttemptLineageState {
             run_id,
             state: run_instance.state(),
@@ -562,15 +558,19 @@ fn validate_snapshot_run_details(snapshot_run: &SnapshotRun) -> Result<(), Snaps
         });
     }
 
-    if let Some(current_attempt_id) = snapshot_run.run_instance.current_attempt_id() {
-        let unfinished: Vec<&SnapshotAttemptHistoryEntry> = snapshot_run
-            .attempts
-            .iter()
-            .filter(|entry| entry.attempt_id == current_attempt_id)
-            .collect();
-        if unfinished.len() != 1 || unfinished[0].finished_at.is_some() {
-            return Err(SnapshotMappingError::InvalidActiveAttemptHistory { run_id });
-        }
+    let unfinished: Vec<&SnapshotAttemptHistoryEntry> =
+        snapshot_run.attempts.iter().filter(|entry| entry.finished_at.is_none()).collect();
+    // Cancellation clears current_attempt_id without inventing an attempt
+    // outcome. That unfinished history remains durable, but is no longer active.
+    let current_attempt_id = snapshot_run.run_instance.current_attempt_id();
+    let canceled = snapshot_run.run_instance.state() == RunState::Canceled;
+    if unfinished.len() > 1
+        || (!canceled && unfinished.first().map(|entry| entry.attempt_id) != current_attempt_id)
+        || current_attempt_id.is_some_and(|id| {
+            snapshot_run.attempts.iter().filter(|entry| entry.attempt_id == id).count() != 1
+        })
+    {
+        return Err(SnapshotMappingError::InvalidActiveAttemptHistory { run_id });
     }
 
     if snapshot_run.lease.is_some()

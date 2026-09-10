@@ -49,6 +49,9 @@ pub(crate) fn encode(snapshot: &Snapshot, store_id: uuid::Uuid) -> Result<Vec<u8
     if payload.len() > MAX_SNAPSHOT_BYTES {
         return Err("snapshot exceeds maximum size".into());
     }
+    // Publication must pass the same decoding and domain validation as loading.
+    // In-memory mapping alone cannot detect stricter Deserialize implementations.
+    decode(&payload, Some(store_id)).map_err(|e| e.to_string())?;
     let mut bytes = MAGIC.to_vec();
     bytes.extend_from_slice(&1u32.to_le_bytes());
     bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());

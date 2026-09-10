@@ -124,16 +124,6 @@ impl ReplayReducer {
             if !r.tasks.contains_key(&run.run_instance.task_id()) {
                 return Err(invalid("orphan run"));
             }
-            if run.run_instance.attempt_count() as usize != run.attempts.len() {
-                return Err(invalid("attempt count/history mismatch"));
-            }
-            let active =
-                run.attempts.iter().filter(|a| a.finished_at.is_none()).collect::<Vec<_>>();
-            if active.len() > 1
-                || active.first().map(|a| a.attempt_id) != run.run_instance.current_attempt_id()
-            {
-                return Err(invalid("active attempt/history mismatch"));
-            }
             r.runs.insert(id, run.run_instance.state());
             r.runs_by_task.entry(run.run_instance.task_id()).or_default().push(id);
             r.run_history.insert(id, map_snapshot_run_history(run.state_history));
