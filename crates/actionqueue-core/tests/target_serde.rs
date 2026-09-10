@@ -8,19 +8,13 @@ use actionqueue_core::data_ref::*;
 use actionqueue_core::executor::*;
 use actionqueue_core::ids::*;
 
-fn round<T: serde::Serialize + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug>(
-    value: T,
-) {
-    let json = serde_json::to_string(&value).unwrap();
-    assert_eq!(serde_json::from_str::<T>(&json).unwrap(), value);
-    let binary = postcard::to_allocvec(&value).unwrap();
-    assert_eq!(postcard::from_bytes::<T>(&binary).unwrap(), value);
-}
+mod common;
+use common::round;
 fn reference() -> OpaqueRef {
     OpaqueRef::new("opaque-reference").unwrap()
 }
 fn hash() -> ContentHash {
-    ContentHash::new(HashAlgorithm::Sha256, vec![17; 32]).unwrap()
+    common::hash_filled(17)
 }
 #[test]
 fn every_new_identifier_and_bounded_value_round_trips() {

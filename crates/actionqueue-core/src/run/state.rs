@@ -56,15 +56,31 @@ pub enum RunState {
 }
 
 impl RunState {
+    /// Every run state, in declaration order.
+    ///
+    /// Observability surfaces derive their bounded label sets and per-state
+    /// counters from this list so that adding a state cannot leave one behind.
+    pub const ALL: [RunState; 10] = [
+        RunState::Scheduled,
+        RunState::Ready,
+        RunState::Leased,
+        RunState::Running,
+        RunState::RetryWait,
+        RunState::Suspended,
+        RunState::Completed,
+        RunState::Failed,
+        RunState::Canceled,
+        RunState::Awaiting,
+    ];
+
     /// Returns true if this is a terminal state.
     pub fn is_terminal(&self) -> bool {
         matches!(self, RunState::Completed | RunState::Failed | RunState::Canceled)
     }
-}
 
-impl std::fmt::Display for RunState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let name = match self {
+    /// Returns the stable snake_case label used by metrics, stats, and display.
+    pub const fn label(self) -> &'static str {
+        match self {
             RunState::Scheduled => "scheduled",
             RunState::Ready => "ready",
             RunState::Leased => "leased",
@@ -75,7 +91,12 @@ impl std::fmt::Display for RunState {
             RunState::Failed => "failed",
             RunState::Canceled => "canceled",
             RunState::Awaiting => "awaiting",
-        };
-        write!(f, "{name}")
+        }
+    }
+}
+
+impl std::fmt::Display for RunState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.label())
     }
 }

@@ -392,6 +392,14 @@ impl AttemptOutcome {
         Self { result: AttemptResultKind::Suspended, error: None, output }
     }
 
+    /// Creates an awaiting outcome: the attempt paused on a durable continuation.
+    ///
+    /// Awaiting attempts carry no error and, like suspension, do not count
+    /// toward the retry cap.
+    pub fn awaiting() -> Self {
+        Self { result: AttemptResultKind::Awaiting, error: None, output: None }
+    }
+
     /// Reconstructs an outcome from raw parts with semantic validation.
     ///
     /// This is intended for WAL replay / deserialization paths where the result

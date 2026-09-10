@@ -106,18 +106,7 @@ impl RunStateCounts {
 }
 
 fn state_label(state: RunState) -> &'static str {
-    match state {
-        RunState::Scheduled => "scheduled",
-        RunState::Ready => "ready",
-        RunState::Leased => "leased",
-        RunState::Running => "running",
-        RunState::RetryWait => "retry_wait",
-        RunState::Suspended => "suspended",
-        RunState::Awaiting => "awaiting",
-        RunState::Completed => "completed",
-        RunState::Failed => "failed",
-        RunState::Canceled => "canceled",
-    }
+    state.label()
 }
 
 fn is_lag_eligible(state: RunState) -> bool {
@@ -314,6 +303,7 @@ mod tests {
         assert_eq!(state_label(RunState::Leased), "leased");
         assert_eq!(state_label(RunState::Running), "running");
         assert_eq!(state_label(RunState::RetryWait), "retry_wait");
+        assert_eq!(state_label(RunState::Suspended), "suspended");
         assert_eq!(state_label(RunState::Completed), "completed");
         assert_eq!(state_label(RunState::Failed), "failed");
         assert_eq!(state_label(RunState::Canceled), "canceled");

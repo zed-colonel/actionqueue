@@ -564,12 +564,7 @@ impl ReplayReducer {
                                     )
                                 }
                                 actionqueue_core::mutation::AttemptResultKind::Awaiting => {
-                                    AttemptOutcome::from_raw_parts(
-                                        actionqueue_core::mutation::AttemptResultKind::Awaiting,
-                                        None,
-                                        None,
-                                    )
-                                    .expect("valid awaiting outcome")
+                                    AttemptOutcome::awaiting()
                                 }
                                 actionqueue_core::mutation::AttemptResultKind::Suspended => {
                                     AttemptOutcome::suspended()

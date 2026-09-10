@@ -12,9 +12,9 @@ use actionqueue_core::task::{
     run_policy::RunPolicy,
     task_spec::{TaskPayload, TaskSpec},
 };
-fn hash() -> ContentHash {
-    ContentHash::new(HashAlgorithm::Sha256, vec![0; 32]).unwrap()
-}
+mod common;
+use common::hash;
+
 fn task() -> TaskSpec {
     TaskSpec::new(
         TaskId::new(),
@@ -109,6 +109,22 @@ fn admission_checks_ownership_dependencies_and_counts() {
     let run = RunInstance::new_scheduled(id, 0, 0).unwrap();
     assert!(AdmissionPlan::new(req.clone(), vec![run.clone(); 65], AdmissionDigest::new(hash()))
         .is_err());
+    assert_eq!(
+        AdmissionPlan::new(
+            req.clone(),
+            vec![run.clone(), run.clone()],
+            AdmissionDigest::new(hash())
+        )
+        .err(),
+        Some(AdmissionRejection::DuplicateRun)
+    );
+    let second = RunInstance::new_scheduled(id, 0, 1).unwrap();
+    assert!(AdmissionPlan::new(
+        req.clone(),
+        vec![run.clone(), second],
+        AdmissionDigest::new(hash())
+    )
+    .is_ok());
     assert!(AdmissionPlan::new(req, vec![run], AdmissionDigest::new(hash())).is_ok());
     assert!(ChildAdmission::new(
         AdmissionKey::new("c").unwrap(),
@@ -163,12 +179,7 @@ fn disposition_collection_ceilings_apply() {
 #[cfg(feature = "serde")]
 #[test]
 fn admission_and_disposition_deserialization_preserves_invariants() {
-    fn round<T: serde::Serialize + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug>(
-        v: T,
-    ) {
-        assert_eq!(postcard::from_bytes::<T>(&postcard::to_allocvec(&v).unwrap()).unwrap(), v);
-        assert_eq!(serde_json::from_str::<T>(&serde_json::to_string(&v).unwrap()).unwrap(), v);
-    }
+    use common::round;
     let spec = task();
     let run = RunInstance::new_scheduled(spec.id(), 0, 0).unwrap();
     let req = request(spec, vec![]).unwrap();
@@ -176,9 +187,13 @@ fn admission_and_disposition_deserialization_preserves_invariants() {
     round(child());
     let plan = AdmissionPlan::new(req, vec![run], AdmissionDigest::new(hash())).unwrap();
     round(plan.clone());
-    let mut invalid = serde_json::to_value(plan).unwrap();
+    let mut invalid = serde_json::to_value(plan.clone()).unwrap();
     invalid["runs"][0]["task_id"] = serde_json::to_value(TaskId::new()).unwrap();
     assert!(serde_json::from_value::<AdmissionPlan>(invalid).is_err());
+    let mut duplicated = serde_json::to_value(plan).unwrap();
+    let first = duplicated["runs"][0].clone();
+    duplicated["runs"].as_array_mut().unwrap().push(first);
+    assert!(serde_json::from_value::<AdmissionPlan>(duplicated).is_err());
     let disposition = AttemptDisposition::new(
         DispositionOutcome::Awaiting,
         DispositionParts {

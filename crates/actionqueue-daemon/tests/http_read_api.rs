@@ -307,6 +307,8 @@ async fn health_ready_stats_routes_return_success() {
                 "leased": 0,
                 "running": 0,
                 "retry_wait": 0,
+                "suspended": 0,
+                "awaiting": 0,
                 "completed": 0,
                 "failed": 0,
                 "canceled": 0
@@ -338,6 +340,8 @@ async fn stats_route_returns_deterministic_authoritative_counts_for_seeded_proje
                 "leased": 0,
                 "running": 0,
                 "retry_wait": 0,
+                "suspended": 0,
+                "awaiting": 0,
                 "completed": 1,
                 "failed": 0,
                 "canceled": 0

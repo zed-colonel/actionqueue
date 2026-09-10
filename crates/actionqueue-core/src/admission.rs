@@ -48,6 +48,8 @@ pub enum AdmissionRejection {
     TooLarge,
     /// A planned run belongs to a different task.
     RunTaskMismatch,
+    /// The same run identity appears more than once in one plan.
+    DuplicateRun,
 }
 impl std::fmt::Display for AdmissionRejection {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -163,7 +165,8 @@ pub struct AdmissionPlan {
     digest: AdmissionDigest,
 }
 impl AdmissionPlan {
-    /// Validates run ownership and count. Control attribution belongs to the commit command.
+    /// Validates run ownership, count, and identity uniqueness. Control
+    /// attribution belongs to the commit command.
     pub fn new(
         request: EnsureTaskRequest,
         runs: Vec<RunInstance>,
@@ -174,6 +177,10 @@ impl AdmissionPlan {
         }
         if runs.iter().any(|run| run.task_id() != request.task_spec.id()) {
             return Err(AdmissionRejection::RunTaskMismatch);
+        }
+        let mut seen = std::collections::HashSet::with_capacity(runs.len());
+        if runs.iter().any(|run| !seen.insert(run.id())) {
+            return Err(AdmissionRejection::DuplicateRun);
         }
         Ok(Self {
             admission_key: request.admission_key,

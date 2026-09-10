@@ -1,12 +1,11 @@
-use actionqueue_core::bounded::{BoundedCode, ContentHash, HashAlgorithm, OpaqueRef};
-use actionqueue_core::causal::{CausalContext, CausationLink, ControlMutationContext};
+use actionqueue_core::bounded::OpaqueRef;
+use actionqueue_core::causal::{CausationLink, ControlMutationContext};
 use actionqueue_core::continuation::*;
-use actionqueue_core::data_ref::{DataRef, InlineData};
+use actionqueue_core::data_ref::InlineData;
 use actionqueue_core::ids::*;
 
-fn hash() -> ContentHash {
-    ContentHash::new(HashAlgorithm::Sha256, vec![0; 32]).unwrap()
-}
+mod common;
+use common::hash;
 fn filter() -> SignalFilter {
     SignalFilter {
         tenant_id: None,
@@ -164,12 +163,10 @@ fn resume_identifies_wait_for_every_wake_kind() {
 #[cfg(feature = "serde")]
 #[test]
 fn target_types_round_trip_and_validate_on_decode() {
-    fn round<T: serde::Serialize + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug>(
-        v: T,
-    ) {
-        assert_eq!(serde_json::from_str::<T>(&serde_json::to_string(&v).unwrap()).unwrap(), v);
-        assert_eq!(postcard::from_bytes::<T>(&postcard::to_allocvec(&v).unwrap()).unwrap(), v);
-    }
+    use actionqueue_core::bounded::BoundedCode;
+    use actionqueue_core::causal::CausalContext;
+    use actionqueue_core::data_ref::DataRef;
+    use common::round;
     let link = CausationLink::new(Some(TaskId::new()), None, None, None).unwrap();
     round(link.clone());
     round(
