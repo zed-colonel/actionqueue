@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use actionqueue_core::actor::{ActorCapabilities, ActorRegistration};
+use actionqueue_core::actor::{ActorRegistration, ExecutorTraits};
 use actionqueue_core::ids::{ActorId, TenantId};
 use actionqueue_core::platform::{Capability, Role, TenantRegistration};
 use actionqueue_engine::time::clock::MockClock;
@@ -58,7 +58,7 @@ async fn triad_rbac_enforcement() {
     let operator_id = ActorId::new();
     let auditor_id = ActorId::new();
     let gatekeeper_id = ActorId::new();
-    let caps = ActorCapabilities::new(vec!["work".to_string()]).expect("caps");
+    let caps = ExecutorTraits::new(vec!["work".to_string()]).expect("caps");
 
     boot.register_actor(
         ActorRegistration::new(operator_id, "operator", caps.clone(), 30).with_tenant(tenant),
@@ -126,7 +126,7 @@ async fn no_role_rejected_by_check_permission() {
     boot.create_tenant(TenantRegistration::new(tenant, "Corp")).expect("tenant");
 
     let actor_id = ActorId::new();
-    let caps = ActorCapabilities::new(vec!["work".to_string()]).expect("caps");
+    let caps = ExecutorTraits::new(vec!["work".to_string()]).expect("caps");
     boot.register_actor(ActorRegistration::new(actor_id, "worker", caps, 30).with_tenant(tenant))
         .expect("reg");
 

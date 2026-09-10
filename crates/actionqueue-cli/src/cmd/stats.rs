@@ -29,10 +29,13 @@ pub fn run(args: StatsArgs) -> Result<CommandOutput, CliError> {
             "summary": summary,
         }))),
         StatsOutputFormat::Text => Ok(CommandOutput::Text(format!(
-            "command=stats\ndata_dir={}\ntotal_tasks={}\ntotal_runs={}\nlatest_sequence={}\\
-             nruns_scheduled={}\nruns_ready={}\nruns_leased={}\nruns_running={}\\
-             nruns_retry_wait={}\nruns_completed={}\nruns_failed={}\nruns_canceled={}\\
-             nattempts_total={}",
+            concat!(
+                "command=stats\ndata_dir={}\ntotal_tasks={}\ntotal_runs={}\n",
+                "latest_sequence={}\nruns_scheduled={}\nruns_ready={}\n",
+                "runs_leased={}\nruns_running={}\nruns_retry_wait={}\n",
+                "runs_suspended={}\nruns_awaiting={}\nruns_completed={}\n",
+                "runs_failed={}\nruns_canceled={}\nattempts_total={}",
+            ),
             data_dir.display(),
             summary.total_tasks,
             summary.total_runs,
@@ -42,6 +45,8 @@ pub fn run(args: StatsArgs) -> Result<CommandOutput, CliError> {
             summary.runs_by_state.leased,
             summary.runs_by_state.running,
             summary.runs_by_state.retry_wait,
+            summary.runs_by_state.suspended,
+            summary.runs_by_state.awaiting,
             summary.runs_by_state.completed,
             summary.runs_by_state.failed,
             summary.runs_by_state.canceled,
@@ -63,6 +68,10 @@ pub struct RunsByState {
     pub running: usize,
     /// Count of `RetryWait` runs.
     pub retry_wait: usize,
+    /// Count of `Suspended` runs.
+    pub suspended: usize,
+    /// Count of `Awaiting` runs.
+    pub awaiting: usize,
     /// Count of `Completed` runs.
     pub completed: usize,
     /// Count of `Failed` runs.
@@ -79,6 +88,8 @@ impl RunsByState {
             leased: 0,
             running: 0,
             retry_wait: 0,
+            suspended: 0,
+            awaiting: 0,
             completed: 0,
             failed: 0,
             canceled: 0,
@@ -116,7 +127,8 @@ impl StatsSummary {
                 actionqueue_core::run::state::RunState::Leased => runs_by_state.leased += 1,
                 actionqueue_core::run::state::RunState::Running => runs_by_state.running += 1,
                 actionqueue_core::run::state::RunState::RetryWait => runs_by_state.retry_wait += 1,
-                actionqueue_core::run::state::RunState::Suspended => {}
+                actionqueue_core::run::state::RunState::Suspended => runs_by_state.suspended += 1,
+                actionqueue_core::run::state::RunState::Awaiting => runs_by_state.awaiting += 1,
                 actionqueue_core::run::state::RunState::Completed => runs_by_state.completed += 1,
                 actionqueue_core::run::state::RunState::Failed => runs_by_state.failed += 1,
                 actionqueue_core::run::state::RunState::Canceled => runs_by_state.canceled += 1,

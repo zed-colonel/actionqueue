@@ -160,7 +160,7 @@ impl LeaseMetadata {
 pub struct ActorRecord {
     pub actor_id: ActorId,
     pub identity: String,
-    pub capabilities: Vec<String>,
+    pub executor_traits: Vec<String>,
     pub department: Option<String>,
     pub heartbeat_interval_secs: u64,
     pub tenant_id: Option<TenantId>,
@@ -563,6 +563,9 @@ impl ReplayReducer {
                                             .unwrap_or_else(|| "unknown timeout".to_string()),
                                     )
                                 }
+                                actionqueue_core::mutation::AttemptResultKind::Awaiting => {
+                                    AttemptOutcome::awaiting()
+                                }
                                 actionqueue_core::mutation::AttemptResultKind::Suspended => {
                                     AttemptOutcome::suspended()
                                 }
@@ -650,7 +653,7 @@ impl ReplayReducer {
             WalEventType::ActorRegistered {
                 actor_id,
                 identity,
-                capabilities,
+                executor_traits,
                 department,
                 heartbeat_interval_secs,
                 tenant_id,
@@ -661,7 +664,7 @@ impl ReplayReducer {
                     ActorRecord {
                         actor_id: *actor_id,
                         identity: identity.clone(),
-                        capabilities: capabilities.clone(),
+                        executor_traits: executor_traits.clone(),
                         department: department.clone(),
                         heartbeat_interval_secs: *heartbeat_interval_secs,
                         tenant_id: *tenant_id,

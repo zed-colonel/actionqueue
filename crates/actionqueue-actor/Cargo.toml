@@ -4,10 +4,10 @@ authors = ["Keith <zed.colonel@gmail.com>"]
 version = "0.1.2"
 edition = "2021"
 license = "Apache-2.0"
-description = "Remote actor registration, heartbeat monitoring, and capability routing for the ActionQueue task queue engine."
+description = "Remote actor registration, heartbeat monitoring, and executor trait routing for the ActionQueue task queue engine."
 readme = "README.md"
 repository = "https://github.com/zed-colonel/actionqueue"
-keywords = ["actor", "heartbeat", "capability", "task-queue", "routing"]
+keywords = ["actor", "heartbeat", "executor-trait", "task-queue", "routing"]
 categories = ["concurrency"]
 
 [dependencies]

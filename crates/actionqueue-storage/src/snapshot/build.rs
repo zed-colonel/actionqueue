@@ -120,7 +120,7 @@ pub fn build_snapshot_from_projection(
         .map(|(_, record)| SnapshotActor {
             actor_id: record.actor_id,
             identity: record.identity.clone(),
-            capabilities: record.capabilities.clone(),
+            executor_traits: record.executor_traits.clone(),
             department: record.department.clone(),
             heartbeat_interval_secs: record.heartbeat_interval_secs,
             tenant_id: record.tenant_id,

@@ -88,10 +88,10 @@
   "legacy_symbols": {
     "description": "Symbols slated for removal, scanned over git-tracked text files outside legacy_scan_exempt_roots. Stage 'report' fails only if the number of tracked files containing the symbol grows beyond max_files (a tight ratchet: max_files equals the baseline footprint, so any new file that names the symbol is a conscious policy bump); stage 'forbid' fails on any occurrence. A removal PR sets its symbols to 'forbid'.",
     "symbols": [
-      { "symbol": "ActorCapabilities", "replacement": "ExecutorTraits", "removal_pr": "AQ-02", "stage": "report", "max_files": 11 },
-      { "symbol": "required_capabilities", "replacement": "required_executor_traits", "removal_pr": "AQ-02", "stage": "report", "max_files": 6 },
-      { "symbol": "with_capabilities", "replacement": "executor-trait constructors", "removal_pr": "AQ-02", "stage": "report", "max_files": 1 },
-      { "symbol": "HandlerOutput", "replacement": "AttemptDisposition", "removal_pr": "AQ-08", "stage": "report", "max_files": 43 },
+      { "symbol": "ActorCapabilities", "replacement": "ExecutorTraits", "removal_pr": "AQ-02", "stage": "forbid", "max_files": 11 },
+      { "symbol": "required_capabilities", "replacement": "required_executor_traits", "removal_pr": "AQ-02", "stage": "forbid", "max_files": 6 },
+      { "symbol": "with_capabilities", "replacement": "executor-trait constructors", "removal_pr": "AQ-02", "stage": "forbid", "max_files": 1 },
+      { "symbol": "HandlerOutput", "replacement": "AttemptDisposition", "removal_pr": "AQ-08", "stage": "report", "max_files": 44 },
       { "symbol": "TaskSubmissionPort", "replacement": "compound child admission", "removal_pr": "AQ-09", "stage": "report", "max_files": 5 },
       { "symbol": "SubmissionChannel", "replacement": "compound child admission", "removal_pr": "AQ-09", "stage": "report", "max_files": 8 },
       { "symbol": "EventFilter::Custom", "replacement": "durable SignalEnvelope / WaitSpec", "removal_pr": "AQ-10", "stage": "report", "max_files": 6 },

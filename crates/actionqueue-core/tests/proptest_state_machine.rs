@@ -11,6 +11,8 @@ fn arb_run_state() -> impl Strategy<Value = RunState> {
         Just(RunState::Leased),
         Just(RunState::Running),
         Just(RunState::RetryWait),
+        Just(RunState::Suspended),
+        Just(RunState::Awaiting),
         Just(RunState::Completed),
         Just(RunState::Failed),
         Just(RunState::Canceled),

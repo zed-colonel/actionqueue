@@ -3,13 +3,20 @@
 //! This module implements the concurrency key acquire and release policy:
 //! - Keys are acquired when a run transitions to Running state (execution starts).
 //! - Keys are released when a run transitions to a terminal state.
+//! - Leaving Running for RetryWait or Suspended consults the hold policy;
+//!   leaving Running for Awaiting consults the wait policy (AQ-ADR-009).
+//! - A RetryWait, Suspended, or Awaiting run that reaches a terminal state releases
+//!   unconditionally, because the key may have been held across the pause.
+//!
+//! The dispatch loop applies the same rules in `try_release_concurrency_key`;
+//! keep the two in step.
 //!
 //! The lifecycle logic uses the key gate contracts from `key_gate` module
 //! and does not add unrelated policy behavior.
 
 use actionqueue_core::ids::RunId;
 use actionqueue_core::run::RunState;
-use actionqueue_core::task::constraints::ConcurrencyKeyHoldPolicy;
+use actionqueue_core::task::constraints::{ConcurrencyKeyHoldPolicy, ConcurrencyKeyWaitPolicy};
 
 use crate::concurrency::key_gate::{AcquireResult, KeyGate, ReleaseResult};
 
@@ -99,6 +106,8 @@ pub struct KeyLifecycleContext<'a> {
     key_gate: &'a mut KeyGate,
     /// Policy controlling key behavior during retry transitions.
     hold_policy: ConcurrencyKeyHoldPolicy,
+    /// Policy controlling key behavior while the run awaits a continuation.
+    wait_policy: ConcurrencyKeyWaitPolicy,
 }
 
 impl<'a> KeyLifecycleContext<'a> {
@@ -109,7 +118,21 @@ impl<'a> KeyLifecycleContext<'a> {
         key_gate: &'a mut KeyGate,
         hold_policy: ConcurrencyKeyHoldPolicy,
     ) -> Self {
-        Self { concurrency_key, run_id, key_gate, hold_policy }
+        Self {
+            concurrency_key,
+            run_id,
+            key_gate,
+            hold_policy,
+            wait_policy: ConcurrencyKeyWaitPolicy::default(),
+        }
+    }
+
+    /// Sets the wait policy consulted when the run leaves Running for Awaiting.
+    ///
+    /// Defaults to [`ConcurrencyKeyWaitPolicy::ReleaseWhileAwaiting`].
+    pub fn with_wait_policy(mut self, wait_policy: ConcurrencyKeyWaitPolicy) -> Self {
+        self.wait_policy = wait_policy;
+        self
     }
 
     /// Returns the optional concurrency key.
@@ -145,7 +168,7 @@ pub fn evaluate_state_transition(
     to: RunState,
     ctx: KeyLifecycleContext<'_>,
 ) -> LifecycleResult {
-    let KeyLifecycleContext { concurrency_key, run_id, key_gate, hold_policy } = ctx;
+    let KeyLifecycleContext { concurrency_key, run_id, key_gate, hold_policy, wait_policy } = ctx;
     tracing::debug!(%run_id, ?from, ?to, "concurrency key lifecycle evaluated");
 
     // Key is acquired when entering Running state
@@ -174,15 +197,29 @@ pub fn evaluate_state_transition(
         };
     }
 
+    // When leaving Running for Awaiting, consult the wait policy (AQ-ADR-009).
+    // The dispatch loop applies the same rule; the persisted per-task field
+    // arrives in AQ-03, so today only the default is selectable there.
+    if from == RunState::Running && to == RunState::Awaiting {
+        return if wait_policy.releases_while_awaiting() {
+            release_key(concurrency_key, run_id, key_gate)
+        } else {
+            LifecycleResult::NoAction { key: None }
+        };
+    }
+
     // Key is released when leaving Running state for any other non-Running state
     if from == RunState::Running && to != RunState::Running {
         return release_key(concurrency_key, run_id, key_gate);
     }
 
-    // When a Suspended run reaches a terminal state (e.g. cascade cancellation),
-    // release the key unconditionally. The key may have been held during suspend
-    // under HoldDuringRetry policy and must be freed to avoid permanent key leak.
-    if from == RunState::Suspended && to.is_terminal() {
+    // When a RetryWait, Suspended, or Awaiting run reaches a terminal state (e.g. cascade
+    // cancellation), release the key unconditionally. The key may have been held
+    // across the pause under HoldDuringRetry or HoldWhileAwaiting and must be
+    // freed to avoid a permanent key leak.
+    if matches!(from, RunState::RetryWait | RunState::Suspended | RunState::Awaiting)
+        && to.is_terminal()
+    {
         return release_key(concurrency_key, run_id, key_gate);
     }
 
@@ -195,6 +232,140 @@ mod tests {
     use actionqueue_core::ids::RunId;
 
     use super::*;
+
+    fn held_key(key_gate: &mut KeyGate, run_id: RunId) -> Option<String> {
+        let key = Some("await-key".to_string());
+        assert!(matches!(
+            acquire_key(key.clone(), run_id, key_gate),
+            LifecycleResult::Acquired { .. }
+        ));
+        key
+    }
+
+    fn occupied(key_gate: &KeyGate) -> bool {
+        key_gate.is_key_occupied(&crate::concurrency::key_gate::ConcurrencyKey::new("await-key"))
+    }
+
+    #[test]
+    fn running_to_awaiting_releases_key_under_default_wait_policy() {
+        let mut key_gate = KeyGate::new();
+        let run_id = RunId::new();
+        let key = held_key(&mut key_gate, run_id);
+
+        let result = evaluate_state_transition(
+            RunState::Running,
+            RunState::Awaiting,
+            KeyLifecycleContext::new(
+                key,
+                run_id,
+                &mut key_gate,
+                ConcurrencyKeyHoldPolicy::default(),
+            ),
+        );
+
+        assert!(matches!(result, LifecycleResult::Released { .. }));
+        assert!(!occupied(&key_gate));
+    }
+
+    #[test]
+    fn running_to_awaiting_holds_key_under_hold_while_awaiting() {
+        let mut key_gate = KeyGate::new();
+        let run_id = RunId::new();
+        let key = held_key(&mut key_gate, run_id);
+
+        let result = evaluate_state_transition(
+            RunState::Running,
+            RunState::Awaiting,
+            KeyLifecycleContext::new(
+                key,
+                run_id,
+                &mut key_gate,
+                ConcurrencyKeyHoldPolicy::default(),
+            )
+            .with_wait_policy(ConcurrencyKeyWaitPolicy::HoldWhileAwaiting),
+        );
+
+        assert_eq!(result, LifecycleResult::NoAction { key: None });
+        assert!(occupied(&key_gate));
+    }
+
+    #[test]
+    fn awaiting_to_terminal_releases_a_held_key() {
+        for terminal in [RunState::Canceled, RunState::Failed] {
+            let mut key_gate = KeyGate::new();
+            let run_id = RunId::new();
+            let key = held_key(&mut key_gate, run_id);
+
+            let result = evaluate_state_transition(
+                RunState::Awaiting,
+                terminal,
+                KeyLifecycleContext::new(
+                    key,
+                    run_id,
+                    &mut key_gate,
+                    ConcurrencyKeyHoldPolicy::HoldDuringRetry,
+                )
+                .with_wait_policy(ConcurrencyKeyWaitPolicy::HoldWhileAwaiting),
+            );
+
+            assert!(matches!(result, LifecycleResult::Released { .. }), "{terminal:?}");
+            assert!(!occupied(&key_gate), "{terminal:?}");
+        }
+    }
+
+    #[test]
+    fn retry_wait_to_terminal_releases_a_key_held_during_retry() {
+        for terminal in [RunState::Canceled, RunState::Failed] {
+            let mut key_gate = KeyGate::new();
+            let run_id = RunId::new();
+            let key = held_key(&mut key_gate, run_id);
+            let held = evaluate_state_transition(
+                RunState::Running,
+                RunState::RetryWait,
+                KeyLifecycleContext::new(
+                    key.clone(),
+                    run_id,
+                    &mut key_gate,
+                    ConcurrencyKeyHoldPolicy::HoldDuringRetry,
+                ),
+            );
+            assert!(matches!(held, LifecycleResult::NoAction { .. }));
+            assert!(occupied(&key_gate));
+
+            let released = evaluate_state_transition(
+                RunState::RetryWait,
+                terminal,
+                KeyLifecycleContext::new(
+                    key,
+                    run_id,
+                    &mut key_gate,
+                    ConcurrencyKeyHoldPolicy::HoldDuringRetry,
+                ),
+            );
+            assert!(matches!(released, LifecycleResult::Released { .. }), "{terminal:?}");
+            assert!(!occupied(&key_gate), "{terminal:?}");
+        }
+    }
+
+    #[test]
+    fn awaiting_to_ready_takes_no_key_action() {
+        let mut key_gate = KeyGate::new();
+        let run_id = RunId::new();
+        let key = Some("await-key".to_string());
+
+        let result = evaluate_state_transition(
+            RunState::Awaiting,
+            RunState::Ready,
+            KeyLifecycleContext::new(
+                key,
+                run_id,
+                &mut key_gate,
+                ConcurrencyKeyHoldPolicy::default(),
+            ),
+        );
+
+        assert_eq!(result, LifecycleResult::NoAction { key: None });
+    }
 
     #[test]
     fn acquire_key_succeeds_when_key_is_free() {

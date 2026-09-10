@@ -3,7 +3,7 @@
 //! These endpoints are only registered when the `actor` feature is enabled.
 //! They submit actor mutation commands through the WAL-backed control authority.
 
-use actionqueue_core::actor::{ActorCapabilities, ActorRegistration};
+use actionqueue_core::actor::{ActorRegistration, ExecutorTraits};
 use actionqueue_core::ids::ActorId;
 use actionqueue_core::mutation::{
     ActorDeregisterCommand, ActorHeartbeatCommand, ActorRegisterCommand, DurabilityPolicy,
@@ -22,7 +22,7 @@ use crate::http::RouterState;
 pub struct RegisterActorRequest {
     pub actor_id: ActorId,
     pub identity: String,
-    pub capabilities: Vec<String>,
+    pub executor_traits: Vec<String>,
     pub heartbeat_interval_secs: u64,
     #[serde(default)]
     pub department: Option<String>,
@@ -57,15 +57,15 @@ async fn register_actor(
             .into_response();
     };
 
-    let caps = match ActorCapabilities::new(body.capabilities) {
+    let caps = match ExecutorTraits::new(body.executor_traits) {
         Ok(c) => c,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": "invalid_capabilities", "message": e })),
-            )
-                .into_response()
-        }
+        Err(e) => return (
+            StatusCode::BAD_REQUEST,
+            Json(
+                serde_json::json!({ "error": "invalid_executor_traits", "message": e.to_string() }),
+            ),
+        )
+            .into_response(),
     };
 
     let mut reg =
@@ -166,12 +166,12 @@ async fn deregister_actor(
     }
 }
 
-/// Returns claimable runs for an actor (stub — capability routing not yet implemented).
+/// Returns claimable runs for an actor (stub — executor trait routing not yet implemented).
 async fn claimable_runs(
     State(_state): State<RouterState>,
     Path(_actor_id): Path<ActorId>,
 ) -> impl IntoResponse {
-    // Capability-filtered dispatch is implemented in the dispatch loop.
+    // Executor-trait-filtered dispatch is implemented in the dispatch loop.
     // This HTTP endpoint is a placeholder for the actor claiming protocol.
     (StatusCode::OK, Json(serde_json::json!({ "runs": [] }))).into_response()
 }

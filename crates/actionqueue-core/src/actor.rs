@@ -1,59 +1,15 @@
 //! Actor domain types for remote actor registration and heartbeat coordination.
 //!
-//! Remote actors are Caelum Vessels (or other clients) that register with the
-//! Org ActionQueue hub, claim tasks by capability, and report execution results.
+//! Remote workers register executor traits, claim eligible tasks, and report results.
 //! This module defines the pure domain types; storage, routing, and heartbeat
 //! monitoring logic lives in `actionqueue-actor`.
 
+pub use crate::executor::ExecutorTraits;
 use crate::ids::{ActorId, DepartmentId, TenantId};
-
-/// Declared capabilities of a remote actor.
-///
-/// Capabilities are free-form strings (e.g. `"compute"`, `"review"`,
-/// `"approve"`). The dispatch loop uses capability intersection to decide
-/// which actors are eligible to claim a given task.
-///
-/// # Invariants
-///
-/// - The capability list must be non-empty.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct ActorCapabilities {
-    capabilities: Vec<String>,
-}
-
-impl ActorCapabilities {
-    /// Creates a validated `ActorCapabilities` from a list of capability strings.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error string if the list is empty or any entry is empty.
-    pub fn new(capabilities: Vec<String>) -> Result<Self, String> {
-        if capabilities.is_empty() {
-            return Err("actor must declare at least one capability".to_string());
-        }
-        for cap in &capabilities {
-            if cap.is_empty() {
-                return Err("capability string must be non-empty".to_string());
-            }
-        }
-        Ok(ActorCapabilities { capabilities })
-    }
-
-    /// Returns the capability strings.
-    pub fn as_slice(&self) -> &[String] {
-        &self.capabilities
-    }
-
-    /// Returns `true` if this set contains all capabilities in `required`.
-    pub fn satisfies(&self, required: &[String]) -> bool {
-        required.iter().all(|r| self.capabilities.iter().any(|c| c == r))
-    }
-}
 
 /// Actor registration record.
 ///
-/// Represents a remote actor's registration with the Org ActionQueue hub.
+/// Represents a remote actor's registration with the ActionQueue service.
 /// All fields are private with validated constructors.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -61,7 +17,7 @@ pub struct ActorRegistration {
     actor_id: ActorId,
     /// Human-readable identity string used as the WAL lease owner.
     identity: String,
-    capabilities: ActorCapabilities,
+    executor_traits: ExecutorTraits,
     department: Option<DepartmentId>,
     heartbeat_interval_secs: u64,
     tenant_id: Option<TenantId>,
@@ -78,7 +34,7 @@ impl ActorRegistration {
     pub fn new(
         actor_id: ActorId,
         identity: impl Into<String>,
-        capabilities: ActorCapabilities,
+        executor_traits: ExecutorTraits,
         heartbeat_interval_secs: u64,
     ) -> Self {
         let identity = identity.into();
@@ -87,7 +43,7 @@ impl ActorRegistration {
         ActorRegistration {
             actor_id,
             identity,
-            capabilities,
+            executor_traits,
             department: None,
             heartbeat_interval_secs,
             tenant_id: None,
@@ -116,9 +72,9 @@ impl ActorRegistration {
         &self.identity
     }
 
-    /// Returns the actor's declared capabilities.
-    pub fn capabilities(&self) -> &ActorCapabilities {
-        &self.capabilities
+    /// Returns the actor's declared executor traits.
+    pub fn executor_traits(&self) -> &ExecutorTraits {
+        &self.executor_traits
     }
 
     /// Returns the actor's department, if any.

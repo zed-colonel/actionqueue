@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use actionqueue_actor::DepartmentRegistry;
-use actionqueue_core::actor::{ActorCapabilities, ActorRegistration};
+use actionqueue_core::actor::{ActorRegistration, ExecutorTraits};
 use actionqueue_core::ids::{ActorId, DepartmentId};
 use actionqueue_engine::time::clock::MockClock;
 use actionqueue_executor_local::handler::{ExecutorContext, ExecutorHandler, HandlerOutput};
@@ -59,7 +59,7 @@ async fn five_actors_in_engineering_department() {
     for i in 0..5 {
         let id = ActorId::new();
         actor_ids.push(id);
-        let caps = ActorCapabilities::new(vec!["compute".to_string()]).expect("caps");
+        let caps = ExecutorTraits::new(vec!["compute".to_string()]).expect("caps");
         let reg = ActorRegistration::new(id, format!("worker-{i}"), caps, 30)
             .with_department(dept.clone());
         boot.register_actor(reg).expect("register");

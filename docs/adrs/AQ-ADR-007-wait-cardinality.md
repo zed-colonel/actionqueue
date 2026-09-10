@@ -1,7 +1,6 @@
 # AQ-ADR-007 — Wait cardinality
 
-- **Status:** Proposed. The recommended default below is the working implementation choice
-  until code review produces a concrete counterexample (implementation plan, Section 3).
+- **Status:** Accepted.
 - **Decide before:** `AQ-06`
 - **Contract:** `AQ-CONT-1`
 - **Invariants:** AQ-H4, AQ-H5
@@ -38,6 +37,7 @@ run always has exactly one active wait after replay.
 
 | Field | Value |
 |---|---|
-| Accepted in PR | _pending_ |
-| Accepted on | _pending_ |
+| Accepted in PR | `AQ-02` |
+| Accepted on | 2026-09-09 |
 | Superseded by | — |
+| Deferred verification | Verified in `AQ-02`: `WaitSpec` and `ResumeContext` carry exactly one `WaitId`, and resume identifies its wait for every wake kind (`continuation_vocabulary.rs`). Deferred to `AQ-06`: rejection of a second wait registration for a run, and the replay property that an `Awaiting` run has exactly one active wait. |

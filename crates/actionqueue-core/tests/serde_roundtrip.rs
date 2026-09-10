@@ -116,20 +116,20 @@ fn run_instance_deserialization_rejects_ready_with_scheduled_after_created() {
 }
 
 #[test]
-fn task_constraints_deserialization_rejects_empty_capabilities() {
+fn task_constraints_deserialization_rejects_empty_executor_traits() {
     let json = r#"{
         "max_attempts": 1,
         "timeout_secs": null,
         "concurrency_key": null,
-        "required_capabilities": []
+        "required_executor_traits": []
     }"#;
 
     let err = serde_json::from_str::<TaskConstraints>(json)
-        .expect_err("empty required_capabilities must be rejected during deserialization");
+        .expect_err("empty required_executor_traits must be rejected during deserialization");
 
     assert!(
         err.to_string().contains("empty"),
-        "deserialization error should mention empty capabilities: {err}"
+        "deserialization error should mention empty executor traits: {err}"
     );
 }
 

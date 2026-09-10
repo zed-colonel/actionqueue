@@ -189,19 +189,13 @@ async fn assert_metrics_value_truth(router: &mut axum::Router<()>, expected: Met
 async fn assert_metrics_label_bounds_and_families(router: &mut axum::Router<()>) {
     let metrics = support::get_text(router, "/metrics").await;
 
-    let expected_run_labels: BTreeSet<String> = [
-        "scheduled",
-        "ready",
-        "leased",
-        "running",
-        "retry_wait",
-        "completed",
-        "failed",
-        "canceled",
-    ]
-    .into_iter()
-    .map(str::to_string)
-    .collect();
+    // The bounded label set is derived from `RunState::ALL`; every state,
+    // including `suspended` and `awaiting`, must be pre-seeded.
+    let expected_run_labels: BTreeSet<String> =
+        actionqueue_daemon::metrics::registry::RUN_STATE_LABEL_VALUES
+            .into_iter()
+            .map(str::to_string)
+            .collect();
     let expected_attempt_labels: BTreeSet<String> =
         ["success", "failure", "timeout"].into_iter().map(str::to_string).collect();
     let expected_run_keys: BTreeSet<String> = ["state"].into_iter().map(str::to_string).collect();
@@ -222,7 +216,10 @@ async fn assert_metrics_label_bounds_and_families(router: &mut axum::Router<()>)
         expected_attempt_keys
     );
 
-    assert_eq!(support::metrics_sample_count(&metrics, "actionqueue_runs_total"), 8);
+    assert_eq!(
+        support::metrics_sample_count(&metrics, "actionqueue_runs_total"),
+        actionqueue_daemon::metrics::registry::RUN_STATE_LABEL_VALUES.len()
+    );
     assert_eq!(support::metrics_sample_count(&metrics, "actionqueue_attempts_total"), 3);
 
     for prefix in required_metric_family_prefixes() {
@@ -235,28 +232,19 @@ async fn assert_metrics_label_bounds_and_families(router: &mut axum::Router<()>)
 
 /// Captures canonicalized metrics fact set for restart parity snapshots.
 fn capture_metrics_fact_snapshot(metrics_text: &str) -> MetricsFactSnapshot {
-    let run_state_values = [
-        "scheduled",
-        "ready",
-        "leased",
-        "running",
-        "retry_wait",
-        "completed",
-        "failed",
-        "canceled",
-    ]
-    .into_iter()
-    .map(|state| {
-        (
-            state.to_string(),
-            support::metrics_sample_value(
-                metrics_text,
-                "actionqueue_runs_total",
-                &[("state", state)],
-            ),
-        )
-    })
-    .collect::<BTreeMap<_, _>>();
+    let run_state_values = actionqueue_daemon::metrics::registry::RUN_STATE_LABEL_VALUES
+        .into_iter()
+        .map(|state| {
+            (
+                state.to_string(),
+                support::metrics_sample_value(
+                    metrics_text,
+                    "actionqueue_runs_total",
+                    &[("state", state)],
+                ),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
 
     let attempts_result_values = ["success", "failure", "timeout"]
         .into_iter()

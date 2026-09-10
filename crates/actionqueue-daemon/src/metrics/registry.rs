@@ -6,14 +6,25 @@
 
 use std::net::SocketAddr;
 
+use actionqueue_core::run::state::RunState;
 use prometheus::core::Collector;
 use prometheus::{
     Counter, Encoder, Gauge, GaugeVec, Histogram, HistogramOpts, Opts, Registry, TextEncoder,
 };
 
 /// Bounded run-state label values for `actionqueue_runs_total{state=...}`.
-pub const RUN_STATE_LABEL_VALUES: [&str; 8] =
-    ["scheduled", "ready", "leased", "running", "retry_wait", "completed", "failed", "canceled"];
+///
+/// Derived from [`RunState::ALL`] so every state, including `suspended` and
+/// `awaiting`, is pre-seeded and no state can be added without a label.
+pub const RUN_STATE_LABEL_VALUES: [&str; RunState::ALL.len()] = {
+    let mut labels = [""; RunState::ALL.len()];
+    let mut index = 0;
+    while index < labels.len() {
+        labels[index] = RunState::ALL[index].label();
+        index += 1;
+    }
+    labels
+};
 
 /// Bounded attempt-result label values for `actionqueue_attempts_total{result=...}`.
 pub const ATTEMPT_RESULT_LABEL_VALUES: [&str; 3] = ["success", "failure", "timeout"];

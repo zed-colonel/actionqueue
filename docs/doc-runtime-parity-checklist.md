@@ -25,7 +25,7 @@ A public capability claim is accepted only when it maps to concrete runtime symb
 | Suspend/resume | **Shipped** | RunState::Suspended + dispatch handling | `suspend_resume` acceptance test |
 | Event subscriptions | **Shipped** | `crates/actionqueue-budget/src/subscription/` | `subscription_triggered_promotion`, `custom_event_subscription` tests |
 | Actor registration + heartbeat | **Shipped** | `crates/actionqueue-actor/src/registry.rs`, `heartbeat.rs` | `actor_registration`, `remote_actor_crash` tests |
-| Capability routing | **Shipped** | `crates/actionqueue-actor/src/routing.rs` | `capability_matching` acceptance test |
+| Executor trait routing | **Shipped** | `crates/actionqueue-actor/src/routing.rs` | `executor_trait_matching` acceptance test |
 | Multi-tenant isolation | **Shipped** | `crates/actionqueue-platform/src/tenant.rs` | `multi_tenant_isolation` acceptance test |
 | RBAC enforcement | **Shipped** | `crates/actionqueue-platform/src/rbac.rs` | `rbac_enforcement` acceptance test |
 | Append-only ledgers | **Shipped** | `crates/actionqueue-platform/src/ledger.rs` | `ledger_recovery` acceptance test |

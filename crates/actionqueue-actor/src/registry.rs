@@ -79,13 +79,13 @@ impl ActorRegistry {
 
 #[cfg(test)]
 mod tests {
-    use actionqueue_core::actor::{ActorCapabilities, ActorRegistration};
+    use actionqueue_core::actor::{ActorRegistration, ExecutorTraits};
     use actionqueue_core::ids::{ActorId, TenantId};
 
     use super::ActorRegistry;
 
     fn make_registration(actor_id: ActorId) -> ActorRegistration {
-        let caps = ActorCapabilities::new(vec!["compute".to_string()]).unwrap();
+        let caps = ExecutorTraits::new(vec!["compute".to_string()]).unwrap();
         ActorRegistration::new(actor_id, "test-actor", caps, 30)
     }
 
@@ -117,7 +117,7 @@ mod tests {
         let deregistered_id = ActorId::new();
         let other_tenant_id = ActorId::new();
 
-        let caps = ActorCapabilities::new(vec!["c".to_string()]).unwrap();
+        let caps = ExecutorTraits::new(vec!["c".to_string()]).unwrap();
         registry
             .register(ActorRegistration::new(active_id, "a", caps.clone(), 30).with_tenant(tenant));
         registry.register(
@@ -136,7 +136,7 @@ mod tests {
     fn identity_returns_lease_owner_string() {
         let mut registry = ActorRegistry::new();
         let id = ActorId::new();
-        let caps = ActorCapabilities::new(vec!["c".to_string()]).unwrap();
+        let caps = ExecutorTraits::new(vec!["c".to_string()]).unwrap();
         registry.register(ActorRegistration::new(id, "caelum-vessel-1", caps, 30));
         assert_eq!(registry.identity(id), Some("caelum-vessel-1"));
     }

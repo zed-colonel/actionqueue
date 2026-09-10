@@ -1,7 +1,6 @@
 # AQ-ADR-004 — Signal matching grammar
 
-- **Status:** Proposed. The recommended default below is the working implementation choice
-  until code review produces a concrete counterexample (implementation plan, Section 3).
+- **Status:** Accepted.
 - **Decide before:** `AQ-05`
 - **Contract:** `AQ-CONT-1`
 - **Invariants:** AQ-H3, AQ-H5
@@ -40,6 +39,7 @@ non-match; replay-equivalence of match decisions.
 
 | Field | Value |
 |---|---|
-| Accepted in PR | _pending_ |
-| Accepted on | _pending_ |
+| Accepted in PR | `AQ-02` |
+| Accepted on | 2026-09-09 |
 | Superseded by | — |
+| Deferred verification | Verified in `AQ-02`: exhaustive filter table with exact tenant and optional-attribute equality, constructor rejection of empty or unbounded filters, and cross-tenant non-match (`crates/actionqueue-core/tests/continuation_vocabulary.rs`). Deferred to `AQ-05`: replay equivalence of match decisions against a persisted signal log. |

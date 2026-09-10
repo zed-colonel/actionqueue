@@ -1,7 +1,6 @@
 # AQ-ADR-009 — Concurrency key while awaiting
 
-- **Status:** Proposed. The recommended default below is the working implementation choice
-  until code review produces a concrete counterexample (implementation plan, Section 3).
+- **Status:** Accepted.
 - **Decide before:** `AQ-06`
 - **Contract:** `AQ-CONT-1`
 - **Invariants:** AQ-H13
@@ -38,6 +37,7 @@ re-acquires in order; suspended and awaiting runs do not deadlock the key.
 
 | Field | Value |
 |---|---|
-| Accepted in PR | _pending_ |
-| Accepted on | _pending_ |
+| Accepted in PR | `AQ-02` |
+| Accepted on | 2026-09-09 |
 | Superseded by | — |
+| Deferred verification | Verified in `AQ-02`: the default is `ReleaseWhileAwaiting`; engine evaluator tests cover release on `Awaiting` by default, retention under `HoldWhileAwaiting`, and release of a held key when the awaiting run terminates (`crates/actionqueue-engine/src/concurrency/lifecycle.rs`). Dispatch currently uses an accessor that always returns `ReleaseWhileAwaiting`. Deferred to `AQ-03`: persisted per-task policy selection. Deferred to `AQ-06`: dispatch verification of both wait policies under live continuation, resumed key reacquisition in order, and freedom from key deadlocks for suspended and awaiting runs. |

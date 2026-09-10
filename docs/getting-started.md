@@ -296,7 +296,7 @@ For black-box contract proofs, use the full acceptance suite (48 tests + 1 chaos
 **Actor feature tests** (requires `--features actor`):
 
 - `tests/acceptance/actor_registration.rs`
-- `tests/acceptance/capability_matching.rs`
+- `tests/acceptance/executor_trait_matching.rs`
 - `tests/acceptance/remote_actor_crash.rs`
 - `tests/acceptance/department_routing.rs`
 
@@ -321,3 +321,26 @@ And for CLI command-surface checks:
 - `docs/examples/idempotency-runid.md`
 - `docs/policy-defaults-v0.1.md`
 - `docs/acceptance-test-taxonomy.md`
+
+### Executor routing and attribution
+
+Remote actor registration uses `executor_traits`, a non-empty set of bounded labels.
+Task constraints use `required_executor_traits`; absence permits any executor.
+These routing labels grant no queue RBAC permission or downstream resource authority.
+`correlation_id` and `origin_ref` carry bounded opaque attribution only.
+
+AQ-02 supplies pure admission and continuation types. Durable continuation operations
+are introduced by subsequent work items; generic state commands cannot enter or leave
+`Awaiting` before the compound continuation records land.
+
+AQ-02 does not promise compatibility with pre-contract stores. The executor-trait
+vector retains its postcard field layout, but decoding now rejects legacy labels
+or counts outside the new grammar and ceilings. Snapshot JSON routing keys were
+renamed without aliases or a schema bump. AQ-03 establishes the fresh persistence
+lineage and rejects old stores; do not rely on layout preservation for migration.
+
+Awaiting key release now uses `TaskConstraints::concurrency_key_wait_policy()`.
+AQ-03 must back that accessor with the durable per-task field; until then it returns
+`ReleaseWhileAwaiting`. AQ-06 must support atomic active-wait cancellation for both
+run and task cancellation and explicitly map continuation-record guard errors
+before enabling reachable Awaiting runs.

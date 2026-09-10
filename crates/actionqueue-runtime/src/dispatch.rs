@@ -435,13 +435,22 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
             let mut registry = actionqueue_actor::ActorRegistry::new();
             for (actor_id, record) in authority.projection().actors() {
                 if record.deregistered_at.is_none() {
-                    let caps = actionqueue_core::actor::ActorCapabilities::new(
-                        record.capabilities.clone(),
-                    )
-                    .unwrap_or_else(|_| {
-                        actionqueue_core::actor::ActorCapabilities::new(vec!["_".to_string()])
-                            .expect("fallback capability")
-                    });
+                    let caps = match actionqueue_core::actor::ExecutorTraits::new(
+                        record.executor_traits.clone(),
+                    ) {
+                        Ok(traits) => traits,
+                        Err(error) => {
+                            // AQ-03 rejects pre-contract stores before decode.
+                            // Until then, do not invent a routable trait for an
+                            // actor whose persisted traits are invalid.
+                            tracing::warn!(
+                                %actor_id, %error,
+                                "persisted actor executor traits fail the current grammar; \
+                                 skipping actor registration"
+                            );
+                            continue;
+                        }
+                    };
                     let mut reg = actionqueue_core::actor::ActorRegistration::new(
                         *actor_id,
                         record.identity.clone(),
@@ -801,9 +810,9 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         .map_err(|e| DispatchError::Authority(e.into_source()))?;
 
         // Compute the effective attempt number for retry cap purposes.
-        // Suspended attempts do not count against max_attempts: they are
-        // budget-driven pauses, not failure-driven retries.
-        let suspended_count = self
+        // Suspended and Awaiting attempts do not count against max_attempts: they are
+        // capacity pauses or continuation waits rather than failures.
+        let non_failure_count = self
             .authority
             .projection()
             .get_attempt_history(&run_id)
@@ -811,12 +820,18 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
                 history
                     .iter()
                     .filter(|a| {
-                        a.result() == Some(actionqueue_core::mutation::AttemptResultKind::Suspended)
+                        matches!(
+                            a.result(),
+                            Some(
+                                actionqueue_core::mutation::AttemptResultKind::Suspended
+                                    | actionqueue_core::mutation::AttemptResultKind::Awaiting
+                            )
+                        )
                     })
                     .count() as u32
             })
             .unwrap_or(0);
-        let effective_attempt = worker_result.attempt_number.saturating_sub(suspended_count);
+        let effective_attempt = worker_result.attempt_number.saturating_sub(non_failure_count);
 
         // Determine target state by delegating to the canonical retry decision
         // function. This gets us defensive validation (rejects N+1 paths, validates
@@ -1030,21 +1045,8 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
                     .filter(|r| !r.state().is_terminal())
                     .map(|r| (r.id(), r.state()))
                     .collect();
-                for (run_id, current_state) in runs_to_cancel {
-                    let seq = self.next_sequence()?;
-                    let _ = self
-                        .authority
-                        .submit_command(
-                            MutationCommand::RunStateTransition(RunStateTransitionCommand::new(
-                                seq,
-                                run_id,
-                                current_state,
-                                RunState::Canceled,
-                                current_time,
-                            )),
-                            DurabilityPolicy::Immediate,
-                        )
-                        .map_err(DispatchError::Authority)?;
+                for (run_id, prev_state) in runs_to_cancel {
+                    self.cancel_run_and_release_key(run_id, blocked_id, prev_state, current_time)?;
                 }
             }
         }
@@ -1123,31 +1125,12 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
                     .collect();
 
                 for (run_id, prev_state) in runs_to_cancel {
-                    let seq = self.next_sequence()?;
-                    let _ = self
-                        .authority
-                        .submit_command(
-                            MutationCommand::RunStateTransition(RunStateTransitionCommand::new(
-                                seq,
-                                run_id,
-                                prev_state,
-                                RunState::Canceled,
-                                current_time,
-                            )),
-                            DurabilityPolicy::Immediate,
-                        )
-                        .map_err(DispatchError::Authority)?;
-
-                    // Release concurrency key for cascade-canceled runs.
-                    // Without this, a Suspended run with HoldDuringRetry policy
-                    // would permanently leak its concurrency key slot.
-                    Self::try_release_concurrency_key(
-                        &self.authority,
-                        &mut self.key_gate,
+                    self.cancel_run_and_release_key(
                         run_id,
                         descendant_id,
-                        RunState::Canceled,
-                    );
+                        prev_state,
+                        current_time,
+                    )?;
                 }
 
                 // All descendant runs are now canceled — mark terminal in tracker.
@@ -1356,8 +1339,76 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         Ok(())
     }
 
+    /// Durably cancels a non-terminal run, then releases its concurrency key.
+    ///
+    /// Every cancellation cascade goes through this method so that release is
+    /// inseparable from cancellation for runs without an executing worker. The
+    /// key is released only when this run actually holds it: Scheduled and
+    /// Ready runs never acquired one, so they release nothing and emit no
+    /// warning.
+    ///
+    /// A run whose worker is still executing (present in `in_flight`) keeps
+    /// the key. Releasing it here would let a competitor start under the same
+    /// key while the worker runs, violating the mutual exclusion the key
+    /// exists for. Today the worker's eventual result is rejected by the
+    /// authority's previous-state check. `process_worker_result` propagates
+    /// that rejection as a tick error before releasing the key, leaving the
+    /// slot held until restart. The canceled entry also remains in `in_flight`:
+    /// its next lease heartbeat is rejected and can fail every subsequent tick
+    /// before worker results are drained. Restart creates an empty key gate;
+    /// it does not rebuild ownership from the projection, so even keys held
+    /// under HoldDuringRetry are lost. AQ-08 owns reconciling in-flight workers
+    /// and their heartbeats after dependency or hierarchy cancellation;
+    /// see the AQ-08 handoff in docs/planning/aq-cont-1/aq-02-review-remediation.md.
+    fn cancel_run_and_release_key(
+        &mut self,
+        run_id: RunId,
+        task_id: TaskId,
+        prev_state: RunState,
+        current_time: u64,
+    ) -> Result<(), DispatchError> {
+        let seq = self.next_sequence()?;
+        let _ = self
+            .authority
+            .submit_command(
+                MutationCommand::RunStateTransition(RunStateTransitionCommand::new(
+                    seq,
+                    run_id,
+                    prev_state,
+                    RunState::Canceled,
+                    current_time,
+                )),
+                DurabilityPolicy::Immediate,
+            )
+            .map_err(DispatchError::Authority)?;
+
+        if self.in_flight.contains_key(&run_id) {
+            tracing::debug!(
+                %run_id, %task_id, ?prev_state,
+                "run canceled while in flight; concurrency key held until the worker is reconciled"
+            );
+            return Ok(());
+        }
+        let holds_key = self
+            .authority
+            .projection()
+            .get_task(&task_id)
+            .and_then(|task| task.constraints().concurrency_key().map(ConcurrencyKey::new))
+            .is_some_and(|key| self.key_gate.key_holder(&key) == Some(run_id));
+        if holds_key {
+            Self::try_release_concurrency_key(
+                &self.authority,
+                &mut self.key_gate,
+                run_id,
+                task_id,
+                RunState::Canceled,
+            );
+        }
+        Ok(())
+    }
+
     /// Attempts to release the concurrency key for a run entering a terminal or
-    /// RetryWait state, depending on the task's hold policy.
+    /// RetryWait, Suspended, or Awaiting state, depending on the task's policies.
     fn try_release_concurrency_key(
         authority: &StorageMutationAuthority<W, ReplayReducer>,
         key_gate: &mut KeyGate,
@@ -1367,6 +1418,13 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
     ) {
         let should_release = if target_state.is_terminal() {
             true
+        } else if target_state == RunState::Awaiting {
+            // AQ-03 adds the persisted per-task wait policy (AQ-ADR-009). Until
+            // then the accessor always returns the default, ReleaseWhileAwaiting,
+            // so HoldWhileAwaiting is not selectable here yet.
+            authority.projection().get_task(&task_id).is_some_and(|task| {
+                task.constraints().concurrency_key_wait_policy().releases_while_awaiting()
+            })
         } else if target_state == RunState::RetryWait || target_state == RunState::Suspended {
             // Suspended follows the same hold policy as RetryWait: the run is paused
             // and may resume, so whether the key is held depends on the task's policy.
@@ -1876,21 +1934,8 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
                 .filter(|r| !r.state().is_terminal())
                 .map(|r| (r.id(), r.state()))
                 .collect();
-            for (run_id, current_state) in runs_to_cancel {
-                let seq = self.next_sequence()?;
-                let _ = self
-                    .authority
-                    .submit_command(
-                        MutationCommand::RunStateTransition(RunStateTransitionCommand::new(
-                            seq,
-                            run_id,
-                            current_state,
-                            RunState::Canceled,
-                            current_time,
-                        )),
-                        DurabilityPolicy::Immediate,
-                    )
-                    .map_err(DispatchError::Authority)?;
+            for (run_id, prev_state) in runs_to_cancel {
+                self.cancel_run_and_release_key(run_id, task_id, prev_state, current_time)?;
             }
         }
         Ok(())
@@ -2688,5 +2733,271 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
     /// Consumes the dispatch loop and returns the mutation authority.
     pub fn into_authority(self) -> StorageMutationAuthority<W, ReplayReducer> {
         self.authority
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use actionqueue_core::task::constraints::TaskConstraints;
+    use actionqueue_core::task::metadata::TaskMetadata;
+    use actionqueue_core::task::run_policy::RunPolicy;
+    use actionqueue_core::task::task_spec::TaskPayload;
+    use actionqueue_engine::time::clock::MockClock;
+    use actionqueue_executor_local::handler::{ExecutorContext, HandlerOutput};
+    use actionqueue_storage::recovery::bootstrap::load_projection_from_storage;
+
+    use super::*;
+
+    struct DependencyHandler;
+
+    impl ExecutorHandler for DependencyHandler {
+        fn execute(&self, ctx: ExecutorContext) -> HandlerOutput {
+            match ctx.input.payload.as_slice() {
+                b"suspend" => HandlerOutput::Suspended { output: None, consumption: vec![] },
+                b"fail" => HandlerOutput::TerminalFailure {
+                    error: "prerequisite failed".into(),
+                    consumption: vec![],
+                },
+                _ => HandlerOutput::Success { output: None, consumption: vec![] },
+            }
+        }
+    }
+
+    fn task(payload: &[u8], key: Option<&str>) -> TaskSpec {
+        let mut constraints = TaskConstraints::new(3, None, key.map(str::to_owned)).unwrap();
+        constraints.set_concurrency_key_hold_policy(ConcurrencyKeyHoldPolicy::HoldDuringRetry);
+        TaskSpec::new(
+            TaskId::new(),
+            TaskPayload::new(payload.to_vec()),
+            RunPolicy::Once,
+            constraints,
+            TaskMetadata::default(),
+        )
+        .unwrap()
+    }
+
+    async fn dependency_cancellation_releases_held_key(catch_up: bool) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut dispatch = new_dispatch(dir.path(), DependencyHandler);
+
+        let suspended = task(b"suspend", Some("shared"));
+        let suspended_id = suspended.id();
+        dispatch.submit_task(suspended).unwrap();
+        let _ = dispatch.run_until_idle().await.unwrap();
+        let suspended_run = dispatch.projection().run_ids_for_task(suspended_id)[0];
+        assert_eq!(dispatch.projection().get_run_state(&suspended_run), Some(&RunState::Suspended));
+
+        let competitor = task(b"success", Some("shared"));
+        let competitor_id = competitor.id();
+        dispatch.submit_task(competitor).unwrap();
+        let _ = dispatch.run_until_idle().await.unwrap();
+        let competitor_run = dispatch.projection().run_ids_for_task(competitor_id)[0];
+        assert_eq!(dispatch.projection().get_run_state(&competitor_run), Some(&RunState::Ready));
+
+        if catch_up {
+            // Model the gap between a gate learning of dependency failure and
+            // committing cancellation, keeping the existing key owner in memory.
+            dispatch.dependency_gate.force_fail(suspended_id);
+        } else {
+            let prerequisite = task(b"fail", None);
+            let prerequisite_id = prerequisite.id();
+            dispatch.submit_task(prerequisite).unwrap();
+            dispatch.declare_dependency(suspended_id, vec![prerequisite_id]).unwrap();
+        }
+        let _ = dispatch.run_until_idle().await.unwrap();
+        assert_eq!(dispatch.projection().get_run_state(&suspended_run), Some(&RunState::Canceled));
+        assert_eq!(
+            dispatch.projection().get_run_state(&competitor_run),
+            Some(&RunState::Completed),
+            "dependency cancellation must free the held key without a restart"
+        );
+    }
+
+    #[tokio::test]
+    async fn dependency_failure_cascade_releases_suspended_key() {
+        dependency_cancellation_releases_held_key(false).await;
+    }
+
+    #[tokio::test]
+    async fn dependency_failure_catch_up_releases_suspended_key() {
+        dependency_cancellation_releases_held_key(true).await;
+    }
+
+    /// Collects log lines written by a thread-local tracing subscriber.
+    #[derive(Clone, Default)]
+    struct LogBuffer(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for LogBuffer {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl LogBuffer {
+        fn contents(&self) -> String {
+            String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
+        }
+    }
+
+    fn capture_warnings() -> (LogBuffer, tracing::subscriber::DefaultGuard) {
+        let buffer = LogBuffer::default();
+        let writer = buffer.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::WARN)
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish();
+        let guard = tracing::subscriber::set_default(subscriber);
+        (buffer, guard)
+    }
+
+    fn new_dispatch<H: ExecutorHandler + 'static>(
+        dir: &std::path::Path,
+        handler: H,
+    ) -> DispatchLoop<
+        actionqueue_storage::wal::writer::InstrumentedWalWriter<
+            actionqueue_storage::wal::fs_writer::WalFsWriter,
+        >,
+        H,
+        MockClock,
+    > {
+        let recovery = load_projection_from_storage(dir).unwrap();
+        let authority = StorageMutationAuthority::new(recovery.wal_writer, recovery.projection);
+        DispatchLoop::new(
+            authority,
+            handler,
+            MockClock::new(1000),
+            DispatchConfig::new(
+                BackoffStrategyConfig::Fixed { interval: Duration::ZERO },
+                1,
+                30,
+                None,
+                None,
+            ),
+        )
+        .unwrap()
+    }
+
+    #[cfg(feature = "actor")]
+    #[test]
+    fn recovery_skips_actors_with_invalid_traits_without_inventing_a_label() {
+        use actionqueue_core::ids::ActorId;
+        use actionqueue_storage::wal::event::{WalEvent, WalEventType};
+        use actionqueue_storage::wal::writer::WalWriter;
+
+        let (log, _guard) = capture_warnings();
+        let dir = tempfile::tempdir().unwrap();
+        let invalid_id = ActorId::new();
+        let valid_id = ActorId::new();
+        {
+            let mut recovery = load_projection_from_storage(dir.path()).unwrap();
+            for (sequence, actor_id, label) in [(1, invalid_id, "bad trait"), (2, valid_id, "_")] {
+                recovery
+                    .wal_writer
+                    .append(&WalEvent::new(
+                        sequence,
+                        WalEventType::ActorRegistered {
+                            actor_id,
+                            identity: "persisted-actor".into(),
+                            executor_traits: vec![label.into()],
+                            department: None,
+                            heartbeat_interval_secs: 30,
+                            tenant_id: None,
+                            timestamp: 1000,
+                        },
+                    ))
+                    .unwrap();
+            }
+            recovery.wal_writer.flush().unwrap();
+        }
+
+        let dispatch = new_dispatch(dir.path(), DependencyHandler);
+        assert!(dispatch.projection().get_actor(&invalid_id).is_some());
+        assert!(dispatch.actor_registry().get(invalid_id).is_none());
+        assert!(dispatch.actor_registry().is_active(valid_id));
+        let contents = log.contents();
+        assert!(contents.contains("skipping actor registration"), "{contents}");
+        assert!(contents.contains(&invalid_id.to_string()), "{contents}");
+    }
+
+    #[tokio::test]
+    async fn dependency_cascade_skips_release_for_runs_that_never_held_the_key() {
+        let (log, _guard) = capture_warnings();
+        tracing::warn!("capture-probe");
+        let dir = tempfile::tempdir().unwrap();
+        let mut dispatch = new_dispatch(dir.path(), DependencyHandler);
+
+        let prerequisite = task(b"fail", None);
+        let prerequisite_id = prerequisite.id();
+        let dependent = task(b"success", Some("shared"));
+        let dependent_id = dependent.id();
+        dispatch.submit_task(prerequisite).unwrap();
+        dispatch.submit_task(dependent).unwrap();
+        dispatch.declare_dependency(dependent_id, vec![prerequisite_id]).unwrap();
+        let _ = dispatch.run_until_idle().await.unwrap();
+
+        let dependent_run = dispatch.projection().run_ids_for_task(dependent_id)[0];
+        assert_eq!(dispatch.projection().get_run_state(&dependent_run), Some(&RunState::Canceled));
+        assert_eq!(dispatch.key_gate.key_holder(&ConcurrencyKey::new("shared")), None);
+        let contents = log.contents();
+        assert!(contents.contains("capture-probe"), "log capture is not wired: {contents}");
+        assert!(
+            !contents.contains("key not held by this run"),
+            "cancelling a run that never acquired the key must not warn: {contents}"
+        );
+    }
+
+    /// Blocks every execution until the test releases it.
+    struct BlockingHandler {
+        release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+
+    impl ExecutorHandler for BlockingHandler {
+        fn execute(&self, _ctx: ExecutorContext) -> HandlerOutput {
+            let _ = self.release.lock().unwrap().recv();
+            HandlerOutput::Success { output: None, consumption: vec![] }
+        }
+    }
+
+    #[tokio::test]
+    async fn dependency_cascade_keeps_key_while_worker_is_still_executing() {
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let dir = tempfile::tempdir().unwrap();
+        let mut dispatch = new_dispatch(
+            dir.path(),
+            BlockingHandler { release: std::sync::Mutex::new(release_rx) },
+        );
+
+        let blocked = task(b"block", Some("shared"));
+        let blocked_id = blocked.id();
+        dispatch.submit_task(blocked).unwrap();
+        for _ in 0..3 {
+            if !dispatch.in_flight.is_empty() {
+                break;
+            }
+            let _ = dispatch.tick().await.unwrap();
+        }
+        let blocked_run = dispatch.projection().run_ids_for_task(blocked_id)[0];
+        assert!(dispatch.in_flight.contains_key(&blocked_run), "worker must be in flight");
+        assert_eq!(dispatch.projection().get_run_state(&blocked_run), Some(&RunState::Running));
+        let key = ConcurrencyKey::new("shared");
+        assert_eq!(dispatch.key_gate.key_holder(&key), Some(blocked_run));
+
+        dispatch.dependency_gate.force_fail(blocked_id);
+        dispatch.cancel_dependency_failed_runs(1000).unwrap();
+
+        assert_eq!(dispatch.projection().get_run_state(&blocked_run), Some(&RunState::Canceled));
+        assert_eq!(
+            dispatch.key_gate.key_holder(&key),
+            Some(blocked_run),
+            "an in-flight run keeps its key so no competitor starts under it"
+        );
+        release_tx.send(()).unwrap();
     }
 }

@@ -362,6 +362,12 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
             });
         }
 
+        if command.previous_state() == RunState::Awaiting
+            || command.new_state() == RunState::Awaiting
+        {
+            return Err(MutationValidationError::AwaitingTransitionRequiresContinuationRecord);
+        }
+
         Ok(())
     }
 
@@ -1056,7 +1062,12 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
                     WalEventType::ActorRegistered {
                         actor_id: reg.actor_id(),
                         identity: reg.identity().to_string(),
-                        capabilities: reg.capabilities().as_slice().to_vec(),
+                        executor_traits: reg
+                            .executor_traits()
+                            .as_slice()
+                            .iter()
+                            .map(|value| value.as_str().to_owned())
+                            .collect(),
                         department: reg.department().map(|d| d.as_str().to_string()),
                         heartbeat_interval_secs: reg.heartbeat_interval_secs(),
                         tenant_id: reg.tenant_id(),
@@ -1250,6 +1261,8 @@ struct LeaseCloseParams<'a> {
 /// Typed validation failures from the authority validation stage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MutationValidationError {
+    /// Awaiting transitions require compound continuation records (AQ-06).
+    AwaitingTransitionRequiresContinuationRecord,
     /// Projection sequence could not be advanced because it overflowed `u64`.
     SequenceOverflow,
     /// Command sequence is stale or otherwise non-monotonic.
@@ -1503,6 +1516,9 @@ impl std::fmt::Display for MutationValidationError {
                     "mutation rejected for run {run_id}: previous_state mismatch \
                      expected={expected:?} actual={actual:?}"
                 )
+            }
+            MutationValidationError::AwaitingTransitionRequiresContinuationRecord => {
+                write!(f, "awaiting transition requires a continuation record")
             }
             MutationValidationError::InvalidTransition { run_id, from, to } => {
                 write!(

@@ -514,7 +514,7 @@ fn bootstrap_reducer_from_snapshot(
             WalEventType::ActorRegistered {
                 actor_id: actor.actor_id,
                 identity: actor.identity.clone(),
-                capabilities: actor.capabilities.clone(),
+                executor_traits: actor.executor_traits.clone(),
                 department: actor.department.clone(),
                 heartbeat_interval_secs: actor.heartbeat_interval_secs,
                 tenant_id: actor.tenant_id,

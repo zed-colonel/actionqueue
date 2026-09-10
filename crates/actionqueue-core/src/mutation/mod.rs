@@ -288,6 +288,9 @@ pub enum AttemptResultKind {
     /// Attempt was preempted (e.g. budget exhaustion) and the run is now Suspended.
     /// Does not count toward the max_attempts retry cap.
     Suspended,
+    /// Attempt yielded to a continuation; excluded from the failure count (AQ-H13).
+    /// Appended to preserve WAL v5 postcard discriminants until AQ-03.
+    Awaiting,
 }
 
 /// Semantic grouping of attempt result kind, optional error detail, and optional
@@ -314,7 +317,7 @@ pub struct AttemptOutcome {
 /// Typed validation error for [`AttemptOutcome`] reconstruction from raw parts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AttemptOutcomeError {
-    /// A `Success` or `Suspended` outcome was provided with a non-None error field.
+    /// A `Success`, `Suspended`, or `Awaiting` outcome was provided with a non-None error field.
     SuccessWithError {
         /// The unexpected error detail.
         error: String,
@@ -335,7 +338,11 @@ impl std::fmt::Display for AttemptOutcomeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             AttemptOutcomeError::SuccessWithError { error } => {
-                write!(f, "Success/Suspended outcome must not have an error detail, got: {error}")
+                write!(
+                    f,
+                    "Success/Suspended/Awaiting outcome must not have an error detail, got: \
+                     {error}"
+                )
             }
             AttemptOutcomeError::NonSuccessWithoutError { result } => {
                 write!(f, "{result:?} outcome must have an error detail")
@@ -389,11 +396,19 @@ impl AttemptOutcome {
         Self { result: AttemptResultKind::Suspended, error: None, output }
     }
 
+    /// Creates an awaiting outcome: the attempt paused on a durable continuation.
+    ///
+    /// Awaiting attempts carry no error and, like suspension, do not count
+    /// toward the retry cap.
+    pub fn awaiting() -> Self {
+        Self { result: AttemptResultKind::Awaiting, error: None, output: None }
+    }
+
     /// Reconstructs an outcome from raw parts with semantic validation.
     ///
     /// This is intended for WAL replay / deserialization paths where the result
     /// kind, error, and output are stored separately. Validates that:
-    /// - `Success` / `Suspended` have `error == None` (output is optional)
+    /// - `Success` / `Suspended` / `Awaiting` have `error == None` (output is optional)
     /// - `Failure` / `Timeout` have `error == Some(_)` and `output == None`
     ///
     /// # Errors
@@ -406,7 +421,9 @@ impl AttemptOutcome {
         output: Option<Vec<u8>>,
     ) -> Result<Self, AttemptOutcomeError> {
         match result {
-            AttemptResultKind::Success | AttemptResultKind::Suspended => {
+            AttemptResultKind::Success
+            | AttemptResultKind::Suspended
+            | AttemptResultKind::Awaiting => {
                 if let Some(err) = error {
                     return Err(AttemptOutcomeError::SuccessWithError { error: err });
                 }
@@ -1504,3 +1521,15 @@ impl LedgerAppendCommand {
         self.timestamp
     }
 }
+
+pub mod admission;
+pub use admission::*;
+
+pub mod attempt;
+pub use attempt::*;
+
+pub mod signal;
+pub use signal::*;
+
+pub mod control;
+pub use control::*;

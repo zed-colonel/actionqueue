@@ -24,6 +24,7 @@ tracing = "0.1"
 
 [dev-dependencies]
 tempfile = "3.0"
+tracing-subscriber = { version = "0.3", features = ["fmt"] }
 
 [dependencies.actionqueue-budget]
 version = "0.1.2"

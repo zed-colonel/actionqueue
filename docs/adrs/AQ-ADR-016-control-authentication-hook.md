@@ -1,7 +1,6 @@
 # AQ-ADR-016 — Control authentication hook
 
-- **Status:** Proposed. The recommended default below is the working implementation choice
-  until code review produces a concrete counterexample (implementation plan, Section 3).
+- **Status:** Accepted.
 - **Decide before:** `AQ-11`
 - **Contract:** `AQ-CONT-1`
 - **Invariants:** AQ-H11, AQ-H15
@@ -37,6 +36,7 @@ platform tests prove references do not widen permissions.
 
 | Field | Value |
 |---|---|
-| Accepted in PR | _pending_ |
-| Accepted on | _pending_ |
+| Accepted in PR | `AQ-02` |
+| Accepted on | 2026-09-09 |
 | Superseded by | — |
+| Deferred verification | Verified in `AQ-02`: `ControlMutationContext` round trip, and the acceptance proof that executor traits grant no RBAC permission (`tests/acceptance/executor_trait_matching.rs`). Deferred to `AQ-11`: rejection of control mutations without context, and verbatim replay of context. |

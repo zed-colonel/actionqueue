@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use actionqueue_core::actor::{ActorCapabilities, ActorRegistration};
+use actionqueue_core::actor::{ActorRegistration, ExecutorTraits};
 use actionqueue_core::ids::ActorId;
 use actionqueue_engine::time::clock::Clock;
 use actionqueue_executor_local::handler::{ExecutorContext, ExecutorHandler, HandlerOutput};
@@ -69,7 +69,7 @@ fn make_config(dir: PathBuf) -> RuntimeConfig {
 
 fn make_registration(actor_id: ActorId) -> ActorRegistration {
     let caps =
-        ActorCapabilities::new(vec!["compute".to_string(), "review".to_string()]).expect("caps");
+        ExecutorTraits::new(vec!["compute".to_string(), "review".to_string()]).expect("caps");
     ActorRegistration::new(actor_id, "test-actor", caps, 10)
 }
 
