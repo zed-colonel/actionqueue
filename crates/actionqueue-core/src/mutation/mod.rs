@@ -338,7 +338,11 @@ impl std::fmt::Display for AttemptOutcomeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             AttemptOutcomeError::SuccessWithError { error } => {
-                write!(f, "Success/Suspended/Awaiting outcome must not have an error detail, got: {error}")
+                write!(
+                    f,
+                    "Success/Suspended/Awaiting outcome must not have an error detail, got: \
+                     {error}"
+                )
             }
             AttemptOutcomeError::NonSuccessWithoutError { result } => {
                 write!(f, "{result:?} outcome must have an error detail")

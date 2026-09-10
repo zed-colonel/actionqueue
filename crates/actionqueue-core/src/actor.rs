@@ -4,9 +4,8 @@
 //! This module defines the pure domain types; storage, routing, and heartbeat
 //! monitoring logic lives in `actionqueue-actor`.
 
-use crate::ids::{ActorId, DepartmentId, TenantId};
-
 pub use crate::executor::ExecutorTraits;
+use crate::ids::{ActorId, DepartmentId, TenantId};
 
 /// Actor registration record.
 ///

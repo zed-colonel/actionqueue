@@ -37,7 +37,7 @@ pub fn update(state: &crate::http::RouterStateInner) {
         }
     }
 
-    for run_state in ALL_RUN_STATES {
+    for run_state in RunState::ALL {
         collectors
             .runs_total()
             .with_label_values(&[state_label(run_state)])
@@ -48,18 +48,6 @@ pub fn update(state: &crate::http::RouterStateInner) {
     collectors.runs_running().set(counts.get(RunState::Running) as f64);
 }
 
-const ALL_RUN_STATES: [RunState; 9] = [
-    RunState::Scheduled,
-    RunState::Ready,
-    RunState::Leased,
-    RunState::Running,
-    RunState::RetryWait,
-    RunState::Completed,
-    RunState::Failed,
-    RunState::Canceled,
-    RunState::Awaiting,
-];
-
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct RunStateCounts {
     scheduled: u64,
@@ -67,6 +55,7 @@ struct RunStateCounts {
     leased: u64,
     running: u64,
     retry_wait: u64,
+    suspended: u64,
     completed: u64,
     failed: u64,
     canceled: u64,
@@ -81,7 +70,7 @@ impl RunStateCounts {
             RunState::Leased => self.leased += 1,
             RunState::Running => self.running += 1,
             RunState::RetryWait => self.retry_wait += 1,
-            RunState::Suspended => {}
+            RunState::Suspended => self.suspended += 1,
             RunState::Awaiting => self.awaiting += 1,
             RunState::Completed => self.completed += 1,
             RunState::Failed => self.failed += 1,
@@ -96,7 +85,7 @@ impl RunStateCounts {
             RunState::Leased => self.leased,
             RunState::Running => self.running,
             RunState::RetryWait => self.retry_wait,
-            RunState::Suspended => 0,
+            RunState::Suspended => self.suspended,
             RunState::Awaiting => self.awaiting,
             RunState::Completed => self.completed,
             RunState::Failed => self.failed,
@@ -319,6 +308,7 @@ mod tests {
         assert!(is_lag_eligible(RunState::Leased));
         assert!(is_lag_eligible(RunState::Running));
         assert!(is_lag_eligible(RunState::RetryWait));
+        assert!(!is_lag_eligible(RunState::Suspended));
         assert!(!is_lag_eligible(RunState::Completed));
         assert!(!is_lag_eligible(RunState::Failed));
         assert!(!is_lag_eligible(RunState::Canceled));
@@ -498,6 +488,21 @@ mod tests {
     }
     #[test]
     fn awaiting_is_counted_without_running_or_lag() {
+        assert_yielded_state_is_counted_without_running_or_lag(
+            actionqueue_core::run::RunState::Awaiting,
+        );
+    }
+
+    #[test]
+    fn suspended_is_counted_without_running_or_lag() {
+        assert_yielded_state_is_counted_without_running_or_lag(
+            actionqueue_core::run::RunState::Suspended,
+        );
+    }
+
+    fn assert_yielded_state_is_counted_without_running_or_lag(
+        run_state: actionqueue_core::run::RunState,
+    ) {
         let task_id = TaskId::new();
         let mut projection = ReplayReducer::new();
         apply_event(
@@ -506,19 +511,18 @@ mod tests {
             WalEventType::TaskCreated { task_spec: build_task_spec(task_id), timestamp: 1 },
         );
         let mut sequence = 2;
-        seed_run_state(
-            &mut projection,
-            &mut sequence,
-            RunId::new(),
-            task_id,
-            actionqueue_core::run::RunState::Awaiting,
-            100,
-        );
+        seed_run_state(&mut projection, &mut sequence, RunId::new(), task_id, run_state, 100);
         let metrics = Arc::new(MetricsRegistry::new(None).unwrap());
         let state = build_state(projection, Arc::clone(&metrics), 200);
         update(&state);
-        assert_eq!(run_total_value(&metrics, actionqueue_core::run::RunState::Awaiting), 1.0);
+        assert_eq!(run_total_value(&metrics, run_state), 1.0);
+        assert_eq!(metrics.collectors().runs_ready().get(), 0.0);
         assert_eq!(metrics.collectors().runs_running().get(), 0.0);
         assert_eq!(metrics.collectors().scheduling_lag_seconds().get_sample_count(), 0);
+
+        // Reusing the registry must clear the old sample when the run disappears.
+        let empty_state = build_state(ReplayReducer::new(), Arc::clone(&metrics), 201);
+        update(&empty_state);
+        assert_eq!(run_total_value(&metrics, run_state), 0.0);
     }
 }

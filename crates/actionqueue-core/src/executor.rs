@@ -29,11 +29,13 @@ impl std::fmt::Display for ExecutorTraitError {
             }
             Self::Collection { count } => write!(
                 f,
-                "executor trait collection must contain 1..={MAX_EXECUTOR_TRAITS} entries before deduplication (received {count})"
+                "executor trait collection must contain 1..={MAX_EXECUTOR_TRAITS} entries before \
+                 deduplication (received {count})"
             ),
             Self::Label { index, source } => write!(
                 f,
-                "executor trait label at index {index}: {source} (maximum {MAX_EXECUTOR_TRAIT_BYTES} bytes; no whitespace or control characters)"
+                "executor trait label at index {index}: {source} (maximum \
+                 {MAX_EXECUTOR_TRAIT_BYTES} bytes; no whitespace or control characters)"
             ),
         }
     }
@@ -48,8 +50,12 @@ impl std::error::Error for ExecutorTraitError {
     }
 }
 
-crate::bounded::bounded_text!(/// A bounded executor routing label.
-    ExecutorTrait, crate::limits::MAX_EXECUTOR_TRAIT_BYTES, crate::bounded::TextGrammar::RoutingLabel);
+crate::bounded::bounded_text!(
+    /// A bounded executor routing label.
+    ExecutorTrait,
+    crate::limits::MAX_EXECUTOR_TRAIT_BYTES,
+    crate::bounded::TextGrammar::RoutingLabel
+);
 
 /// A non-empty, sorted and deduplicated set of executor routing labels.
 /// Transparent serialization preserves the legacy vector's postcard layout, but

@@ -132,20 +132,7 @@ pub fn transition_rejection(from: RunState, to: RunState) -> Option<RunTransitio
 
 /// Returns all valid transitions from a given state.
 pub fn valid_transitions(from: RunState) -> Vec<RunState> {
-    let states = [
-        RunState::Scheduled,
-        RunState::Ready,
-        RunState::Leased,
-        RunState::Running,
-        RunState::RetryWait,
-        RunState::Suspended,
-        RunState::Completed,
-        RunState::Failed,
-        RunState::Canceled,
-        RunState::Awaiting,
-    ];
-
-    states.into_iter().filter(|&to| is_valid_transition(from, to)).collect()
+    RunState::ALL.into_iter().filter(|&to| is_valid_transition(from, to)).collect()
 }
 
 /// Reason a lifecycle edge is forbidden.

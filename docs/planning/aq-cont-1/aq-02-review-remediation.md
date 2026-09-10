@@ -47,6 +47,73 @@ are recorded below.
 
 ## Review dispositions
 
+### Changes-requested review (eight findings)
+
+This section addresses the review supplied for this remediation run. Numbering
+in the historical review tables below belongs to earlier reviews.
+
+| Finding | Disposition | Change or follow-up |
+|---|---|---|
+| 1 | Fixed | Ran `cargo +nightly fmt --all`, including the pre-existing formatting difference in `tests/conformance/contract_boundaries.rs`, so the complete CI formatting gate can pass. No frozen evidence or contract files were changed. |
+| 2 | Fixed | Run metrics iterate `RunState::ALL` and count `Suspended` in both counter accessors. The seeded Suspended regression verifies a count of one, no Ready/Running count or scheduling lag, and reset to zero on a later empty projection. Awaiting uses the same assertions. The previous mergeable-review finding 9 covered stats and labels but missed this metrics discard. |
+| 3 | Fixed (documentation and ownership) | Cancellation rustdoc now names the propagated tick error and concurrency key retention until restart. AQ-08 owns worker-result reconciliation, with acceptance obligations below. |
+| 4 | Deferred to AQ-03 | Keep the planned clean break at store admission. The AQ-03 handoff below requires rejection before any snapshot/WAL decoding or repair and explicitly tests the silently ignored legacy JSON routing key. AQ-02 does not make pre-contract stores safe to open. |
+| 5 | Deferred to AQ-08 | Retain the disclosed `HandlerOutput` ceiling of 44: the new dispatch regression fixture must implement the current handler trait, which returns that type. Lowering the ceiling now would fail the required regression coverage; moving or disguising the use would only hide the footprint. AQ-08 owns replacement of the handler API and these fixtures, removal of the symbol, and changing its boundary stage to `forbid`. This remediation adds no uses and makes no policy bump. |
+| 6 | Fixed | `valid_transitions` enumerates `RunState::ALL`; the independent exhaustive transition oracle remains unchanged. |
+| 7 | Fixed | `AdmissionCommitCommand::control_context` returns `Option<&ControlMutationContext>` using `as_ref()`. |
+| 8 | Fixed | `AttemptDispositionCommitCommand` has one impl block, with the constructor before its accessors. |
+
+#### AQ-03 handoff: reject lineage before decode
+
+AQ-03 must gate every store-open, recovery, and restore path on a recognized target
+manifest and supported format before snapshot or WAL decode, replay fallback, or
+repair. A fixture with a pre-contract JSON snapshot containing a legacy task
+routing key must fail with a lineage error and preserve every store byte. This
+must hold even though `TaskConstraintsWire` currently ignores unknown fields and
+would silently decode that requirement as `None`. The same gate must precede
+lenient WAL repair; the existing detailed repair qualification below still applies.
+The AQ-03 reviewer must verify these ordering tests before accepting the new store
+lineage, rather than relying on serde to reject old data.
+
+#### AQ-08 handoff: reconcile canceled workers
+
+AQ-08 owns reconciliation of in-flight workers after dependency and hierarchy
+cancellation as part of the lease-fenced disposition cutover. Today a worker's
+eventual result fails the authority's previous-state check; `process_worker_result`
+propagates that failure from the tick before releasing the concurrency key. The
+key remains held until restart rebuilds the gate from the canceled projection.
+
+Required regression coverage: cancel a Running run whose worker is blocked, prove
+that a competing run cannot start while that worker is still active, then deliver
+its result and reconcile it without an unhandled tick error or subordinate
+mutations. Once the worker is reconciled, the competitor must proceed without a
+restart. Cover dependency and hierarchy cascades and preserve the durable Canceled
+state. Implement this alongside stale-result fencing; merely releasing the key at
+cancellation would violate mutual exclusion while the worker still executes.
+
+#### Changes-requested review verification
+
+All checks passed on 2026-09-09:
+
+| Check | Result |
+|---|---|
+| `cargo test -p actionqueue-daemon metrics::runs::tests` | 8 passed |
+| `cargo test --workspace` | 950 passed, 1 ignored |
+| `cargo test --workspace --features workflow` | 984 passed, 1 ignored |
+| `cargo test --workspace --features workflow,budget,actor,platform` | 1,020 passed, 1 ignored |
+| `cargo test -p actionqueue-core --no-default-features` | 88 passed |
+| `cargo aq-conformance` | 39 passed, 1 ignored |
+| `cargo build --workspace` | Passed |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | Passed |
+| `cargo +nightly fmt --all -- --check` | Passed |
+| `cargo fmt --all -- --check` | Passed (existing warnings about nightly-only options) |
+| `git diff --check` | Passed |
+
+The ignored test remains the AQ-03 pre-contract-store rejection scaffold. No
+failure required a retry in this run. No frozen files or boundary policies changed.
+
+### Initial review
+
 | Finding | Disposition | Change |
 |---|---|---|
 | 1 | Fixed | Envelope correlation and source are optional; constrained filters require a present, equal value. Missing and null attribution round-trip. |

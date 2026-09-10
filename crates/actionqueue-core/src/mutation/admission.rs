@@ -28,8 +28,8 @@ impl AdmissionCommitCommand {
         &self.plan
     }
     /// Returns control context.
-    pub fn control_context(&self) -> &Option<ControlMutationContext> {
-        &self.control_context
+    pub fn control_context(&self) -> Option<&ControlMutationContext> {
+        self.control_context.as_ref()
     }
     /// Returns timestamp.
     pub fn timestamp(&self) -> u64 {

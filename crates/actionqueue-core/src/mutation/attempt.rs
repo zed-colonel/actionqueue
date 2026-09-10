@@ -113,6 +113,22 @@ pub struct AttemptDispositionCommitCommand {
     timestamp: u64,
 }
 impl AttemptDispositionCommitCommand {
+    /// Constructs a proposal against explicit state and lease expectations.
+    pub fn new(
+        expected: AttemptCommitExpectation,
+        disposition: AttemptDisposition,
+        timestamp: u64,
+    ) -> Self {
+        Self {
+            expected_sequence: expected.expected_sequence,
+            run_id: expected.run_id,
+            attempt_id: expected.attempt_id,
+            expected_state: expected.expected_state,
+            expected_lease: expected.expected_lease,
+            disposition,
+            timestamp,
+        }
+    }
     /// Returns expected sequence.
     pub fn expected_sequence(&self) -> u64 {
         self.expected_sequence
@@ -140,23 +156,5 @@ impl AttemptDispositionCommitCommand {
     /// Returns timestamp.
     pub fn timestamp(&self) -> u64 {
         self.timestamp
-    }
-}
-impl AttemptDispositionCommitCommand {
-    /// Constructs a proposal against explicit state and lease expectations.
-    pub fn new(
-        expected: AttemptCommitExpectation,
-        disposition: AttemptDisposition,
-        timestamp: u64,
-    ) -> Self {
-        Self {
-            expected_sequence: expected.expected_sequence,
-            run_id: expected.run_id,
-            attempt_id: expected.attempt_id,
-            expected_state: expected.expected_state,
-            expected_lease: expected.expected_lease,
-            disposition,
-            timestamp,
-        }
     }
 }

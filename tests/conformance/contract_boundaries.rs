@@ -1036,9 +1036,8 @@ mod unit {
 
     #[test]
     fn pub_crate_positions_count_as_public() {
-        let src =
-            "use serde_json::Value;\npub(crate) struct S { pub(crate) v: Value }\npub(super) \
-                   fn f(v: Value) {}\nstruct P { v: Value }\n";
+        let src = "use serde_json::Value;\npub(crate) struct S { pub(crate) v: Value \
+                   }\npub(super) fn f(v: Value) {}\nstruct P { v: Value }\n";
         assert_eq!(public_items(src), vec!["S::v", "f"]);
     }
 

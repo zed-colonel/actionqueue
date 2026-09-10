@@ -6,7 +6,6 @@
 //! - When the lease expires.
 
 use actionqueue_core::ids::RunId;
-
 pub use actionqueue_core::mutation::LeaseOwner;
 
 /// Typed lease-expiry timestamp represented in epoch seconds.

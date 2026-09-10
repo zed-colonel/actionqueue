@@ -1350,11 +1350,12 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
     /// the key. Releasing it here would let a competitor start under the same
     /// key while the worker runs, violating the mutual exclusion the key
     /// exists for. Today the worker's eventual result is rejected by the
-    /// authority's previous-state check before any release, so such a slot is
-    /// freed on restart, when the key gate is rebuilt from the projection and
-    /// a Canceled run holds nothing. Reconciling in-flight workers with
-    /// cascade cancellation is a pre-existing gap shared with the hierarchy
-    /// cascade and is outside AQ-02.
+    /// authority's previous-state check. `process_worker_result` propagates
+    /// that rejection as a tick error before releasing the key, leaving the
+    /// slot held until restart. Restart rebuilds the key gate from the
+    /// projection, where a Canceled run holds nothing. AQ-08 owns reconciling
+    /// in-flight worker results after dependency or hierarchy cancellation;
+    /// see the AQ-08 handoff in docs/planning/aq-cont-1/aq-02-review-remediation.md.
     fn cancel_run_and_release_key(
         &mut self,
         run_id: RunId,

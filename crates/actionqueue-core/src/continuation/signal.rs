@@ -3,10 +3,18 @@ use crate::bounded::{ContentHash, OpaqueRef};
 use crate::causal::{CausationLink, ControlMutationContext};
 use crate::data_ref::DataRef;
 use crate::ids::{CorrelationId, SignalId, TenantId};
-crate::bounded::bounded_text!(/// Bounded lowercase signal namespace.
-    SignalNamespace, crate::limits::MAX_SIGNAL_NAMESPACE_BYTES, crate::bounded::TextGrammar::LowercaseCode);
-crate::bounded::bounded_text!(/// Bounded lowercase signal kind.
-    SignalKind, crate::limits::MAX_SIGNAL_KIND_BYTES, crate::bounded::TextGrammar::LowercaseCode);
+crate::bounded::bounded_text!(
+    /// Bounded lowercase signal namespace.
+    SignalNamespace,
+    crate::limits::MAX_SIGNAL_NAMESPACE_BYTES,
+    crate::bounded::TextGrammar::LowercaseCode
+);
+crate::bounded::bounded_text!(
+    /// Bounded lowercase signal kind.
+    SignalKind,
+    crate::limits::MAX_SIGNAL_KIND_BYTES,
+    crate::bounded::TextGrammar::LowercaseCode
+);
 /// Structural SignalEnvelope; all text components validate on construction and decode.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
