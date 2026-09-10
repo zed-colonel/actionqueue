@@ -146,6 +146,7 @@ pub async fn handle(
     // in the durable task cancellation operation. Do not commit TaskCancel and
     // then hit AwaitingTransitionRequiresContinuationRecord in the loop below;
     // map that guard explicitly rather than returning HTTP 500 after a partial cancel.
+    let timestamp = state.clock.now();
     let status = if authority.projection().is_task_canceled(task_id) {
         "already_canceled"
     } else {
@@ -153,7 +154,6 @@ pub async fn handle(
             Some(s) => s,
             None => return internal_error_response("control sequence overflow"),
         };
-        let timestamp = sequence;
         let command =
             MutationCommand::TaskCancel(TaskCancelCommand::new(sequence, task_id, timestamp));
         match authority.submit_command(command, DurabilityPolicy::Immediate) {
@@ -174,7 +174,6 @@ pub async fn handle(
             Some(s) => s,
             None => return internal_error_response("control sequence overflow"),
         };
-        let timestamp = sequence;
         let command = MutationCommand::RunStateTransition(RunStateTransitionCommand::new(
             sequence,
             run_id,

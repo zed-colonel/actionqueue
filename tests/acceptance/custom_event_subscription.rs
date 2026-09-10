@@ -124,3 +124,76 @@ async fn custom_event_triggers_subscription_promotion() {
     boot.shutdown().expect("shutdown");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A budget gate keeps promoted runs Ready so the automatic snapshot captures
+/// the early-promotion state before any attempt can start.
+#[tokio::test]
+async fn subscription_promoted_ready_run_survives_snapshot_restart_and_backup() {
+    use actionqueue_core::budget::{BudgetConsumption, BudgetDimension};
+    use actionqueue_storage::{
+        recovery::bootstrap::recover_read_only,
+        store::{backup_store, inspect_store, open_store, restore_store, OpenOptions},
+        wal::repair::RepairPolicy,
+    };
+    #[derive(Debug)]
+    struct ConsumeBudget;
+    impl ExecutorHandler for ConsumeBudget {
+        fn execute(&self, _ctx: ExecutorContext) -> HandlerOutput {
+            HandlerOutput::Success {
+                output: None,
+                consumption: vec![BudgetConsumption::new(BudgetDimension::Token, 1)],
+            }
+        }
+    }
+    let base = tempfile::tempdir().unwrap();
+    let source = base.path().join("source");
+    let mut config = make_config(source.clone());
+    config.snapshot_event_threshold = Some(1);
+    let engine = ActionQueueEngine::new(config.clone(), ConsumeBudget);
+    let mut boot = engine.bootstrap_with_clock(MockClock::new(1000)).unwrap();
+    let task_id = TaskId::new();
+    boot.submit_task(
+        TaskSpec::new(
+            task_id,
+            TaskPayload::new(b"early-ready".to_vec()),
+            RunPolicy::repeat(2, 10000).unwrap(),
+            TaskConstraints::default(),
+            TaskMetadata::default(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    boot.allocate_budget(task_id, BudgetDimension::Token, 1).unwrap();
+    boot.create_subscription(task_id, EventFilter::Custom { key: "promote".into() }).unwrap();
+    let future_run = boot
+        .projection()
+        .runs_for_task(task_id)
+        .find(|run| run.scheduled_at() == 11000)
+        .unwrap()
+        .id();
+    boot.run_until_idle().await.unwrap();
+    assert!(boot.is_budget_exhausted(task_id, BudgetDimension::Token));
+    boot.fire_custom_event("promote".into()).unwrap();
+    assert_eq!(boot.tick().await.unwrap().dispatched, 0);
+    assert_eq!(boot.projection().get_run_state(&future_run), Some(&RunState::Ready));
+    let expected = boot.projection().projection_digest().unwrap();
+    boot.shutdown().unwrap();
+    let session = open_store(&source, OpenOptions::ReadOnly).unwrap();
+    let recovered = recover_read_only(&session, RepairPolicy::Strict).unwrap();
+    assert!(recovered.snapshot_loaded);
+    assert_eq!(recovered.projection.projection_digest().unwrap(), expected);
+    drop(session);
+    let backup = base.path().join("backup");
+    let restored = base.path().join("restored");
+    assert_eq!(backup_store(&source, &backup).unwrap().projection_digest, expected);
+    restore_store(&backup, &restored).unwrap();
+    assert_eq!(inspect_store(&restored).unwrap().projection_digest, expected);
+    for path in [source, restored] {
+        config.data_dir = path;
+        let engine = ActionQueueEngine::new(config.clone(), AlwaysSucceedHandler);
+        let boot = engine.bootstrap_with_clock(MockClock::new(1000)).unwrap();
+        assert_eq!(boot.projection().get_run_state(&future_run), Some(&RunState::Ready));
+        assert_eq!(boot.projection().projection_digest().unwrap(), expected);
+        boot.shutdown().unwrap();
+    }
+}

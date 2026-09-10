@@ -4,7 +4,6 @@
 //! remain strict projections of canonical core semantics.
 
 use std::fs;
-use std::io::Write;
 use std::path::PathBuf;
 
 use actionqueue_core::budget::BudgetDimension;
@@ -319,84 +318,57 @@ fn d06_t_n1_mapping_boundary_rejects_duplicate_run_ids() {
 
 #[test]
 fn d06_t_n2_loader_rejects_snapshot_payload_that_fails_mapping_invariants() {
+    use actionqueue_storage::{
+        recovery::reducer::ReplayReducer,
+        snapshot::build::build_snapshot_from_projection,
+        wal::event::{WalEvent, WalEventType},
+    };
     let path = temp_snapshot_path();
     let task_id = TaskId::from_uuid(uuid::Uuid::from_u128(0xA200));
-    let run_id = RunId::from_uuid(uuid::Uuid::from_u128(0xB200));
-
-    // Ready with scheduled_at > created_at is rejected at deserialization.
-    let invalid_json = serde_json::json!({
-        "id": run_id,
-        "task_id": task_id,
-        "state": "Ready",
-        "current_attempt_id": null,
-        "attempt_count": 0,
-        "created_at": 1_000,
-        "scheduled_at": 2_000,
-        "effective_priority": 0
-    });
-    let deser_result = serde_json::from_value::<RunInstance>(invalid_json);
-    assert!(
-        deser_result.is_err(),
-        "Ready with scheduled_at > created_at must be rejected at deserialization"
-    );
-
-    // Also verify the loader rejects a raw snapshot containing this violation.
-    // Build the snapshot JSON by hand (bypassing RunInstance construction).
-    let snapshot_json = serde_json::json!({
-        "version": 4,
-        "timestamp": 2,
-        "metadata": {
-            "schema_version": SNAPSHOT_SCHEMA_VERSION,
-            "wal_sequence": 20,
-            "task_count": 1,
-            "run_count": 1
-        },
-        "tasks": [{
-            "task_spec": serde_json::to_value(task_spec_with_id(task_id))
-                .expect("task spec should serialize"),
-            "created_at": 0,
-            "updated_at": null,
-            "canceled_at": null
-        }],
-        "runs": [{
-            "run_instance": {
-                "id": run_id,
-                "task_id": task_id,
-                "state": "Ready",
-                "current_attempt_id": null,
-                "attempt_count": 0,
-                "created_at": 1_000,
-                "scheduled_at": 2_000,
-                "effective_priority": 0,
-                "last_state_change_at": 0
+    let mut projection = ReplayReducer::new();
+    projection
+        .apply(&WalEvent::new(
+            1,
+            WalEventType::TaskCreated { task_spec: task_spec_with_id(task_id), timestamp: 1000 },
+        ))
+        .unwrap();
+    projection
+        .apply(&WalEvent::new(
+            2,
+            WalEventType::RunCreated {
+                run_instance: run_with_state(task_id, 0xB200, RunState::Scheduled),
             },
-            "state_history": [{"from": null, "to": "Scheduled", "timestamp": 1_000}],
-            "attempt_history": []
-        }],
-        "engine": { "is_paused": false, "paused_at": null }
+        ))
+        .unwrap();
+    let snapshot = build_snapshot_from_projection(&projection, 1000).unwrap();
+    let mut snapshot_json = serde_json::to_value(snapshot).unwrap();
+    // An active attempt outside Running is invalid, independently of scheduling.
+    let run_json = &mut snapshot_json["runs"][0]["run_instance"];
+    run_json["current_attempt_id"] = serde_json::json!(AttemptId::new());
+    let error = serde_json::from_value::<RunInstance>(run_json.clone()).unwrap_err();
+    assert!(error.to_string().contains("active attempt_id is only valid in Running state"));
+    let envelope = serde_json::json!({
+        "store_id": uuid::Uuid::nil(), "snapshot_schema": 1, "projection_version": 1,
+        "wal_sequence": 2,
+        "digest": {"algorithm":"sha256", "version":1,"hex":"domain validation must fail first"},
+        "reserved": {"admissions":[],"signals":[],"waits":[],"checkpoints":[],"resume_assignments":[],"causal_control":[]},
+        "projection": snapshot_json
     });
-
-    let payload = serde_json::to_vec(&snapshot_json).expect("raw snapshot json should serialize");
-    let crc = crc32fast::hash(&payload);
-    {
-        let mut file = std::fs::File::create(&path).expect("snapshot file should be creatable");
-        file.write_all(&4u32.to_le_bytes()).expect("version write");
-        file.write_all(&(payload.len() as u32).to_le_bytes()).expect("length write");
-        file.write_all(&crc.to_le_bytes()).expect("crc write");
-        file.write_all(&payload).expect("payload write");
-        file.flush().expect("flush");
-    }
-
-    let mut loader = SnapshotFsLoader::new(path.clone());
-    let load_result = loader.load();
-
-    // Rejected at serde decode (DecodeError) due to causality constraint.
+    let payload = serde_json::to_vec(&envelope).unwrap();
+    let mut bytes = b"AQCONT1S".to_vec();
+    bytes.extend_from_slice(&1u32.to_le_bytes());
+    bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(&crc32fast::hash(&payload).to_le_bytes());
+    bytes.extend_from_slice(&payload);
+    fs::write(&path, &bytes).unwrap();
+    let error = SnapshotFsLoader::new(path.clone()).load().unwrap_err();
     assert!(
-        matches!(load_result, Err(SnapshotLoaderError::DecodeError(_))),
-        "snapshot with invalid Ready causality must be rejected, got: {load_result:?}"
+        matches!(error, SnapshotLoaderError::DecodeError(ref message)
+        if message.contains("active attempt_id is only valid in Running state")),
+        "{error}"
     );
-
-    let _ = fs::remove_file(path);
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+    fs::remove_file(path).unwrap();
 }
 
 #[test]

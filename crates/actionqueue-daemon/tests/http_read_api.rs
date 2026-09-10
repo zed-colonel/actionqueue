@@ -773,6 +773,16 @@ async fn control_task_cancel_first_and_second_call_are_idempotent_with_locked_sh
         r#"{"task_id":"00000000-0000-0000-0000-000000000123","status":"canceled","runs_canceled":1,"runs_already_terminal":1,"runs_total":2}"#
     );
 
+    let canceled_run = send_request(&mut router, &format!("/api/v1/runs/{run_ready}")).await;
+    assert_eq!(canceled_run.status(), StatusCode::OK);
+    let canceled_run: serde_json::Value =
+        serde_json::from_str(&response_body_string(canceled_run).await).unwrap();
+    assert_eq!(
+        canceled_run["state_history"].as_array().unwrap().last().unwrap()["timestamp"],
+        1_700_000_000,
+        "cancellation uses the daemon clock, not the WAL sequence"
+    );
+
     let second = send_post_request(&mut router, path).await;
     assert_eq!(second.status(), StatusCode::OK);
     assert_eq!(

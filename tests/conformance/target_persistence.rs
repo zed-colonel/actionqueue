@@ -427,7 +427,7 @@ fn cancellation_before_creation_is_rejected_before_append_and_projection_publica
     let source = dir.path().join("source");
     let t = TaskId::new();
     let mut authority = init(&source).into_authority().unwrap();
-    authority
+    let _ = authority
         .submit_command(
             MutationCommand::TaskCreate(TaskCreateCommand::new(2, task(t), 100)),
             DurabilityPolicy::Immediate,
@@ -466,7 +466,7 @@ fn cancellation_before_creation_is_rejected_before_append_and_projection_publica
     // Equality is valid, and a rejected attempt must leave sequence 3 available.
     let mut authority =
         open_store(&source, OpenOptions::ReadWrite).unwrap().into_authority().unwrap();
-    authority
+    let _ = authority
         .submit_command(
             MutationCommand::TaskCancel(TaskCancelCommand::new(3, t, 100)),
             DurabilityPolicy::Immediate,
@@ -526,6 +526,71 @@ fn invalid_cancellation_prefix_never_qualifies_for_tail_repair() {
             assert!(backup_store(&source, &backup).is_err());
             assert!(!backup.exists());
             assert_eq!(tree(&source), before);
+        }
+    }
+}
+
+#[test]
+fn lease_close_ready_transition_has_exact_history_for_snapshot_and_replay() {
+    for expired in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let session = init(dir.path());
+        let mut p = recover_read_only(&session, RepairPolicy::Strict).unwrap().projection;
+        let mut w = WalFsWriter::new(session.clone()).unwrap();
+        let t = TaskId::new();
+        let r = RunId::new();
+        append(&mut w, &mut p, E::TaskCreated { task_spec: task(t), timestamp: 10 });
+        append(
+            &mut w,
+            &mut p,
+            E::RunCreated {
+                run_instance: RunInstance::new_scheduled_with_id(r, t, 10, 10).unwrap(),
+            },
+        );
+        for (previous_state, new_state) in
+            [(RunState::Scheduled, RunState::Ready), (RunState::Ready, RunState::Leased)]
+        {
+            append(
+                &mut w,
+                &mut p,
+                E::RunStateChanged { run_id: r, previous_state, new_state, timestamp: 11 },
+            );
+        }
+        append(
+            &mut w,
+            &mut p,
+            E::LeaseAcquired { run_id: r, owner: "worker".into(), expiry: 100, timestamp: 11 },
+        );
+        snapshot(&session, &p);
+        append(
+            &mut w,
+            &mut p,
+            if expired {
+                E::LeaseExpired { run_id: r, owner: "worker".into(), expiry: 100, timestamp: 100 }
+            } else {
+                E::LeaseReleased { run_id: r, owner: "worker".into(), expiry: 100, timestamp: 100 }
+            },
+        );
+        let expected = p.projection_digest().unwrap();
+        // Replay the lease-close event on top of a snapshot, then hydrate a
+        // snapshot that covers that same event.
+        for publish in [false, true] {
+            if publish {
+                snapshot(&session, &p);
+            }
+            let recovered = recover_read_only(&session, RepairPolicy::Strict).unwrap();
+            assert!(recovered.snapshot_loaded);
+            assert_eq!(recovered.projection.projection_digest().unwrap(), expected);
+            let run = recovered.projection.get_run_instance(&r).unwrap();
+            assert_eq!(run.state(), RunState::Ready);
+            assert_eq!(run.last_state_change_at(), 100);
+            assert_eq!(run.effective_priority(), 37);
+            assert!(recovered.projection.get_lease(&r).is_none());
+            let history = recovered.projection.get_run_history(&r).unwrap();
+            assert_eq!(history.len(), 4);
+            assert_eq!(history[3].from(), Some(RunState::Leased));
+            assert_eq!(history[3].to(), RunState::Ready);
+            assert_eq!(history[3].timestamp(), 100);
         }
     }
 }

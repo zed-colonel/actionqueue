@@ -1059,7 +1059,7 @@ impl ReplayReducer {
         run_id: &actionqueue_core::ids::RunId,
         owner: String,
         expiry: u64,
-        _timestamp: u64,
+        timestamp: u64,
     ) -> Result<(), ReplayReducerError> {
         let current_state = self.validate_lease_run_precondition(run_id, LeaseEventKind::Expire)?;
 
@@ -1069,7 +1069,7 @@ impl ReplayReducer {
         self.lease_metadata.remove(run_id);
 
         if current_state == RunState::Leased {
-            self.transition_run_to_ready_after_lease_close(run_id)?;
+            self.transition_run_to_ready_after_lease_close(run_id, timestamp)?;
         }
 
         Ok(())
@@ -1080,7 +1080,7 @@ impl ReplayReducer {
         run_id: &actionqueue_core::ids::RunId,
         owner: String,
         expiry: u64,
-        _timestamp: u64,
+        timestamp: u64,
     ) -> Result<(), ReplayReducerError> {
         let current_state =
             self.validate_lease_run_precondition(run_id, LeaseEventKind::Release)?;
@@ -1091,7 +1091,7 @@ impl ReplayReducer {
         self.lease_metadata.remove(run_id);
 
         if current_state == RunState::Leased {
-            self.transition_run_to_ready_after_lease_close(run_id)?;
+            self.transition_run_to_ready_after_lease_close(run_id, timestamp)?;
         }
 
         Ok(())
@@ -1177,17 +1177,11 @@ impl ReplayReducer {
     fn transition_run_to_ready_after_lease_close(
         &mut self,
         run_id: &RunId,
+        timestamp: u64,
     ) -> Result<(), ReplayReducerError> {
-        let run_instance =
-            self.run_instances.get_mut(run_id).ok_or(ReplayReducerError::CorruptedData)?;
-
-        if run_instance.state() != RunState::Leased {
-            return Err(ReplayReducerError::CorruptedData);
-        }
-
-        run_instance.transition_to(RunState::Ready).map_err(Self::map_run_instance_error)?;
-        self.runs.insert(*run_id, RunState::Ready);
-        Ok(())
+        // Lease-close records carry this transition, including its history,
+        // effective priority and timestamp, just like RunStateChanged records.
+        self.apply_run_state_changed(run_id, &RunState::Leased, &RunState::Ready, timestamp)
     }
 
     fn apply_engine_paused(&mut self, timestamp: u64) -> Result<(), ReplayReducerError> {
