@@ -6,7 +6,7 @@
 # increments `package_revision`; normative change requires a contract amendment.
 schema_version: 1
 package: conformance/aq-cont-1
-package_revision: 2
+package_revision: 3
 status: scaffold
 contract: AQ-CONT-1
 contract_revision: STACK-2026-07-20-CLEAN-1
@@ -117,6 +117,7 @@ admission:
   snapshot_schema: 2
   projection_version: 2
   tests:
+  - tests/acceptance/dispatch_invariants.rs
   - tests/acceptance/idempotent_admission.rs
   - tests/acceptance/admission_conflict.rs
   - tests/acceptance/compound_admission_crash.rs

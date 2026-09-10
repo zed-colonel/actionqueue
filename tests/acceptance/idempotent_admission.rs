@@ -1,6 +1,4 @@
 mod admission_support;
-#[path = "admission_support/dependencies.rs"]
-mod dependencies;
 use actionqueue_core::{
     admission::{EnsureTaskOutcome, EnsureTaskRequest},
     bounded::OpaqueRef,
