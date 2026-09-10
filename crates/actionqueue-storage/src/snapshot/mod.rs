@@ -5,3 +5,5 @@ pub mod loader;
 pub mod mapping;
 pub mod model;
 pub mod writer;
+
+pub(crate) mod envelope;

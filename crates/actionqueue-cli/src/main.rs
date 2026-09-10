@@ -39,6 +39,7 @@ fn main() {
     let outcome = match parsed {
         Command::Daemon(daemon_args) => cmd::daemon::run(daemon_args),
         Command::Submit(submit_args) => cmd::submit::run(submit_args),
+        Command::Storage(args) => cmd::storage::run(args),
         Command::Stats(stats_args) => cmd::stats::run(stats_args),
     };
 

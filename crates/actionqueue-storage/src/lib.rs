@@ -28,17 +28,10 @@
 //! use actionqueue_storage::recovery::reducer::ReplayReducer;
 //! use actionqueue_storage::wal::fs_writer::WalFsWriter;
 //!
-//! // Build a unique temporary WAL path for this process.
-//! let unique = std::time::SystemTime::now()
-//!     .duration_since(std::time::UNIX_EPOCH)
-//!     .expect("clock should be after unix epoch")
-//!     .as_nanos();
-//! let wal_path = std::env::temp_dir().join(format!("actionqueue-storage-example-{unique}.wal"));
-//!
-//! // Authority lane owns durable ordering: validate -> append -> durability -> apply.
-//! let wal_writer = WalFsWriter::new(wal_path.clone()).expect("failed to create WAL writer");
-//! let projection = ReplayReducer::new();
-//! let mut authority = StorageMutationAuthority::new(wal_writer, projection);
+//! let root = std::env::temp_dir().join(format!("aq-example-{}", TaskId::new()));
+//! let session = actionqueue_storage::store::open_store(&root,
+//!     actionqueue_storage::store::OpenOptions::Initialize { features: vec![] }).unwrap();
+//! let mut authority = session.into_authority().unwrap();
 //!
 //! let task_id = TaskId::new();
 //! let task_spec = TaskSpec::new(
@@ -52,16 +45,19 @@
 //!
 //! authority
 //!     .submit_command(
-//!         MutationCommand::TaskCreate(TaskCreateCommand::new(1, task_spec, 0)),
+//!         MutationCommand::TaskCreate(TaskCreateCommand::new(2, task_spec, 0)),
 //!         DurabilityPolicy::Immediate,
 //!     )
 //!     .expect("authority command should succeed");
 //!
 //! # // Clean up
-//! # let _ = std::fs::remove_file(wal_path);
+//! # let _ = std::fs::remove_dir_all(root);
 //! ```
 
 pub mod mutation;
 pub mod recovery;
 pub mod snapshot;
 pub mod wal;
+
+/// Target store identity and ownership.
+pub mod store;

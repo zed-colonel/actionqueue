@@ -25,6 +25,8 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 http-body-util = "0.1"
 tower = { version = "0.4", features = ["util"] }
 
+actionqueue-storage = { version = "0.1.2", features = ["testing"] }
+
 [dependencies.actionqueue-actor]
 version = "0.1.2"
 optional = true
@@ -34,8 +36,9 @@ version = "0.1.2"
 optional = true
 
 [features]
+budget = ["actionqueue-storage/budget"]
 default = ["serde"]
 serde = ["dep:serde"]
-workflow = ["actionqueue-core/workflow"]
-actor = ["dep:actionqueue-actor"]
-platform = ["dep:actionqueue-platform", "actor"]
+workflow = ["actionqueue-storage/workflow", "actionqueue-core/workflow"]
+actor = ["actionqueue-storage/actor", "dep:actionqueue-actor"]
+platform = ["actionqueue-storage/platform", "dep:actionqueue-platform", "actor"]

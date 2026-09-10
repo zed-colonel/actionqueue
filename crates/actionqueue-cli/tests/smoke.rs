@@ -109,6 +109,13 @@ fn submit_repeat_json_success_creates_repeat_runs() {
 #[test]
 fn stats_formats_return_consistent_deterministic_fields() {
     let data_dir = unique_data_dir("smoke-stats-json");
+    drop(
+        actionqueue_storage::store::open_store(
+            &data_dir,
+            actionqueue_storage::store::OpenOptions::Initialize { features: vec![] },
+        )
+        .unwrap(),
+    );
 
     let output = cli()
         .args([
@@ -176,4 +183,171 @@ fn invalid_usage_emits_structured_stderr_and_non_zero_exit() {
     assert_eq!(payload["error_kind"], "validation");
     assert_eq!(payload["error_code"], "input_validation_failed");
     assert!(payload["message"].as_str().is_some());
+}
+
+#[test]
+fn storage_commands_verify_roundtrip_and_never_initialize_inspection() {
+    let base = unique_data_dir("smoke-storage");
+    let source = base.join("source");
+    let backup = base.join("backup");
+    let dest = base.join("restored");
+    let refused = cli()
+        .args(["storage", "inspect", "--data-dir", source.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    assert!(!source.exists());
+    let submitted = cli()
+        .args([
+            "submit",
+            "--data-dir",
+            source.to_str().unwrap(),
+            "--task-id",
+            "123e4567-e89b-12d3-a456-426614174099",
+            "--run-policy",
+            "once",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(submitted.status.success(), "{}", String::from_utf8_lossy(&submitted.stderr));
+    let inspect = cli()
+        .args(["storage", "inspect", "--data-dir", source.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(inspect.status.success());
+    let before: serde_json::Value = serde_json::from_slice(&inspect.stdout).unwrap();
+    assert_eq!(before["task_count"], 1);
+    let copied = cli()
+        .args([
+            "storage",
+            "backup",
+            "--data-dir",
+            source.to_str().unwrap(),
+            "--output",
+            backup.to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(copied.status.success(), "{}", String::from_utf8_lossy(&copied.stderr));
+    let restored = cli()
+        .args([
+            "storage",
+            "restore",
+            "--input",
+            backup.to_str().unwrap(),
+            "--data-dir",
+            dest.to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(restored.status.success(), "{}", String::from_utf8_lossy(&restored.stderr));
+    let after = cli()
+        .args(["storage", "inspect", "--data-dir", dest.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    let after: serde_json::Value = serde_json::from_slice(&after.stdout).unwrap();
+    assert_eq!(after["projection_digest"], before["projection_digest"]);
+    assert_eq!(after["manifest"]["store_id"], before["manifest"]["store_id"]);
+    let refused = cli()
+        .args([
+            "storage",
+            "restore",
+            "--input",
+            backup.to_str().unwrap(),
+            "--data-dir",
+            dest.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    std::fs::remove_dir_all(base).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn restore_rejects_fifo_descriptor_and_inventory_without_blocking() {
+    use actionqueue_storage::{
+        recovery::bootstrap::recover_read_only,
+        snapshot::{
+            build::build_snapshot_from_projection,
+            writer::{SnapshotFsWriter, SnapshotWriter},
+        },
+        store::{backup_store, open_store, OpenOptions},
+        wal::repair::RepairPolicy,
+    };
+    use std::{
+        fs,
+        os::unix::fs::FileTypeExt,
+        process::Stdio,
+        time::{Duration, Instant},
+    };
+    let base = unique_data_dir("smoke-restore-fifo");
+    let source = base.join("source");
+    let backup = base.join("backup");
+    let dest = base.join("restored");
+    let session = open_store(&source, OpenOptions::Initialize { features: vec![] }).unwrap();
+    let projection = recover_read_only(&session, RepairPolicy::Strict).unwrap().projection;
+    let mut writer = SnapshotFsWriter::new(&session).unwrap();
+    writer.write(&build_snapshot_from_projection(&projection, 0).unwrap()).unwrap();
+    writer.close().unwrap();
+    drop(session);
+    backup_store(&source, &backup).unwrap();
+    let names = [
+        "backup.json",
+        "manifest.json",
+        "store.lock",
+        "wal/actionqueue.wal",
+        "snapshots/snapshot.bin",
+    ];
+    let originals: Vec<_> = names.iter().map(|name| fs::read(backup.join(name)).unwrap()).collect();
+    for (index, name) in names.iter().enumerate() {
+        let path = backup.join(name);
+        fs::remove_file(&path).unwrap();
+        assert!(Command::new("mkfifo").arg(&path).status().unwrap().success());
+        let mut child = cli()
+            .args(["storage", "restore", "--input"])
+            .arg(&backup)
+            .arg("--data-dir")
+            .arg(&dest)
+            .arg("--json")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if child.try_wait().unwrap().is_some() {
+                break;
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let output = child.wait_with_output().unwrap();
+                panic!(
+                    "restore blocked on FIFO {name}: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let output = child.wait_with_output().unwrap();
+        assert!(!output.status.success(), "restore accepted FIFO {name}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("regular file"),
+            "unexpected rejection for {name}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!dest.exists());
+        assert!(fs::symlink_metadata(&path).unwrap().file_type().is_fifo());
+        for (other_index, other_name) in names.iter().enumerate() {
+            if other_index != index {
+                assert_eq!(fs::read(backup.join(other_name)).unwrap(), originals[other_index]);
+            }
+        }
+        fs::remove_file(path).unwrap();
+        fs::write(backup.join(name), &originals[index]).unwrap();
+    }
+    fs::remove_dir_all(base).unwrap();
 }

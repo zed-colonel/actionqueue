@@ -96,23 +96,17 @@ fn task_spec_deserialization_rejects_zero_repeat_interval() {
 }
 
 #[test]
-fn run_instance_deserialization_rejects_ready_with_scheduled_after_created() {
-    // Create a valid Ready run, then tamper with the JSON to violate the constraint
-    let run = RunInstance::new_ready_with_id(RunId::new(), TaskId::new(), 1_000, 1_000, 0)
-        .expect("valid ready run");
-
-    let mut value = serde_json::to_value(&run).expect("serialize RunInstance to Value");
-    // Set scheduled_at > created_at to violate the Ready-state constraint
-    value["scheduled_at"] = serde_json::json!(2_000);
-    value["created_at"] = serde_json::json!(1_000);
-
-    let err = serde_json::from_value::<RunInstance>(value)
-        .expect_err("Ready run with scheduled_at > created_at must be rejected");
-
-    assert!(
-        err.to_string().contains("scheduled_at"),
-        "deserialization error should mention scheduled_at constraint: {err}"
-    );
+fn promoted_ready_runs_roundtrip_before_at_and_after_scheduled_time() {
+    for promotion_time in [1_000, 11_000, 12_000] {
+        let mut run = RunInstance::new_scheduled(TaskId::new(), 11_000, 1_000).unwrap();
+        run.transition_to(RunState::Ready).unwrap();
+        run.record_state_change_at(promotion_time);
+        run.set_effective_priority(37).unwrap();
+        let json = serde_json::to_value(&run).unwrap();
+        assert_eq!(serde_json::from_value::<RunInstance>(json).unwrap(), run);
+        let bytes = postcard::to_allocvec(&run).unwrap();
+        assert_eq!(postcard::from_bytes::<RunInstance>(&bytes).unwrap(), run);
+    }
 }
 
 #[test]

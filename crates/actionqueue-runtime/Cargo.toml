@@ -26,6 +26,8 @@ tracing = "0.1"
 tempfile = "3.0"
 tracing-subscriber = { version = "0.3", features = ["fmt"] }
 
+actionqueue-storage = { version = "0.1.2", features = ["testing"] }
+
 [dependencies.actionqueue-budget]
 version = "0.1.2"
 optional = true
@@ -41,7 +43,7 @@ optional = true
 [features]
 default = ["serde"]
 serde = ["actionqueue-core/serde"]
-workflow = ["actionqueue-engine/workflow"]
-budget = ["dep:actionqueue-budget"]
-actor = ["dep:actionqueue-actor"]
-platform = ["dep:actionqueue-platform", "actor"]
+workflow = ["actionqueue-storage/workflow", "actionqueue-engine/workflow"]
+budget = ["actionqueue-storage/budget", "dep:actionqueue-budget"]
+actor = ["actionqueue-storage/actor", "dep:actionqueue-actor"]
+platform = ["actionqueue-storage/platform", "dep:actionqueue-platform", "actor"]

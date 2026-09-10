@@ -42,6 +42,8 @@ impl WalEvent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum WalEventType {
+    /// Binds sequence one to the immutable manifest.
+    StoreInitialized { manifest_digest: [u8; 32] },
     /// A new task definition has been persisted.
     TaskCreated {
         /// The task specification that was created.

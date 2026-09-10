@@ -6,7 +6,7 @@
 # increments `package_revision`; normative change requires a contract amendment.
 schema_version: 1
 package: conformance/aq-cont-1
-package_revision: 0
+package_revision: 1
 status: scaffold
 contract: AQ-CONT-1
 contract_revision: STACK-2026-07-20-CLEAN-1
@@ -58,3 +58,21 @@ acceptance_matrices:
 boundary_policy:
   path: contract-boundaries.json
   enforced_by: tests/conformance/contract_boundaries.rs
+
+# Additive AQ-03 target persistence evidence; continuation gates remain scaffolded.
+target_persistence:
+  introduced_by: AQ-03
+  tests:
+  - tests/conformance/pre_contract_store.rs
+  - tests/conformance/target_persistence.rs
+  - tests/conformance/store_process_lock.rs
+  - tests/acceptance/wal_corruption_recovery.rs
+  cross_build_driver: conformance/aq-cont-1/cross-feature-persistence.sh
+  canonical_vector: conformance/aq-cont-1/projection-v1-vector.json
+  guarantees:
+  - manifest_and_frame_lineage_rejection_without_writes
+  - exclusive_lifetime_ownership_and_process_crash_release
+  - strict_replay_and_partial_final_frame_only_repair
+  - exact_snapshot_hydration_and_projection_equivalence
+  - verified_offline_backup_restore
+  - immutable_store_feature_profiles_and_stable_wire_ids

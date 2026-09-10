@@ -270,7 +270,7 @@ fn cm_c_wal_writer_rejects_non_monotonic_append() {
     let task_spec = test_task_spec(task_id);
 
     // Step 1: Create a WAL file with WalFsWriter.
-    let mut writer = WalFsWriter::new(wal_path.clone())
+    let mut writer = WalFsWriter::new_raw_for_test(wal_path.clone())
         .expect("WAL writer creation should succeed for new file");
 
     // Step 2: Append an event with sequence=1.

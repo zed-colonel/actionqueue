@@ -244,6 +244,7 @@ impl<'de> serde::Deserialize<'de> for TaskSpec {
         D: serde::Deserializer<'de>,
     {
         #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
         struct TaskSpecWire {
             id: TaskId,
             payload: TaskPayload,

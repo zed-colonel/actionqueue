@@ -15,9 +15,12 @@ name = "actionqueue-cli"
 path = "src/main.rs"
 
 [features]
+platform = ["actionqueue-daemon/platform", "actionqueue-storage/platform"]
+actor = ["actionqueue-daemon/actor", "actionqueue-storage/actor"]
+budget = ["actionqueue-daemon/budget", "actionqueue-storage/budget"]
 default = ["serde"]
 serde = ["actionqueue-core/serde"]
-workflow = ["actionqueue-core/workflow", "actionqueue-engine/workflow"]
+workflow = ["actionqueue-daemon/workflow", "actionqueue-storage/workflow", "actionqueue-core/workflow", "actionqueue-engine/workflow"]
 
 [dependencies]
 actionqueue-core = { version = "0.1.2", features = ["serde"] }

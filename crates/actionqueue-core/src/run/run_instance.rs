@@ -485,6 +485,7 @@ impl<'de> serde::Deserialize<'de> for RunInstance {
         D: serde::Deserializer<'de>,
     {
         #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
         struct RunInstanceWire {
             id: RunId,
             task_id: TaskId,
@@ -518,13 +519,9 @@ impl<'de> serde::Deserialize<'de> for RunInstance {
             return Err(serde::de::Error::custom("terminal state cannot have an active attempt"));
         }
 
-        // Validate schedule causality for Ready state
-        if wire.state == RunState::Ready && wire.scheduled_at > wire.created_at {
-            return Err(serde::de::Error::custom(format!(
-                "Ready state requires scheduled_at ({}) <= created_at ({})",
-                wire.scheduled_at, wire.created_at,
-            )));
-        }
+        // A Scheduled run may be promoted early by a subscription. The schedule
+        // constraint on direct Ready construction does not apply to persisted
+        // state reached through a supported transition.
 
         Ok(RunInstance {
             id: wire.id,

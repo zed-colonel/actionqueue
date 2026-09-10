@@ -20,6 +20,7 @@ use crate::recovery::reducer::{AttemptHistoryEntry, LeaseMetadata, RunStateHisto
 /// format is versioned to support future evolution of the data structures.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct Snapshot {
     /// The format version of this snapshot.
     ///
@@ -69,6 +70,7 @@ pub struct Snapshot {
 /// Snapshot representation of engine control projection.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct SnapshotEngineControl {
     /// Whether scheduling and dispatch are paused.
     pub paused: bool,
@@ -84,6 +86,7 @@ pub struct SnapshotEngineControl {
 /// of all prerequisite tasks listed in `depends_on`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct SnapshotDependencyDeclaration {
     /// The task whose promotion is gated.
     pub task_id: TaskId,
@@ -99,6 +102,7 @@ pub struct SnapshotDependencyDeclaration {
 /// maintaining backward compatibility with existing data.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct SnapshotMetadata {
     /// The schema version of the snapshot format.
     ///
@@ -119,6 +123,7 @@ pub struct SnapshotMetadata {
 /// A task in the snapshot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct SnapshotTask {
     /// The task specification.
     pub task_spec: TaskSpec,
@@ -134,6 +139,7 @@ pub struct SnapshotTask {
 /// A run in the snapshot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct SnapshotRun {
     /// The canonical run payload.
     ///
@@ -159,6 +165,7 @@ impl SnapshotRun {
 /// Snapshot representation of a run state history entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct SnapshotRunStateHistoryEntry {
     /// The previous state, if any.
     pub from: Option<actionqueue_core::run::state::RunState>,
@@ -177,6 +184,7 @@ impl From<RunStateHistoryEntry> for SnapshotRunStateHistoryEntry {
 /// Snapshot representation of an attempt history entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct SnapshotAttemptHistoryEntry {
     /// The attempt identifier.
     pub attempt_id: actionqueue_core::ids::AttemptId,
@@ -209,6 +217,7 @@ impl From<AttemptHistoryEntry> for SnapshotAttemptHistoryEntry {
 /// Snapshot representation of lease metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct SnapshotLeaseMetadata {
     /// Lease owner string.
     pub owner: String,
@@ -234,6 +243,7 @@ impl From<LeaseMetadata> for SnapshotLeaseMetadata {
 /// Snapshot representation of a budget allocation and consumption record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct SnapshotBudget {
     /// The task whose budget this record covers.
     pub task_id: actionqueue_core::ids::TaskId,
@@ -252,6 +262,7 @@ pub struct SnapshotBudget {
 /// Snapshot representation of a subscription state record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct SnapshotSubscription {
     /// The subscription identifier.
     pub subscription_id: SubscriptionId,
@@ -270,6 +281,7 @@ pub struct SnapshotSubscription {
 /// Snapshot representation of a registered actor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct SnapshotActor {
     pub actor_id: ActorId,
     pub identity: String,
@@ -285,6 +297,7 @@ pub struct SnapshotActor {
 /// Snapshot representation of a tenant.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct SnapshotTenant {
     pub tenant_id: TenantId,
     pub name: String,
@@ -294,6 +307,7 @@ pub struct SnapshotTenant {
 /// Snapshot representation of a role assignment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct SnapshotRoleAssignment {
     pub actor_id: ActorId,
     pub role: Role,
@@ -304,6 +318,7 @@ pub struct SnapshotRoleAssignment {
 /// Snapshot representation of a capability grant.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct SnapshotCapabilityGrant {
     pub actor_id: ActorId,
     pub capability: Capability,
@@ -315,6 +330,7 @@ pub struct SnapshotCapabilityGrant {
 /// Snapshot representation of a ledger entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct SnapshotLedgerEntry {
     pub entry_id: LedgerEntryId,
     pub tenant_id: TenantId,

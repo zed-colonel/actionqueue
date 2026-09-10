@@ -7,3 +7,7 @@
 pub mod bootstrap;
 pub mod reducer;
 pub mod replay;
+
+pub mod projection;
+
+mod validation;

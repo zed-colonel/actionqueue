@@ -40,6 +40,7 @@ pub type ControlMutationAuthority =
 /// This state is read-only. Handlers must not mutate any fields or introduce
 /// interior mutability beyond `Arc` cloning.
 pub struct RouterStateInner {
+    pub(crate) store_session: Option<actionqueue_storage::store::StoreSession>,
     /// Router configuration for routing decisions.
     ///
     /// Used by [`build_router`] to determine which optional route sets
@@ -124,6 +125,7 @@ impl RouterStateInner {
         ready_status: ReadyStatus,
     ) -> Self {
         Self {
+            store_session: None,
             router_config,
             shared_projection,
             control_authority: None,
@@ -145,6 +147,7 @@ impl RouterStateInner {
         ready_status: ReadyStatus,
     ) -> Self {
         Self {
+            store_session: None,
             router_config,
             shared_projection,
             control_authority: Some(control_authority),

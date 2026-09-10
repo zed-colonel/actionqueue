@@ -24,16 +24,16 @@ use actionqueue_core::subscription::{EventFilter, SubscriptionId};
 use crate::wal::event::{WalEvent, WalEventType};
 
 /// Projection record for a task with timestamp metadata.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TaskRecord {
     /// Canonical task specification.
-    task_spec: actionqueue_core::task::task_spec::TaskSpec,
+    pub(crate) task_spec: actionqueue_core::task::task_spec::TaskSpec,
     /// Task creation timestamp (Unix epoch seconds).
-    created_at: u64,
+    pub(crate) created_at: u64,
     /// Task update timestamp (Unix epoch seconds), if any.
-    updated_at: Option<u64>,
+    pub(crate) updated_at: Option<u64>,
     /// Task cancellation timestamp (Unix epoch seconds), if canceled.
-    canceled_at: Option<u64>,
+    pub(crate) canceled_at: Option<u64>,
 }
 
 /// A deterministic state transition record for a run.
@@ -156,7 +156,7 @@ impl LeaseMetadata {
 }
 
 /// Actor projection record.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ActorRecord {
     pub actor_id: ActorId,
     pub identity: String,
@@ -170,7 +170,7 @@ pub struct ActorRecord {
 }
 
 /// Tenant projection record.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TenantRecord {
     pub tenant_id: TenantId,
     pub name: String,
@@ -178,7 +178,7 @@ pub struct TenantRecord {
 }
 
 /// Role assignment record.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RoleAssignmentRecord {
     pub actor_id: ActorId,
     pub role: Role,
@@ -187,7 +187,7 @@ pub struct RoleAssignmentRecord {
 }
 
 /// Capability grant record.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CapabilityGrantRecord {
     pub actor_id: ActorId,
     pub capability: Capability,
@@ -197,7 +197,7 @@ pub struct CapabilityGrantRecord {
 }
 
 /// Ledger entry record.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LedgerEntryRecord {
     pub entry_id: LedgerEntryId,
     pub tenant_id: TenantId,
@@ -208,7 +208,7 @@ pub struct LedgerEntryRecord {
 }
 
 /// Budget allocation and consumption record.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct BudgetRecord {
     /// The budget dimension this record covers.
     pub dimension: BudgetDimension,
@@ -223,7 +223,7 @@ pub struct BudgetRecord {
 }
 
 /// Subscription state record.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SubscriptionRecord {
     /// The subscription identifier.
     pub subscription_id: SubscriptionId,
@@ -265,51 +265,52 @@ impl TaskRecord {
 #[derive(Debug, Clone)]
 pub struct ReplayReducer {
     /// The current state of all runs being replayed.
-    runs: HashMap<actionqueue_core::ids::RunId, RunState>,
+    pub(crate) runs: HashMap<actionqueue_core::ids::RunId, RunState>,
     /// The current state of all tasks being replayed.
-    tasks: HashMap<actionqueue_core::ids::TaskId, TaskRecord>,
+    pub(crate) tasks: HashMap<actionqueue_core::ids::TaskId, TaskRecord>,
     /// The current state of all run instances being replayed.
-    run_instances:
+    pub(crate) run_instances:
         HashMap<actionqueue_core::ids::RunId, actionqueue_core::run::run_instance::RunInstance>,
     /// Secondary index: task_id → run_ids for O(R_task) lookups.
-    runs_by_task: HashMap<TaskId, Vec<RunId>>,
+    pub(crate) runs_by_task: HashMap<TaskId, Vec<RunId>>,
     /// Run lifecycle history derived from WAL transitions.
-    run_history: HashMap<actionqueue_core::ids::RunId, Vec<RunStateHistoryEntry>>,
+    pub(crate) run_history: HashMap<actionqueue_core::ids::RunId, Vec<RunStateHistoryEntry>>,
     /// Attempt lineage derived from WAL attempt events.
-    attempt_history: HashMap<actionqueue_core::ids::RunId, Vec<AttemptHistoryEntry>>,
+    pub(crate) attempt_history: HashMap<actionqueue_core::ids::RunId, Vec<AttemptHistoryEntry>>,
     /// The active lease projection for runs (`owner`, `expiry`).
-    leases: HashMap<actionqueue_core::ids::RunId, (String, u64)>,
+    pub(crate) leases: HashMap<actionqueue_core::ids::RunId, (String, u64)>,
     /// Lease metadata derived from WAL lease events.
-    lease_metadata: HashMap<actionqueue_core::ids::RunId, LeaseMetadata>,
+    pub(crate) lease_metadata: HashMap<actionqueue_core::ids::RunId, LeaseMetadata>,
     /// The latest sequence number processed.
-    latest_sequence: u64,
+    pub(crate) latest_sequence: u64,
     /// Task canceled projection keyed by task identifier.
-    task_canceled_at: HashMap<TaskId, u64>,
+    pub(crate) task_canceled_at: HashMap<TaskId, u64>,
     /// Whether engine scheduling/dispatch is currently paused.
-    engine_paused: bool,
+    pub(crate) engine_paused: bool,
     /// Timestamp of most recent engine pause, if any.
-    engine_paused_at: Option<u64>,
+    pub(crate) engine_paused_at: Option<u64>,
     /// Timestamp of most recent engine resume, if any.
-    engine_resumed_at: Option<u64>,
+    pub(crate) engine_resumed_at: Option<u64>,
     /// Declared task dependencies: task_id → prerequisite task_ids.
     /// Rebuilt from `DependencyDeclared` WAL events. Used by the dispatch loop
     /// to reconstruct the `DependencyGate` after recovery.
-    dependency_declarations: HashMap<TaskId, HashSet<TaskId>>,
+    pub(crate) dependency_declarations: HashMap<TaskId, HashSet<TaskId>>,
+    pub(crate) dependency_declared_at: HashMap<TaskId, u64>,
     /// Budget allocation and consumption records keyed by (task_id, dimension).
-    budgets: HashMap<(actionqueue_core::ids::TaskId, BudgetDimension), BudgetRecord>,
+    pub(crate) budgets: HashMap<(actionqueue_core::ids::TaskId, BudgetDimension), BudgetRecord>,
     /// Subscription state records keyed by subscription identifier.
-    subscriptions: HashMap<SubscriptionId, SubscriptionRecord>,
+    pub(crate) subscriptions: HashMap<SubscriptionId, SubscriptionRecord>,
     /// Actor projection records keyed by actor identifier.
-    actors: HashMap<ActorId, ActorRecord>,
+    pub(crate) actors: HashMap<ActorId, ActorRecord>,
     /// Tenant projection records keyed by tenant identifier.
-    tenants: HashMap<TenantId, TenantRecord>,
+    pub(crate) tenants: HashMap<TenantId, TenantRecord>,
     /// Role assignment records keyed by (actor_id, tenant_id).
-    role_assignments: HashMap<(ActorId, TenantId), RoleAssignmentRecord>,
+    pub(crate) role_assignments: HashMap<(ActorId, TenantId), RoleAssignmentRecord>,
     /// Capability grant records keyed by (actor_id, capability_key, tenant_id).
     /// Using String as capability key to avoid Hash bound on Capability.
-    capability_grants: HashMap<(ActorId, String, TenantId), CapabilityGrantRecord>,
+    pub(crate) capability_grants: HashMap<(ActorId, String, TenantId), CapabilityGrantRecord>,
     /// Ledger entries (append-only, ordered by insertion).
-    ledger_entries: Vec<LedgerEntryRecord>,
+    pub(crate) ledger_entries: Vec<LedgerEntryRecord>,
 }
 
 impl ReplayReducer {
@@ -330,6 +331,7 @@ impl ReplayReducer {
             engine_paused_at: None,
             engine_resumed_at: None,
             dependency_declarations: HashMap::new(),
+            dependency_declared_at: HashMap::new(),
             budgets: HashMap::new(),
             subscriptions: HashMap::new(),
             actors: HashMap::new(),
@@ -379,17 +381,6 @@ impl ReplayReducer {
         run_id: &actionqueue_core::ids::RunId,
     ) -> Option<&actionqueue_core::run::run_instance::RunInstance> {
         self.run_instances.get(run_id)
-    }
-
-    /// Returns a mutable reference to a run instance by ID.
-    ///
-    /// This is used during snapshot bootstrap to restore attempt state that
-    /// cannot be replayed through normal WAL event application.
-    pub(crate) fn get_run_instance_mut(
-        &mut self,
-        run_id: actionqueue_core::ids::RunId,
-    ) -> Option<&mut actionqueue_core::run::run_instance::RunInstance> {
-        self.run_instances.get_mut(&run_id)
     }
 
     /// Returns the run state history for a run by ID.
@@ -518,6 +509,11 @@ impl ReplayReducer {
         }
 
         match event.event() {
+            WalEventType::StoreInitialized { .. } => {
+                if self.latest_sequence != 0 || event.sequence() != 1 {
+                    return Err(ReplayReducerError::CorruptedData);
+                }
+            }
             WalEventType::TaskCreated { task_spec, timestamp } => {
                 self.apply_task_created(task_spec, *timestamp)?;
             }
@@ -540,37 +536,7 @@ impl ReplayReducer {
             } => {
                 let outcome =
                     AttemptOutcome::from_raw_parts(*result, error.clone(), output.clone())
-                        .unwrap_or_else(|e| {
-                            tracing::warn!(
-                                "WAL replay: invalid attempt outcome shape: {e}; falling back to \
-                                 safe reconstruction"
-                            );
-                            match result {
-                                actionqueue_core::mutation::AttemptResultKind::Success => {
-                                    AttemptOutcome::success()
-                                }
-                                actionqueue_core::mutation::AttemptResultKind::Failure => {
-                                    AttemptOutcome::failure(
-                                        error
-                                            .clone()
-                                            .unwrap_or_else(|| "unknown failure".to_string()),
-                                    )
-                                }
-                                actionqueue_core::mutation::AttemptResultKind::Timeout => {
-                                    AttemptOutcome::timeout(
-                                        error
-                                            .clone()
-                                            .unwrap_or_else(|| "unknown timeout".to_string()),
-                                    )
-                                }
-                                actionqueue_core::mutation::AttemptResultKind::Awaiting => {
-                                    AttemptOutcome::awaiting()
-                                }
-                                actionqueue_core::mutation::AttemptResultKind::Suspended => {
-                                    AttemptOutcome::suspended()
-                                }
-                            }
-                        });
+                        .map_err(|_| ReplayReducerError::CorruptedData)?;
                 self.apply_attempt_finished(run_id, attempt_id, outcome, *timestamp)?;
             }
             WalEventType::TaskCanceled { task_id, timestamp } => {
@@ -597,7 +563,8 @@ impl ReplayReducer {
             WalEventType::EngineResumed { timestamp } => {
                 self.apply_engine_resumed(*timestamp)?;
             }
-            WalEventType::DependencyDeclared { task_id, depends_on, .. } => {
+            WalEventType::DependencyDeclared { task_id, depends_on, timestamp } => {
+                self.dependency_declared_at.insert(*task_id, *timestamp);
                 self.apply_dependency_declared(*task_id, depends_on);
             }
             WalEventType::RunSuspended { run_id, reason: _, timestamp } => {
@@ -649,7 +616,7 @@ impl ReplayReducer {
                 self.apply_subscription_canceled(*subscription_id, *timestamp);
             }
 
-            // ── WAL v5: Actor events ──────────────────────────────────────
+            // ── Actor events ──────────────────────────────────────
             WalEventType::ActorRegistered {
                 actor_id,
                 identity,
@@ -685,7 +652,7 @@ impl ReplayReducer {
                 }
             }
 
-            // ── WAL v5: Platform events ───────────────────────────────────
+            // ── Platform events ───────────────────────────────────
             WalEventType::TenantCreated { tenant_id, name, timestamp } => {
                 self.tenants.insert(
                     *tenant_id,
@@ -790,6 +757,18 @@ impl ReplayReducer {
             }));
         }
 
+        // Shared by live mutation preparation and every replay path. Reject
+        // before changing either cancellation index or advancing the sequence.
+        if timestamp < task_record.created_at {
+            return Err(ReplayReducerError::TaskCausality(
+                TaskCausalityError::CanceledBeforeCreation {
+                    task_id: *task_id,
+                    created_at: task_record.created_at,
+                    canceled_at: timestamp,
+                },
+            ));
+        }
+
         task_record.canceled_at = Some(timestamp);
         self.task_canceled_at.insert(*task_id, timestamp);
         Ok(())
@@ -871,6 +850,16 @@ impl ReplayReducer {
         if let Some(run_instance) = self.run_instances.get_mut(run_id) {
             run_instance.transition_to(*new_state).map_err(Self::map_run_instance_error)?;
             run_instance.record_state_change_at(timestamp);
+            if *new_state == RunState::Ready {
+                let priority = self
+                    .tasks
+                    .get(&run_instance.task_id())
+                    .map(|t| t.task_spec.metadata().priority())
+                    .unwrap_or(0);
+                run_instance
+                    .set_effective_priority(priority)
+                    .map_err(Self::map_run_instance_error)?;
+            }
         }
 
         let history = self.run_history.get_mut(run_id).ok_or(ReplayReducerError::CorruptedData)?;
@@ -1070,7 +1059,7 @@ impl ReplayReducer {
         run_id: &actionqueue_core::ids::RunId,
         owner: String,
         expiry: u64,
-        _timestamp: u64,
+        timestamp: u64,
     ) -> Result<(), ReplayReducerError> {
         let current_state = self.validate_lease_run_precondition(run_id, LeaseEventKind::Expire)?;
 
@@ -1080,7 +1069,7 @@ impl ReplayReducer {
         self.lease_metadata.remove(run_id);
 
         if current_state == RunState::Leased {
-            self.transition_run_to_ready_after_lease_close(run_id)?;
+            self.transition_run_to_ready_after_lease_close(run_id, timestamp)?;
         }
 
         Ok(())
@@ -1091,7 +1080,7 @@ impl ReplayReducer {
         run_id: &actionqueue_core::ids::RunId,
         owner: String,
         expiry: u64,
-        _timestamp: u64,
+        timestamp: u64,
     ) -> Result<(), ReplayReducerError> {
         let current_state =
             self.validate_lease_run_precondition(run_id, LeaseEventKind::Release)?;
@@ -1102,7 +1091,7 @@ impl ReplayReducer {
         self.lease_metadata.remove(run_id);
 
         if current_state == RunState::Leased {
-            self.transition_run_to_ready_after_lease_close(run_id)?;
+            self.transition_run_to_ready_after_lease_close(run_id, timestamp)?;
         }
 
         Ok(())
@@ -1188,17 +1177,11 @@ impl ReplayReducer {
     fn transition_run_to_ready_after_lease_close(
         &mut self,
         run_id: &RunId,
+        timestamp: u64,
     ) -> Result<(), ReplayReducerError> {
-        let run_instance =
-            self.run_instances.get_mut(run_id).ok_or(ReplayReducerError::CorruptedData)?;
-
-        if run_instance.state() != RunState::Leased {
-            return Err(ReplayReducerError::CorruptedData);
-        }
-
-        run_instance.transition_to(RunState::Ready).map_err(Self::map_run_instance_error)?;
-        self.runs.insert(*run_id, RunState::Ready);
-        Ok(())
+        // Lease-close records carry this transition, including its history,
+        // effective priority and timestamp, just like RunStateChanged records.
+        self.apply_run_state_changed(run_id, &RunState::Leased, &RunState::Ready, timestamp)
     }
 
     fn apply_engine_paused(&mut self, timestamp: u64) -> Result<(), ReplayReducerError> {
@@ -1294,36 +1277,6 @@ impl ReplayReducer {
             self.attempt_history.remove(run_id);
             self.lease_metadata.remove(run_id);
         }
-    }
-
-    /// Seeds the run history for a run from validated snapshot data.
-    pub(crate) fn set_run_history(&mut self, run_id: RunId, history: Vec<RunStateHistoryEntry>) {
-        self.run_history.insert(run_id, history);
-    }
-
-    /// Seeds the attempt history for a run from validated snapshot data.
-    pub(crate) fn set_attempt_history(
-        &mut self,
-        run_id: RunId,
-        attempts: Vec<AttemptHistoryEntry>,
-    ) {
-        self.attempt_history.insert(run_id, attempts);
-    }
-
-    /// Seeds both the active lease projection and lease metadata from snapshot data.
-    ///
-    /// During snapshot bootstrap, `set_lease_metadata` alone is insufficient because
-    /// `get_lease()` queries the `leases` map (not `lease_metadata`). This method
-    /// populates both maps so that post-bootstrap lease queries (e.g. heartbeat
-    /// causality checks) find the correct owner/expiry state.
-    pub(crate) fn set_lease_for_bootstrap(&mut self, run_id: RunId, metadata: LeaseMetadata) {
-        self.leases.insert(run_id, (metadata.owner.clone(), metadata.expiry));
-        self.lease_metadata.insert(run_id, metadata);
-    }
-
-    /// Sets reducer sequence during trusted bootstrap hydration.
-    pub(crate) fn set_latest_sequence_for_bootstrap(&mut self, sequence: u64) {
-        self.latest_sequence = sequence;
     }
 
     fn map_run_instance_error(error: RunInstanceError) -> ReplayReducerError {
@@ -1633,6 +1586,15 @@ pub enum TaskCausalityError {
         /// Task ID referenced by the event.
         task_id: TaskId,
     },
+    /// Task cancellation predates task creation.
+    CanceledBeforeCreation {
+        /// Canceled task identifier.
+        task_id: TaskId,
+        /// Durable creation timestamp.
+        created_at: u64,
+        /// Rejected cancellation timestamp.
+        canceled_at: u64,
+    },
     /// Task cancellation for a task that is already canceled.
     AlreadyCanceled {
         /// Canceled task identifier.
@@ -1649,6 +1611,9 @@ impl std::fmt::Display for TaskCausalityError {
         match self {
             TaskCausalityError::UnknownTask { task_id } => {
                 write!(f, "task canceled rejected: unknown task {task_id}")
+            }
+            TaskCausalityError::CanceledBeforeCreation { task_id, created_at, canceled_at } => {
+                write!(f, "task canceled rejected for task {task_id}: canceled_at {canceled_at} precedes created_at {created_at}")
             }
             TaskCausalityError::AlreadyCanceled {
                 task_id,
@@ -1826,7 +1791,7 @@ impl std::fmt::Display for ReplayReducerError {
 impl std::error::Error for ReplayReducerError {}
 
 /// Returns a stable string key for a `Capability`, used as HashMap key.
-fn capability_key(cap: &Capability) -> String {
+pub(crate) fn capability_key(cap: &Capability) -> String {
     match cap {
         Capability::CanSubmit => "CanSubmit".to_string(),
         Capability::CanExecute => "CanExecute".to_string(),

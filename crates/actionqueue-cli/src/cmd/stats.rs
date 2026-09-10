@@ -9,15 +9,16 @@ use crate::cmd::{resolve_data_dir, CliError, CommandOutput};
 /// Executes stats command flow.
 pub fn run(args: StatsArgs) -> Result<CommandOutput, CliError> {
     let data_dir = resolve_data_dir(args.data_dir.as_deref());
-    let recovery = actionqueue_storage::recovery::bootstrap::load_projection_from_storage(
+    let session = actionqueue_storage::store::open_store(
         &data_dir,
+        actionqueue_storage::store::OpenOptions::ReadOnly,
     )
-    .map_err(|error| {
-        CliError::runtime(
-            "storage_bootstrap_failed",
-            format!("unable to load storage projection: {error}"),
-        )
-    })?;
+    .map_err(|e| CliError::runtime("storage_open_failed", e.to_string()))?;
+    let recovery = actionqueue_storage::recovery::bootstrap::recover_read_only(
+        &session,
+        actionqueue_storage::wal::repair::RepairPolicy::Strict,
+    )
+    .map_err(|e| CliError::runtime("storage_recovery_failed", e.to_string()))?;
 
     let projection = recovery.projection;
     let summary = StatsSummary::from_projection(&projection);

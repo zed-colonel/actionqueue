@@ -17,6 +17,8 @@ serde_json = "1.0"
 postcard = { version = "1", features = ["alloc"] }
 crc32fast = "1"
 tracing = "0.1"
+uuid = { version = "1.0", features = ["v4", "serde"] }
+sha2 = "0.10"
 
 [dev-dependencies]
 uuid = { version = "1.0", features = ["v4"] }
@@ -25,7 +27,13 @@ proptest = "1.4"
 actionqueue-engine = "0.1.2"
 actionqueue-executor-local = "0.1.2"
 
+actionqueue-storage = { version = "0.1.2", features = ["testing"] }
+
 [features]
 default = ["serde"]
 serde = ["actionqueue-core/serde"]
-workflow = ["actionqueue-core/workflow"]
+workflow = ["actionqueue-core/workflow", "actionqueue-engine/workflow"]
+budget = []
+actor = []
+platform = ["actor"]
+testing = []
