@@ -1051,6 +1051,13 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
                             DurabilityPolicy::Immediate,
                         )
                         .map_err(DispatchError::Authority)?;
+                    Self::try_release_concurrency_key(
+                        &self.authority,
+                        &mut self.key_gate,
+                        run_id,
+                        blocked_id,
+                        RunState::Canceled,
+                    );
                 }
             }
         }
@@ -1901,6 +1908,13 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
                         DurabilityPolicy::Immediate,
                     )
                     .map_err(DispatchError::Authority)?;
+                Self::try_release_concurrency_key(
+                    &self.authority,
+                    &mut self.key_gate,
+                    run_id,
+                    task_id,
+                    RunState::Canceled,
+                );
             }
         }
         Ok(())
@@ -2698,5 +2712,109 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
     /// Consumes the dispatch loop and returns the mutation authority.
     pub fn into_authority(self) -> StorageMutationAuthority<W, ReplayReducer> {
         self.authority
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use actionqueue_core::task::constraints::TaskConstraints;
+    use actionqueue_core::task::metadata::TaskMetadata;
+    use actionqueue_core::task::run_policy::RunPolicy;
+    use actionqueue_core::task::task_spec::TaskPayload;
+    use actionqueue_engine::time::clock::MockClock;
+    use actionqueue_executor_local::handler::{ExecutorContext, HandlerOutput};
+    use actionqueue_storage::recovery::bootstrap::load_projection_from_storage;
+
+    use super::*;
+
+    struct DependencyHandler;
+
+    impl ExecutorHandler for DependencyHandler {
+        fn execute(&self, ctx: ExecutorContext) -> HandlerOutput {
+            match ctx.input.payload.as_slice() {
+                b"suspend" => HandlerOutput::Suspended { output: None, consumption: vec![] },
+                b"fail" => HandlerOutput::TerminalFailure {
+                    error: "prerequisite failed".into(),
+                    consumption: vec![],
+                },
+                _ => HandlerOutput::Success { output: None, consumption: vec![] },
+            }
+        }
+    }
+
+    fn task(payload: &[u8], key: Option<&str>) -> TaskSpec {
+        let mut constraints = TaskConstraints::new(3, None, key.map(str::to_owned)).unwrap();
+        constraints.set_concurrency_key_hold_policy(ConcurrencyKeyHoldPolicy::HoldDuringRetry);
+        TaskSpec::new(
+            TaskId::new(),
+            TaskPayload::new(payload.to_vec()),
+            RunPolicy::Once,
+            constraints,
+            TaskMetadata::default(),
+        )
+        .unwrap()
+    }
+
+    async fn dependency_cancellation_releases_held_key(catch_up: bool) {
+        let dir = tempfile::tempdir().unwrap();
+        let recovery = load_projection_from_storage(dir.path()).unwrap();
+        let authority = StorageMutationAuthority::new(recovery.wal_writer, recovery.projection);
+        let mut dispatch = DispatchLoop::new(
+            authority,
+            DependencyHandler,
+            MockClock::new(1000),
+            DispatchConfig::new(
+                BackoffStrategyConfig::Fixed { interval: Duration::ZERO },
+                1,
+                30,
+                None,
+                None,
+            ),
+        )
+        .unwrap();
+
+        let suspended = task(b"suspend", Some("shared"));
+        let suspended_id = suspended.id();
+        dispatch.submit_task(suspended).unwrap();
+        let _ = dispatch.run_until_idle().await.unwrap();
+        let suspended_run = dispatch.projection().run_ids_for_task(suspended_id)[0];
+        assert_eq!(dispatch.projection().get_run_state(&suspended_run), Some(&RunState::Suspended));
+
+        let competitor = task(b"success", Some("shared"));
+        let competitor_id = competitor.id();
+        dispatch.submit_task(competitor).unwrap();
+        let _ = dispatch.run_until_idle().await.unwrap();
+        let competitor_run = dispatch.projection().run_ids_for_task(competitor_id)[0];
+        assert_eq!(dispatch.projection().get_run_state(&competitor_run), Some(&RunState::Ready));
+
+        if catch_up {
+            // Model the gap between a gate learning of dependency failure and
+            // committing cancellation, keeping the existing key owner in memory.
+            dispatch.dependency_gate.force_fail(suspended_id);
+        } else {
+            let prerequisite = task(b"fail", None);
+            let prerequisite_id = prerequisite.id();
+            dispatch.submit_task(prerequisite).unwrap();
+            dispatch.declare_dependency(suspended_id, vec![prerequisite_id]).unwrap();
+        }
+        let _ = dispatch.run_until_idle().await.unwrap();
+        assert_eq!(dispatch.projection().get_run_state(&suspended_run), Some(&RunState::Canceled));
+        assert_eq!(
+            dispatch.projection().get_run_state(&competitor_run),
+            Some(&RunState::Completed),
+            "dependency cancellation must free the held key without a restart"
+        );
+    }
+
+    #[tokio::test]
+    async fn dependency_failure_cascade_releases_suspended_key() {
+        dependency_cancellation_releases_held_key(false).await;
+    }
+
+    #[tokio::test]
+    async fn dependency_failure_catch_up_releases_suspended_key() {
+        dependency_cancellation_releases_held_key(true).await;
     }
 }

@@ -91,7 +91,7 @@
       { "symbol": "ActorCapabilities", "replacement": "ExecutorTraits", "removal_pr": "AQ-02", "stage": "forbid", "max_files": 11 },
       { "symbol": "required_capabilities", "replacement": "required_executor_traits", "removal_pr": "AQ-02", "stage": "forbid", "max_files": 6 },
       { "symbol": "with_capabilities", "replacement": "executor-trait constructors", "removal_pr": "AQ-02", "stage": "forbid", "max_files": 1 },
-      { "symbol": "HandlerOutput", "replacement": "AttemptDisposition", "removal_pr": "AQ-08", "stage": "report", "max_files": 43 },
+      { "symbol": "HandlerOutput", "replacement": "AttemptDisposition", "removal_pr": "AQ-08", "stage": "report", "max_files": 44 },
       { "symbol": "TaskSubmissionPort", "replacement": "compound child admission", "removal_pr": "AQ-09", "stage": "report", "max_files": 5 },
       { "symbol": "SubmissionChannel", "replacement": "compound child admission", "removal_pr": "AQ-09", "stage": "report", "max_files": 8 },
       { "symbol": "EventFilter::Custom", "replacement": "durable SignalEnvelope / WaitSpec", "removal_pr": "AQ-10", "stage": "report", "max_files": 6 },

@@ -49,6 +49,92 @@ by this remediation.
 | 3 | Fixed | `DataScheme` uses its own `MAX_DATA_SCHEME_BYTES` constant, retaining the existing 64-byte ceiling. |
 | 4 | Fixed | Moved this log under `docs/planning/aq-cont-1/` alongside the work-item planning artifacts. |
 
+## Final cross-file addendum dispositions
+
+The supplied addendum contains findings 13 and 14. Follow-up findings 1–4 are
+recorded immediately above. Findings 5–12 from that follow-up report were not
+included in the work-item brief or found in this worktree; their text has been
+requested from the operator. The initial review's separate 1–15 numbering above
+must not be mistaken for the missing follow-up findings.
+
+| Finding | Disposition | Change or follow-up |
+|---|---|---|
+| 5 | Deferred: review text unavailable | Requires the follow-up report to identify and assess this finding. |
+| 6 | Deferred: review text unavailable | Requires the follow-up report to identify and assess this finding. |
+| 7 | Deferred: review text unavailable | Requires the follow-up report to identify and assess this finding. |
+| 8 | Deferred: review text unavailable | Requires the follow-up report to identify and assess this finding. |
+| 9 | Deferred: review text unavailable | Requires the follow-up report to identify and assess this finding. |
+| 10 | Deferred: review text unavailable | Requires the follow-up report to identify and assess this finding. |
+| 11 | Deferred: review text unavailable | Requires the follow-up report to identify and assess this finding. |
+| 12 | Deferred: review text unavailable | Requires the follow-up report to identify and assess this finding. |
+| 13 | Deferred to AQ-03 as recommended; interim behavior documented | Reject pre-contract stores before decoding or repair, with a store-format/value-domain diagnostic rather than a disk-corruption diagnosis. See the qualification below concerning `TruncatePartial`. |
+| 14 | Fixed | Both live dependency-failure propagation and the catch-up cancellation path now release concurrency keys after durable cancellation succeeds. Two dispatch regression tests prove that a competing run completes without restarting after a `HoldDuringRetry` run is canceled from `Suspended`. |
+
+### Interim persistence behavior and AQ-03 handoff
+
+Pre-AQ-02 `TaskCreated` records can have routing labels that the former validator
+accepted but `ExecutorTraits` now rejects: whitespace, labels longer than 128
+bytes, or collections with more than 64 entries. The postcard layout remains
+readable, but deserialization rejects those values. The streaming WAL reader maps
+that rejection to `WalCorruption { reason: DecodeFailure, .. }`, so the default
+`RepairPolicy::Strict` refuses startup without distinguishing the pre-contract
+value domain from disk corruption. AQ-03 must reject nonempty pre-contract stores
+without modifying their bytes, before this decode/repair path, and report the
+missing/unsupported target lineage explicitly. AQ-02 does not provide a migration.
+
+The claim in finding 13 that `TruncatePartial` can cut only a trailing record is
+**disagreed with for the current implementation**. Although its rustdoc promises
+that restriction, `WalFsWriter::load_current_sequence_lenient` returns a truncation
+offset at the first `StreamingReadResult::Corruption`, without inspecting later
+records. `new_with_repair` passes that offset to `truncate_to_last_valid`, whose
+`set_len` removes the entire suffix. Thus a rejected legacy value followed by valid
+records can cause those later records to be removed when the lenient writer is
+opened directly. This does not occur under the default strict policy. AQ-03 must
+also enforce the documented trailing-only repair restriction for recognized target
+stores; the manifest check alone is not a replacement for that restriction.
+
+A local probe confirmed this distinction using two CRC-valid `TaskCreated`
+frames (118 bytes total). In the first frame, a valid routing label was changed
+to begin with whitespace and its CRC recomputed; the second frame still decoded
+successfully. Strict opening rejected the first frame and preserved all 118 bytes.
+Direct `TruncatePartial` opening succeeded at sequence 0 and shortened the file to
+zero bytes, removing the valid second frame as well. The probe used only a disposable
+WAL inside this worktree, never an operator store.
+
+The finding 14 fix covers today's reachable suspension behavior. Persisting and
+selecting `HoldWhileAwaiting`, testing that it retains the key while waiting, and
+durably canceling active waits remain in AQ-03/AQ-06 as tracked in follow-up finding
+1 and initial finding 6. Both dependency cancellation paths use the existing
+terminal-state helper, which releases keys irrespective of retry/wait hold policy.
+
+The dispatch regression fixture implements the currently supported handler API.
+It adds a test-only `HandlerOutput` use in `dispatch.rs`; the boundary policy's
+file-count ceiling is consciously raised from 43 to 44 for that one file. Its
+removal stage remains `report` with AQ-08 responsible for replacement. The new
+tests fail on both cancellation paths without the two release calls (the competing
+run stays `Ready`) and pass with them.
+
+### Addendum verification
+
+Final checks on 2026-09-09:
+
+| Check | Result |
+|---|---|
+| `cargo test --workspace` | 942 passed, 1 ignored |
+| `cargo test --workspace --features workflow` | 976 passed, 1 ignored |
+| `cargo test --workspace --features workflow,budget,actor,platform` | 1,012 passed, 1 ignored |
+| `cargo test -p actionqueue-core --no-default-features` | 87 passed |
+| `cargo aq-conformance` | 39 passed, 1 ignored |
+| `cargo build --workspace` | Passed |
+| `cargo fmt --all -- --check` | Passed (stable rustfmt reports existing nightly-option warnings) |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | Passed |
+| `git diff --check 8bc7a2b` | Passed |
+
+The first matrix/conformance runs caught the new test fixture's legacy-symbol
+footprint increase. All affected checks were rerun successfully after the explicit
+policy adjustment described above. The ignored test remains the existing AQ-03
+pre-contract-store rejection scaffold. No frozen contracts or evidence were edited.
+
 ## Follow-up verification
 
 Checks rerun on 2026-09-09 for the follow-up changes:
