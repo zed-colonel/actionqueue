@@ -143,6 +143,10 @@ pub(crate) fn recover(
     if !matched_snapshot {
         return Err(invalid("snapshot sequence is outside complete WAL history"));
     }
+    // Enforce the same projection invariants as append, inspection and snapshot
+    // publication, including WAL-only recovery. Repair may only use this result
+    // after the complete candidate prefix has passed validation.
+    full.projection_image()?;
     if let Some(h) = &hydrated {
         if h.projection_digest()? != full.projection_digest()? {
             return Err(invalid("snapshot plus tail differs from WAL replay"));

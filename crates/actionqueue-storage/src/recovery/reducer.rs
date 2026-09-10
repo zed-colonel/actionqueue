@@ -757,6 +757,18 @@ impl ReplayReducer {
             }));
         }
 
+        // Shared by live mutation preparation and every replay path. Reject
+        // before changing either cancellation index or advancing the sequence.
+        if timestamp < task_record.created_at {
+            return Err(ReplayReducerError::TaskCausality(
+                TaskCausalityError::CanceledBeforeCreation {
+                    task_id: *task_id,
+                    created_at: task_record.created_at,
+                    canceled_at: timestamp,
+                },
+            ));
+        }
+
         task_record.canceled_at = Some(timestamp);
         self.task_canceled_at.insert(*task_id, timestamp);
         Ok(())
@@ -1580,6 +1592,15 @@ pub enum TaskCausalityError {
         /// Task ID referenced by the event.
         task_id: TaskId,
     },
+    /// Task cancellation predates task creation.
+    CanceledBeforeCreation {
+        /// Canceled task identifier.
+        task_id: TaskId,
+        /// Durable creation timestamp.
+        created_at: u64,
+        /// Rejected cancellation timestamp.
+        canceled_at: u64,
+    },
     /// Task cancellation for a task that is already canceled.
     AlreadyCanceled {
         /// Canceled task identifier.
@@ -1596,6 +1617,9 @@ impl std::fmt::Display for TaskCausalityError {
         match self {
             TaskCausalityError::UnknownTask { task_id } => {
                 write!(f, "task canceled rejected: unknown task {task_id}")
+            }
+            TaskCausalityError::CanceledBeforeCreation { task_id, created_at, canceled_at } => {
+                write!(f, "task canceled rejected for task {task_id}: canceled_at {canceled_at} precedes created_at {created_at}")
             }
             TaskCausalityError::AlreadyCanceled {
                 task_id,

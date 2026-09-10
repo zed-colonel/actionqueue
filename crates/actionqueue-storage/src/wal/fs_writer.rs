@@ -128,6 +128,8 @@ impl WalWriter for WalFsWriter {
             p.validate_target_event(event.event())
                 .map_err(|e| WalWriterError::EncodeError(e.to_string()))?;
             p.apply(event).map_err(|e| WalWriterError::EncodeError(e.to_string()))?;
+            // An accepted durable prefix must also be inspectable and snapshotable.
+            p.projection_image().map_err(|e| WalWriterError::EncodeError(e.to_string()))?;
         }
         let bytes = super::codec::encode_for_store(
             event,

@@ -418,6 +418,119 @@ fn cancellation_preserves_unfinished_attempt_through_snapshot_tail_and_restore()
 }
 
 #[test]
+fn cancellation_before_creation_is_rejected_before_append_and_projection_publication() {
+    use actionqueue_core::mutation::{
+        DurabilityPolicy, MutationAuthority, MutationCommand, TaskCancelCommand, TaskCreateCommand,
+    };
+    use actionqueue_storage::recovery::reducer::{ReplayReducerError, TaskCausalityError};
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source");
+    let t = TaskId::new();
+    let mut authority = init(&source).into_authority().unwrap();
+    authority
+        .submit_command(
+            MutationCommand::TaskCreate(TaskCreateCommand::new(2, task(t), 100)),
+            DurabilityPolicy::Immediate,
+        )
+        .unwrap();
+    let before = tree(&source);
+    let expected = authority.projection().projection_digest().unwrap();
+    for timestamp in [0, 50, 99] {
+        let mut replay = authority.projection().clone();
+        assert_eq!(
+            replay.apply(&WalEvent::new(3, E::TaskCanceled { task_id: t, timestamp })),
+            Err(ReplayReducerError::TaskCausality(TaskCausalityError::CanceledBeforeCreation {
+                task_id: t,
+                created_at: 100,
+                canceled_at: timestamp,
+            }))
+        );
+        assert_eq!(replay.projection_digest().unwrap(), expected);
+        assert!(authority
+            .submit_command(
+                MutationCommand::TaskCancel(TaskCancelCommand::new(3, t, timestamp)),
+                DurabilityPolicy::Immediate,
+            )
+            .is_err());
+        assert_eq!(authority.projection().projection_digest().unwrap(), expected);
+        assert!(!authority.projection().is_task_canceled(t));
+        assert_eq!(tree(&source), before);
+    }
+    drop(authority);
+    let session = open_store(&source, OpenOptions::ReadWrite).unwrap();
+    let mut w = WalFsWriter::new(session).unwrap();
+    assert!(w.append(&WalEvent::new(3, E::TaskCanceled { task_id: t, timestamp: 50 })).is_err());
+    assert_eq!(w.current_sequence(), 2);
+    assert_eq!(tree(&source), before);
+    drop(w);
+    // Equality is valid, and a rejected attempt must leave sequence 3 available.
+    let mut authority =
+        open_store(&source, OpenOptions::ReadWrite).unwrap().into_authority().unwrap();
+    authority
+        .submit_command(
+            MutationCommand::TaskCancel(TaskCancelCommand::new(3, t, 100)),
+            DurabilityPolicy::Immediate,
+        )
+        .unwrap();
+    let expected = authority.projection().projection_digest().unwrap();
+    drop(authority);
+    assert_eq!(inspect_store(&source).unwrap().projection_digest, expected);
+    let backup = dir.path().join("backup");
+    assert_eq!(backup_store(&source, &backup).unwrap().projection_digest, expected);
+}
+
+#[test]
+fn invalid_cancellation_prefix_never_qualifies_for_tail_repair() {
+    for with_snapshot in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source");
+        let session = init(&source);
+        let id = session.manifest().store_id;
+        let path = session.wal_path();
+        let mut p = recover_read_only(&session, RepairPolicy::Strict).unwrap().projection;
+        let mut w = WalFsWriter::new(session.clone()).unwrap();
+        let t = TaskId::new();
+        append(&mut w, &mut p, E::TaskCreated { task_spec: task(t), timestamp: 100 });
+        if with_snapshot {
+            snapshot(&session, &p);
+        }
+        drop((w, session));
+        let mut invalid = fs::read(&path).unwrap();
+        invalid.extend(
+            codec::encode_for_store(
+                &WalEvent::new(3, E::TaskCanceled { task_id: t, timestamp: 50 }),
+                id,
+            )
+            .unwrap(),
+        );
+        let next_frame =
+            codec::encode_for_store(&WalEvent::new(4, E::EnginePaused { timestamp: 100 }), id)
+                .unwrap();
+        for tail_len in [0, 7, codec::HEADER_LEN + 1] {
+            let mut bytes = invalid.clone();
+            bytes.extend_from_slice(&next_frame[..tail_len]);
+            fs::write(&path, bytes).unwrap();
+            let before = tree(&source);
+            for policy in [RepairPolicy::Strict, RepairPolicy::TruncatePartial] {
+                let session = open_store(&source, OpenOptions::ReadWrite).unwrap();
+                let error = recover_read_only(&session, policy).unwrap_err();
+                assert!(
+                    error.to_string().contains("canceled_at 50 precedes created_at 100"),
+                    "{error}"
+                );
+                assert!(WalFsWriter::new_with_repair(session, policy).is_err());
+                assert_eq!(tree(&source), before);
+            }
+            assert!(inspect_store(&source).is_err());
+            let backup = dir.path().join("backup");
+            assert!(backup_store(&source, &backup).is_err());
+            assert!(!backup.exists());
+            assert_eq!(tree(&source), before);
+        }
+    }
+}
+
+#[test]
 fn only_incomplete_final_target_frames_are_repairable() {
     let dir = tempfile::tempdir().unwrap();
     let session = init(dir.path());
