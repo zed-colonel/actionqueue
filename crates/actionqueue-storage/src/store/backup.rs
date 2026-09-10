@@ -67,12 +67,21 @@ pub struct BackupDescriptor {
     pub projection_digest: ProjectionDigest,
     pub files: Vec<BackupFile>,
 }
-fn file_hash(path: &Path) -> Result<(u64, String), StoreError> {
+fn open_regular_file(path: &Path) -> Result<File, StoreError> {
     reject_symlinks(path)?;
-    let mut file = File::open(path)?;
-    if !file.metadata()?.is_file() {
-        return Err(invalid("backup inventory requires regular files"));
+    // Opening a FIFO for reading can block indefinitely. Check the path before
+    // opening, and retain the descriptor check in case the entry was replaced.
+    if !fs::symlink_metadata(path)?.is_file() {
+        return Err(invalid("backup input requires regular files"));
     }
+    let file = File::open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(invalid("backup input requires regular files"));
+    }
+    Ok(file)
+}
+fn file_hash(path: &Path) -> Result<(u64, String), StoreError> {
+    let mut file = open_regular_file(path)?;
     let mut sha = Sha256::new();
     let mut len = 0;
     let mut buffer = [0u8; 64 * 1024];
@@ -87,11 +96,7 @@ fn file_hash(path: &Path) -> Result<(u64, String), StoreError> {
     Ok((len, format!("{:x}", sha.finalize())))
 }
 fn copy_file(source: &Path, dest: &Path) -> Result<(), StoreError> {
-    reject_symlinks(source)?;
-    let mut from = File::open(source)?;
-    if !from.metadata()?.is_file() {
-        return Err(invalid("source must be regular file"));
-    }
+    let mut from = open_regular_file(source)?;
     let mut to = fs::OpenOptions::new().write(true).create_new(true).open(dest)?;
     std::io::copy(&mut from, &mut to)?;
     to.sync_all()?;
@@ -206,9 +211,8 @@ fn inventory(root: &Path, relative: &Path, files: &mut BTreeSet<String>) -> Resu
     Ok(())
 }
 fn read_descriptor(input: &Path) -> Result<BackupDescriptor, StoreError> {
-    reject_symlinks(&input.join("backup.json"))?;
-    let f = File::open(input.join("backup.json"))?;
-    if !f.metadata()?.is_file() || f.metadata()?.len() > 64 * 1024 {
+    let f = open_regular_file(&input.join("backup.json"))?;
+    if f.metadata()?.len() > 64 * 1024 {
         return Err(invalid("invalid backup descriptor size/type"));
     }
     let mut bytes = Vec::new();

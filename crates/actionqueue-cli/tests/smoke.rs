@@ -265,3 +265,89 @@ fn storage_commands_verify_roundtrip_and_never_initialize_inspection() {
     assert!(!refused.status.success());
     std::fs::remove_dir_all(base).unwrap();
 }
+
+#[cfg(unix)]
+#[test]
+fn restore_rejects_fifo_descriptor_and_inventory_without_blocking() {
+    use actionqueue_storage::{
+        recovery::bootstrap::recover_read_only,
+        snapshot::{
+            build::build_snapshot_from_projection,
+            writer::{SnapshotFsWriter, SnapshotWriter},
+        },
+        store::{backup_store, open_store, OpenOptions},
+        wal::repair::RepairPolicy,
+    };
+    use std::{
+        fs,
+        os::unix::fs::FileTypeExt,
+        process::Stdio,
+        time::{Duration, Instant},
+    };
+    let base = unique_data_dir("smoke-restore-fifo");
+    let source = base.join("source");
+    let backup = base.join("backup");
+    let dest = base.join("restored");
+    let session = open_store(&source, OpenOptions::Initialize { features: vec![] }).unwrap();
+    let projection = recover_read_only(&session, RepairPolicy::Strict).unwrap().projection;
+    let mut writer = SnapshotFsWriter::new(&session).unwrap();
+    writer.write(&build_snapshot_from_projection(&projection, 0).unwrap()).unwrap();
+    writer.close().unwrap();
+    drop(session);
+    backup_store(&source, &backup).unwrap();
+    let names = [
+        "backup.json",
+        "manifest.json",
+        "store.lock",
+        "wal/actionqueue.wal",
+        "snapshots/snapshot.bin",
+    ];
+    let originals: Vec<_> = names.iter().map(|name| fs::read(backup.join(name)).unwrap()).collect();
+    for (index, name) in names.iter().enumerate() {
+        let path = backup.join(name);
+        fs::remove_file(&path).unwrap();
+        assert!(Command::new("mkfifo").arg(&path).status().unwrap().success());
+        let mut child = cli()
+            .args(["storage", "restore", "--input"])
+            .arg(&backup)
+            .arg("--data-dir")
+            .arg(&dest)
+            .arg("--json")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if child.try_wait().unwrap().is_some() {
+                break;
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let output = child.wait_with_output().unwrap();
+                panic!(
+                    "restore blocked on FIFO {name}: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let output = child.wait_with_output().unwrap();
+        assert!(!output.status.success(), "restore accepted FIFO {name}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("regular file"),
+            "unexpected rejection for {name}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!dest.exists());
+        assert!(fs::symlink_metadata(&path).unwrap().file_type().is_fifo());
+        for (other_index, other_name) in names.iter().enumerate() {
+            if other_index != index {
+                assert_eq!(fs::read(backup.join(other_name)).unwrap(), originals[other_index]);
+            }
+        }
+        fs::remove_file(path).unwrap();
+        fs::write(backup.join(name), &originals[index]).unwrap();
+    }
+    fs::remove_dir_all(base).unwrap();
+}
