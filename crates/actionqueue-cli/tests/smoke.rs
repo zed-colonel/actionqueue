@@ -184,3 +184,84 @@ fn invalid_usage_emits_structured_stderr_and_non_zero_exit() {
     assert_eq!(payload["error_code"], "input_validation_failed");
     assert!(payload["message"].as_str().is_some());
 }
+
+#[test]
+fn storage_commands_verify_roundtrip_and_never_initialize_inspection() {
+    let base = unique_data_dir("smoke-storage");
+    let source = base.join("source");
+    let backup = base.join("backup");
+    let dest = base.join("restored");
+    let refused = cli()
+        .args(["storage", "inspect", "--data-dir", source.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    assert!(!source.exists());
+    let submitted = cli()
+        .args([
+            "submit",
+            "--data-dir",
+            source.to_str().unwrap(),
+            "--task-id",
+            "123e4567-e89b-12d3-a456-426614174099",
+            "--run-policy",
+            "once",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(submitted.status.success(), "{}", String::from_utf8_lossy(&submitted.stderr));
+    let inspect = cli()
+        .args(["storage", "inspect", "--data-dir", source.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(inspect.status.success());
+    let before: serde_json::Value = serde_json::from_slice(&inspect.stdout).unwrap();
+    assert_eq!(before["task_count"], 1);
+    let copied = cli()
+        .args([
+            "storage",
+            "backup",
+            "--data-dir",
+            source.to_str().unwrap(),
+            "--output",
+            backup.to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(copied.status.success(), "{}", String::from_utf8_lossy(&copied.stderr));
+    let restored = cli()
+        .args([
+            "storage",
+            "restore",
+            "--input",
+            backup.to_str().unwrap(),
+            "--data-dir",
+            dest.to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(restored.status.success(), "{}", String::from_utf8_lossy(&restored.stderr));
+    let after = cli()
+        .args(["storage", "inspect", "--data-dir", dest.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    let after: serde_json::Value = serde_json::from_slice(&after.stdout).unwrap();
+    assert_eq!(after["projection_digest"], before["projection_digest"]);
+    assert_eq!(after["manifest"]["store_id"], before["manifest"]["store_id"]);
+    let refused = cli()
+        .args([
+            "storage",
+            "restore",
+            "--input",
+            backup.to_str().unwrap(),
+            "--data-dir",
+            dest.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    std::fs::remove_dir_all(base).unwrap();
+}

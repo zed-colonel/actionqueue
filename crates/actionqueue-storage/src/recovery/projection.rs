@@ -21,7 +21,7 @@ fn invalid(e: impl std::fmt::Display) -> StoreError {
 /// Canonical tree encoding: typed one-byte tags; 64-bit LE lengths and integers;
 /// UTF-8 strings; objects sorted by UTF-8 field names; chronological arrays retained.
 /// The JSON value is an intermediate typed tree, never serializer output bytes.
-pub(crate) fn canonical(value: &serde_json::Value, out: &mut Vec<u8>) -> Result<(), StoreError> {
+fn canonical(value: &serde_json::Value, out: &mut Vec<u8>) -> Result<(), StoreError> {
     use serde_json::Value as V;
     match value {
         V::Null => out.push(0),

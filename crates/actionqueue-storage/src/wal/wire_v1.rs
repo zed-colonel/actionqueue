@@ -23,7 +23,7 @@ struct TaskCreatedV1 {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RunCreatedV1 {
-    run_instance: actionqueue_core::run::run_instance::RunInstance,
+    run_instance: super::domain_v1::RunV1,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -292,7 +292,7 @@ pub fn encode_payload(event: &WalEventType) -> Result<Vec<u8>, EncodeError> {
             timestamp: timestamp.clone(),
         }),
         WalEventType::RunCreated { run_instance } => {
-            bounded(&RunCreatedV1 { run_instance: run_instance.clone() })
+            bounded(&RunCreatedV1 { run_instance: super::domain_v1::RunV1::from(run_instance) })
         }
         WalEventType::RunStateChanged { run_id, previous_state, new_state, timestamp } => {
             bounded(&RunStateChangedV1 {
@@ -526,7 +526,7 @@ pub fn decode_payload(kind: u16, payload: &[u8]) -> Result<WalEventType, DecodeE
             if !rest.is_empty() {
                 return Err(DecodeError::Decode("trailing payload bytes".into()));
             }
-            Ok(WalEventType::RunCreated { run_instance: v.run_instance })
+            Ok(WalEventType::RunCreated { run_instance: v.run_instance.try_into()? })
         }
         18 => {
             let (v, rest) = postcard::take_from_bytes::<RunStateChangedV1>(payload)
@@ -877,8 +877,11 @@ pub fn decode_payload(kind: u16, payload: &[u8]) -> Result<WalEventType, DecodeE
 pub const RESERVED_KINDS: &[u16] = &[256, 272, 273, 288, 304, 305, 306, 307, 320, 321];
 
 fn bounded<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, EncodeError> {
-    let size = postcard::experimental::serialized_size(value)
-        .map_err(|e| EncodeError::Serialization(e.to_string()))?;
+    let size = postcard::serialize_with_flavor::<_, postcard::ser_flavors::Size, usize>(
+        value,
+        postcard::ser_flavors::Size::default(),
+    )
+    .map_err(|e| EncodeError::Serialization(e.to_string()))?;
     if size > super::codec::MAX_PAYLOAD_SIZE {
         return Err(EncodeError::PayloadTooLarge(size));
     }

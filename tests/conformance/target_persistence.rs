@@ -775,3 +775,37 @@ fn durable_append_recovers_after_failure_before_projection_publication() {
     assert_eq!(recovered.projection.latest_sequence(), 2);
     assert!(recovered.projection.is_engine_paused());
 }
+
+#[test]
+fn incomplete_snapshot_writer_never_replaces_prior_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = init(dir.path());
+    let p = recover_read_only(&session, RepairPolicy::Strict).unwrap().projection;
+    snapshot(&session, &p);
+    let before = fs::read(session.snapshot_path()).unwrap();
+    assert!(SnapshotFsWriter::new(&session).unwrap().close().is_err());
+    assert_eq!(fs::read(session.snapshot_path()).unwrap(), before);
+    let mut writer = SnapshotFsWriter::new(&session).unwrap();
+    let mut invalid = build_snapshot_from_projection(&p, 0).unwrap();
+    invalid.metadata.wal_sequence += 1;
+    assert!(writer.write(&invalid).is_err());
+    assert!(writer.close().is_err());
+    assert_eq!(fs::read(session.snapshot_path()).unwrap(), before);
+}
+#[test]
+fn daemon_without_controls_owns_store_until_last_router_is_dropped() {
+    let dir = tempfile::tempdir().unwrap();
+    let state =
+        actionqueue_daemon::bootstrap::bootstrap(actionqueue_daemon::config::DaemonConfig {
+            data_dir: dir.path().to_path_buf(),
+            enable_control: false,
+            ..Default::default()
+        })
+        .unwrap();
+    let router = state.http_router().clone();
+    assert!(matches!(open_store(dir.path(), OpenOptions::ReadOnly), Err(StoreError::StoreInUse)));
+    drop(state);
+    assert!(matches!(open_store(dir.path(), OpenOptions::ReadOnly), Err(StoreError::StoreInUse)));
+    drop(router);
+    assert!(inspect_store(dir.path()).is_ok());
+}

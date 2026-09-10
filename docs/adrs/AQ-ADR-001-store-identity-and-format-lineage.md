@@ -14,7 +14,7 @@ manifest. A target store must be unambiguously identifiable so the runtime never
 upgrades, or mixes a pre-contract store, and so future supported upgrades have an explicit
 starting point.
 
-## Decision
+## Recommended decision
 
 Write a human-readable `manifest.json` in the data directory root containing at least
 `contract = "AQ-CONT-1"`, `wal_format = 1`, `snapshot_schema = 1`, creation metadata, and

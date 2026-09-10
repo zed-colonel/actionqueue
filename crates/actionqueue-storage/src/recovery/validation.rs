@@ -6,6 +6,17 @@ impl ReplayReducer {
         let invalid = || ReplayReducerError::CorruptedData;
         let task = |id| if self.tasks.contains_key(&id) { Ok(()) } else { Err(invalid()) };
         match e {
+            E::RunStateChanged {
+                new_state: actionqueue_core::run::state::RunState::Awaiting,
+                ..
+            }
+            | E::AttemptFinished {
+                result: actionqueue_core::mutation::AttemptResultKind::Awaiting,
+                ..
+            } => {
+                // Durable continuation establishment belongs to its reserved compound family.
+                return Err(invalid());
+            }
             E::TaskCreated { task_spec, .. } => {
                 if let Some(parent) = task_spec.parent_task_id() {
                     task(parent)?;
@@ -89,6 +100,7 @@ impl ReplayReducer {
                 identity,
                 executor_traits,
                 heartbeat_interval_secs,
+                department,
                 tenant_id,
                 ..
             } => {
@@ -98,6 +110,10 @@ impl ReplayReducer {
                     || self.is_actor_active(*actor_id)
                 {
                     return Err(invalid());
+                }
+                if let Some(department) = department {
+                    actionqueue_core::ids::DepartmentId::new(department.clone())
+                        .map_err(|_| invalid())?;
                 }
                 actionqueue_core::executor::ExecutorTraits::new(executor_traits.clone())
                     .map_err(|_| invalid())?;

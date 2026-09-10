@@ -1,22 +1,18 @@
-//! Frozen task payload layout, including feature-independent scheduling identifiers.
+use super::domain_v1::{ConstraintsV1, MetadataV1, PayloadV1};
+// Frozen task payload layout, including feature-independent scheduling identifiers.
 use super::codec::DecodeError;
 use actionqueue_core::{
     ids::{TaskId, TenantId},
-    task::{
-        constraints::TaskConstraints,
-        metadata::TaskMetadata,
-        run_policy::RunPolicy,
-        task_spec::{TaskPayload, TaskSpec},
-    },
+    task::{run_policy::RunPolicy, task_spec::TaskSpec},
 };
 use serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize)]
 pub(super) struct TaskSpecV1 {
     id: TaskId,
-    payload: TaskPayload,
+    payload: PayloadV1,
     policy: PolicyV1,
-    constraints: TaskConstraints,
-    metadata: TaskMetadata,
+    constraints: ConstraintsV1,
+    metadata: MetadataV1,
     parent_task_id: Option<TaskId>,
     tenant_id: Option<TenantId>,
 }
@@ -54,10 +50,10 @@ impl From<&TaskSpec> for TaskSpecV1 {
         }
         Self {
             id: s.id(),
-            payload: s.task_payload().clone(),
+            payload: PayloadV1::from(s.task_payload()),
             policy,
-            constraints: s.constraints().clone(),
-            metadata: s.metadata().clone(),
+            constraints: ConstraintsV1::from(s.constraints()),
+            metadata: MetadataV1::from(s.metadata()),
             parent_task_id: s.parent_task_id(),
             tenant_id: s.tenant_id(),
         }
@@ -92,8 +88,14 @@ impl TryFrom<TaskSpecV1> for TaskSpec {
             }
             _ => return Err(invalid("unsupported or invalid scheduling policy v1".into())),
         };
-        let mut spec = TaskSpec::new(s.id, s.payload, policy, s.constraints, s.metadata)
-            .map_err(|e| invalid(e.to_string()))?;
+        let mut spec = TaskSpec::new(
+            s.id,
+            s.payload.into(),
+            policy,
+            s.constraints.try_into()?,
+            s.metadata.into(),
+        )
+        .map_err(|e| invalid(e.to_string()))?;
         if let Some(parent) = s.parent_task_id {
             if parent.is_nil() {
                 return Err(invalid("nil parent".into()));

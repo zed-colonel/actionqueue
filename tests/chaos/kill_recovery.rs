@@ -2,7 +2,7 @@
 //!
 //! These tests exercise WAL durability under abrupt process termination by:
 //!   1. Writing state via the mutation authority (task creation, run creation, transitions),
-//!   2. Simulating kill -9 by calling `std::mem::forget` on all handles (skipping Drop/close),
+//!   2. Simulating kill -9 by dropping the authority without a durability sync,
 //!   3. Re-opening from storage via `load_projection_from_storage`,
 //!   4. Verifying recovered state matches expectations,
 //!   5. Verifying new operations succeed after recovery.
@@ -86,16 +86,9 @@ fn next_seq(
     authority.projection().latest_sequence().checked_add(1).expect("sequence should not overflow")
 }
 
-/// Simulates kill -9 by forgetting all handles without running destructors.
-///
-/// `std::mem::forget` prevents Drop from running, which means:
-/// - WalFsWriter does NOT get its `Drop::drop` called (no best-effort sync_all)
-/// - No buffers are flushed
-/// - File descriptors leak (OS reclaims on process exit; in test they leak until GC)
-///
-/// This is strictly harsher than `drop()`, which runs the destructor and triggers
-/// a best-effort sync. A real kill -9 would do neither — `forget` is the closest
-/// in-process simulation.
+/// Simulates loss of the process-owned projection after durable, unbuffered writes.
+/// Dropping releases the OS lock without a WAL sync. A separate target conformance
+/// child-process test proves real SIGKILL lock release and durable recovery.
 fn simulate_kill9(
     authority: StorageMutationAuthority<InstrumentedWalWriter<WalFsWriter>, ReplayReducer>,
 ) {

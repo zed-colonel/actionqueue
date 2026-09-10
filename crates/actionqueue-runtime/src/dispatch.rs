@@ -452,10 +452,9 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
                         reg = reg.with_tenant(tid);
                     }
                     if let Some(dept_str) = &record.department {
-                        if let Ok(dept) = actionqueue_core::ids::DepartmentId::new(dept_str.clone())
-                        {
-                            reg = reg.with_department(dept);
-                        }
+                        let dept = actionqueue_core::ids::DepartmentId::new(dept_str.clone())
+                            .map_err(|e| DispatchError::RecoveryInvariant(e.to_string()))?;
+                        reg = reg.with_department(dept);
                     }
                     registry.register(reg);
                 }

@@ -87,6 +87,7 @@ pub struct SnapshotFsWriter {
     target_path: PathBuf,
     temp_path: PathBuf,
     is_closed: bool,
+    ready_to_publish: bool,
     session: Option<crate::store::StoreSession>,
 }
 
@@ -132,7 +133,14 @@ impl SnapshotFsWriter {
         let temp_path = path.with_file_name(temp_name);
         let file = OpenOptions::new().create_new(true).write(true).open(&temp_path)?;
 
-        Ok(SnapshotFsWriter { file, target_path: path, temp_path, is_closed: false, session: None })
+        Ok(SnapshotFsWriter {
+            file,
+            target_path: path,
+            temp_path,
+            is_closed: false,
+            ready_to_publish: false,
+            session: None,
+        })
     }
 
     /// Seeks to the beginning of the file for writing.
@@ -167,6 +175,7 @@ impl SnapshotWriter for SnapshotFsWriter {
             return Err(SnapshotWriterError::Closed);
         }
 
+        self.ready_to_publish = false;
         validate_snapshot(snapshot).map_err(SnapshotWriterError::MappingError)?;
         if let Some(session) = &self.session {
             crate::recovery::bootstrap::validate_snapshot_for_session(session, snapshot)
@@ -183,6 +192,7 @@ impl SnapshotWriter for SnapshotFsWriter {
         .map_err(SnapshotWriterError::EncodeError)?;
         self.file.set_len(0).map_err(|e| SnapshotWriterError::IoError(e.to_string()))?;
         self.file.write_all(&bytes).map_err(|e| SnapshotWriterError::IoError(e.to_string()))?;
+        self.ready_to_publish = true;
 
         Ok(())
     }
@@ -223,6 +233,11 @@ impl SnapshotWriter for SnapshotFsWriter {
     /// Returns `SnapshotWriterError::IoError` if the flush, rename, or
     /// directory sync operation fails.
     fn close(mut self) -> Result<(), SnapshotWriterError> {
+        if !self.ready_to_publish {
+            return Err(SnapshotWriterError::EncodeError(
+                "no complete validated snapshot to publish".into(),
+            ));
+        }
         // Snapshot publication must never outrun durability of its covered WAL prefix.
         if let Some(session) = &self.session {
             File::open(session.wal_path())
