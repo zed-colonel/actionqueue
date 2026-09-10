@@ -1,5 +1,5 @@
 //! Target-only recovery. Validate complete history and snapshot equivalence before writing.
-use super::{projection::ProjectionImageV1, reducer::ReplayReducer};
+use super::{projection::ProjectionImageV2, reducer::ReplayReducer};
 use crate::{
     snapshot::{
         loader::{SnapshotFsLoader, SnapshotLoader},
@@ -198,7 +198,7 @@ pub fn load_projection_with_features(
 fn bootstrap_reducer_from_snapshot(
     snapshot: &Snapshot,
 ) -> Result<(ReplayReducer, u64), StoreError> {
-    ReplayReducer::from_projection_image(ProjectionImageV1(snapshot.clone())).map(|r| (r, 0))
+    ReplayReducer::from_projection_image(ProjectionImageV2(snapshot.clone())).map(|r| (r, 0))
 }
 
 /// A snapshot can publish only an exact image of an existing WAL prefix.
@@ -206,7 +206,7 @@ pub(crate) fn validate_snapshot_for_session(
     session: &StoreSession,
     snapshot: &Snapshot,
 ) -> Result<(), StoreError> {
-    let restored = ReplayReducer::from_projection_image(ProjectionImageV1(snapshot.clone()))?;
+    let restored = ReplayReducer::from_projection_image(ProjectionImageV2(snapshot.clone()))?;
     let mut reader = WalFsReader::for_session(session).map_err(invalid)?;
     let mut prefix = ReplayReducer::new();
     while prefix.latest_sequence() < snapshot.metadata.wal_sequence {

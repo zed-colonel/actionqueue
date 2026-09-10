@@ -7,6 +7,8 @@ use std::time::Duration;
 /// Configuration for the ActionQueue runtime.
 #[derive(Debug, Clone)]
 pub struct RuntimeConfig {
+    /// Creation-only admission limits; hard ceilings cannot be raised.
+    pub admission_limits: actionqueue_core::limits::AdmissionLimits,
     /// Directory for WAL and snapshot storage.
     pub data_dir: PathBuf,
     /// Backoff strategy for retry delay computation.
@@ -44,6 +46,7 @@ pub enum BackoffStrategyConfig {
 impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
+            admission_limits: actionqueue_core::limits::AdmissionLimits::default(),
             data_dir: PathBuf::from("data"),
             backoff_strategy: BackoffStrategyConfig::Fixed { interval: Duration::from_secs(5) },
             dispatch_concurrency: NonZeroUsize::new(4).expect("4 is non-zero"),

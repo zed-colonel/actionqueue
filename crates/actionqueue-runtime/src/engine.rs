@@ -99,10 +99,12 @@ impl<H: ExecutorHandler + 'static> ActionQueueEngine<H> {
             .map_err(BootstrapError::Recovery)?;
 
         // Build mutation authority
-        let authority = actionqueue_storage::mutation::authority::StorageMutationAuthority::new(
+        let mut authority = actionqueue_storage::mutation::authority::StorageMutationAuthority::new(
             recovery.wal_writer,
             recovery.projection,
         );
+
+        authority.set_admission_limits(self.config.admission_limits);
 
         // Compute snapshot path — must match bootstrap.rs snapshot_dir / "snapshot.bin"
         let snapshot_path = self
@@ -136,13 +138,26 @@ pub struct BootstrappedEngine<H: ExecutorHandler + 'static, C: Clock = SystemClo
 }
 
 impl<H: ExecutorHandler + 'static, C: Clock> BootstrappedEngine<H, C> {
-    /// Submits a new task specification for execution.
-    pub fn submit_task(&mut self, spec: TaskSpec) -> Result<(), EngineError> {
+    /// Idempotent convenience admission with task/<uuid> key, trace, and correlation.
+    /// Retain the preallocated task UUID on retry.
+    pub fn submit_task(
+        &mut self,
+        spec: TaskSpec,
+    ) -> Result<actionqueue_core::admission::EnsureTaskOutcome, crate::admission::AdmissionError>
+    {
         let task_id = spec.id();
         tracing::debug!(%task_id, "submit_task");
-        self.dispatch.submit_task(spec).map_err(EngineError::Dispatch)
+        self.dispatch.submit_task(spec)
     }
 
+    /// Ensures a durable tenant-scoped admission; changed meaning returns a typed conflict.
+    pub fn ensure_task(
+        &mut self,
+        request: actionqueue_core::admission::EnsureTaskRequest,
+    ) -> Result<actionqueue_core::admission::EnsureTaskOutcome, crate::admission::AdmissionError>
+    {
+        self.dispatch.ensure_task(request)
+    }
     /// Advances the dispatch loop by one tick.
     pub async fn tick(&mut self) -> Result<TickResult, EngineError> {
         self.dispatch.tick().await.map_err(EngineError::Dispatch)

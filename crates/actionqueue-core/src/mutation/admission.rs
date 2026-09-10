@@ -1,7 +1,7 @@
-//! Admission commit proposal, wired into mutation authority in AQ-04.
+//! Compound admission proposal for the storage mutation authority.
 use crate::admission::AdmissionPlan;
 use crate::causal::ControlMutationContext;
-/// Pure AdmissionCommitCommand proposal; no mutation authority implementation yet.
+/// Immutable proposal. Storage validates and commits the entire admission atomically.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdmissionCommitCommand {
     expected_sequence: u64,

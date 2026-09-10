@@ -59,11 +59,11 @@ async fn once_accounting_proves_one_run_and_no_redispatch_after_restart() {
 
     // 3) Durably complete run through authority lane
     let completion = support::complete_once_run_via_authority(&data_dir, task_id);
-    // Once policy: task_create(1) + run_create(2) + promote(3) + lease(4) +
-    // running(5) + attempt_start(6) + attempt_finish(7) + completed(8)
+    // Once policy: admission + promote + lease + running + attempt_start +
+    // attempt_finish + completed, plus StoreInitialized.
     assert_eq!(
-        completion.final_sequence, 9,
-        "Once policy completion should produce 8 mutations plus StoreInitialized"
+        completion.final_sequence, 8,
+        "Once policy completion should produce 7 mutations plus StoreInitialized"
     );
 
     // 4) Pre-restart readback assertions + metrics parity

@@ -1,0 +1,67 @@
+{
+  "projection": {
+    "actors": [],
+    "admissions": [],
+    "budgets": [],
+    "capability_grants": [],
+    "dependency_declarations": [],
+    "engine": {
+      "paused": false,
+      "paused_at": null,
+      "resumed_at": null
+    },
+    "ledger_entries": [],
+    "metadata": {
+      "run_count": 0,
+      "schema_version": 2,
+      "task_count": 1,
+      "wal_sequence": 2
+    },
+    "role_assignments": [],
+    "runs": [],
+    "subscriptions": [],
+    "tasks": [
+      {
+        "canceled_at": null,
+        "created_at": 42,
+        "task_spec": {
+          "constraints": {
+            "concurrency_key": null,
+            "concurrency_key_hold_policy": "HoldDuringRetry",
+            "max_attempts": 1,
+            "required_executor_traits": null,
+            "safety_level": "Pure",
+            "timeout_secs": null
+          },
+          "id": "11111111-1111-4111-8111-111111111111",
+          "metadata": {
+            "description": null,
+            "priority": 17,
+            "tags": []
+          },
+          "parent_task_id": null,
+          "payload": {
+            "bytes": [
+              0,
+              1,
+              255
+            ],
+            "content_type": null
+          },
+          "run_policy": {
+            "Repeat": {
+              "count": 3,
+              "interval_secs": 7
+            }
+          },
+          "tenant_id": null
+        },
+        "updated_at": null
+      }
+    ],
+    "tenants": [],
+    "timestamp": 0,
+    "version": 2
+  },
+  "sha256": "14bae702b496e0625da6531a7b24f72dcba0e78bf6d94e6e15b8c784c04e0f2e"
+}

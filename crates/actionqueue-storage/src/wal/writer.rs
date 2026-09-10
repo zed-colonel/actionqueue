@@ -105,6 +105,12 @@ impl<W: WalWriter> InstrumentedWalWriter<W> {
 }
 
 impl<W: WalWriter> WalWriter for InstrumentedWalWriter<W> {
+    fn fence(&mut self) {
+        self.inner.fence();
+    }
+    fn recovery_required(&self) -> bool {
+        self.inner.recovery_required()
+    }
     fn store_session(&self) -> Option<&crate::store::StoreSession> {
         self.inner.store_session()
     }
@@ -133,6 +139,13 @@ impl<W: WalWriter> WalWriter for InstrumentedWalWriter<W> {
 
 /// A writer that can append events to the WAL.
 pub trait WalWriter {
+    /// Permanently fences a session-backed writer after an uncertain authority operation.
+    /// Stateless test writers may use the default; durable implementations must retain it.
+    fn fence(&mut self) {}
+    /// Whether this writer must be reopened through recovery before further use.
+    fn recovery_required(&self) -> bool {
+        false
+    }
     /// Returns the lifetime store session when backed by target storage.
     fn store_session(&self) -> Option<&crate::store::StoreSession> {
         None
@@ -164,8 +177,8 @@ pub enum WalWriterError {
         /// The sequence number that was provided.
         provided: u64,
     },
-    /// Writer is permanently poisoned after a truncation-recovery failure.
-    /// Callers must restart the process.
+    /// Writer is permanently fenced after an uncertain write or publication.
+    /// Callers must reopen through recovery.
     Poisoned,
 }
 

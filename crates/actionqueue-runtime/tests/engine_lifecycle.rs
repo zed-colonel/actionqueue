@@ -54,7 +54,9 @@ async fn full_lifecycle_submit_to_complete() {
     )
     .expect("valid spec");
 
-    bootstrapped.submit_task(spec).expect("submit should succeed");
+    let request =
+        actionqueue_core::admission::EnsureTaskRequest::for_task(spec.clone(), vec![]).unwrap();
+    let created = bootstrapped.submit_task(spec).expect("submit should succeed");
 
     // Verify task was created
     assert_eq!(bootstrapped.projection().task_count(), 1);
@@ -72,7 +74,21 @@ async fn full_lifecycle_submit_to_complete() {
     let run_state = bootstrapped.projection().get_run_state(&run_ids[0]);
     assert_eq!(run_state, Some(&RunState::Completed));
 
+    let before = bootstrapped.projection().projection_digest().unwrap();
+    let duplicate = bootstrapped.ensure_task(request.clone()).unwrap();
+    assert!(!duplicate.is_created());
+    assert_eq!(duplicate.sequence(), created.sequence());
+    assert_eq!(bootstrapped.projection().projection_digest().unwrap(), before);
     bootstrapped.shutdown().expect("shutdown should succeed");
+    let mut recovered = ActionQueueEngine::new(
+        RuntimeConfig { data_dir: data_dir.clone(), ..Default::default() },
+        SuccessHandler,
+    )
+    .bootstrap_with_clock(MockClock::new(5000))
+    .unwrap();
+    assert!(!recovered.ensure_task(request).unwrap().is_created());
+    assert_eq!(recovered.projection().projection_digest().unwrap(), before);
+    recovered.shutdown().unwrap();
     let _ = std::fs::remove_dir_all(data_dir);
 }
 
@@ -100,5 +116,49 @@ async fn engine_pause_skips_dispatch() {
     let tick = bootstrapped.tick().await.expect("tick should succeed");
     assert!(!tick.engine_paused);
 
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
+#[tokio::test]
+async fn child_retry_survives_parent_completion_cache_cleanup_and_restart() {
+    use actionqueue_core::admission::{AdmissionRejection, EnsureTaskRequest};
+    use actionqueue_runtime::admission::AdmissionError;
+    let data_dir = temp_data_dir();
+    let config = RuntimeConfig { data_dir: data_dir.clone(), ..Default::default() };
+    let mut engine = ActionQueueEngine::new(config.clone(), SuccessHandler)
+        .bootstrap_with_clock(MockClock::new(1000))
+        .unwrap();
+    let make_spec = |id| {
+        TaskSpec::new(
+            id,
+            TaskPayload::new(vec![]),
+            RunPolicy::Once,
+            TaskConstraints::default(),
+            TaskMetadata::default(),
+        )
+        .unwrap()
+    };
+    let parent = TaskId::new();
+    let child = TaskId::new();
+    engine.submit_task(make_spec(parent)).unwrap();
+    let request =
+        EnsureTaskRequest::for_task(make_spec(child).with_parent(parent), vec![]).unwrap();
+    engine.ensure_task(request.clone()).unwrap();
+    let _ = engine.run_until_idle().await.unwrap();
+    assert!(engine.projection().runs_for_task(parent).all(|r| r.state() == RunState::Completed));
+    assert!(engine.projection().runs_for_task(child).all(|r| r.state() == RunState::Completed));
+    let digest = engine.projection().projection_digest().unwrap();
+    assert!(!engine.ensure_task(request.clone()).unwrap().is_created());
+    assert!(matches!(
+        engine.submit_task(make_spec(TaskId::new()).with_parent(parent)),
+        Err(AdmissionError::Rejected(AdmissionRejection::TerminalParent))
+    ));
+    engine.shutdown().unwrap();
+    let mut recovered = ActionQueueEngine::new(config, SuccessHandler)
+        .bootstrap_with_clock(MockClock::new(5000))
+        .unwrap();
+    assert!(!recovered.ensure_task(request).unwrap().is_created());
+    assert_eq!(recovered.projection().projection_digest().unwrap(), digest);
+    recovered.shutdown().unwrap();
     let _ = std::fs::remove_dir_all(data_dir);
 }

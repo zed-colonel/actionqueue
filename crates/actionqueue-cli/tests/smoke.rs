@@ -351,3 +351,36 @@ fn restore_rejects_fifo_descriptor_and_inventory_without_blocking() {
     }
     fs::remove_dir_all(base).unwrap();
 }
+
+#[test]
+fn submit_retry_reports_original_admission_and_changed_meaning_conflicts() {
+    let data_dir = unique_data_dir("admission-retry");
+    let run = |policy| {
+        cli()
+            .args([
+                "submit",
+                "--task-id",
+                "11111111-1111-4111-8111-111111111111",
+                "--run-policy",
+                policy,
+                "--data-dir",
+                data_dir.to_str().unwrap(),
+                "--json",
+            ])
+            .output()
+            .unwrap()
+    };
+    let first = run("once");
+    assert!(first.status.success(), "{}", String::from_utf8_lossy(&first.stderr));
+    let duplicate = run("once");
+    assert!(duplicate.status.success());
+    let original: serde_json::Value = serde_json::from_slice(&first.stdout).unwrap();
+    let repeated: serde_json::Value = serde_json::from_slice(&duplicate.stdout).unwrap();
+    assert_eq!(original["admission_status"], "created");
+    assert_eq!(repeated["admission_status"], "already_exists");
+    assert_eq!(original["admission_sequence"], repeated["admission_sequence"]);
+    assert_eq!(original["latest_sequence"], repeated["latest_sequence"]);
+    assert_eq!(repeated["runs_created"], 0);
+    assert!(!run("repeat:2:5").status.success());
+    let _ = std::fs::remove_dir_all(data_dir);
+}

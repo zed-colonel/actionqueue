@@ -264,6 +264,12 @@ impl TaskRecord {
 /// A reducer that applies WAL events to reconstruct state.
 #[derive(Debug, Clone)]
 pub struct ReplayReducer {
+    pub(crate) admissions: HashMap<
+        (Option<TenantId>, actionqueue_core::ids::AdmissionKey),
+        crate::mutation::admission::AdmissionRecord,
+    >,
+    pub(crate) admission_by_task:
+        HashMap<TaskId, (Option<TenantId>, actionqueue_core::ids::AdmissionKey)>,
     /// The current state of all runs being replayed.
     pub(crate) runs: HashMap<actionqueue_core::ids::RunId, RunState>,
     /// The current state of all tasks being replayed.
@@ -317,6 +323,8 @@ impl ReplayReducer {
     /// Creates a new replay reducer.
     pub fn new() -> Self {
         ReplayReducer {
+            admissions: HashMap::new(),
+            admission_by_task: HashMap::new(),
             runs: HashMap::new(),
             tasks: HashMap::new(),
             run_instances: HashMap::new(),
@@ -499,6 +507,30 @@ impl ReplayReducer {
         self.tasks.values()
     }
 
+    /// Looks up immutable admission facts in the caller's tenant namespace.
+    pub fn admission(
+        &self,
+        tenant: Option<TenantId>,
+        key: &actionqueue_core::ids::AdmissionKey,
+    ) -> Option<&crate::mutation::admission::AdmissionRecord> {
+        self.admissions.get(&(tenant, key.clone()))
+    }
+    /// Resolves admission context through a task, including after terminal cleanup.
+    pub fn task_admission(
+        &self,
+        task: TaskId,
+    ) -> Option<&crate::mutation::admission::AdmissionRecord> {
+        self.admission_by_task.get(&task).and_then(|key| self.admissions.get(key))
+    }
+    /// All immutable admission records.
+    pub fn admissions(&self) -> impl Iterator<Item = &crate::mutation::admission::AdmissionRecord> {
+        self.admissions.values()
+    }
+    pub(crate) fn insert_admission(&mut self, record: crate::mutation::admission::AdmissionRecord) {
+        let key = (record.tenant_id(), record.key().clone());
+        self.admission_by_task.insert(record.task_id(), key.clone());
+        self.admissions.insert(key, record);
+    }
     /// Applies an event to the current state.
     pub fn apply(&mut self, event: &WalEvent) -> Result<(), ReplayReducerError> {
         // Validate sequence order (must be monotonically increasing).
@@ -509,6 +541,32 @@ impl ReplayReducer {
         }
 
         match event.event() {
+            WalEventType::AdmissionCommitted { record, runs } => {
+                if record.sequence() != event.sequence() {
+                    return Err(ReplayReducerError::CorruptedData);
+                }
+                self.validate_admission(record, runs).map_err(ReplayReducerError::Admission)?;
+                crate::wal::codec::encode(event).map_err(|_| {
+                    ReplayReducerError::Admission(
+                        actionqueue_core::admission::AdmissionRejection::TooLarge,
+                    )
+                })?;
+                // Even direct reducer callers observe all or none if a sub-apply fails.
+                let mut prepared = self.clone();
+                prepared.apply_task_created(record.request().task_spec(), record.timestamp())?;
+                for run in runs {
+                    prepared.apply_run_created(run)?;
+                }
+                if !record.request().dependencies().is_empty() {
+                    prepared.apply_dependency_declared(
+                        record.task_id(),
+                        record.request().dependencies(),
+                    );
+                    prepared.dependency_declared_at.insert(record.task_id(), record.timestamp());
+                }
+                prepared.insert_admission(record.clone());
+                *self = prepared;
+            }
             WalEventType::StoreInitialized { .. } => {
                 if self.latest_sequence != 0 || event.sequence() != 1 {
                     return Err(ReplayReducerError::CorruptedData);
@@ -1505,6 +1563,8 @@ impl Default for ReplayReducer {
 /// Errors that can occur during replay reduction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReplayReducerError {
+    /// Invalid compound admission.
+    Admission(actionqueue_core::admission::AdmissionRejection),
     /// Invalid state transition during replay.
     InvalidTransition,
     /// Duplicate event detected.
@@ -1770,6 +1830,7 @@ impl std::fmt::Display for LeaseCausalityError {
 impl std::fmt::Display for ReplayReducerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Admission(e) => write!(f, "{e}"),
             ReplayReducerError::InvalidTransition => {
                 write!(f, "Invalid state transition during replay")
             }

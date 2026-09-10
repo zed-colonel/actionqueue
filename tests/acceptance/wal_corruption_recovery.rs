@@ -22,8 +22,7 @@ fn reserved_kinds_schemas_sequences_and_oversized_lengths_refuse_repair() {
     )
     .unwrap();
     for (offset, value) in [
-        (12, 256u32),
-        (12, 272),
+        (12, 272u32),
         (12, 273),
         (12, 288),
         (12, 304),

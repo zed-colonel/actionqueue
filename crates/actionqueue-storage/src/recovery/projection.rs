@@ -1,4 +1,4 @@
-//! Exact v1 projection image, validated hydration, and canonical SHA-256.
+//! Exact v2 projection image, validated hydration, and canonical SHA-256.
 use super::reducer::*;
 use crate::{
     snapshot::{mapping::*, model::Snapshot},
@@ -14,7 +14,7 @@ pub struct ProjectionDigest {
     pub hex: String,
 }
 #[derive(Debug, Clone)]
-pub(crate) struct ProjectionImageV1(pub Snapshot);
+pub(crate) struct ProjectionImageV2(pub Snapshot);
 fn invalid(e: impl std::fmt::Display) -> StoreError {
     StoreError::InvalidStore(e.to_string())
 }
@@ -34,7 +34,7 @@ fn canonical(value: &serde_json::Value, out: &mut Vec<u8>) -> Result<(), StoreEr
                 out.push(3);
                 out.extend_from_slice(&v.to_le_bytes());
             } else {
-                return Err(invalid("floating point is not permitted in projection v1"));
+                return Err(invalid("floating point is not permitted in projection v2"));
             }
         }
         V::String(v) => {
@@ -70,6 +70,7 @@ fn key<T: Serialize>(v: &T) -> Vec<u8> {
 }
 pub(crate) fn normalize(snapshot: &mut Snapshot) {
     snapshot.timestamp = 0;
+    snapshot.admissions.sort_by_key(|r| *r.task_id().as_uuid());
     snapshot.tasks.sort_by_key(|r| *r.task_spec.id().as_uuid());
     snapshot.runs.sort_by_key(|r| *r.run_instance.id().as_uuid());
     for d in &mut snapshot.dependency_declarations {
@@ -86,11 +87,11 @@ pub(crate) fn normalize(snapshot: &mut Snapshot) {
 pub(crate) fn snapshot_digest(snapshot: &Snapshot) -> Result<ProjectionDigest, StoreError> {
     let mut image = snapshot.clone();
     normalize(&mut image);
-    let mut bytes = b"AQ-CONT-1\0projection\0v1\0".to_vec();
+    let mut bytes = b"AQ-CONT-1\0projection\0v2\0".to_vec();
     canonical(&serde_json::to_value(image).map_err(invalid)?, &mut bytes)?;
     Ok(ProjectionDigest {
         algorithm: "sha256".into(),
-        version: 1,
+        version: 2,
         hex: format!("{:x}", Sha256::digest(bytes)),
     })
 }
@@ -98,15 +99,15 @@ fn convert<S: Serialize, T: serde::de::DeserializeOwned>(v: S) -> Result<T, Stor
     serde_json::from_value(serde_json::to_value(v).map_err(invalid)?).map_err(invalid)
 }
 impl ReplayReducer {
-    pub(crate) fn projection_image(&self) -> Result<ProjectionImageV1, StoreError> {
+    pub(crate) fn projection_image(&self) -> Result<ProjectionImageV2, StoreError> {
         let snapshot =
             crate::snapshot::build::build_snapshot_from_projection(self, 0).map_err(invalid)?;
-        Ok(ProjectionImageV1(snapshot))
+        Ok(ProjectionImageV2(snapshot))
     }
     pub fn projection_digest(&self) -> Result<ProjectionDigest, StoreError> {
         snapshot_digest(&self.projection_image()?.0)
     }
-    pub(crate) fn from_projection_image(image: ProjectionImageV1) -> Result<Self, StoreError> {
+    pub(crate) fn from_projection_image(image: ProjectionImageV2) -> Result<Self, StoreError> {
         let s = image.0;
         validate_snapshot(&s).map_err(invalid)?;
         let original_digest = snapshot_digest(&s)?;
@@ -133,6 +134,9 @@ impl ReplayReducer {
                 r.lease_metadata.insert(id, l);
             }
             r.run_instances.insert(id, run.run_instance);
+        }
+        for record in s.admissions {
+            r.insert_admission(record);
         }
         r.engine_paused = s.engine.paused;
         r.engine_paused_at = s.engine.paused_at;

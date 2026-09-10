@@ -1,6 +1,6 @@
 # actionqueue-storage
 
-AQ-CONT-1 persistence begins at version 1. Pre-contract WAL v5 and snapshot schema 8
+AQ-CONT-1 uses WAL framing v1 and, since AQ-04, snapshot/projection schema v2. Pre-contract WAL v5 and snapshot schema 8
 are evidence only: this crate has no compatibility reader or migration path.
 
 ## Ownership and opening
@@ -53,7 +53,7 @@ occurrence limit. Existing bounded domain values retain their validation.
 
 Kinds 16–46 carry retained task/run, attempt, lease, engine, dependency, suspension,
 budget, subscription, actor, and platform records. Reserved unsupported kinds are
-256 (admission), 272/273 (compound attempt start/disposition), 288 (signal), 304–307
+272/273 (compound attempt start/disposition), 288 (signal), 304–307
 (wait lifecycle), and 320/321 (attributed controls). A reserved/unknown kind or schema
 fails; none is treated as a no-op. Each owning work item must add encoding, semantic
 validation, reduction, snapshot representation, and replay tests together.
@@ -81,11 +81,11 @@ snapshot-only stores are rejected.
 Snapshots use `AQCONT1S`, u32 frame version, u32 payload length, u32 payload CRC, and a
 strict JSON envelope, with a symmetric 256 MiB writer/reader payload limit. The envelope
 binds store UUID, snapshot/projection versions, covered sequence, and projection digest.
-It reserves empty admission, signal, wait, checkpoint, resume-assignment and causal/control
-sections; nonempty sections are unsupported. These reservations do not provide continuation
-recovery before AQ-04–AQ-08.
+It includes admission records and reserves empty signal, wait, checkpoint, resume-assignment and causal/control
+sections; nonempty reserved sections are unsupported. These reservations do not provide
+continuation recovery before their owning work items land.
 
-`ProjectionImageV1` restores complete state directly without synthesizing events:
+`ProjectionImageV2` restores complete state directly without synthesizing events:
 run priority and transition times, full attempt/output history, active leases, control
 state, original dependency timestamps, and feature records. Derived indexes are rebuilt;
 hydration must reproduce the original image digest. Snapshot writers verify their image
@@ -93,7 +93,7 @@ against the covered WAL prefix and sync that WAL before snapshot publication. Th
 temp-file write, sync, rename, and parent-directory sync. Only physical snapshot damage
 permits fallback. Identity, compatibility, and semantic failures halt recovery.
 
-Projection SHA-256 uses domain bytes `AQ-CONT-1\0projection\0v1\0`, followed by the
+Projection SHA-256 uses domain bytes `AQ-CONT-1\0projection\0v2\0`, followed by the
 following canonical **typed tree**, not JSON serializer output:
 
 - Null: tag 0. Boolean: tag 1 followed by byte 0/1.
@@ -108,7 +108,7 @@ tenant maps are ordered by UUID; dependency sets are ordered by UUID. Budgets, r
 and capability grants are ordered by canonical record bytes. Chronological state,
 attempt and ledger vectors retain order. Sequence and durable state are included;
 paths, metrics and recovery duration are excluded. The independent Python-generated
-vector is `conformance/aq-cont-1/projection-v1-vector.json`.
+current vector is `conformance/aq-cont-1/projection-v2-vector.json`; the v1 evidence remains retained.
 
 AQ-03 verifies snapshot-plus-tail against full WAL replay at opening. It intentionally
 pays full-history replay cost while the complete WAL is required. Compaction and a
@@ -141,3 +141,23 @@ outside the backup; their durable references remain opaque and preserved.
 real process-kill lock recovery, and offline transfer tests. Run the standard workspace
 and expanded feature matrices as well. Actual independent binary compatibility is tested
 with `conformance/aq-cont-1/cross-feature-persistence.sh` from the repository root.
+
+## Compound admission (AQ-04)
+
+Kind 256/schema 1 commits a task, all initial runs, parent/dependency facts, original
+causal/control attribution, and a tenant-scoped admission index in one synced record.
+Duplicate keys with equal canonical meaning return the original task and sequence;
+changed meaning conflicts. Task UUIDs remain globally unique. Admission records outlive
+terminal tasks and runtime cache cleanup. Run context resolves through task admission.
+
+The default limits are 64 initial runs, 64 dependencies, 64 KiB payload, 128-byte content
+type, and 16 MiB WAL payload plus the 52-byte frame header. AdmissionLimits may lower
+creation limits but cannot raise hard ceilings or invalidate successful duplicates.
+Metadata and other variable strings are bounded in aggregate before copying; encoded
+record size is checked exactly before append. Immediate sync is mandatory.
+
+Snapshot schema/image and projection version are 2. AQ-03 stores with version 1
+manifests are refused untouched. Projection cloning remains the preparation strategy;
+full WAL verification remains part of snapshot recovery. A fenced authority must be
+dropped and reopened; neither additional writes nor cached admission success is safe
+until recovery reconciles the WAL.

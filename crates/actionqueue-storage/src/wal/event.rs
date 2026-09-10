@@ -42,6 +42,13 @@ impl WalEvent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum WalEventType {
+    /// One durable task admission, including all initial run identities.
+    AdmissionCommitted {
+        /// Immutable admission facts.
+        record: crate::mutation::admission::AdmissionRecord,
+        /// Complete initial run set.
+        runs: Vec<actionqueue_core::run::RunInstance>,
+    },
     /// Binds sequence one to the immutable manifest.
     StoreInitialized { manifest_digest: [u8; 32] },
     /// A new task definition has been persisted.

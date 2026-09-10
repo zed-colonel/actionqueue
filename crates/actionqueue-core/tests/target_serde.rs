@@ -140,11 +140,17 @@ fn ensure_outcomes_and_actor_registration_round_trip() {
     let key = AdmissionKey::new("key").unwrap();
     let digest = AdmissionDigest::new(hash());
     round(EnsureTaskOutcome::Created {
+        sequence: 1,
         task_id: id,
         admission_key: key.clone(),
         digest: digest.clone(),
     });
-    round(EnsureTaskOutcome::AlreadyExists { task_id: id, admission_key: key, digest });
+    round(EnsureTaskOutcome::AlreadyExists {
+        sequence: 1,
+        task_id: id,
+        admission_key: key,
+        digest,
+    });
     let registration = ActorRegistration::new(
         ActorId::new(),
         "actor",

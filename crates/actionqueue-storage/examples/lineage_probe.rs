@@ -36,13 +36,31 @@ fn spec() -> TaskSpec {
 fn id() -> TaskId {
     "11111111-1111-4111-8111-111111111111".parse().unwrap()
 }
+fn admission_event() -> Result<WalEvent, Box<dyn std::error::Error>> {
+    let request = actionqueue_core::admission::EnsureTaskRequest::for_task(spec(), vec![])?;
+    let record = actionqueue_storage::mutation::admission::AdmissionRecord::new(
+        request.clone(),
+        request.digest()?,
+        42,
+        2,
+    )?;
+    let runs = (0..3)
+        .map(|n| {
+            actionqueue_core::run::RunInstance::new_scheduled_with_id(
+                format!("22222222-2222-4222-8222-{n:012}").parse().unwrap(),
+                id(),
+                42 + n * 7,
+                42,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(WalEvent::new(2, E::AdmissionCommitted { record, runs }))
+}
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().collect();
     let mode = args.get(1).ok_or("missing mode")?;
     if mode == "wire" {
-        for b in
-            codec::encode(&WalEvent::new(2, E::TaskCreated { task_spec: spec(), timestamp: 42 }))?
-        {
+        for b in codec::encode(&admission_event()?)? {
             print!("{b:02x}");
         }
         println!();
@@ -53,8 +71,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "create" => {
             let session = open_store(path, OpenOptions::Initialize { features: capabilities() })?;
             let mut writer = WalFsWriter::new(session.clone())?;
-            writer
-                .append(&WalEvent::new(2, E::TaskCreated { task_spec: spec(), timestamp: 42 }))?;
+            writer.append(&admission_event()?)?;
             writer.flush()?;
             let p = recover_read_only(&session, RepairPolicy::Strict)?.projection;
             let mut sw = SnapshotFsWriter::new(&session)?;

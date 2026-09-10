@@ -241,6 +241,7 @@ struct LedgerEntryAppendedV1 {
 }
 pub fn kind(event: &WalEventType) -> u16 {
     match event {
+        WalEventType::AdmissionCommitted { .. } => 256,
         WalEventType::StoreInitialized { .. } => 1,
         WalEventType::TaskCreated { .. } => 16,
         WalEventType::RunCreated { .. } => 17,
@@ -278,12 +279,15 @@ pub fn kind(event: &WalEventType) -> u16 {
 pub fn check_kind(kind: u16) -> Result<(), DecodeError> {
     match kind {
         1 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32
-        | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 => Ok(()),
+        | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 256 => Ok(()),
         _ => Err(DecodeError::UnsupportedRecordKind(kind)),
     }
 }
 pub fn encode_payload(event: &WalEventType) -> Result<Vec<u8>, EncodeError> {
     match event {
+        WalEventType::AdmissionCommitted { record, runs } => {
+            bounded(&super::admission_v1::AdmissionCommittedV1::new(record, runs))
+        }
         WalEventType::StoreInitialized { manifest_digest } => {
             bounded(&StoreInitializedV1 { manifest_digest: manifest_digest.clone() })
         }
@@ -501,6 +505,15 @@ pub fn encode_payload(event: &WalEventType) -> Result<Vec<u8>, EncodeError> {
 }
 pub fn decode_payload(kind: u16, payload: &[u8]) -> Result<WalEventType, DecodeError> {
     match kind {
+        256 => {
+            let (v, rest) =
+                postcard::take_from_bytes::<super::admission_v1::AdmissionCommittedV1>(payload)
+                    .map_err(|e| DecodeError::Decode(e.to_string()))?;
+            if !rest.is_empty() {
+                return Err(DecodeError::Decode("trailing payload bytes".into()));
+            }
+            v.into_event()
+        }
         1 => {
             let (v, rest) = postcard::take_from_bytes::<StoreInitializedV1>(payload)
                 .map_err(|e| DecodeError::Decode(e.to_string()))?;
@@ -871,10 +884,10 @@ pub fn decode_payload(kind: u16, payload: &[u8]) -> Result<WalEventType, DecodeE
         _ => Err(DecodeError::UnsupportedRecordKind(kind)),
     }
 }
-/// Reserved IDs: admission 256; compound attempt start/disposition 272/273;
+/// Kind 256 is admission. Reserved IDs: compound attempt start/disposition 272/273;
 /// signal 288; wait establish/satisfy/timeout/cancel 304..=307;
 /// attributed task/run control 320/321. All are unsupported until their owners land.
-pub const RESERVED_KINDS: &[u16] = &[256, 272, 273, 288, 304, 305, 306, 307, 320, 321];
+pub const RESERVED_KINDS: &[u16] = &[272, 273, 288, 304, 305, 306, 307, 320, 321];
 
 fn bounded<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, EncodeError> {
     let size = postcard::serialize_with_flavor::<_, postcard::ser_flavors::Size, usize>(
