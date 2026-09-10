@@ -438,7 +438,15 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
                     let caps = actionqueue_core::actor::ExecutorTraits::new(
                         record.executor_traits.clone(),
                     )
-                    .unwrap_or_else(|_| {
+                    .unwrap_or_else(|error| {
+                        // Only pre-contract stores can reach this; AQ-03 rejects
+                        // them before decode. Until then, make the routing
+                        // change visible rather than silently narrowing the actor.
+                        tracing::warn!(
+                            %actor_id, %error,
+                            "persisted actor executor traits fail the current grammar; \
+                             registering the placeholder trait \"_\" instead"
+                        );
                         actionqueue_core::actor::ExecutorTraits::new(vec!["_".to_string()])
                             .expect("fallback executor trait")
                     });
@@ -1036,28 +1044,8 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
                     .filter(|r| !r.state().is_terminal())
                     .map(|r| (r.id(), r.state()))
                     .collect();
-                for (run_id, current_state) in runs_to_cancel {
-                    let seq = self.next_sequence()?;
-                    let _ = self
-                        .authority
-                        .submit_command(
-                            MutationCommand::RunStateTransition(RunStateTransitionCommand::new(
-                                seq,
-                                run_id,
-                                current_state,
-                                RunState::Canceled,
-                                current_time,
-                            )),
-                            DurabilityPolicy::Immediate,
-                        )
-                        .map_err(DispatchError::Authority)?;
-                    Self::try_release_concurrency_key(
-                        &self.authority,
-                        &mut self.key_gate,
-                        run_id,
-                        blocked_id,
-                        RunState::Canceled,
-                    );
+                for (run_id, prev_state) in runs_to_cancel {
+                    self.cancel_run_and_release_key(run_id, blocked_id, prev_state, current_time)?;
                 }
             }
         }
@@ -1136,31 +1124,12 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
                     .collect();
 
                 for (run_id, prev_state) in runs_to_cancel {
-                    let seq = self.next_sequence()?;
-                    let _ = self
-                        .authority
-                        .submit_command(
-                            MutationCommand::RunStateTransition(RunStateTransitionCommand::new(
-                                seq,
-                                run_id,
-                                prev_state,
-                                RunState::Canceled,
-                                current_time,
-                            )),
-                            DurabilityPolicy::Immediate,
-                        )
-                        .map_err(DispatchError::Authority)?;
-
-                    // Release concurrency key for cascade-canceled runs.
-                    // Without this, a Suspended run with HoldDuringRetry policy
-                    // would permanently leak its concurrency key slot.
-                    Self::try_release_concurrency_key(
-                        &self.authority,
-                        &mut self.key_gate,
+                    self.cancel_run_and_release_key(
                         run_id,
                         descendant_id,
-                        RunState::Canceled,
-                    );
+                        prev_state,
+                        current_time,
+                    )?;
                 }
 
                 // All descendant runs are now canceled — mark terminal in tracker.
@@ -1369,6 +1338,70 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         Ok(())
     }
 
+    /// Durably cancels a non-terminal run, then releases its concurrency key.
+    ///
+    /// Every cancellation cascade goes through this method so that release is
+    /// inseparable from cancellation and no path can leak a held key slot. The
+    /// key is released only when this run actually holds it: Scheduled and
+    /// Ready runs never acquired one, so they release nothing and emit no
+    /// warning.
+    ///
+    /// A run whose worker is still executing (present in `in_flight`) keeps
+    /// the key. Releasing it here would let a competitor start under the same
+    /// key while the worker runs, violating the mutual exclusion the key
+    /// exists for. Today the worker's eventual result is rejected by the
+    /// authority's previous-state check before any release, so such a slot is
+    /// freed on restart, when the key gate is rebuilt from the projection and
+    /// a Canceled run holds nothing. Reconciling in-flight workers with
+    /// cascade cancellation is a pre-existing gap shared with the hierarchy
+    /// cascade and is outside AQ-02.
+    fn cancel_run_and_release_key(
+        &mut self,
+        run_id: RunId,
+        task_id: TaskId,
+        prev_state: RunState,
+        current_time: u64,
+    ) -> Result<(), DispatchError> {
+        let seq = self.next_sequence()?;
+        let _ = self
+            .authority
+            .submit_command(
+                MutationCommand::RunStateTransition(RunStateTransitionCommand::new(
+                    seq,
+                    run_id,
+                    prev_state,
+                    RunState::Canceled,
+                    current_time,
+                )),
+                DurabilityPolicy::Immediate,
+            )
+            .map_err(DispatchError::Authority)?;
+
+        if self.in_flight.contains_key(&run_id) {
+            tracing::debug!(
+                %run_id, %task_id, ?prev_state,
+                "run canceled while in flight; concurrency key held until the worker is reconciled"
+            );
+            return Ok(());
+        }
+        let holds_key = self
+            .authority
+            .projection()
+            .get_task(&task_id)
+            .and_then(|task| task.constraints().concurrency_key().map(ConcurrencyKey::new))
+            .is_some_and(|key| self.key_gate.key_holder(&key) == Some(run_id));
+        if holds_key {
+            Self::try_release_concurrency_key(
+                &self.authority,
+                &mut self.key_gate,
+                run_id,
+                task_id,
+                RunState::Canceled,
+            );
+        }
+        Ok(())
+    }
+
     /// Attempts to release the concurrency key for a run entering a terminal or
     /// RetryWait, Suspended, or Awaiting state, depending on the task's policies.
     fn try_release_concurrency_key(
@@ -1381,6 +1414,9 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         let should_release = if target_state.is_terminal() {
             true
         } else if target_state == RunState::Awaiting {
+            // AQ-03 adds the persisted per-task wait policy (AQ-ADR-009). Until
+            // then the accessor always returns the default, ReleaseWhileAwaiting,
+            // so HoldWhileAwaiting is not selectable here yet.
             authority.projection().get_task(&task_id).is_some_and(|task| {
                 task.constraints().concurrency_key_wait_policy().releases_while_awaiting()
             })
@@ -1893,28 +1929,8 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
                 .filter(|r| !r.state().is_terminal())
                 .map(|r| (r.id(), r.state()))
                 .collect();
-            for (run_id, current_state) in runs_to_cancel {
-                let seq = self.next_sequence()?;
-                let _ = self
-                    .authority
-                    .submit_command(
-                        MutationCommand::RunStateTransition(RunStateTransitionCommand::new(
-                            seq,
-                            run_id,
-                            current_state,
-                            RunState::Canceled,
-                            current_time,
-                        )),
-                        DurabilityPolicy::Immediate,
-                    )
-                    .map_err(DispatchError::Authority)?;
-                Self::try_release_concurrency_key(
-                    &self.authority,
-                    &mut self.key_gate,
-                    run_id,
-                    task_id,
-                    RunState::Canceled,
-                );
+            for (run_id, prev_state) in runs_to_cancel {
+                self.cancel_run_and_release_key(run_id, task_id, prev_state, current_time)?;
             }
         }
         Ok(())
@@ -2816,5 +2832,139 @@ mod tests {
     #[tokio::test]
     async fn dependency_failure_catch_up_releases_suspended_key() {
         dependency_cancellation_releases_held_key(true).await;
+    }
+
+    /// Collects log lines written by a thread-local tracing subscriber.
+    #[derive(Clone, Default)]
+    struct LogBuffer(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for LogBuffer {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl LogBuffer {
+        fn contents(&self) -> String {
+            String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
+        }
+    }
+
+    fn capture_warnings() -> (LogBuffer, tracing::subscriber::DefaultGuard) {
+        let buffer = LogBuffer::default();
+        let writer = buffer.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::WARN)
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish();
+        let guard = tracing::subscriber::set_default(subscriber);
+        (buffer, guard)
+    }
+
+    fn new_dispatch<H: ExecutorHandler + 'static>(
+        dir: &std::path::Path,
+        handler: H,
+    ) -> DispatchLoop<
+        actionqueue_storage::wal::writer::InstrumentedWalWriter<
+            actionqueue_storage::wal::fs_writer::WalFsWriter,
+        >,
+        H,
+        MockClock,
+    > {
+        let recovery = load_projection_from_storage(dir).unwrap();
+        let authority = StorageMutationAuthority::new(recovery.wal_writer, recovery.projection);
+        DispatchLoop::new(
+            authority,
+            handler,
+            MockClock::new(1000),
+            DispatchConfig::new(
+                BackoffStrategyConfig::Fixed { interval: Duration::ZERO },
+                1,
+                30,
+                None,
+                None,
+            ),
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn dependency_cascade_skips_release_for_runs_that_never_held_the_key() {
+        let (log, _guard) = capture_warnings();
+        tracing::warn!("capture-probe");
+        let dir = tempfile::tempdir().unwrap();
+        let mut dispatch = new_dispatch(dir.path(), DependencyHandler);
+
+        let prerequisite = task(b"fail", None);
+        let prerequisite_id = prerequisite.id();
+        let dependent = task(b"success", Some("shared"));
+        let dependent_id = dependent.id();
+        dispatch.submit_task(prerequisite).unwrap();
+        dispatch.submit_task(dependent).unwrap();
+        dispatch.declare_dependency(dependent_id, vec![prerequisite_id]).unwrap();
+        let _ = dispatch.run_until_idle().await.unwrap();
+
+        let dependent_run = dispatch.projection().run_ids_for_task(dependent_id)[0];
+        assert_eq!(dispatch.projection().get_run_state(&dependent_run), Some(&RunState::Canceled));
+        assert_eq!(dispatch.key_gate.key_holder(&ConcurrencyKey::new("shared")), None);
+        let contents = log.contents();
+        assert!(contents.contains("capture-probe"), "log capture is not wired: {contents}");
+        assert!(
+            !contents.contains("key not held by this run"),
+            "cancelling a run that never acquired the key must not warn: {contents}"
+        );
+    }
+
+    /// Blocks every execution until the test releases it.
+    struct BlockingHandler {
+        release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+
+    impl ExecutorHandler for BlockingHandler {
+        fn execute(&self, _ctx: ExecutorContext) -> HandlerOutput {
+            let _ = self.release.lock().unwrap().recv();
+            HandlerOutput::Success { output: None, consumption: vec![] }
+        }
+    }
+
+    #[tokio::test]
+    async fn dependency_cascade_keeps_key_while_worker_is_still_executing() {
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let dir = tempfile::tempdir().unwrap();
+        let mut dispatch = new_dispatch(
+            dir.path(),
+            BlockingHandler { release: std::sync::Mutex::new(release_rx) },
+        );
+
+        let blocked = task(b"block", Some("shared"));
+        let blocked_id = blocked.id();
+        dispatch.submit_task(blocked).unwrap();
+        for _ in 0..3 {
+            if !dispatch.in_flight.is_empty() {
+                break;
+            }
+            let _ = dispatch.tick().await.unwrap();
+        }
+        let blocked_run = dispatch.projection().run_ids_for_task(blocked_id)[0];
+        assert!(dispatch.in_flight.contains_key(&blocked_run), "worker must be in flight");
+        assert_eq!(dispatch.projection().get_run_state(&blocked_run), Some(&RunState::Running));
+        let key = ConcurrencyKey::new("shared");
+        assert_eq!(dispatch.key_gate.key_holder(&key), Some(blocked_run));
+
+        dispatch.dependency_gate.force_fail(blocked_id);
+        dispatch.cancel_dependency_failed_runs(1000).unwrap();
+
+        assert_eq!(dispatch.projection().get_run_state(&blocked_run), Some(&RunState::Canceled));
+        assert_eq!(
+            dispatch.key_gate.key_holder(&key),
+            Some(blocked_run),
+            "an in-flight run keeps its key so no competitor starts under it"
+        );
+        release_tx.send(()).unwrap();
     }
 }
