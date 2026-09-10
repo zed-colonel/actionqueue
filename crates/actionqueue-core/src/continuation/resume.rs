@@ -1,7 +1,7 @@
 //! Structural reason and data delivered to a resumed attempt.
 use super::{CheckpointRef, SignalEnvelope};
 use crate::causal::ControlMutationContext;
-use crate::ids::{SignalId, SignalSequence, WaitId};
+use crate::ids::{SignalSequence, WaitId};
 /// Data supplied on resumption.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -27,11 +27,9 @@ pub enum WakeReason {
     Signal {
         /// Wait identity.
         wait_id: WaitId,
-        /// Signal identity.
-        signal_id: SignalId,
         /// Store sequence.
         signal_sequence: SignalSequence,
-        /// Full signal.
+        /// Full signal, including its identity.
         envelope: Box<SignalEnvelope>,
     },
     /// Wait deadline elapsed.

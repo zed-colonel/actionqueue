@@ -41,10 +41,10 @@ fn all_hundred_pairs_have_precise_classification() {
                 None
             } else if from.is_terminal() {
                 Some(TerminalStateIsFinal)
+            } else if from == Awaiting {
+                Some(AwaitingResolvesOnlyToReadyFailedCanceled)
             } else if to == Awaiting && from != Running {
                 Some(AwaitingRequiresRunning)
-            } else if from == Awaiting {
-                Some(AwaitingResolvesViaReadyOnly)
             } else {
                 Some(NotInTransitionTable)
             };

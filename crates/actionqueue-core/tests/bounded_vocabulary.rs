@@ -1,5 +1,5 @@
 use actionqueue_core::bounded::{
-    BoundedCode, BoundedMessage, ContentHash, ContentType, HashAlgorithm, OpaqueRef,
+    BoundedCode, BoundedMessage, ContentHash, ContentType, DataScheme, HashAlgorithm, OpaqueRef,
 };
 use actionqueue_core::executor::{ExecutorTrait, ExecutorTraits};
 use actionqueue_core::ids::{
@@ -23,7 +23,7 @@ fn bounded_text_rejects_invalid_values_at_byte_boundaries() {
     assert!(BoundedCode::new("a".repeat(65)).is_err());
     assert!(BoundedMessage::new("a".repeat(2048)).is_ok());
     assert!(BoundedMessage::new("a".repeat(2049)).is_err());
-    for value in ["", "text/ plain", "text/\nplain", "text/\u{a0}plain"] {
+    for value in ["", "text/\nplain", "text/\0plain"] {
         assert!(ContentType::new(value).is_err());
     }
     assert!(ContentType::new("x".repeat(128)).is_ok());
@@ -91,4 +91,32 @@ fn deserialization_cannot_bypass_bounded_validation() {
     assert_eq!(serde_json::to_string(&traits).unwrap(), r#"["a","z"]"#);
     let old = vec!["a".to_string(), "z".to_string()];
     assert_eq!(postcard::to_allocvec(&traits).unwrap(), postcard::to_allocvec(&old).unwrap());
+}
+
+#[test]
+fn opaque_content_types_and_schemes_allow_parameters_and_uri_punctuation() {
+    assert!(ContentType::new("text/plain; charset=utf-8").is_ok());
+    assert!(ContentType::new("opaque type").is_ok());
+    for scheme in ["git+https", "custom resolver", "Mixed.Case-1"] {
+        assert!(DataScheme::new(scheme).is_ok());
+    }
+    for scheme in ["", "git\nhttps", "git\0https"] {
+        assert!(DataScheme::new(scheme).is_err());
+    }
+    assert!(DataScheme::new("x".repeat(64)).is_ok());
+    assert!(DataScheme::new("x".repeat(65)).is_err());
+    // Messages deliberately permit empty text and controls such as newlines.
+    assert!(BoundedMessage::new("").is_ok());
+    assert!(BoundedMessage::new("first\nsecond").is_ok());
+}
+
+#[test]
+fn continuation_key_release_respects_both_policies() {
+    use actionqueue_core::task::constraints::{ConcurrencyKeyWaitPolicy, TaskConstraints};
+    assert!(ConcurrencyKeyWaitPolicy::ReleaseWhileAwaiting.releases_while_awaiting());
+    assert!(!ConcurrencyKeyWaitPolicy::HoldWhileAwaiting.releases_while_awaiting());
+    assert_eq!(
+        TaskConstraints::default().concurrency_key_wait_policy(),
+        ConcurrencyKeyWaitPolicy::ReleaseWhileAwaiting
+    );
 }

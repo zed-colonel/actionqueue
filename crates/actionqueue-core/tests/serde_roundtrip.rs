@@ -116,7 +116,7 @@ fn run_instance_deserialization_rejects_ready_with_scheduled_after_created() {
 }
 
 #[test]
-fn task_constraints_deserialization_rejects_empty_capabilities() {
+fn task_constraints_deserialization_rejects_empty_executor_traits() {
     let json = r#"{
         "max_attempts": 1,
         "timeout_secs": null,
@@ -129,7 +129,7 @@ fn task_constraints_deserialization_rejects_empty_capabilities() {
 
     assert!(
         err.to_string().contains("empty"),
-        "deserialization error should mention empty capabilities: {err}"
+        "deserialization error should mention empty executor traits: {err}"
     );
 }
 

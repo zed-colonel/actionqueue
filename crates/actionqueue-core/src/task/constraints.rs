@@ -15,8 +15,6 @@ pub enum TaskConstraintsError {
     EmptyConcurrencyKey,
     /// A timeout of zero seconds was provided.
     ZeroTimeout,
-    /// An empty list was provided as required executor traits.
-    EmptyExecutorTraits,
     /// A routing label or trait count violates its bounds.
     InvalidExecutorTrait(ExecutorTraitError),
 }
@@ -32,9 +30,6 @@ impl std::fmt::Display for TaskConstraintsError {
             }
             TaskConstraintsError::ZeroTimeout => {
                 write!(f, "timeout_secs must not be zero")
-            }
-            TaskConstraintsError::EmptyExecutorTraits => {
-                write!(f, "required executor traits list must not be empty")
             }
             TaskConstraintsError::InvalidExecutorTrait(error) => {
                 write!(f, "invalid executor trait: {error}")
@@ -198,6 +193,13 @@ impl TaskConstraints {
         self.safety_level = safety_level;
     }
 
+    /// Returns the concurrency-key policy for continuation waits.
+    ///
+    /// AQ-03 adds the durable per-task field. Until then, existing tasks use the default.
+    pub fn concurrency_key_wait_policy(&self) -> ConcurrencyKeyWaitPolicy {
+        ConcurrencyKeyWaitPolicy::default()
+    }
+
     /// Returns the required executor traits, if any.
     ///
     /// These requirements select executors; they grant no queue permission.
@@ -223,9 +225,6 @@ impl TaskConstraints {
     ) -> Result<(), TaskConstraintsError> {
         let validated = traits
             .map(|values| {
-                if values.is_empty() {
-                    return Err(TaskConstraintsError::EmptyExecutorTraits);
-                }
                 ExecutorTraits::new(values).map_err(TaskConstraintsError::InvalidExecutorTrait)
             })
             .transpose()?;
@@ -395,7 +394,12 @@ mod tests {
     fn with_required_executor_traits_rejects_empty_vec() {
         let constraints = TaskConstraints::default();
         let result = constraints.with_required_executor_traits(vec![]);
-        assert_eq!(result, Err(TaskConstraintsError::EmptyExecutorTraits));
+        assert_eq!(
+            result,
+            Err(TaskConstraintsError::InvalidExecutorTrait(
+                crate::executor::ExecutorTraitError::Empty
+            ))
+        );
     }
 
     #[test]
@@ -443,4 +447,14 @@ pub enum ConcurrencyKeyWaitPolicy {
     ReleaseWhileAwaiting,
     /// Keep the key until the continuation resolves.
     HoldWhileAwaiting,
+}
+
+impl ConcurrencyKeyWaitPolicy {
+    /// Whether entering Awaiting releases the held concurrency key.
+    pub fn releases_while_awaiting(self) -> bool {
+        match self {
+            Self::ReleaseWhileAwaiting => true,
+            Self::HoldWhileAwaiting => false,
+        }
+    }
 }

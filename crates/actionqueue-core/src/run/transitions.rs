@@ -97,13 +97,13 @@ pub fn transition_rejection(from: RunState, to: RunState) -> Option<RunTransitio
         return Some(RunTransitionRejection::TerminalStateIsFinal);
     }
 
-    if to == RunState::Awaiting && from != RunState::Running {
-        return Some(RunTransitionRejection::AwaitingRequiresRunning);
-    }
     if from == RunState::Awaiting
         && !matches!(to, RunState::Ready | RunState::Failed | RunState::Canceled)
     {
-        return Some(RunTransitionRejection::AwaitingResolvesViaReadyOnly);
+        return Some(RunTransitionRejection::AwaitingResolvesOnlyToReadyFailedCanceled);
+    }
+    if to == RunState::Awaiting && from != RunState::Running {
+        return Some(RunTransitionRejection::AwaitingRequiresRunning);
     }
     let valid = matches!(
         (from, to),
@@ -162,7 +162,7 @@ pub enum RunTransitionRejection {
     /// Only Running can register a continuation.
     AwaitingRequiresRunning,
     /// A continuation resumes through Ready, or ends in Failed/Canceled.
-    AwaitingResolvesViaReadyOnly,
+    AwaitingResolvesOnlyToReadyFailedCanceled,
     /// No such edge exists in the canonical table.
     NotInTransitionTable,
 }

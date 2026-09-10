@@ -22,9 +22,9 @@ fn envelope() -> SignalEnvelope {
         tenant_id: None,
         namespace: SignalNamespace::new("external").unwrap(),
         kind: SignalKind::new("ready").unwrap(),
-        correlation_id: CorrelationId::new("c1").unwrap(),
+        correlation_id: Some(CorrelationId::new("c1").unwrap()),
         causation: None,
-        source_ref: OpaqueRef::new("source").unwrap(),
+        source_ref: Some(OpaqueRef::new("source").unwrap()),
         payload: None,
         payload_hash: None,
         occurred_at: None,
@@ -78,12 +78,12 @@ fn exhaustive_filter_table_uses_exact_tenant_and_optional_equality() {
                             }
                             f.correlation_id = match correlation_mode {
                                 0 => None,
-                                1 => Some(e.correlation_id.clone()),
+                                1 => e.correlation_id.clone(),
                                 _ => Some(CorrelationId::new("other").unwrap()),
                             };
                             f.source_ref = match source_mode {
                                 0 => None,
-                                1 => Some(e.source_ref.clone()),
+                                1 => e.source_ref.clone(),
                                 _ => Some(OpaqueRef::new("other").unwrap()),
                             };
                             assert_eq!(
@@ -150,7 +150,6 @@ fn resume_identifies_wait_for_every_wake_kind() {
     let wakes = [
         WakeReason::Signal {
             wait_id: id,
-            signal_id: SignalId::new("s1").unwrap(),
             signal_sequence: SignalSequence::new(1),
             envelope: Box::new(envelope()),
         },
@@ -214,4 +213,45 @@ fn target_types_round_trip_and_validate_on_decode() {
     let mut invalid = serde_json::to_value(InlineData::new(None, vec![], hash()).unwrap()).unwrap();
     invalid["bytes"] = serde_json::json!(vec![0u8; 65537]);
     assert!(serde_json::from_value::<InlineData>(invalid).is_err());
+}
+
+#[test]
+fn optional_signal_attribution_matches_only_present_exact_values() {
+    for has_correlation in [false, true] {
+        for has_source in [false, true] {
+            let mut signal = envelope();
+            if !has_correlation {
+                signal.correlation_id = None;
+            }
+            if !has_source {
+                signal.source_ref = None;
+            }
+            let mut expected = filter();
+            assert!(expected.matches(&signal));
+            expected.correlation_id = envelope().correlation_id;
+            assert_eq!(expected.matches(&signal), has_correlation);
+            expected.correlation_id = None;
+            expected.source_ref = envelope().source_ref;
+            assert_eq!(expected.matches(&signal), has_source);
+            expected.correlation_id = envelope().correlation_id;
+            assert_eq!(expected.matches(&signal), has_correlation && has_source);
+
+            #[cfg(feature = "serde")]
+            {
+                let json = serde_json::to_value(&signal).unwrap();
+                assert_eq!(serde_json::from_value::<SignalEnvelope>(json).unwrap(), signal);
+                let bytes = postcard::to_allocvec(&signal).unwrap();
+                assert_eq!(postcard::from_bytes::<SignalEnvelope>(&bytes).unwrap(), signal);
+            }
+        }
+    }
+    #[cfg(feature = "serde")]
+    {
+        let mut json = serde_json::to_value(envelope()).unwrap();
+        json.as_object_mut().unwrap().remove("correlation_id");
+        json.as_object_mut().unwrap().remove("source_ref");
+        let decoded = serde_json::from_value::<SignalEnvelope>(json).unwrap();
+        assert_eq!(decoded.correlation_id, None);
+        assert_eq!(decoded.source_ref, None);
+    }
 }

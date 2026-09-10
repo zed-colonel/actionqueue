@@ -1363,7 +1363,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
     }
 
     /// Attempts to release the concurrency key for a run entering a terminal or
-    /// RetryWait state, depending on the task's hold policy.
+    /// RetryWait, Suspended, or Awaiting state, depending on the task's policies.
     fn try_release_concurrency_key(
         authority: &StorageMutationAuthority<W, ReplayReducer>,
         key_gate: &mut KeyGate,
@@ -1371,8 +1371,12 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         task_id: TaskId,
         target_state: RunState,
     ) {
-        let should_release = if target_state.is_terminal() || target_state == RunState::Awaiting {
+        let should_release = if target_state.is_terminal() {
             true
+        } else if target_state == RunState::Awaiting {
+            authority.projection().get_task(&task_id).is_some_and(|task| {
+                task.constraints().concurrency_key_wait_policy().releases_while_awaiting()
+            })
         } else if target_state == RunState::RetryWait || target_state == RunState::Suspended {
             // Suspended follows the same hold policy as RetryWait: the run is paused
             // and may resume, so whether the key is held depends on the task's policy.

@@ -10,7 +10,7 @@ use crate::task::task_spec::TaskSpec;
 /// Target attempt result taxonomy.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum AttemptOutcome {
+pub enum DispositionOutcome {
     /// Successful completion.
     Complete,
     /// Failed with retry eligibility.
@@ -58,7 +58,7 @@ pub struct DispositionParts {
 #[cfg_attr(feature = "serde", serde(try_from = "DispositionWire"))]
 pub struct AttemptDisposition {
     /// Outcome.
-    outcome: AttemptOutcome,
+    outcome: DispositionOutcome,
     /// Output.
     output: Option<DataRef>,
     /// Checkpoint.
@@ -88,19 +88,23 @@ impl std::fmt::Display for DispositionError {
 impl std::error::Error for DispositionError {}
 impl AttemptDisposition {
     /// Checks outcome/effect combinations and hard collection ceilings.
-    pub fn new(outcome: AttemptOutcome, parts: DispositionParts) -> Result<Self, DispositionError> {
+    pub fn new(
+        outcome: DispositionOutcome,
+        parts: DispositionParts,
+    ) -> Result<Self, DispositionError> {
         if parts.child_admissions.len() > crate::limits::MAX_CHILD_ADMISSIONS_PER_DISPOSITION
             || parts.emitted_signals.len() > crate::limits::MAX_SIGNALS_PER_DISPOSITION
+            || parts.consumption.len() > crate::limits::MAX_CONSUMPTION_ENTRIES_PER_DISPOSITION
         {
             return Err(DispositionError::TooLarge);
         }
         let valid = match &outcome {
-            AttemptOutcome::Complete => parts.wait.is_none() && parts.checkpoint.is_none(),
-            AttemptOutcome::Awaiting => parts.wait.is_some(),
-            AttemptOutcome::Suspended { .. } => parts.wait.is_none(),
-            AttemptOutcome::RetryableFailure { .. }
-            | AttemptOutcome::TerminalFailure { .. }
-            | AttemptOutcome::Timeout { .. } => {
+            DispositionOutcome::Complete => parts.wait.is_none() && parts.checkpoint.is_none(),
+            DispositionOutcome::Awaiting => parts.wait.is_some(),
+            DispositionOutcome::Suspended { .. } => parts.wait.is_none(),
+            DispositionOutcome::RetryableFailure { .. }
+            | DispositionOutcome::TerminalFailure { .. }
+            | DispositionOutcome::Timeout { .. } => {
                 parts.wait.is_none() && parts.child_admissions.is_empty()
             }
         };
@@ -118,7 +122,7 @@ impl AttemptDisposition {
         })
     }
     /// Returns outcome.
-    pub fn outcome(&self) -> &AttemptOutcome {
+    pub fn outcome(&self) -> &DispositionOutcome {
         &self.outcome
     }
     /// Returns output.
@@ -150,7 +154,7 @@ impl AttemptDisposition {
 #[derive(serde::Deserialize)]
 struct DispositionWire {
     /// Outcome.
-    outcome: AttemptOutcome,
+    outcome: DispositionOutcome,
     /// Output.
     output: Option<DataRef>,
     /// Checkpoint.

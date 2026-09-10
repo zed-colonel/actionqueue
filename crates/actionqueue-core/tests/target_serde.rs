@@ -34,7 +34,7 @@ fn every_new_identifier_and_bounded_value_round_trips() {
     round(reference());
     round(BoundedCode::new("error.code").unwrap());
     round(BoundedMessage::new("human detail\n").unwrap());
-    round(ContentType::new("application/octet-stream").unwrap());
+    round(ContentType::new("text/plain; charset=utf-8").unwrap());
     round(hash());
     round(HashAlgorithm::Sha256);
     round(BoundedError {
@@ -83,11 +83,11 @@ fn complete_causal_and_control_contexts_round_trip() {
 #[test]
 fn external_data_signal_and_all_resolution_variants_round_trip() {
     let data = ExternalDataRef {
-        scheme: BoundedCode::new("blob").unwrap(),
+        scheme: DataScheme::new("git+https").unwrap(),
         locator: reference(),
         hash: hash(),
         size_bytes: Some(123),
-        content_type: Some(ContentType::new("application/octet-stream").unwrap()),
+        content_type: Some(ContentType::new("text/plain; charset=utf-8").unwrap()),
     };
     round(data.clone());
     round(DataRef::External(data.clone()));
@@ -106,9 +106,9 @@ fn external_data_signal_and_all_resolution_variants_round_trip() {
         tenant_id: Some(TenantId::new()),
         namespace: proposal.namespace,
         kind: proposal.kind,
-        correlation_id: proposal.correlation_id,
+        correlation_id: Some(proposal.correlation_id),
         causation: Some(CausationLink::new(None, None, None, Some(reference())).unwrap()),
-        source_ref: reference(),
+        source_ref: Some(reference()),
         payload: proposal.payload,
         payload_hash: proposal.payload_hash,
         occurred_at: proposal.occurred_at,
@@ -118,7 +118,6 @@ fn external_data_signal_and_all_resolution_variants_round_trip() {
     round(envelope.clone());
     round(WakeReason::Signal {
         wait_id: WaitId::new(),
-        signal_id: proposal.signal_id,
         signal_sequence: SignalSequence::new(3),
         envelope: Box::new(envelope),
     });

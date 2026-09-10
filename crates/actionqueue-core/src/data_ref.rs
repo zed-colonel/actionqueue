@@ -1,6 +1,6 @@
 //! Immutable data references. Core does not fetch external data. AQ-07 must
 //! verify inline hash-versus-bytes consistency at its commit boundary.
-use crate::bounded::{BoundedCode, BoundedValueError, ContentHash, ContentType, OpaqueRef};
+use crate::bounded::{BoundedValueError, ContentHash, ContentType, DataScheme, OpaqueRef};
 /// Inline or externally owned opaque data.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -63,7 +63,7 @@ impl TryFrom<InlineWire> for InlineData {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ExternalDataRef {
     /// Opaque resolver scheme.
-    pub scheme: BoundedCode,
+    pub scheme: DataScheme,
     /// Redacted external locator.
     pub locator: OpaqueRef,
     /// Immutable content hash.

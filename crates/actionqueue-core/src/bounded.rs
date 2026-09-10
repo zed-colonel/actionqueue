@@ -22,24 +22,32 @@ impl std::fmt::Display for BoundedValueError {
 }
 impl std::error::Error for BoundedValueError {}
 
+#[derive(Clone, Copy)]
+pub(crate) enum TextGrammar {
+    Opaque,
+    LowercaseCode,
+    RoutingLabel,
+    Message,
+}
+
 pub(crate) fn validate_text(
     value: &str,
     limit: usize,
-    grammar: u8,
+    grammar: TextGrammar,
 ) -> Result<(), BoundedValueError> {
-    if value.is_empty() && grammar != 3 {
+    if value.is_empty() && !matches!(grammar, TextGrammar::Message) {
         return Err(BoundedValueError::Empty);
     }
     if value.len() > limit {
         return Err(BoundedValueError::TooLarge);
     }
     let valid = match grammar {
-        0 => !value.chars().any(char::is_control),
-        1 => value.bytes().enumerate().all(|(i, b)| {
+        TextGrammar::Opaque => !value.chars().any(char::is_control),
+        TextGrammar::LowercaseCode => value.bytes().enumerate().all(|(i, b)| {
             b.is_ascii_lowercase() || b.is_ascii_digit() || (i > 0 && b"._-".contains(&b))
         }),
-        2 => !value.chars().any(|c| c.is_whitespace() || c.is_control()),
-        _ => true,
+        TextGrammar::RoutingLabel => !value.chars().any(|c| c.is_whitespace() || c.is_control()),
+        TextGrammar::Message => true,
     };
     if valid {
         Ok(())
@@ -82,12 +90,15 @@ macro_rules! bounded_text {
 }
 pub(crate) use bounded_text;
 
-bounded_text!(/// A lowercase machine-readable error or scheme code.
-    BoundedCode, crate::limits::MAX_CODE_BYTES, 1);
+bounded_text!(/// A lowercase machine-readable error code.
+    BoundedCode, crate::limits::MAX_CODE_BYTES, TextGrammar::LowercaseCode);
 bounded_text!(/// A bounded human-readable error message (may be empty).
-    BoundedMessage, crate::limits::MAX_ERROR_MESSAGE_BYTES, 3);
-bounded_text!(/// Opaque content type without whitespace or controls.
-    ContentType, crate::limits::MAX_CONTENT_TYPE_BYTES, 2);
+    BoundedMessage, crate::limits::MAX_ERROR_MESSAGE_BYTES, TextGrammar::Message);
+bounded_text!(/// Opaque content type, including parameters, without control characters.
+    ContentType, crate::limits::MAX_CONTENT_TYPE_BYTES, TextGrammar::Opaque);
+
+bounded_text!(/// Opaque resolver scheme without control characters; core does not parse URI syntax.
+    DataScheme, crate::limits::MAX_CODE_BYTES, TextGrammar::Opaque);
 
 /// Bounded, equality-only opaque attribution. Never dereferenced by core.
 ///
@@ -102,7 +113,7 @@ impl OpaqueRef {
     /// Validates a non-empty UTF-8 reference without control characters.
     pub fn new(value: impl Into<String>) -> Result<Self, BoundedValueError> {
         let value = value.into();
-        validate_text(&value, crate::limits::MAX_OPAQUE_REF_BYTES, 0)?;
+        validate_text(&value, crate::limits::MAX_OPAQUE_REF_BYTES, TextGrammar::Opaque)?;
         Ok(Self(value))
     }
     /// Explicitly exposes the reference for persistence or exact comparison.

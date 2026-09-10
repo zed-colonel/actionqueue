@@ -22,7 +22,8 @@ use crate::snapshot::model::{
 /// Version history:
 /// - v4: Sprint 1 release (WAL v2, JSON snapshots)
 /// - v5: Sprint 2 additions — parent_task_id on TaskSpec, output on AttemptOutcome,
-///   required_executor_traits on TaskConstraints
+///   legacy capability requirements on TaskConstraints (renamed to
+///   required_executor_traits in AQ-02)
 /// - v6: Sprint 2 review — dependency declarations persisted in snapshots
 /// - v7: Sprint 3 — budgets, subscriptions, Suspended run state
 pub const SNAPSHOT_SCHEMA_VERSION: u32 = 8;

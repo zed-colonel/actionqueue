@@ -80,18 +80,18 @@ fn checkpoint() -> CheckpointRef {
         created_by_attempt: AttemptId::new(),
     }
 }
-fn outcomes() -> Vec<AttemptOutcome> {
+fn outcomes() -> Vec<DispositionOutcome> {
     let error = BoundedError {
         code: BoundedCode::new("failed").unwrap(),
         message: BoundedMessage::new("detail").unwrap(),
     };
     vec![
-        AttemptOutcome::Complete,
-        AttemptOutcome::Awaiting,
-        AttemptOutcome::Suspended { reason: None },
-        AttemptOutcome::RetryableFailure { error: error.clone() },
-        AttemptOutcome::TerminalFailure { error: error.clone() },
-        AttemptOutcome::Timeout { error },
+        DispositionOutcome::Complete,
+        DispositionOutcome::Awaiting,
+        DispositionOutcome::Suspended { reason: None },
+        DispositionOutcome::RetryableFailure { error: error.clone() },
+        DispositionOutcome::TerminalFailure { error: error.clone() },
+        DispositionOutcome::Timeout { error },
     ]
 }
 #[test]
@@ -153,11 +153,11 @@ fn all_disposition_combinations_are_checked() {
 fn disposition_collection_ceilings_apply() {
     for count in [64, 65] {
         let p = DispositionParts { child_admissions: vec![child(); count], ..Default::default() };
-        assert_eq!(AttemptDisposition::new(AttemptOutcome::Complete, p).is_ok(), count == 64);
+        assert_eq!(AttemptDisposition::new(DispositionOutcome::Complete, p).is_ok(), count == 64);
     }
     for count in [32, 33] {
         let p = DispositionParts { emitted_signals: vec![signal(); count], ..Default::default() };
-        assert_eq!(AttemptDisposition::new(AttemptOutcome::Complete, p).is_ok(), count == 32);
+        assert_eq!(AttemptDisposition::new(DispositionOutcome::Complete, p).is_ok(), count == 32);
     }
 }
 #[cfg(feature = "serde")]
@@ -180,7 +180,7 @@ fn admission_and_disposition_deserialization_preserves_invariants() {
     invalid["runs"][0]["task_id"] = serde_json::to_value(TaskId::new()).unwrap();
     assert!(serde_json::from_value::<AdmissionPlan>(invalid).is_err());
     let disposition = AttemptDisposition::new(
-        AttemptOutcome::Awaiting,
+        DispositionOutcome::Awaiting,
         DispositionParts {
             wait: Some(wait()),
             checkpoint: Some(checkpoint()),
@@ -217,7 +217,7 @@ fn compound_command_shapes_preserve_commit_expectations() {
     let expected =
         AttemptCommitExpectation::new(4, run_id, attempt, RunState::Running, fence.clone());
     let disposition =
-        AttemptDisposition::new(AttemptOutcome::Complete, DispositionParts::default()).unwrap();
+        AttemptDisposition::new(DispositionOutcome::Complete, DispositionParts::default()).unwrap();
     let command = AttemptDispositionCommitCommand::new(expected, disposition.clone(), 5);
     assert_eq!(command.expected_sequence(), 4);
     assert_eq!(command.run_id(), run_id);
@@ -226,4 +226,43 @@ fn compound_command_shapes_preserve_commit_expectations() {
     assert_eq!(command.expected_lease(), &fence);
     assert_eq!(command.disposition(), &disposition);
     assert_eq!(command.timestamp(), 5);
+}
+
+#[test]
+fn consumption_ceiling_applies_to_construction_and_decode() {
+    use actionqueue_core::budget::{BudgetConsumption, BudgetDimension};
+    use actionqueue_core::limits::MAX_CONSUMPTION_ENTRIES_PER_DISPOSITION as LIMIT;
+    for count in [0, LIMIT, LIMIT + 1] {
+        let consumption = vec![BudgetConsumption::new(BudgetDimension::Token, 1); count];
+        let result = AttemptDisposition::new(
+            DispositionOutcome::Complete,
+            DispositionParts { consumption: consumption.clone(), ..Default::default() },
+        );
+        if count <= LIMIT {
+            assert_eq!(result.unwrap().consumption(), consumption);
+        } else {
+            assert_eq!(result, Err(DispositionError::TooLarge));
+        }
+        #[cfg(feature = "serde")]
+        {
+            let json = serde_json::json!({
+                "outcome": "Complete", "output": null, "checkpoint": null, "wait": null,
+                "child_admissions": [], "emitted_signals": [], "consumption": consumption,
+            });
+            assert_eq!(serde_json::from_value::<AttemptDisposition>(json).is_ok(), count <= LIMIT);
+            // Encode raw fields to exercise the binary validation seam independently
+            // of the constructor that rejects oversized lists.
+            let bytes = postcard::to_allocvec(&(
+                DispositionOutcome::Complete,
+                None::<DataRef>,
+                None::<CheckpointRef>,
+                None::<WaitSpec>,
+                Vec::<ChildAdmission>::new(),
+                Vec::<SignalProposal>::new(),
+                consumption,
+            ))
+            .unwrap();
+            assert_eq!(postcard::from_bytes::<AttemptDisposition>(&bytes).is_ok(), count <= LIMIT);
+        }
+    }
 }

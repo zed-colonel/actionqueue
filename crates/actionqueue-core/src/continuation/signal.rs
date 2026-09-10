@@ -4,9 +4,9 @@ use crate::causal::{CausationLink, ControlMutationContext};
 use crate::data_ref::DataRef;
 use crate::ids::{CorrelationId, SignalId, TenantId};
 crate::bounded::bounded_text!(/// Bounded lowercase signal namespace.
-    SignalNamespace, crate::limits::MAX_SIGNAL_NAMESPACE_BYTES, 1);
+    SignalNamespace, crate::limits::MAX_SIGNAL_NAMESPACE_BYTES, crate::bounded::TextGrammar::LowercaseCode);
 crate::bounded::bounded_text!(/// Bounded lowercase signal kind.
-    SignalKind, crate::limits::MAX_SIGNAL_KIND_BYTES, 1);
+    SignalKind, crate::limits::MAX_SIGNAL_KIND_BYTES, crate::bounded::TextGrammar::LowercaseCode);
 /// Structural SignalEnvelope; all text components validate on construction and decode.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -20,11 +20,11 @@ pub struct SignalEnvelope {
     /// Kind.
     pub kind: SignalKind,
     /// Correlation id.
-    pub correlation_id: CorrelationId,
+    pub correlation_id: Option<CorrelationId>,
     /// Causation.
     pub causation: Option<CausationLink>,
     /// Source ref.
-    pub source_ref: OpaqueRef,
+    pub source_ref: Option<OpaqueRef>,
     /// Payload.
     pub payload: Option<DataRef>,
     /// Payload hash.
@@ -77,7 +77,13 @@ impl SignalFilter {
         self.tenant_id == signal.tenant_id
             && self.namespace == signal.namespace
             && self.kind == signal.kind
-            && self.correlation_id.as_ref().is_none_or(|id| id == &signal.correlation_id)
-            && self.source_ref.as_ref().is_none_or(|source| source == &signal.source_ref)
+            && self
+                .correlation_id
+                .as_ref()
+                .is_none_or(|id| Some(id) == signal.correlation_id.as_ref())
+            && self
+                .source_ref
+                .as_ref()
+                .is_none_or(|source| Some(source) == signal.source_ref.as_ref())
     }
 }

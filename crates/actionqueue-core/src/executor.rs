@@ -4,10 +4,12 @@
 use crate::bounded::BoundedValueError;
 pub use crate::bounded::BoundedValueError as ExecutorTraitError;
 crate::bounded::bounded_text!(/// A bounded executor routing label.
-    ExecutorTrait, crate::limits::MAX_EXECUTOR_TRAIT_BYTES, 2);
+    ExecutorTrait, crate::limits::MAX_EXECUTOR_TRAIT_BYTES, crate::bounded::TextGrammar::RoutingLabel);
 
 /// A non-empty, sorted and deduplicated set of executor routing labels.
-/// Transparent serialization preserves the legacy vector's postcard layout.
+/// Transparent serialization preserves the legacy vector's postcard layout, but
+/// decoding enforces the new label grammar and ceilings. Legacy values outside
+/// that domain are rejected; this is not a backward-compatibility guarantee.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]

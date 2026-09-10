@@ -107,6 +107,9 @@ pub async fn handle(
         return run_not_found_response(&run_id_str);
     };
 
+    // AQ-06: before Awaiting becomes reachable, cancel through WaitCancel and map
+    // AwaitingTransitionRequiresContinuationRecord explicitly instead of HTTP 500.
+    // The generic transition below cannot atomically cancel the active wait.
     match classify_cancel_disposition(current_state) {
         CancelDisposition::AlreadyCanceled => {
             return success_response(run_id, "already_canceled");

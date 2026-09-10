@@ -1,11 +1,11 @@
-//! Unique identifier for a durable continuation specification.
+//! Unique identifier for a durable checkpoint.
 
 use std::fmt::{Display, Formatter};
 use std::str::FromStr;
 
 use uuid::Uuid;
 
-/// A unique identifier for a continuation definition.
+/// A unique identifier for a checkpoint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CheckpointId(Uuid);

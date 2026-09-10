@@ -332,3 +332,15 @@ These routing labels grant no queue RBAC permission or downstream resource autho
 AQ-02 supplies pure admission and continuation types. Durable continuation operations
 are introduced by subsequent work items; generic state commands cannot enter or leave
 `Awaiting` before the compound continuation records land.
+
+AQ-02 does not promise compatibility with pre-contract stores. The executor-trait
+vector retains its postcard field layout, but decoding now rejects legacy labels
+or counts outside the new grammar and ceilings. Snapshot JSON routing keys were
+renamed without aliases or a schema bump. AQ-03 establishes the fresh persistence
+lineage and rejects old stores; do not rely on layout preservation for migration.
+
+Awaiting key release now uses `TaskConstraints::concurrency_key_wait_policy()`.
+AQ-03 must back that accessor with the durable per-task field; until then it returns
+`ReleaseWhileAwaiting`. AQ-06 must support atomic active-wait cancellation for both
+run and task cancellation and explicitly map continuation-record guard errors
+before enabling reachable Awaiting runs.

@@ -34,3 +34,5 @@ pub const MAX_SIGNALS_PER_DISPOSITION: usize = 32;
 pub const MAX_RUNS_PER_ADMISSION: usize = 64;
 /// Maximum content type bytes.
 pub const MAX_CONTENT_TYPE_BYTES: usize = 128;
+/// Maximum budget consumption entries per disposition.
+pub const MAX_CONSUMPTION_ENTRIES_PER_DISPOSITION: usize = 64;

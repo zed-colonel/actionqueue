@@ -104,7 +104,7 @@ async fn register_actor(
             .into_response(),
         Err(e) => (
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "mutation_failed", "message": e.to_string().to_string() })),
+            Json(serde_json::json!({ "error": "mutation_failed", "message": e.to_string() })),
         )
             .into_response(),
     }

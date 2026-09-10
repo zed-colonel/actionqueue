@@ -142,6 +142,10 @@ pub async fn handle(
         }
     }
 
+    // AQ-06: before Awaiting becomes reachable, include active-wait cancellation
+    // in the durable task cancellation operation. Do not commit TaskCancel and
+    // then hit AwaitingTransitionRequiresContinuationRecord in the loop below;
+    // map that guard explicitly rather than returning HTTP 500 after a partial cancel.
     let status = if authority.projection().is_task_canceled(task_id) {
         "already_canceled"
     } else {
