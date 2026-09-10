@@ -40,7 +40,7 @@ fn count_attempt_results(state: &crate::http::RouterStateInner) -> AttemptResult
                     Some(AttemptResultKind::Success) => counts.success += 1,
                     Some(AttemptResultKind::Failure) => counts.failure += 1,
                     Some(AttemptResultKind::Timeout) => counts.timeout += 1,
-                    Some(AttemptResultKind::Suspended) => {}
+                    Some(AttemptResultKind::Suspended | AttemptResultKind::Awaiting) => {}
                     None => {}
                 }
             }

@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use actionqueue_core::actor::{ActorCapabilities, ActorRegistration};
+use actionqueue_core::actor::{ActorRegistration, ExecutorTraits};
 use actionqueue_core::ids::ActorId;
 use actionqueue_engine::time::clock::Clock;
 use actionqueue_executor_local::handler::{ExecutorContext, ExecutorHandler, HandlerOutput};
@@ -74,7 +74,7 @@ async fn actor_crash_detected_at_timeout() {
     let mut boot = engine.bootstrap_with_clock(clock.clone()).expect("bootstrap");
 
     let actor_id = ActorId::new();
-    let caps = ActorCapabilities::new(vec!["work".to_string()]).expect("caps");
+    let caps = ExecutorTraits::new(vec!["work".to_string()]).expect("caps");
     // interval=10s, multiplier=3 → timeout=30s
     let reg = ActorRegistration::new(actor_id, "crashed-actor", caps, 10);
     boot.register_actor(reg).expect("register");
@@ -104,7 +104,7 @@ async fn only_crashed_actor_deregistered() {
     let crashed_id = ActorId::new();
     let alive_id = ActorId::new();
 
-    let caps = ActorCapabilities::new(vec!["work".to_string()]).expect("caps");
+    let caps = ExecutorTraits::new(vec!["work".to_string()]).expect("caps");
     boot.register_actor(ActorRegistration::new(crashed_id, "crashed", caps.clone(), 10))
         .expect("register crashed");
     boot.register_actor(ActorRegistration::new(alive_id, "alive", caps, 10))

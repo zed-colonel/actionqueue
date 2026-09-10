@@ -31,7 +31,7 @@ Default `TaskConstraints` values:
 - `concurrency_key = None`
 - `concurrency_key_hold_policy = HoldDuringRetry` (default)
 - `safety_level = Pure` (default)
-- `required_capabilities = None`
+- `required_executor_traits = None`
 
 Reference surface:
 
@@ -100,7 +100,7 @@ Reference surface:
 
 - Heartbeat timeout multiplier: 3x interval (default)
 - No actors registered by default
-- Capability matching: actor must have ALL required capabilities (strict intersection)
+- Executor trait matching: actor must have ALL required traits (exact subset)
 
 Reference surface:
 

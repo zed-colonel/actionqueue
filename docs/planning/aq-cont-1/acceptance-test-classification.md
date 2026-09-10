@@ -26,7 +26,7 @@ in [`archive/pre-aq-cont-1/characterization-results/`](../../../archive/pre-aq-c
 | `concurrency_key` | Retain | Concurrency-key enforcement; adds wait-time policy per `AQ-ADR-009` | `AQ-06` |
 | `observability` | Replace | Metrics/inspection surfaces are rebuilt; no developmental identifiers in labels | `AQ-12` |
 | `cancellation` | Retain (attribution added) | Terminal finality retained; control mutations gain `ControlMutationContext` | `AQ-11` |
-| `negative_transitions` | Retain (table grows) | Exhaustive transition table adds `Awaiting` rules | `AQ-02` |
+| `negative_transitions` | Retained and extended (AQ-02) | Invalid Awaiting edges and generic continuation-record guard asserted | `AQ-02` |
 | `lease_expiry` | Retain | Lease fencing and expiry | `AQ-03`, `AQ-08` |
 | `wal_corruption_recovery` | Retain | Trailing-corruption repair policy carries into the target WAL format | `AQ-03` |
 | `misfire` | Retain | Misfire policy for scheduled runs | `AQ-04` |
@@ -74,8 +74,8 @@ in [`archive/pre-aq-cont-1/characterization-results/`](../../../archive/pre-aq-c
 
 | Test | Classification | Reason | Re-proved / removed in |
 |---|---|---|---|
-| `actor_registration` | Retain (renamed) | Registration with `ExecutorTraits` | `AQ-02`, `AQ-11` |
-| `capability_matching` | Replace | Renamed to executor-trait matching; routing-only semantics asserted | `AQ-02`, `AQ-11` |
+| `actor_registration` | Retained (AQ-02) | Registration with validated `ExecutorTraits` | `AQ-02`, `AQ-11` |
+| `executor_trait_matching` | Replaced (AQ-02) | Bounded executor trait matching; routing grants no RBAC role or permission | `AQ-02`, `AQ-11` |
 | `remote_actor_crash` | Retain (fenced) | Crash detection plus result-envelope fencing per `AQ-ADR-017` | `AQ-11` |
 | `department_routing` | Replace | Routing by trait; must prove traits grant no authority | `AQ-11` |
 

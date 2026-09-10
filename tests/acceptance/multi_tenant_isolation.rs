@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use actionqueue_core::actor::{ActorCapabilities, ActorRegistration};
+use actionqueue_core::actor::{ActorRegistration, ExecutorTraits};
 use actionqueue_core::ids::{ActorId, TenantId};
 use actionqueue_core::platform::TenantRegistration;
 use actionqueue_engine::time::clock::MockClock;
@@ -62,7 +62,7 @@ async fn two_tenants_created_and_actors_scoped() {
     assert!(boot.tenant_registry().exists(tenant_beta), "beta must exist");
     assert!(!boot.tenant_registry().exists(TenantId::new()), "unknown tenant must not exist");
 
-    let caps = ActorCapabilities::new(vec!["work".to_string()]).expect("caps");
+    let caps = ExecutorTraits::new(vec!["work".to_string()]).expect("caps");
     let actor_a = ActorId::new();
     let actor_b = ActorId::new();
 

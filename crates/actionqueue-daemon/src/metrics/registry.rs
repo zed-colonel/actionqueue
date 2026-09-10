@@ -12,8 +12,17 @@ use prometheus::{
 };
 
 /// Bounded run-state label values for `actionqueue_runs_total{state=...}`.
-pub const RUN_STATE_LABEL_VALUES: [&str; 8] =
-    ["scheduled", "ready", "leased", "running", "retry_wait", "completed", "failed", "canceled"];
+pub const RUN_STATE_LABEL_VALUES: [&str; 9] = [
+    "scheduled",
+    "ready",
+    "leased",
+    "running",
+    "retry_wait",
+    "completed",
+    "failed",
+    "canceled",
+    "awaiting",
+];
 
 /// Bounded attempt-result label values for `actionqueue_attempts_total{result=...}`.
 pub const ATTEMPT_RESULT_LABEL_VALUES: [&str; 3] = ["success", "failure", "timeout"];

@@ -435,12 +435,12 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
             let mut registry = actionqueue_actor::ActorRegistry::new();
             for (actor_id, record) in authority.projection().actors() {
                 if record.deregistered_at.is_none() {
-                    let caps = actionqueue_core::actor::ActorCapabilities::new(
-                        record.capabilities.clone(),
+                    let caps = actionqueue_core::actor::ExecutorTraits::new(
+                        record.executor_traits.clone(),
                     )
                     .unwrap_or_else(|_| {
-                        actionqueue_core::actor::ActorCapabilities::new(vec!["_".to_string()])
-                            .expect("fallback capability")
+                        actionqueue_core::actor::ExecutorTraits::new(vec!["_".to_string()])
+                            .expect("fallback executor trait")
                     });
                     let mut reg = actionqueue_core::actor::ActorRegistration::new(
                         *actor_id,
@@ -801,9 +801,9 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         .map_err(|e| DispatchError::Authority(e.into_source()))?;
 
         // Compute the effective attempt number for retry cap purposes.
-        // Suspended attempts do not count against max_attempts: they are
-        // budget-driven pauses, not failure-driven retries.
-        let suspended_count = self
+        // Suspended and Awaiting attempts do not count against max_attempts: they are
+        // capacity pauses or continuation waits rather than failures.
+        let non_failure_count = self
             .authority
             .projection()
             .get_attempt_history(&run_id)
@@ -811,12 +811,18 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
                 history
                     .iter()
                     .filter(|a| {
-                        a.result() == Some(actionqueue_core::mutation::AttemptResultKind::Suspended)
+                        matches!(
+                            a.result(),
+                            Some(
+                                actionqueue_core::mutation::AttemptResultKind::Suspended
+                                    | actionqueue_core::mutation::AttemptResultKind::Awaiting
+                            )
+                        )
                     })
                     .count() as u32
             })
             .unwrap_or(0);
-        let effective_attempt = worker_result.attempt_number.saturating_sub(suspended_count);
+        let effective_attempt = worker_result.attempt_number.saturating_sub(non_failure_count);
 
         // Determine target state by delegating to the canonical retry decision
         // function. This gets us defensive validation (rejects N+1 paths, validates
@@ -1365,7 +1371,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         task_id: TaskId,
         target_state: RunState,
     ) {
-        let should_release = if target_state.is_terminal() {
+        let should_release = if target_state.is_terminal() || target_state == RunState::Awaiting {
             true
         } else if target_state == RunState::RetryWait || target_state == RunState::Suspended {
             // Suspended follows the same hold policy as RetryWait: the run is paused

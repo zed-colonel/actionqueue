@@ -298,7 +298,7 @@ pub enum WalEventType {
     ActorRegistered {
         actor_id: ActorId,
         identity: String,
-        capabilities: Vec<String>,
+        executor_traits: Vec<String>,
         department: Option<String>,
         heartbeat_interval_secs: u64,
         tenant_id: Option<TenantId>,

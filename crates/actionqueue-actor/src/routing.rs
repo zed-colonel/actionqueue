@@ -1,74 +1,40 @@
-//! Capability-based task routing.
-
+//! Executor trait routing grants no queue RBAC or downstream resource authority.
+use actionqueue_core::executor::ExecutorTraits;
 use actionqueue_core::ids::ActorId;
-
-/// Stateless capability intersection matcher for task → actor routing.
-///
-/// The dispatch loop uses this to filter which actors are eligible to
-/// claim a task based on its `required_capabilities`.
-pub struct CapabilityRouter;
-
-impl CapabilityRouter {
-    /// Returns `true` if `actor_capabilities` contains ALL entries in `required`.
-    ///
-    /// An empty `required` slice matches any actor (no capability requirements).
-    pub fn can_handle(actor_capabilities: &[String], required: &[String]) -> bool {
-        required.iter().all(|r| actor_capabilities.iter().any(|c| c == r))
+/// Stateless exact subset matcher for task-to-worker routing.
+pub struct ExecutorTraitRouter;
+impl ExecutorTraitRouter {
+    /// Absent requirements match any actor; otherwise every trait must be present.
+    pub fn can_handle(actor_traits: &ExecutorTraits, required: Option<&ExecutorTraits>) -> bool {
+        required.is_none_or(|required| actor_traits.satisfies(required))
     }
-
-    /// Filters a list of `(actor_id, capabilities)` pairs to those eligible
-    /// to handle a task with `required_capabilities`.
-    pub fn eligible_actors(actors: &[(ActorId, &[String])], required: &[String]) -> Vec<ActorId> {
+    /// Selects actors by routing traits only.
+    pub fn eligible_actors(
+        actors: &[(ActorId, &ExecutorTraits)],
+        required: Option<&ExecutorTraits>,
+    ) -> Vec<ActorId> {
         actors
             .iter()
-            .filter(|(_, caps)| Self::can_handle(caps, required))
+            .filter(|(_, traits)| Self::can_handle(traits, required))
             .map(|(id, _)| *id)
             .collect()
     }
 }
-
 #[cfg(test)]
 mod tests {
-    use actionqueue_core::ids::ActorId;
-
-    use super::CapabilityRouter;
-
-    fn caps(c: &[&str]) -> Vec<String> {
-        c.iter().map(|s| s.to_string()).collect()
-    }
-
+    use super::*;
     #[test]
-    fn can_handle_all_required_present() {
-        let actor = caps(&["compute", "review", "approve"]);
-        assert!(CapabilityRouter::can_handle(&actor, &caps(&["compute", "review"])));
-    }
-
-    #[test]
-    fn can_handle_missing_requirement() {
-        let actor = caps(&["compute"]);
-        assert!(!CapabilityRouter::can_handle(&actor, &caps(&["compute", "review"])));
-    }
-
-    #[test]
-    fn can_handle_empty_required_always_matches() {
-        let actor = caps(&[]);
-        assert!(CapabilityRouter::can_handle(&actor, &[]));
-    }
-
-    #[test]
-    fn eligible_actors_filters_correctly() {
-        let a = ActorId::new();
-        let b = ActorId::new();
-        let c = ActorId::new();
-        let a_caps = caps(&["compute", "review"]);
-        let b_caps = caps(&["compute"]);
-        let c_caps = caps(&["review"]);
-
-        let actors = vec![(a, a_caps.as_slice()), (b, b_caps.as_slice()), (c, c_caps.as_slice())];
-        let required = caps(&["compute", "review"]);
-        let eligible = CapabilityRouter::eligible_actors(&actors, &required);
-
-        assert_eq!(eligible.len(), 1);
-        assert!(eligible.contains(&a));
+    fn exact_subset_and_absent_requirements() {
+        let a = ExecutorTraits::new(vec!["compute".into()]).unwrap();
+        let b = ExecutorTraits::new(vec!["review".into(), "compute".into()]).unwrap();
+        assert!(ExecutorTraitRouter::can_handle(&b, Some(&a)));
+        assert!(!ExecutorTraitRouter::can_handle(&a, Some(&b)));
+        assert!(ExecutorTraitRouter::can_handle(&a, None));
+        let first = ActorId::new();
+        let second = ActorId::new();
+        assert_eq!(
+            ExecutorTraitRouter::eligible_actors(&[(first, &a), (second, &b)], Some(&b)),
+            [second]
+        );
     }
 }

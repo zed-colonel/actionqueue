@@ -1,8 +1,7 @@
 //! Budget domain types for resource consumption tracking.
 //!
 //! These types define the vocabulary for budget allocation and consumption
-//! that Caelum uses to enforce per-thread and per-Vessel resource caps.
-//! ActionQueue enforces the caps; Caelum aggregates and reports consumption.
+//! used to enforce per-task resource caps. Applications aggregate and report consumption.
 
 /// The dimension along which a budget is measured.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

@@ -146,7 +146,8 @@ impl StatsResponse {
                 actionqueue_core::run::state::RunState::Leased => leased += 1,
                 actionqueue_core::run::state::RunState::Running => running += 1,
                 actionqueue_core::run::state::RunState::RetryWait => retry_wait += 1,
-                actionqueue_core::run::state::RunState::Suspended => {}
+                actionqueue_core::run::state::RunState::Suspended
+                | actionqueue_core::run::state::RunState::Awaiting => {}
                 actionqueue_core::run::state::RunState::Completed => completed += 1,
                 actionqueue_core::run::state::RunState::Failed => failed += 1,
                 actionqueue_core::run::state::RunState::Canceled => canceled += 1,

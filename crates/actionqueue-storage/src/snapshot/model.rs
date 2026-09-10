@@ -273,7 +273,7 @@ pub struct SnapshotSubscription {
 pub struct SnapshotActor {
     pub actor_id: ActorId,
     pub identity: String,
-    pub capabilities: Vec<String>,
+    pub executor_traits: Vec<String>,
     pub department: Option<String>,
     pub heartbeat_interval_secs: u64,
     pub tenant_id: Option<TenantId>,

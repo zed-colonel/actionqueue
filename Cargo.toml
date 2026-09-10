@@ -263,8 +263,8 @@ path = "tests/acceptance/actor_registration.rs"
 required-features = ["actor"]
 
 [[test]]
-name = "acceptance_capability_matching"
-path = "tests/acceptance/capability_matching.rs"
+name = "acceptance_executor_trait_matching"
+path = "tests/acceptance/executor_trait_matching.rs"
 required-features = ["actor"]
 
 [[test]]

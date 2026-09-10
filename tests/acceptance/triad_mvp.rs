@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use actionqueue_core::actor::{ActorCapabilities, ActorRegistration};
+use actionqueue_core::actor::{ActorRegistration, ExecutorTraits};
 use actionqueue_core::ids::{ActorId, LedgerEntryId, TaskId, TenantId};
 use actionqueue_core::platform::{Capability, LedgerEntry, Role, TenantRegistration};
 use actionqueue_core::run::state::RunState;
@@ -97,7 +97,7 @@ async fn triad_mvp_full_workflow() {
     let operator_id = ActorId::new();
     let auditor_id = ActorId::new();
     let gatekeeper_id = ActorId::new();
-    let caps = ActorCapabilities::new(vec!["work".to_string()]).expect("caps");
+    let caps = ExecutorTraits::new(vec!["work".to_string()]).expect("caps");
 
     boot.register_actor(
         ActorRegistration::new(operator_id, "operator", caps.clone(), 30).with_tenant(tenant_id),

@@ -116,7 +116,8 @@ impl StatsSummary {
                 actionqueue_core::run::state::RunState::Leased => runs_by_state.leased += 1,
                 actionqueue_core::run::state::RunState::Running => runs_by_state.running += 1,
                 actionqueue_core::run::state::RunState::RetryWait => runs_by_state.retry_wait += 1,
-                actionqueue_core::run::state::RunState::Suspended => {}
+                actionqueue_core::run::state::RunState::Suspended
+                | actionqueue_core::run::state::RunState::Awaiting => {}
                 actionqueue_core::run::state::RunState::Completed => runs_by_state.completed += 1,
                 actionqueue_core::run::state::RunState::Failed => runs_by_state.failed += 1,
                 actionqueue_core::run::state::RunState::Canceled => runs_by_state.canceled += 1,

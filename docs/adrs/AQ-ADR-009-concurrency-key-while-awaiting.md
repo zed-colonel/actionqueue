@@ -1,7 +1,6 @@
 # AQ-ADR-009 — Concurrency key while awaiting
 
-- **Status:** Proposed. The recommended default below is the working implementation choice
-  until code review produces a concrete counterexample (implementation plan, Section 3).
+- **Status:** Accepted.
 - **Decide before:** `AQ-06`
 - **Contract:** `AQ-CONT-1`
 - **Invariants:** AQ-H13
@@ -38,6 +37,6 @@ re-acquires in order; suspended and awaiting runs do not deadlock the key.
 
 | Field | Value |
 |---|---|
-| Accepted in PR | _pending_ |
-| Accepted on | _pending_ |
+| Accepted in PR | `AQ-02` |
+| Accepted on | 2026-09-09 |
 | Superseded by | — |

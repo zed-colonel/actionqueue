@@ -7,43 +7,7 @@
 
 use actionqueue_core::ids::RunId;
 
-/// Typed identifier for the worker/executor that owns a lease.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Ord, PartialOrd)]
-pub struct LeaseOwner(String);
-
-impl LeaseOwner {
-    /// Creates a lease owner from a worker identity string.
-    ///
-    /// In debug builds, panics if the value is empty.
-    pub fn new(owner: impl Into<String>) -> Self {
-        let value = owner.into();
-        assert!(!value.is_empty(), "LeaseOwner must not be empty");
-        Self(value)
-    }
-
-    /// Returns the worker identity as a string slice.
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::fmt::Display for LeaseOwner {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl From<String> for LeaseOwner {
-    fn from(value: String) -> Self {
-        Self::new(value)
-    }
-}
-
-impl From<&str> for LeaseOwner {
-    fn from(value: &str) -> Self {
-        Self::new(value.to_owned())
-    }
-}
+pub use actionqueue_core::mutation::LeaseOwner;
 
 /// Typed lease-expiry timestamp represented in epoch seconds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]

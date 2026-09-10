@@ -48,7 +48,7 @@ pub fn update(state: &crate::http::RouterStateInner) {
     collectors.runs_running().set(counts.get(RunState::Running) as f64);
 }
 
-const ALL_RUN_STATES: [RunState; 8] = [
+const ALL_RUN_STATES: [RunState; 9] = [
     RunState::Scheduled,
     RunState::Ready,
     RunState::Leased,
@@ -57,6 +57,7 @@ const ALL_RUN_STATES: [RunState; 8] = [
     RunState::Completed,
     RunState::Failed,
     RunState::Canceled,
+    RunState::Awaiting,
 ];
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -69,6 +70,7 @@ struct RunStateCounts {
     completed: u64,
     failed: u64,
     canceled: u64,
+    awaiting: u64,
 }
 
 impl RunStateCounts {
@@ -80,6 +82,7 @@ impl RunStateCounts {
             RunState::Running => self.running += 1,
             RunState::RetryWait => self.retry_wait += 1,
             RunState::Suspended => {}
+            RunState::Awaiting => self.awaiting += 1,
             RunState::Completed => self.completed += 1,
             RunState::Failed => self.failed += 1,
             RunState::Canceled => self.canceled += 1,
@@ -94,6 +97,7 @@ impl RunStateCounts {
             RunState::Running => self.running,
             RunState::RetryWait => self.retry_wait,
             RunState::Suspended => 0,
+            RunState::Awaiting => self.awaiting,
             RunState::Completed => self.completed,
             RunState::Failed => self.failed,
             RunState::Canceled => self.canceled,
@@ -109,6 +113,7 @@ fn state_label(state: RunState) -> &'static str {
         RunState::Running => "running",
         RunState::RetryWait => "retry_wait",
         RunState::Suspended => "suspended",
+        RunState::Awaiting => "awaiting",
         RunState::Completed => "completed",
         RunState::Failed => "failed",
         RunState::Canceled => "canceled",
@@ -239,13 +244,39 @@ mod tests {
                 );
                 *sequence += 1;
             }
-            RunState::Suspended => {
+            RunState::Suspended | RunState::Awaiting => {
                 transition_state(reducer, sequence, run_id, RunState::Scheduled, RunState::Ready);
                 transition_state(reducer, sequence, run_id, RunState::Ready, RunState::Leased);
                 transition_state(reducer, sequence, run_id, RunState::Leased, RunState::Running);
-                transition_state(reducer, sequence, run_id, RunState::Running, RunState::Suspended);
+                if target_state == RunState::Awaiting {
+                    finish_awaiting_attempt(reducer, sequence, run_id);
+                }
+                transition_state(reducer, sequence, run_id, RunState::Running, target_state);
             }
         }
+    }
+
+    fn finish_awaiting_attempt(reducer: &mut ReplayReducer, sequence: &mut u64, run_id: RunId) {
+        let attempt_id = actionqueue_core::ids::AttemptId::new();
+        apply_event(
+            reducer,
+            *sequence,
+            WalEventType::AttemptStarted { run_id, attempt_id, timestamp: *sequence + 1_000 },
+        );
+        *sequence += 1;
+        apply_event(
+            reducer,
+            *sequence,
+            WalEventType::AttemptFinished {
+                run_id,
+                attempt_id,
+                result: actionqueue_core::mutation::AttemptResultKind::Awaiting,
+                error: None,
+                output: None,
+                timestamp: *sequence + 1_000,
+            },
+        );
+        *sequence += 1;
     }
 
     fn build_state(
@@ -286,6 +317,7 @@ mod tests {
         assert_eq!(state_label(RunState::Completed), "completed");
         assert_eq!(state_label(RunState::Failed), "failed");
         assert_eq!(state_label(RunState::Canceled), "canceled");
+        assert_eq!(state_label(RunState::Awaiting), "awaiting");
     }
 
     #[test]
@@ -300,6 +332,7 @@ mod tests {
         assert!(!is_lag_eligible(RunState::Completed));
         assert!(!is_lag_eligible(RunState::Failed));
         assert!(!is_lag_eligible(RunState::Canceled));
+        assert!(!is_lag_eligible(RunState::Awaiting));
     }
 
     #[test]
@@ -472,5 +505,30 @@ mod tests {
         assert_eq!(sample_sum_after_first, 10.0);
         assert_eq!(sample_count_after_second, 2);
         assert_eq!(sample_sum_after_second, 60.0);
+    }
+    #[test]
+    fn awaiting_is_counted_without_running_or_lag() {
+        let task_id = TaskId::new();
+        let mut projection = ReplayReducer::new();
+        apply_event(
+            &mut projection,
+            1,
+            WalEventType::TaskCreated { task_spec: build_task_spec(task_id), timestamp: 1 },
+        );
+        let mut sequence = 2;
+        seed_run_state(
+            &mut projection,
+            &mut sequence,
+            RunId::new(),
+            task_id,
+            actionqueue_core::run::RunState::Awaiting,
+            100,
+        );
+        let metrics = Arc::new(MetricsRegistry::new(None).unwrap());
+        let state = build_state(projection, Arc::clone(&metrics), 200);
+        update(&state);
+        assert_eq!(run_total_value(&metrics, actionqueue_core::run::RunState::Awaiting), 1.0);
+        assert_eq!(metrics.collectors().runs_running().get(), 0.0);
+        assert_eq!(metrics.collectors().scheduling_lag_seconds().get_sample_count(), 0);
     }
 }

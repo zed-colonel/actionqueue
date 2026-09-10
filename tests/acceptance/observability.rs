@@ -198,6 +198,7 @@ async fn assert_metrics_label_bounds_and_families(router: &mut axum::Router<()>)
         "completed",
         "failed",
         "canceled",
+        "awaiting",
     ]
     .into_iter()
     .map(str::to_string)
@@ -222,7 +223,7 @@ async fn assert_metrics_label_bounds_and_families(router: &mut axum::Router<()>)
         expected_attempt_keys
     );
 
-    assert_eq!(support::metrics_sample_count(&metrics, "actionqueue_runs_total"), 8);
+    assert_eq!(support::metrics_sample_count(&metrics, "actionqueue_runs_total"), 9);
     assert_eq!(support::metrics_sample_count(&metrics, "actionqueue_attempts_total"), 3);
 
     for prefix in required_metric_family_prefixes() {
@@ -244,6 +245,7 @@ fn capture_metrics_fact_snapshot(metrics_text: &str) -> MetricsFactSnapshot {
         "completed",
         "failed",
         "canceled",
+        "awaiting",
     ]
     .into_iter()
     .map(|state| {

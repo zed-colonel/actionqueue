@@ -6,10 +6,15 @@ Pure domain types and state machine for the ActionQueue durable task queue engin
 
 This crate defines the fundamental types used throughout the ActionQueue system with no internal dependencies and no I/O:
 
-- **ids** -- Strongly-typed identifiers (TaskId, RunId, AttemptId, ActorId, TenantId, etc.)
-- **run** -- Run state machine with validated monotonic transitions
+- **ids** -- UUID identities and bounded caller-supplied admission, signal, trace and correlation identifiers
+- **run** -- Run state machine with validated transitions and typed rejection reasons
 - **task** -- Task specifications, run policies, constraints, and metadata
-- **mutation** -- Mutation authority boundary contracts
+- **mutation** -- Mutation authority boundary contracts and provisional compound command shapes
+- **bounded / limits** -- Validated opaque values and hard byte/count ceilings
+- **executor** -- Canonical executor routing traits, separate from RBAC
+- **causal** -- Immutable bounded attribution; references grant no authority
+- **data_ref / continuation** -- Data, signals, exact filters, waits, checkpoints and resume context
+- **admission / disposition** -- Validated admission plans and attempt effect combinations
 - **budget** -- Budget dimension and consumption types
 - **subscription** -- Event subscription and filter types
 - **actor** -- Remote actor registration and heartbeat policy types
@@ -22,7 +27,8 @@ This crate defines the fundamental types used throughout the ActionQueue system 
 ```
 Scheduled -> Ready -> Leased -> Running -> Completed
                                        -> RetryWait -> Ready
-                                       -> Suspended
+                                       -> Suspended -> Ready
+                                       -> Awaiting -> Ready / Failed / Canceled
                                        -> Failed
                                        -> Canceled
 ```
@@ -34,3 +40,14 @@ See the [workspace root](https://github.com/zed-colonel/actionqueue) for full do
 ## License
 
 Apache-2.0
+
+`Awaiting` is non-terminal and may originate only from `Running`, after the active
+attempt is finished. Generic mutation commands reject Awaiting transitions until
+AQ-06 supplies the compound continuation record. Existing WAL-embedded layouts
+remain unchanged in AQ-02; the new state and attempt result are appended variants.
+`ConcurrencyKeyWaitPolicy` defaults to release; its constraints field arrives in AQ-03.
+
+Caller references are attribution only. Core neither dereferences them nor computes
+content hashes. Canonical admission hashing is an AQ-04 obligation; inline hash
+verification is an AQ-07 obligation. New command types are not yet members of
+`MutationCommand`.

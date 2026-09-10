@@ -5,7 +5,8 @@
 /// States progress forward through: Scheduled -> Ready -> Leased -> Running -> (RetryWait -> Ready)* or -> Terminal
 /// A running attempt may also be preempted to Suspended (e.g. by budget exhaustion), then
 /// resumed back to Ready when capacity is restored.
-/// Cancellation is also allowed from Scheduled, Ready, Leased, Running, RetryWait, and Suspended -> Canceled.
+/// Running may yield to Awaiting, which resolves through Ready, Failed, or Canceled.
+/// Cancellation is allowed from every non-terminal state.
 /// Terminal states (Completed, Failed, Canceled) are immutable and cannot transition to any other state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -24,7 +25,7 @@ pub enum RunState {
 
     /// The run is currently being executed.
     /// Transitions: -> RetryWait (on failure, if retries remain), -> Suspended (preempted),
-    /// -> Completed (on success), -> Failed (on failure, no retries), -> Canceled
+    /// -> Awaiting (continuation), -> Completed (on success), -> Failed (no retries), -> Canceled
     Running,
 
     /// The run failed and is waiting before retry.
@@ -48,6 +49,10 @@ pub enum RunState {
     /// The run was canceled.
     /// Terminal state - no further transitions allowed.
     Canceled,
+
+    /// Waiting for a durable continuation. Non-terminal; resolves to Ready, Failed, or Canceled.
+    /// Appended to preserve WAL v5 postcard discriminants until AQ-03.
+    Awaiting,
 }
 
 impl RunState {
@@ -69,6 +74,7 @@ impl std::fmt::Display for RunState {
             RunState::Completed => "completed",
             RunState::Failed => "failed",
             RunState::Canceled => "canceled",
+            RunState::Awaiting => "awaiting",
         };
         write!(f, "{name}")
     }

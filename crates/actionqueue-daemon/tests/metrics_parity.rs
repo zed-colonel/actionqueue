@@ -706,7 +706,7 @@ async fn metrics_parity_enforces_bounded_run_and_attempt_labels_without_extras()
         BTreeSet::from(["result".to_string()])
     );
 
-    assert_eq!(samples.iter().filter(|sample| sample.name == "actionqueue_runs_total").count(), 8);
+    assert_eq!(samples.iter().filter(|sample| sample.name == "actionqueue_runs_total").count(), 9);
     assert_eq!(
         samples.iter().filter(|sample| sample.name == "actionqueue_attempts_total").count(),
         3

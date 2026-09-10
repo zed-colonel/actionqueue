@@ -55,9 +55,9 @@ ActionQueue's value is leverage:
 
 ### Remote Actors (feature: `actor`)
 
-- **Actor registration** -- WAL-backed registration with capability declaration
+- **Actor registration** -- WAL-backed registration with executor trait declaration
 - **Heartbeat monitoring** -- configurable interval with timeout-based auto-deregistration
-- **Capability routing** -- filter actors by required task capabilities
+- **Executor trait routing** -- filter actors by required task traits
 - **Department grouping** -- actors organized into named departments
 
 ### Platform (feature: `platform`)
@@ -85,7 +85,7 @@ Eleven workspace crates forming a strict dependency DAG:
   actionqueue-engine         Scheduling, derivation, concurrency, leases
   actionqueue-workflow       DAG, hierarchy, cron, dynamic submission
   actionqueue-budget         Budget tracking, enforcement, subscriptions
-  actionqueue-actor          Actor registry, heartbeat, capability routing
+  actionqueue-actor          Actor registry, heartbeat, executor trait routing
   actionqueue-platform       Tenant registry, RBAC, append-only ledgers
   actionqueue-runtime        Async dispatch loop, embedded API
   actionqueue-daemon         HTTP server, REST API, Prometheus metrics
@@ -163,7 +163,7 @@ See [`actionqueue-charter.md`](actionqueue-charter.md) for the full contract and
 - **Core contract** (18 tests) -- once/repeat accounting, retry cap, crash recovery, concurrency, observability, cancellation, lease expiry, WAL corruption, misfire, dispatch invariants, stress tests
 - **Workflow** (11 tests, `--features workflow`) -- DAG ordering, failure propagation, cycle rejection, hierarchy, dynamic submission, cron scheduling, crash recovery
 - **Budget** (10 tests, `--features budget`) -- enforcement, replenishment, suspend/resume, recovery, threshold suspension, event subscriptions
-- **Actor** (4 tests, `--features actor`) -- registration, capability matching, crash detection, department routing
+- **Actor** (4 tests, `--features actor`) -- registration, executor trait matching, crash detection, department routing
 - **Platform** (5 tests, `--features platform`) -- tenant isolation, RBAC, approval workflow, ledger recovery, triad MVP
 
 See [`docs/acceptance-test-taxonomy.md`](docs/acceptance-test-taxonomy.md) for detailed invariant mappings.

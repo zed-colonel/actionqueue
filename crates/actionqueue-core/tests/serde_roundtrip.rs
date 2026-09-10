@@ -121,11 +121,11 @@ fn task_constraints_deserialization_rejects_empty_capabilities() {
         "max_attempts": 1,
         "timeout_secs": null,
         "concurrency_key": null,
-        "required_capabilities": []
+        "required_executor_traits": []
     }"#;
 
     let err = serde_json::from_str::<TaskConstraints>(json)
-        .expect_err("empty required_capabilities must be rejected during deserialization");
+        .expect_err("empty required_executor_traits must be rejected during deserialization");
 
     assert!(
         err.to_string().contains("empty"),

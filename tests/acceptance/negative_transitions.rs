@@ -311,3 +311,33 @@ where
 {
     authority.projection().latest_sequence().checked_add(1).expect("sequence should not overflow")
 }
+
+/// Generic state changes cannot establish the compound continuation invariant.
+#[test]
+fn generic_awaiting_transition_requires_continuation_record() {
+    let data_dir = support::unique_data_dir("aq-02-awaiting-guard");
+    let task = TaskId::new();
+    support::submit_once_task_via_cli(&task.to_string(), &data_dir);
+    let run = support::single_run_id_for_task(&data_dir, task);
+    let invalid = try_transition(&data_dir, run, RunState::Scheduled, RunState::Awaiting);
+    assert!(matches!(
+        invalid,
+        Err(MutationAuthorityError::Validation(MutationValidationError::InvalidTransition { .. }))
+    ));
+    for (from, to) in [
+        (RunState::Scheduled, RunState::Ready),
+        (RunState::Ready, RunState::Leased),
+        (RunState::Leased, RunState::Running),
+    ] {
+        let _ = try_transition(&data_dir, run, from, to).unwrap();
+    }
+    let guarded = try_transition(&data_dir, run, RunState::Running, RunState::Awaiting);
+    assert!(matches!(
+        guarded,
+        Err(MutationAuthorityError::Validation(
+            MutationValidationError::AwaitingTransitionRequiresContinuationRecord
+        ))
+    ));
+    support::assert_run_state_from_storage(&data_dir, run, RunState::Running);
+    std::fs::remove_dir_all(&data_dir).unwrap();
+}

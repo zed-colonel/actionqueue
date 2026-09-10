@@ -1,7 +1,6 @@
 # AQ-ADR-010 — Checkpoint representation
 
-- **Status:** Proposed. The recommended default below is the working implementation choice
-  until code review produces a concrete counterexample (implementation plan, Section 3).
+- **Status:** Accepted.
 - **Decide before:** `AQ-07`
 - **Contract:** `AQ-CONT-1`
 - **Invariants:** AQ-H9, AQ-H13
@@ -39,6 +38,6 @@ context delivery under crash (§28.6).
 
 | Field | Value |
 |---|---|
-| Accepted in PR | _pending_ |
-| Accepted on | _pending_ |
+| Accepted in PR | `AQ-02` |
+| Accepted on | 2026-09-09 |
 | Superseded by | — |

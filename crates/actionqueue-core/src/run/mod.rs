@@ -6,4 +6,7 @@ pub mod transitions;
 
 pub use run_instance::{RunInstance, RunInstanceConstructionError, RunInstanceError};
 pub use state::RunState;
-pub use transitions::{is_valid_transition, valid_transitions, RunTransitionError, Transition};
+pub use transitions::{
+    is_valid_transition, transition_rejection, valid_transitions, RunTransitionError,
+    RunTransitionRejection, Transition,
+};

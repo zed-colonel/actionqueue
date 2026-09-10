@@ -116,11 +116,11 @@ fn run_with_state(task_id: TaskId, run_id_raw: u128, state: RunState) -> RunInst
         RunState::Canceled => {
             run.transition_to(RunState::Canceled).expect("scheduled->canceled should pass")
         }
-        RunState::Suspended => {
+        RunState::Suspended | RunState::Awaiting => {
             run.transition_to(RunState::Ready).expect("scheduled->ready should pass");
             run.transition_to(RunState::Leased).expect("ready->leased should pass");
             run.transition_to(RunState::Running).expect("leased->running should pass");
-            run.transition_to(RunState::Suspended).expect("running->suspended should pass");
+            run.transition_to(state).expect("running->waiting should pass");
         }
     }
 
@@ -198,11 +198,11 @@ fn snapshot_state_history_for_run(run: &RunInstance) -> Vec<SnapshotRunStateHist
         RunState::Canceled => {
             push_transition(RunState::Scheduled, RunState::Canceled);
         }
-        RunState::Suspended => {
+        RunState::Suspended | RunState::Awaiting => {
             push_transition(RunState::Scheduled, RunState::Ready);
             push_transition(RunState::Ready, RunState::Leased);
             push_transition(RunState::Leased, RunState::Running);
-            push_transition(RunState::Running, RunState::Suspended);
+            push_transition(RunState::Running, run.state());
         }
     }
 
