@@ -60,8 +60,8 @@ use crate::worker::{InFlightRun, WorkerResult};
 
 /// Builds a [`DependencyGate`] from the recovery reducer's dependency state.
 ///
-/// Called once at `DispatchLoop::new()` to reconstruct the gate from WAL events
-/// that were already replayed during bootstrap. Satisfaction is derived from the
+/// Called at bootstrap and after each created admission to reconstruct the gate
+/// from the committed projection. Satisfaction is derived from the
 /// projection's run states (which tasks have at least one Completed run with all
 /// runs terminal). Failure is derived similarly (all runs terminal, none Completed).
 fn build_dependency_gate(projection: &ReplayReducer) -> DependencyGate {
@@ -76,7 +76,7 @@ fn build_dependency_gate(projection: &ReplayReducer) -> DependencyGate {
     for (&task_id, prereqs) in &dep_map {
         // Declarations were already cycle-checked at submission time.
         if let Err(err) = gate.declare(task_id, prereqs.iter().copied().collect()) {
-            tracing::warn!(%task_id, error = %err, "dependency gate declare failed at bootstrap");
+            tracing::warn!(%task_id, error = %err, "dependency gate declaration failed during rebuild");
         }
     }
 
@@ -100,6 +100,13 @@ fn build_dependency_gate(projection: &ReplayReducer) -> DependencyGate {
         } else {
             gate.force_fail(task_id);
         }
+    }
+
+    // Declarations were installed before prerequisite completion was restored.
+    // Recompute every dependent now, using completed tasks (not other tasks'
+    // eligibility), so reconstruction is independent of HashMap iteration order.
+    for &task_id in dep_map.keys() {
+        gate.recompute_satisfaction_pub(task_id);
     }
 
     // Cascade failure from directly-failed prerequisites to all transitive dependents.

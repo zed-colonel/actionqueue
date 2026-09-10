@@ -76,6 +76,10 @@ pub struct DependencyGate {
     /// task_ids all of whose prerequisites have reached terminal success.
     satisfied: HashSet<TaskId>,
 
+    /// task_ids that have themselves reached terminal success. Eligibility to
+    /// execute does not satisfy a downstream task's prerequisite.
+    completed: HashSet<TaskId>,
+
     /// task_ids blocked because at least one prerequisite failed/canceled.
     failed: HashSet<TaskId>,
 }
@@ -179,7 +183,8 @@ impl DependencyGate {
     /// (all prerequisites now satisfied).
     #[must_use]
     pub fn notify_completed(&mut self, completed_task_id: TaskId) -> Vec<TaskId> {
-        // Mark the completed task as satisfied (it is now eligible as a prerequisite).
+        // Record terminal success separately from eligibility to execute.
+        self.completed.insert(completed_task_id);
         self.satisfied.insert(completed_task_id);
 
         // Recompute satisfaction for all tasks that declare this task as a prerequisite.
@@ -217,6 +222,7 @@ impl DependencyGate {
         // The root itself is NOT added to newly_blocked — it is the
         // prerequisite that failed, not a dependent that became blocked.
         self.failed.insert(failed_task_id);
+        self.completed.remove(&failed_task_id);
 
         let mut newly_blocked = Vec::new();
         let mut queue: VecDeque<TaskId> = VecDeque::new();
@@ -235,6 +241,7 @@ impl DependencyGate {
             for dep in dependents {
                 self.failed.insert(dep);
                 self.satisfied.remove(&dep);
+                self.completed.remove(&dep);
                 newly_blocked.push(dep);
                 // Cascade: dependents of the newly-failed task also fail.
                 queue.push_back(dep);
@@ -267,6 +274,7 @@ impl DependencyGate {
             for dep in dependents {
                 self.failed.insert(dep);
                 self.satisfied.remove(&dep);
+                self.completed.remove(&dep);
                 newly_blocked.push(dep);
                 queue.push_back(dep);
             }
@@ -274,10 +282,12 @@ impl DependencyGate {
         newly_blocked
     }
 
-    /// Directly marks a task as satisfied (used during gate reconstruction
-    /// from WAL events at bootstrap — bypasses cycle check since declarations
-    /// are already validated).
+    /// Restores a task's terminal success during gate reconstruction.
+    ///
+    /// Does not recompute dependent eligibility; after restoring all terminal
+    /// states, call [`Self::recompute_satisfaction_pub`] for each declaration.
     pub fn force_satisfy(&mut self, task_id: TaskId) {
+        self.completed.insert(task_id);
         self.satisfied.insert(task_id);
         self.failed.remove(&task_id);
     }
@@ -286,6 +296,7 @@ impl DependencyGate {
     pub fn force_fail(&mut self, task_id: TaskId) {
         self.failed.insert(task_id);
         self.satisfied.remove(&task_id);
+        self.completed.remove(&task_id);
     }
 
     /// Removes all gate state for a fully-terminal task.
@@ -302,6 +313,7 @@ impl DependencyGate {
         // Remove from direct state sets.
         self.prerequisites.remove(&task_id);
         self.satisfied.remove(&task_id);
+        self.completed.remove(&task_id);
         self.failed.remove(&task_id);
 
         // Remove task_id from other tasks' prerequisite sets.
@@ -310,7 +322,7 @@ impl DependencyGate {
         }
     }
 
-    /// Re-evaluates satisfaction for `task_id` using the current `satisfied` set.
+    /// Re-evaluates eligibility for `task_id` using completed prerequisites.
     ///
     /// Called by the dispatch loop after restoring prerequisite satisfaction state
     /// from the projection (e.g., when declaring a dependency after a prerequisite
@@ -351,10 +363,9 @@ impl DependencyGate {
     /// Recomputes whether `task_id` has all prerequisites satisfied and
     /// updates the `satisfied` set for `task_id` itself (not for leaf tasks).
     ///
-    /// A task with declared prerequisites is "satisfied" (eligible as a future
-    /// prerequisite) when ALL its own prerequisites are in the `satisfied` set.
-    /// Leaf tasks (no declared prerequisites) are implicitly satisfied when they
-    /// complete — they are added to `satisfied` directly by `notify_completed`.
+    /// A task with declared prerequisites is eligible to execute when ALL its
+    /// prerequisites have completed. Becoming eligible does not mean the task
+    /// itself has completed, so it cannot yet satisfy downstream prerequisites.
     fn recompute_satisfaction(&mut self, task_id: TaskId) {
         if self.failed.contains(&task_id) {
             return; // Already permanently blocked.
@@ -365,8 +376,8 @@ impl DependencyGate {
         let prereqs: Vec<TaskId> = prereqs.iter().copied().collect();
 
         // A task's prerequisites are all met only if every prereq is in the
-        // `satisfied` set (meaning it has completed successfully).
-        let all_satisfied = prereqs.iter().all(|prereq| self.satisfied.contains(prereq));
+        // `completed` set (meaning it has completed successfully).
+        let all_satisfied = prereqs.iter().all(|prereq| self.completed.contains(prereq));
 
         if all_satisfied {
             self.satisfied.insert(task_id);
@@ -402,6 +413,33 @@ mod tests {
         let newly_eligible = gate.notify_completed(tid(1));
         assert_eq!(newly_eligible, vec![tid(2)]);
         assert!(gate.is_eligible(tid(2)));
+    }
+
+    #[test]
+    fn eligible_task_does_not_satisfy_new_dependent_until_completed() {
+        let mut gate = DependencyGate::new();
+        gate.declare(tid(2), vec![tid(1)]).unwrap();
+        assert_eq!(gate.notify_completed(tid(1)), vec![tid(2)]);
+
+        gate.declare(tid(3), vec![tid(1), tid(2)]).unwrap();
+        assert!(!gate.is_eligible(tid(3)));
+        assert_eq!(gate.notify_completed(tid(2)), vec![tid(3)]);
+    }
+
+    #[test]
+    fn restored_eligibility_is_independent_of_recompute_order() {
+        for order in [[tid(2), tid(3)], [tid(3), tid(2)]] {
+            let mut gate = DependencyGate::new();
+            gate.declare(tid(2), vec![tid(1)]).unwrap();
+            gate.declare(tid(3), vec![tid(1), tid(2)]).unwrap();
+            gate.force_satisfy(tid(1));
+            for task_id in order {
+                gate.recompute_satisfaction_pub(task_id);
+            }
+            assert!(gate.is_eligible(tid(2)));
+            assert!(!gate.is_eligible(tid(3)));
+            assert_eq!(gate.notify_completed(tid(2)), vec![tid(3)]);
+        }
     }
 
     #[test]
