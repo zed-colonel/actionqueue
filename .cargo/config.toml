@@ -9,4 +9,4 @@ RUST_TEST_THREADS = "4"
 [alias]
 # AQ-CONT-1 contract boundary, frozen-evidence, and pre-contract store checks.
 # Prints the pinned contract and developmental-profile revisions (revision_report test).
-aq-conformance = "test --test conformance_contract_boundaries --test conformance_frozen_evidence --test conformance_pre_contract_store --test conformance_target_persistence --test conformance_store_process_lock -- --test-threads=1 --nocapture"
+aq-conformance = "test --test conformance_contract_boundaries --test conformance_frozen_evidence --test conformance_pre_contract_store --test conformance_target_persistence --test conformance_store_process_lock --test acceptance_idempotent_admission --test acceptance_admission_conflict --test acceptance_compound_admission_crash -- --test-threads=1 --nocapture"

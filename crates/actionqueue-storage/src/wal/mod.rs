@@ -18,3 +18,5 @@ mod task_v1;
 pub use wire_v1::RESERVED_KINDS;
 
 mod domain_v1;
+
+pub(crate) mod admission_v1;

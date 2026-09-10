@@ -11,11 +11,15 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::admission::AdmissionError;
+use actionqueue_core::admission::{EnsureTaskOutcome, EnsureTaskRequest};
 use actionqueue_core::ids::{AttemptId, RunId, TaskId};
+#[cfg(feature = "workflow")]
+use actionqueue_core::mutation::RunCreateCommand;
 use actionqueue_core::mutation::{
     AttemptStartCommand, DependencyDeclareCommand, DurabilityPolicy, LeaseAcquireCommand,
     LeaseHeartbeatCommand, LeaseReleaseCommand, MutationAuthority, MutationCommand,
-    RunCreateCommand, RunStateTransitionCommand, TaskCancelCommand, TaskCreateCommand,
+    RunStateTransitionCommand, TaskCancelCommand,
 };
 use actionqueue_core::run::run_instance::{RunInstance, RunInstanceError};
 use actionqueue_core::run::state::RunState;
@@ -176,6 +180,8 @@ pub type AuthorityError = MutationAuthorityError<ReplayReducerError>;
 /// Errors that can occur during dispatch.
 #[derive(Debug)]
 pub enum DispatchError {
+    /// Compound admission failed.
+    Admission(AdmissionError),
     /// Persisted state cannot be reconciled without changing its meaning.
     RecoveryInvariant(String),
     /// WAL sequence counter overflow.
@@ -219,6 +225,7 @@ pub enum DispatchError {
 impl std::fmt::Display for DispatchError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Admission(e) => write!(f, "{e}"),
             DispatchError::RecoveryInvariant(message) => write!(f, "recovery invariant: {message}"),
             DispatchError::SequenceOverflow => write!(f, "WAL sequence counter overflow"),
             DispatchError::Authority(e) => write!(f, "authority error: {e}"),
@@ -607,8 +614,8 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
     /// Drains all pending task submissions proposed by handlers via
     /// `ExecutorContext.submission` and processes them through the mutation authority.
     ///
-    /// Each submission is validated and WAL-appended as a standard TaskCreate +
-    /// RunCreate sequence. Invalid submissions (e.g., nil task ID, terminal parent)
+    /// Each consumed submission commits as one atomic, synced admission.
+    /// Channel enqueue itself is not a durable acknowledgement. Invalid submissions (e.g., nil task ID, terminal parent)
     /// are logged and dropped — handlers have no error path for submission failures.
     fn drain_submissions(&mut self, current_time: u64) -> Result<(), DispatchError> {
         while let Some(submission) = self.submission_rx.try_recv() {
@@ -639,116 +646,20 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         submission: actionqueue_workflow::submission::TaskSubmission,
         current_time: u64,
     ) -> Result<(), DispatchError> {
-        let (task_spec, mut dependencies) = submission.into_parts();
+        let (task_spec, dependencies) = submission.into_parts();
         let task_id = task_spec.id();
-        let parent_task_id = task_spec.parent_task_id();
-
-        // Deduplicate dependencies to avoid redundant WAL entries and graph edges.
-        {
-            let mut seen = std::collections::HashSet::new();
-            dependencies.retain(|id| seen.insert(*id));
-        }
-
-        // Validate parent: must exist and not be terminal (orphan prevention).
-        if let Some(parent_id) = parent_task_id {
-            if self.authority.projection().get_task(&parent_id).is_none() {
-                return Err(DispatchError::SubmissionRejected {
-                    task_id: task_spec.id(),
-                    context: format!("parent {parent_id} not found"),
-                });
+        let request = EnsureTaskRequest::for_task(task_spec, dependencies)
+            .map_err(|e| DispatchError::SubmissionRejected { task_id, context: e.to_string() })?;
+        let _ = current_time; // The service captures one timestamp after duplicate resolution.
+        self.ensure_task(request).map_err(|e| match e {
+            AdmissionError::Rejected(e) => {
+                DispatchError::SubmissionRejected { task_id, context: e.to_string() }
             }
-            if self.hierarchy_tracker.is_terminal(parent_id) {
-                return Err(DispatchError::SubmissionRejected {
-                    task_id: task_spec.id(),
-                    context: format!("parent {parent_id} is terminal (orphan prevention)"),
-                });
+            AdmissionError::Derivation(e) => {
+                DispatchError::SubmissionRejected { task_id, context: e.to_string() }
             }
-        }
-
-        // WAL-append the task.
-        let task_seq = self.next_sequence()?;
-        let _ = self
-            .authority
-            .submit_command(
-                actionqueue_core::mutation::MutationCommand::TaskCreate(
-                    actionqueue_core::mutation::TaskCreateCommand::new(
-                        task_seq,
-                        task_spec.clone(),
-                        current_time,
-                    ),
-                ),
-                actionqueue_core::mutation::DurabilityPolicy::Immediate,
-            )
-            .map_err(DispatchError::Authority)?;
-
-        // Derive and WAL-append runs.
-        let already_derived = self.authority.projection().run_ids_for_task(task_id).len() as u32;
-        let derivation = actionqueue_engine::derive::derive_runs(
-            &self.clock,
-            task_id,
-            task_spec.run_policy(),
-            already_derived,
-            current_time,
-        )
-        .map_err(DispatchError::Derivation)?;
-
-        for run in derivation.into_derived() {
-            let run_seq = self.next_sequence()?;
-            let _ = self
-                .authority
-                .submit_command(
-                    actionqueue_core::mutation::MutationCommand::RunCreate(
-                        actionqueue_core::mutation::RunCreateCommand::new(run_seq, run),
-                    ),
-                    actionqueue_core::mutation::DurabilityPolicy::Immediate,
-                )
-                .map_err(DispatchError::Authority)?;
-        }
-
-        // If the submission includes dependency declarations, WAL-append and register.
-        if !dependencies.is_empty() {
-            // Check for cycles BEFORE WAL append so invalid declarations are
-            // never persisted. The read-only check_cycle leaves the gate
-            // unmodified; declare() below is guaranteed to succeed after this.
-            self.dependency_gate
-                .check_cycle(task_id, &dependencies)
-                .map_err(DispatchError::DependencyCycle)?;
-
-            // Reject if any prerequisite is not yet in the projection.
-            // This prevents the mutation authority from fatally rejecting
-            // the DependencyDeclareCommand (UnknownTask), which would crash
-            // the dispatch loop instead of gracefully dropping the submission.
-            for prereq_id in &dependencies {
-                if self.authority.projection().get_task(prereq_id).is_none() {
-                    return Err(DispatchError::SubmissionRejected {
-                        task_id,
-                        context: format!("prerequisite {prereq_id} not yet in projection"),
-                    });
-                }
-            }
-            let dep_seq = self.next_sequence()?;
-            let _ = self
-                .authority
-                .submit_command(
-                    MutationCommand::DependencyDeclare(DependencyDeclareCommand::new(
-                        dep_seq,
-                        task_id,
-                        dependencies.clone(),
-                        current_time,
-                    )),
-                    DurabilityPolicy::Immediate,
-                )
-                .map_err(DispatchError::Authority)?;
-            // Gate declare is guaranteed to succeed after check_cycle above.
-            let _ = self.dependency_gate.declare(task_id, dependencies);
-        }
-
-        // Register parent-child in the hierarchy tracker (after WAL commit).
-        if let Some(parent_id) = parent_task_id {
-            // Validation already passed above; ignore errors here (should not occur).
-            let _ = self.hierarchy_tracker.register_child(parent_id, task_id);
-        }
-
+            e => DispatchError::Admission(e),
+        })?;
         tracing::debug!(task_id = %task_id, "workflow submission committed");
         Ok(())
     }
@@ -2045,47 +1956,24 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         Ok(summary)
     }
 
-    /// Submits a new task and derives initial runs.
-    pub fn submit_task(&mut self, spec: TaskSpec) -> Result<(), DispatchError> {
-        let current_time = self.clock.now();
-        let seq = self.next_sequence()?;
-
-        // Create task
-        let _ = self
-            .authority
-            .submit_command(
-                MutationCommand::TaskCreate(TaskCreateCommand::new(
-                    seq,
-                    spec.clone(),
-                    current_time,
-                )),
-                DurabilityPolicy::Immediate,
-            )
-            .map_err(DispatchError::Authority)?;
-
-        // Derive runs
-        let already_derived = self.authority.projection().run_ids_for_task(spec.id()).len() as u32;
-        let derivation = actionqueue_engine::derive::derive_runs(
-            &self.clock,
-            spec.id(),
-            spec.run_policy(),
-            already_derived,
-            current_time,
+    /// Idempotent convenience admission using stable task/<uuid> key, trace, and correlation.
+    /// Retain the task UUID on retry. Outbox callers should supply explicit ensure_task requests.
+    pub fn submit_task(&mut self, spec: TaskSpec) -> Result<EnsureTaskOutcome, AdmissionError> {
+        self.ensure_task(
+            EnsureTaskRequest::for_task(spec, vec![]).map_err(AdmissionError::Rejected)?,
         )
-        .map_err(DispatchError::Derivation)?;
-
-        for run in derivation.into_derived() {
-            let seq = self.next_sequence()?;
-            let _ = self
-                .authority
-                .submit_command(
-                    MutationCommand::RunCreate(RunCreateCommand::new(seq, run)),
-                    DurabilityPolicy::Immediate,
-                )
-                .map_err(DispatchError::Authority)?;
+    }
+    /// Commits one complete admission and publishes scheduling caches before another tick.
+    pub fn ensure_task(
+        &mut self,
+        request: EnsureTaskRequest,
+    ) -> Result<EnsureTaskOutcome, AdmissionError> {
+        let outcome = crate::admission::ensure_task(&mut self.authority, request, &self.clock)?;
+        if outcome.is_created() {
+            self.dependency_gate = build_dependency_gate(self.authority.projection());
+            self.hierarchy_tracker = build_hierarchy_tracker(self.authority.projection());
         }
-
-        Ok(())
+        Ok(outcome)
     }
 
     /// Declares a DAG dependency: `task_id` may not promote until all `prereqs` complete.

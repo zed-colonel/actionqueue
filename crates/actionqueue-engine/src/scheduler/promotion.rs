@@ -233,6 +233,9 @@ mod tests {
             _durability: DurabilityPolicy,
         ) -> Result<MutationOutcome, Self::Error> {
             let (sequence, run_id) = match &command {
+                MutationCommand::AdmissionCommit(_) => {
+                    panic!("unexpected admission in promotion test")
+                }
                 MutationCommand::RunStateTransition(details) => {
                     (details.sequence(), details.run_id())
                 }

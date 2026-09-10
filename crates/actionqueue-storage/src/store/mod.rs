@@ -12,6 +12,15 @@ pub(crate) fn check_event_profile(
 ) -> Result<(), StoreError> {
     use crate::wal::event::WalEventType as E;
     let required = match event {
+        E::AdmissionCommitted { record, .. } => {
+            return check_event_profile(
+                &E::TaskCreated {
+                    task_spec: record.request().task_spec().clone(),
+                    timestamp: record.timestamp(),
+                },
+                profile,
+            );
+        }
         E::BudgetAllocated { .. }
         | E::BudgetConsumed { .. }
         | E::BudgetExhausted { .. }

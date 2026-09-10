@@ -331,3 +331,15 @@ path = "tests/conformance/target_persistence.rs"
 [[test]]
 name = "conformance_store_process_lock"
 path = "tests/conformance/store_process_lock.rs"
+
+[[test]]
+name = "acceptance_idempotent_admission"
+path = "tests/acceptance/idempotent_admission.rs"
+
+[[test]]
+name = "acceptance_admission_conflict"
+path = "tests/acceptance/admission_conflict.rs"
+
+[[test]]
+name = "acceptance_compound_admission_crash"
+path = "tests/acceptance/compound_admission_crash.rs"

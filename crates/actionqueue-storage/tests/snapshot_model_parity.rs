@@ -210,10 +210,10 @@ fn snapshot_state_history_for_run(run: &RunInstance) -> Vec<SnapshotRunStateHist
 
 fn write_framed_snapshot(path: &std::path::Path, _version: u32, snapshot: &Snapshot) {
     let envelope = serde_json::json!({
-        "store_id": uuid::Uuid::nil(), "snapshot_schema": 1, "projection_version": 1,
+        "store_id": uuid::Uuid::nil(), "snapshot_schema": 2, "projection_version": 2,
         "wal_sequence": snapshot.metadata.wal_sequence,
-        "digest": {"algorithm":"sha256", "version":1,"hex":"unused for invalid schema"},
-        "reserved": {"admissions":[],"signals":[],"waits":[],"checkpoints":[],"resume_assignments":[],"causal_control":[]},
+        "digest": {"algorithm":"sha256", "version":2,"hex":"unused for invalid schema"},
+        "reserved": {"signals":[],"waits":[],"checkpoints":[],"resume_assignments":[],"causal_control":[]},
         "projection":snapshot
     });
     if snapshot.metadata.schema_version == SNAPSHOT_SCHEMA_VERSION {
@@ -269,7 +269,8 @@ fn d06_t_n1_mapping_boundary_rejects_duplicate_run_ids() {
         .expect("run should build");
 
     let snapshot = Snapshot {
-        version: 1,
+        admissions: vec![],
+        version: 2,
         timestamp: 1,
         metadata: SnapshotMetadata {
             schema_version: SNAPSHOT_SCHEMA_VERSION,
@@ -348,10 +349,10 @@ fn d06_t_n2_loader_rejects_snapshot_payload_that_fails_mapping_invariants() {
     let error = serde_json::from_value::<RunInstance>(run_json.clone()).unwrap_err();
     assert!(error.to_string().contains("active attempt_id is only valid in Running state"));
     let envelope = serde_json::json!({
-        "store_id": uuid::Uuid::nil(), "snapshot_schema": 1, "projection_version": 1,
+        "store_id": uuid::Uuid::nil(), "snapshot_schema": 2, "projection_version": 2,
         "wal_sequence": 2,
-        "digest": {"algorithm":"sha256", "version":1,"hex":"domain validation must fail first"},
-        "reserved": {"admissions":[],"signals":[],"waits":[],"checkpoints":[],"resume_assignments":[],"causal_control":[]},
+        "digest": {"algorithm":"sha256", "version":2,"hex":"domain validation must fail first"},
+        "reserved": {"signals":[],"waits":[],"checkpoints":[],"resume_assignments":[],"causal_control":[]},
         "projection": snapshot_json
     });
     let payload = serde_json::to_vec(&envelope).unwrap();
@@ -378,7 +379,8 @@ fn d06_t_n3_schema_migration_guard_rejects_unknown_schema_version() {
     let run = run_with_state(task_id, 0xB300, RunState::Scheduled);
 
     let snapshot = Snapshot {
-        version: 1,
+        admissions: vec![],
+        version: 2,
         timestamp: 3,
         metadata: SnapshotMetadata {
             schema_version: SNAPSHOT_SCHEMA_VERSION + 1,
@@ -504,7 +506,8 @@ fn d06_t_n6_mapping_rejects_attempt_history_count_mismatch() {
 fn p6_011_t_n3_mapping_rejects_task_canceled_at_before_created_at() {
     let task_id = TaskId::from_uuid(uuid::Uuid::from_u128(0xA700));
     let snapshot = Snapshot {
-        version: 1,
+        admissions: vec![],
+        version: 2,
         timestamp: 7,
         metadata: SnapshotMetadata {
             schema_version: SNAPSHOT_SCHEMA_VERSION,
@@ -544,7 +547,8 @@ fn p6_011_t_n3_mapping_rejects_task_canceled_at_before_created_at() {
 fn p6_013_t_n5_mapping_rejects_engine_paused_without_paused_at() {
     let task_id = TaskId::from_uuid(uuid::Uuid::from_u128(0xA800));
     let snapshot = Snapshot {
-        version: 1,
+        admissions: vec![],
+        version: 2,
         timestamp: 8,
         metadata: SnapshotMetadata {
             schema_version: SNAPSHOT_SCHEMA_VERSION,
@@ -573,7 +577,8 @@ fn p6_013_t_n5_mapping_rejects_engine_paused_without_paused_at() {
 fn p6_013_t_n6_mapping_rejects_engine_pause_resume_ordering() {
     let task_id = TaskId::from_uuid(uuid::Uuid::from_u128(0xA801));
     let snapshot = Snapshot {
-        version: 1,
+        admissions: vec![],
+        version: 2,
         timestamp: 9,
         metadata: SnapshotMetadata {
             schema_version: SNAPSHOT_SCHEMA_VERSION,
@@ -657,7 +662,8 @@ fn dependency_declarations_survive_snapshot_roundtrip() {
     let path = temp_snapshot_path();
 
     let snapshot = Snapshot {
-        version: 1,
+        admissions: vec![],
+        version: 2,
         timestamp: 100,
         metadata: SnapshotMetadata {
             schema_version: SNAPSHOT_SCHEMA_VERSION,
@@ -718,7 +724,8 @@ fn budget_entries_roundtrip_through_snapshot() {
     let path = temp_snapshot_path();
 
     let snapshot = Snapshot {
-        version: 1,
+        admissions: vec![],
+        version: 2,
         timestamp: 100,
         metadata: SnapshotMetadata {
             schema_version: SNAPSHOT_SCHEMA_VERSION,
@@ -775,7 +782,8 @@ fn subscription_entries_roundtrip_through_snapshot() {
     let path = temp_snapshot_path();
 
     let snapshot = Snapshot {
-        version: 1,
+        admissions: vec![],
+        version: 2,
         timestamp: 100,
         metadata: SnapshotMetadata {
             schema_version: SNAPSHOT_SCHEMA_VERSION,
@@ -861,7 +869,8 @@ fn suspended_run_state_in_snapshot_history() {
     };
 
     let snapshot = Snapshot {
-        version: 1,
+        admissions: vec![],
+        version: 2,
         timestamp: 100,
         metadata: SnapshotMetadata {
             schema_version: SNAPSHOT_SCHEMA_VERSION,

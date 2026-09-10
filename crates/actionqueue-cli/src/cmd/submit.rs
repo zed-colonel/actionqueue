@@ -4,9 +4,6 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use actionqueue_core::ids::TaskId;
-use actionqueue_core::mutation::{
-    DurabilityPolicy, MutationAuthority, MutationCommand, RunCreateCommand, TaskCreateCommand,
-};
 use actionqueue_core::task::constraints::TaskConstraints;
 use actionqueue_core::task::metadata::TaskMetadata;
 use actionqueue_core::task::run_policy::RunPolicy;
@@ -14,7 +11,7 @@ use actionqueue_core::task::task_spec::{TaskPayload, TaskSpec};
 use serde_json::json;
 
 use crate::args::SubmitArgs;
-use crate::cmd::{now_unix_seconds, resolve_data_dir, CliError, CommandOutput};
+use crate::cmd::{resolve_data_dir, CliError, CommandOutput};
 
 /// Executes submit command flow.
 pub fn run(args: SubmitArgs) -> Result<CommandOutput, CliError> {
@@ -30,7 +27,6 @@ pub fn run(args: SubmitArgs) -> Result<CommandOutput, CliError> {
     let constraints = parse_constraints(args.constraints.as_deref())?;
     let metadata = parse_metadata(args.metadata.as_deref())?;
     let payload = load_payload(args.payload_path.as_deref())?;
-    let now = now_unix_seconds()?;
 
     let task_payload = match args.content_type.clone() {
         Some(ct) => TaskPayload::with_content_type(payload, ct),
@@ -60,27 +56,31 @@ pub fn run(args: SubmitArgs) -> Result<CommandOutput, CliError> {
         recovery.projection,
     );
 
-    submit_task_create(&mut authority, task_spec.clone(), now)?;
-
-    let clock = actionqueue_engine::time::clock::SystemClock;
-    let derivation =
-        actionqueue_engine::derive::derive_runs(&clock, task_id, task_spec.run_policy(), 0, now)
-            .map_err(|error| {
-                CliError::validation(
-                    "run_derivation_failed",
-                    format!("submit run derivation failed: {error}"),
-                )
-            })?;
-
-    let runs_created = derivation.derived().len();
-    for run in derivation.into_derived() {
-        submit_run_create(&mut authority, run)?;
-    }
-
+    let request = actionqueue_core::admission::EnsureTaskRequest::for_task(task_spec, vec![])
+        .map_err(|e| CliError::validation("admission_rejected", e.to_string()))?;
+    let outcome = actionqueue_runtime::admission::ensure_task(
+        &mut authority,
+        request,
+        &actionqueue_engine::time::clock::SystemClock,
+    )
+    .map_err(|e| match e {
+        actionqueue_runtime::admission::AdmissionError::Rejected(ref rejection) => {
+            CliError::validation("admission_rejected", rejection.to_string())
+        }
+        e => CliError::runtime("admission_failed", e.to_string()),
+    })?;
+    let status = if outcome.is_created() { "created" } else { "already_exists" };
+    let runs_created = if outcome.is_created() {
+        authority.projection().run_ids_for_task(task_id).len()
+    } else {
+        0
+    };
     let latest_sequence = authority.projection().latest_sequence();
     if args.json {
         return Ok(CommandOutput::Json(json!({
             "command": "submit",
+            "admission_status": status,
+            "admission_sequence": outcome.sequence(),
             "task_id": task_id.to_string(),
             "run_policy": format_run_policy(run_policy),
             "runs_created": runs_created,
@@ -91,6 +91,8 @@ pub fn run(args: SubmitArgs) -> Result<CommandOutput, CliError> {
 
     let lines = [
         "command=submit".to_string(),
+        format!("admission_status={status}"),
+        format!("admission_sequence={}", outcome.sequence()),
         format!("task_id={task_id}"),
         format!("run_policy={}", format_run_policy(run_policy)),
         format!("runs_created={runs_created}"),
@@ -98,87 +100,6 @@ pub fn run(args: SubmitArgs) -> Result<CommandOutput, CliError> {
         format!("data_dir={}", data_dir.display()),
     ];
     Ok(CommandOutput::Text(lines.join("\n")))
-}
-
-fn submit_task_create(
-    authority: &mut actionqueue_storage::mutation::StorageMutationAuthority<
-        actionqueue_storage::wal::InstrumentedWalWriter<
-            actionqueue_storage::wal::fs_writer::WalFsWriter,
-        >,
-        actionqueue_storage::recovery::reducer::ReplayReducer,
-    >,
-    task_spec: TaskSpec,
-    timestamp: u64,
-) -> Result<(), CliError> {
-    let sequence = next_sequence(authority)?;
-    let command =
-        MutationCommand::TaskCreate(TaskCreateCommand::new(sequence, task_spec, timestamp));
-    authority
-        .submit_command(command, DurabilityPolicy::Immediate)
-        .map_err(map_authority_error)
-        .map(|_| ())
-}
-
-fn submit_run_create(
-    authority: &mut actionqueue_storage::mutation::StorageMutationAuthority<
-        actionqueue_storage::wal::InstrumentedWalWriter<
-            actionqueue_storage::wal::fs_writer::WalFsWriter,
-        >,
-        actionqueue_storage::recovery::reducer::ReplayReducer,
-    >,
-    run_instance: actionqueue_core::run::RunInstance,
-) -> Result<(), CliError> {
-    let sequence = next_sequence(authority)?;
-    let command = MutationCommand::RunCreate(RunCreateCommand::new(sequence, run_instance));
-    authority
-        .submit_command(command, DurabilityPolicy::Immediate)
-        .map_err(map_authority_error)
-        .map(|_| ())
-}
-
-fn next_sequence(
-    authority: &actionqueue_storage::mutation::StorageMutationAuthority<
-        actionqueue_storage::wal::InstrumentedWalWriter<
-            actionqueue_storage::wal::fs_writer::WalFsWriter,
-        >,
-        actionqueue_storage::recovery::reducer::ReplayReducer,
-    >,
-) -> Result<u64, CliError> {
-    authority
-        .projection()
-        .latest_sequence()
-        .checked_add(1)
-        .ok_or_else(|| CliError::runtime("sequence_overflow", "next WAL sequence overflowed u64"))
-}
-
-fn map_authority_error(
-    error: actionqueue_storage::mutation::MutationAuthorityError<
-        actionqueue_storage::recovery::reducer::ReplayReducerError,
-    >,
-) -> CliError {
-    match error {
-        actionqueue_storage::mutation::MutationAuthorityError::Validation(validation) => {
-            CliError::validation("mutation_validation_failed", validation.to_string())
-        }
-        actionqueue_storage::mutation::MutationAuthorityError::Append(append) => {
-            CliError::runtime("wal_append_failed", append.to_string())
-        }
-        actionqueue_storage::mutation::MutationAuthorityError::PartialDurability {
-            sequence,
-            flush_error,
-        } => CliError::runtime(
-            "wal_partial_durability",
-            format!("append succeeded at sequence {sequence} but flush failed: {flush_error}"),
-        ),
-        actionqueue_storage::mutation::MutationAuthorityError::Apply { sequence, source } => {
-            CliError::runtime(
-                "projection_apply_failed",
-                format!(
-                    "projection apply failed after durable append sequence {sequence}: {source}"
-                ),
-            )
-        }
-    }
 }
 
 fn parse_run_policy(raw: &str) -> Result<RunPolicy, CliError> {
@@ -270,12 +191,26 @@ fn parse_metadata(raw: Option<&str>) -> Result<TaskMetadata, CliError> {
 fn load_payload(payload_path: Option<&Path>) -> Result<Vec<u8>, CliError> {
     match payload_path {
         None => Ok(Vec::new()),
-        Some(path) => std::fs::read(path).map_err(|error| {
-            CliError::validation(
-                "payload_read_failed",
-                format!("unable to read payload '{}': {error}", path.display()),
-            )
-        }),
+        Some(path) => {
+            use std::io::Read;
+            let result = (|| -> std::io::Result<Vec<u8>> {
+                let file = std::fs::File::open(path)?;
+                let mut bytes = Vec::new();
+                file.take(actionqueue_core::limits::MAX_INLINE_DATA_BYTES as u64 + 1)
+                    .read_to_end(&mut bytes)?;
+                Ok(bytes)
+            })();
+            let bytes = result.map_err(|error| {
+                CliError::validation(
+                    "payload_read_failed",
+                    format!("unable to read payload '{}': {error}", path.display()),
+                )
+            })?;
+            if bytes.len() > actionqueue_core::limits::MAX_INLINE_DATA_BYTES {
+                return Err(CliError::validation("admission_rejected", "payload exceeds 64 KiB"));
+            }
+            Ok(bytes)
+        }
     }
 }
 

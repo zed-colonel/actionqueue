@@ -10,7 +10,7 @@ use crate::snapshot::model::{
 };
 
 /// The snapshot format version written by this implementation.
-const SNAPSHOT_FORMAT_VERSION: u32 = 1;
+const SNAPSHOT_FORMAT_VERSION: u32 = 2;
 
 /// Builds a validated [`Snapshot`] from the current state of a [`ReplayReducer`].
 ///
@@ -173,6 +173,7 @@ pub fn build_snapshot_from_projection(
         .collect();
 
     let snapshot = Snapshot {
+        admissions: reducer.admissions().cloned().collect(),
         version: SNAPSHOT_FORMAT_VERSION,
         timestamp,
         metadata: SnapshotMetadata {

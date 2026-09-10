@@ -69,3 +69,21 @@ canonical byte rules, reserved IDs, and offline backup descriptor semantics.
 The archived fixture capture example is no longer registered as a build target; its
 hash-pinned historical source remains unchanged. Low-level framing tests explicitly use
 the test-support constructors, while target conformance initializes real manifest stores.
+
+## AQ-04 addendum: compound admission lineage
+
+Activate WAL kind 256, record schema 1, as storage-owned AdmissionCommittedV1. It
+contains immutable admission facts and the complete bounded initial run set. WAL frame
+version and snapshot frame version remain 1. Snapshot schema, projection image, and
+projection digest version advance to 2. The manifest requires those versions, refusing
+AQ-03 development stores before opening writable state; no migration is provided.
+The v1 evidence vector remains unchanged, and a separately hashed v2 vector is added.
+
+Projection v2 includes immutable admission records and rebuilds both tenant/key and
+task/admission indexes. Records preserve original task specifications and dependencies
+so future controls cannot silently rewrite admission meaning. Snapshot validation checks
+identity, tenant and dependency references, uniqueness, sequence, and canonical digest.
+Admission is an immediate-sync operation; Deferred commits are rejected. Duplicate
+resolution under the exclusive mutation owner precedes stale sequence and current
+parent status checks. Uncertain append, sync, or publication failures fence the whole
+authority, including cached duplicate reads, until it is reconstructed by recovery.

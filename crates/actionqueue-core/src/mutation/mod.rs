@@ -29,6 +29,8 @@ pub enum DurabilityPolicy {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[must_use = "mutation commands should be submitted to a MutationAuthority"]
 pub enum MutationCommand {
+    /// Atomically admit a task and its initial runs.
+    AdmissionCommit(AdmissionCommitCommand),
     /// Request durable creation of a task specification.
     TaskCreate(TaskCreateCommand),
     /// Request durable creation of a run instance.
@@ -763,6 +765,8 @@ impl MutationOutcome {
 /// Applied semantic mutation metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppliedMutation {
+    /// Durable admission result.
+    Admission(crate::admission::EnsureTaskOutcome),
     /// Task specification was durably created.
     TaskCreate {
         /// Created task identifier.

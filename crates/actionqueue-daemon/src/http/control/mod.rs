@@ -58,6 +58,13 @@ pub(crate) fn internal_authority_error(
     >,
 ) -> axum::response::Response {
     let message = match error {
+        actionqueue_storage::mutation::MutationAuthorityError::Publication { .. } => {
+            "authority publication failed"
+        }
+        actionqueue_storage::mutation::MutationAuthorityError::Admission(_) => "admission rejected",
+        actionqueue_storage::mutation::MutationAuthorityError::RecoveryRequired => {
+            "mutation authority requires recovery"
+        }
         actionqueue_storage::mutation::authority::MutationAuthorityError::Validation(_) => {
             "authority validation failed"
         }

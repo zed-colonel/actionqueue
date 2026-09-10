@@ -22,6 +22,8 @@ use crate::recovery::reducer::{AttemptHistoryEntry, LeaseMetadata, RunStateHisto
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct Snapshot {
+    /// Immutable admission facts and the inputs needed to verify their digests.
+    pub admissions: Vec<crate::mutation::admission::AdmissionRecord>,
     /// The format version of this snapshot.
     ///
     /// This version is used to ensure compatibility between the snapshot writer and

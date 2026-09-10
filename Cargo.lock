@@ -52,6 +52,7 @@ dependencies = [
  "actionqueue-core",
  "actionqueue-daemon",
  "actionqueue-engine",
+ "actionqueue-runtime",
  "actionqueue-storage",
  "serde",
  "serde_json",
@@ -68,6 +69,7 @@ dependencies = [
  "proptest",
  "serde",
  "serde_json",
+ "sha2",
  "tracing",
  "uuid",
 ]

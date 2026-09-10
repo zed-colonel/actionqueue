@@ -1,7 +1,6 @@
 # AQ-ADR-003 — Admission hash algorithm
 
-- **Status:** Proposed. The recommended default below is the working implementation choice
-  until code review produces a concrete counterexample (implementation plan, Section 3).
+- **Status:** Accepted for AQ-04 implementation.
 - **Decide before:** `AQ-04`
 - **Contract:** `AQ-CONT-1`
 - **Invariants:** AQ-H7
@@ -38,8 +37,8 @@ payload bytes.
 
 | Field | Value |
 |---|---|
-| Accepted in PR | _pending_ |
-| Accepted on | _pending_ |
+| Accepted in PR | AQ-04 |
+| Accepted on | 2026-09-10 |
 | Superseded by | — |
 
 ## AQ-03 sequencing clarification (2026-09-10)
@@ -50,3 +49,12 @@ algorithm identifiers alongside digests. This does not implement admission diges
 or change the AQ-04 ownership of admission normalization/canonicalization. The target
 projection known-answer vector is independently generated with Python `hashlib` and
 the documented canonical tree encoding, then checked against storage output.
+
+## AQ-04 accepted algorithm
+
+SHA-256 (RustCrypto `sha2` 0.10) hashes exactly ADR-002 canonical bytes. AdmissionDigest
+stores canonical version 1 and an algorithm-tagged 32-byte ContentHash. Storage wire
+algorithm ID 1 means SHA-256. Unknown canonical versions, algorithm IDs, and malformed
+hash lengths fail explicitly. Commit recomputes the digest even for caller-planned
+commands. Conflict errors contain key, original task ID, and both digests, never payload.
+The Python `hashlib` vector generator is an independent implementation.

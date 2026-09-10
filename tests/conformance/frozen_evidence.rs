@@ -147,7 +147,10 @@ fn manifest_pins_contract_baseline_and_normative_documents() {
         if !raw.starts_with([' ', '-', '#']) && raw.ends_with(':') {
             section = raw.trim_end_matches(':').to_string();
         }
-        if section != "normative_documents" && section != "acceptance_matrices" {
+        if section != "normative_documents"
+            && section != "acceptance_matrices"
+            && section != "fixtures"
+        {
             continue;
         }
         let line = raw.trim();
@@ -166,7 +169,10 @@ fn manifest_pins_contract_baseline_and_normative_documents() {
             checked += 1;
         }
     }
-    assert_eq!(checked, 5, "manifest should pin four normative documents and one matrix");
+    assert_eq!(
+        checked, 9,
+        "manifest should pin four normative documents, one matrix, and four admission fixtures"
+    );
 }
 
 #[test]

@@ -106,6 +106,12 @@ impl WalFsWriter {
     }
 }
 impl WalWriter for WalFsWriter {
+    fn fence(&mut self) {
+        self.poisoned = true;
+    }
+    fn recovery_required(&self) -> bool {
+        self.poisoned
+    }
     fn append(&mut self, event: &WalEvent) -> Result<(), WalWriterError> {
         if self.poisoned {
             return Err(WalWriterError::Poisoned);
@@ -140,6 +146,18 @@ impl WalWriter for WalFsWriter {
             self.file.stream_position().map_err(|e| WalWriterError::IoError(e.to_string()))?;
         crate::store::fault::checkpoint("wal_before_append")
             .map_err(|e| WalWriterError::IoError(e.to_string()))?;
+        // Partial-frame injection is compiled only into conformance/test support builds.
+        #[cfg(feature = "testing")]
+        if crate::store::fault::armed("wal_partial_frame") {
+            self.file.write_all(&bytes[..super::codec::HEADER_LEN]).map_err(|e| {
+                self.poisoned = true;
+                WalWriterError::IoError(e.to_string())
+            })?;
+            crate::store::fault::checkpoint("wal_partial_frame").map_err(|e| {
+                self.poisoned = true;
+                WalWriterError::IoError(e.to_string())
+            })?;
+        }
         if let Err(e) = self.file.write_all(&bytes) {
             // A failed append is uncertain; fence this writer even if rollback succeeds.
             self.poisoned = true;

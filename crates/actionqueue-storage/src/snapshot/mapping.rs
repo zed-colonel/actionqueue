@@ -26,11 +26,13 @@ use crate::snapshot::model::{
 ///   required_executor_traits in AQ-02)
 /// - v6: Sprint 2 review — dependency declarations persisted in snapshots
 /// - v7: Sprint 3 — budgets, subscriptions, Suspended run state
-pub const SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+pub const SNAPSHOT_SCHEMA_VERSION: u32 = 2;
 
 /// Typed mapping and validation errors for snapshot/core parity enforcement.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SnapshotMappingError {
+    /// Invalid immutable admission facts.
+    InvalidAdmission,
     /// Snapshot metadata schema version is unknown to this mapping boundary.
     UnsupportedSchemaVersion {
         /// Schema version expected by the current implementation.
@@ -205,6 +207,7 @@ pub enum SnapshotMappingError {
 impl std::fmt::Display for SnapshotMappingError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::InvalidAdmission => write!(f, "invalid admission snapshot"),
             Self::UnsupportedSchemaVersion { expected, found } => {
                 write!(f, "unsupported snapshot schema version: expected {expected}, found {found}")
             }
@@ -367,6 +370,43 @@ pub fn validate_snapshot(snapshot: &Snapshot) -> Result<(), SnapshotMappingError
         }
     }
 
+    let tasks: std::collections::HashMap<_, _> =
+        snapshot.tasks.iter().map(|t| (t.task_spec.id(), t)).collect();
+    let mut keys = HashSet::new();
+    let mut admitted_tasks = HashSet::new();
+    let mut sequences = HashSet::new();
+    for r in &snapshot.admissions {
+        let invalid = SnapshotMappingError::InvalidAdmission;
+        if !keys.insert((r.tenant_id(), r.key().clone()))
+            || !admitted_tasks.insert(r.task_id())
+            || !sequences.insert(r.sequence())
+            || r.sequence() == 0
+            || r.sequence() > snapshot.metadata.wal_sequence
+            || r.request().digest().map_err(|_| invalid.clone())? != *r.digest()
+        {
+            return Err(invalid);
+        }
+        let task = tasks.get(&r.task_id()).ok_or(invalid.clone())?;
+        if task.task_spec != *r.request().task_spec() || task.created_at != r.timestamp() {
+            return Err(invalid);
+        }
+        for id in r
+            .request()
+            .dependencies()
+            .iter()
+            .copied()
+            .chain(r.request().task_spec().parent_task_id())
+        {
+            if id == r.task_id()
+                || tasks.get(&id).is_none_or(|t| t.task_spec.tenant_id() != r.tenant_id())
+            {
+                return Err(invalid);
+            }
+        }
+        if r.tenant_id().is_some_and(|id| !snapshot.tenants.iter().any(|t| t.tenant_id == id)) {
+            return Err(invalid);
+        }
+    }
     let mut run_ids = HashSet::new();
     for run in &snapshot.runs {
         let core_run = map_snapshot_run_to_core(run)?;

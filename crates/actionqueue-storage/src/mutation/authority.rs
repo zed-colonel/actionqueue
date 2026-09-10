@@ -3,6 +3,7 @@
 //! This module implements the D-04 WAL-first authority lane:
 //! validate command -> map event -> append -> durability sync policy -> apply projection.
 
+use super::admission::AdmissionRecord;
 use actionqueue_core::budget::BudgetDimension;
 use actionqueue_core::ids::{AttemptId, RunId, TaskId};
 use actionqueue_core::mutation::{
@@ -19,6 +20,13 @@ use actionqueue_core::mutation::{
 use actionqueue_core::run::state::RunState;
 use actionqueue_core::run::transitions::is_valid_transition;
 use actionqueue_core::subscription::SubscriptionId;
+use actionqueue_core::{
+    admission::{AdmissionDigest, AdmissionRejection, EnsureTaskOutcome, EnsureTaskRequest},
+    ids::{AdmissionKey, TenantId},
+    limits::AdmissionLimits,
+    mutation::AdmissionCommitCommand,
+    run::RunInstance,
+};
 
 use crate::recovery::reducer::ReplayReducer;
 use crate::recovery::reducer::ReplayReducerError;
@@ -66,6 +74,23 @@ pub trait MutationProjection: Clone {
         false
     }
 
+    /// Resolves a tenant-scoped admission under the exclusive mutation owner.
+    fn resolve_admission(
+        &self,
+        _tenant: Option<TenantId>,
+        _key: &AdmissionKey,
+        _digest: &AdmissionDigest,
+    ) -> Result<Option<EnsureTaskOutcome>, AdmissionRejection> {
+        Err(AdmissionRejection::UnsupportedFeature)
+    }
+    /// Validates complete admission semantics against durable state.
+    fn validate_admission(
+        &self,
+        _record: &AdmissionRecord,
+        _runs: &[RunInstance],
+    ) -> Result<(), AdmissionRejection> {
+        Err(AdmissionRejection::UnsupportedFeature)
+    }
     /// Applies a durable event to the in-memory projection.
     fn apply_event(&mut self, event: &WalEvent) -> Result<(), Self::Error>;
 }
@@ -113,6 +138,21 @@ impl MutationProjection for ReplayReducer {
         ReplayReducer::is_subscription_canceled(self, subscription_id)
     }
 
+    fn resolve_admission(
+        &self,
+        tenant: Option<TenantId>,
+        key: &AdmissionKey,
+        digest: &AdmissionDigest,
+    ) -> Result<Option<EnsureTaskOutcome>, AdmissionRejection> {
+        self.admission(tenant, key).map(|r| r.resolve(digest)).transpose()
+    }
+    fn validate_admission(
+        &self,
+        record: &AdmissionRecord,
+        runs: &[RunInstance],
+    ) -> Result<(), AdmissionRejection> {
+        ReplayReducer::validate_admission(self, record, runs)
+    }
     fn apply_event(&mut self, event: &WalEvent) -> Result<(), Self::Error> {
         self.apply(event)
     }
@@ -123,14 +163,48 @@ impl MutationProjection for ReplayReducer {
 pub struct StorageMutationAuthority<W: WalWriter, P: MutationProjection> {
     wal_writer: W,
     projection: P,
+    recovery_required: bool,
+    admission_limits: AdmissionLimits,
 }
 
 impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
     /// Creates a new storage authority with an owned WAL writer and projection.
     pub fn new(wal_writer: W, projection: P) -> Self {
-        Self { wal_writer, projection }
+        let recovery_required = wal_writer.recovery_required();
+        Self {
+            wal_writer,
+            projection,
+            recovery_required,
+            admission_limits: AdmissionLimits::default(),
+        }
     }
 
+    /// Current creation limits (hard ceilings still apply).
+    pub fn admission_limits(&self) -> AdmissionLimits {
+        self.admission_limits
+    }
+    /// Applies creation limits. Values above hard ceilings cannot raise the limits.
+    pub fn set_admission_limits(&mut self, limits: AdmissionLimits) {
+        self.admission_limits = limits;
+    }
+    /// Returns whether an uncertain write requires reopening and recovery.
+    pub fn recovery_required(&self) -> bool {
+        self.recovery_required
+    }
+    /// Resolves retries before planning or applying lowered creation limits.
+    /// A fenced authority never answers even cached duplicate requests.
+    pub fn lookup_admission(
+        &self,
+        request: &EnsureTaskRequest,
+    ) -> Result<Option<EnsureTaskOutcome>, MutationAuthorityError<P::Error>> {
+        if self.recovery_required {
+            return Err(MutationAuthorityError::RecoveryRequired);
+        }
+        let digest = request.digest().map_err(MutationAuthorityError::Admission)?;
+        self.projection
+            .resolve_admission(request.task_spec().tenant_id(), request.admission_key(), &digest)
+            .map_err(MutationAuthorityError::Admission)
+    }
     /// Returns the lifetime store session for session-bound operations.
     pub fn store_session(&self) -> Option<&crate::store::StoreSession> {
         self.wal_writer.store_session()
@@ -157,6 +231,10 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
         command: &MutationCommand,
     ) -> Result<ValidatedCommand, MutationValidationError> {
         match command {
+            MutationCommand::AdmissionCommit(details) => {
+                self.validate_sequence(details.expected_sequence())?;
+                Ok(ValidatedCommand::AdmissionCommit(details.clone()))
+            }
             MutationCommand::TaskCreate(details) => {
                 self.validate_task_create(details)?;
                 Ok(ValidatedCommand::TaskCreate(details.clone()))
@@ -763,6 +841,17 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
 
     fn build_event_and_applied(validated: ValidatedCommand) -> (WalEvent, AppliedMutation) {
         match validated {
+            ValidatedCommand::AdmissionCommit(c) => {
+                let record = AdmissionRecord::from_command(&c).expect("validated admission digest");
+                let applied = AppliedMutation::Admission(record.outcome(true));
+                (
+                    WalEvent::new(
+                        c.expected_sequence(),
+                        WalEventType::AdmissionCommitted { record, runs: c.plan().runs().to_vec() },
+                    ),
+                    applied,
+                )
+            }
             ValidatedCommand::TaskCreate(command) => {
                 let task_id = command.task_spec().id();
                 let event = WalEvent::new(
@@ -1177,6 +1266,35 @@ impl<W: WalWriter, P: MutationProjection> MutationAuthority for StorageMutationA
         command: MutationCommand,
         durability: DurabilityPolicy,
     ) -> Result<MutationOutcome, Self::Error> {
+        if self.recovery_required {
+            return Err(MutationAuthorityError::RecoveryRequired);
+        }
+        if let MutationCommand::AdmissionCommit(c) = &command {
+            if durability != DurabilityPolicy::Immediate {
+                return Err(MutationAuthorityError::Admission(
+                    AdmissionRejection::ImmediateDurabilityRequired,
+                ));
+            }
+            let record =
+                AdmissionRecord::from_command(c).map_err(MutationAuthorityError::Admission)?;
+            // Resolve key before stale sequence or changed lifecycle preconditions.
+            if let Some(outcome) = self
+                .projection
+                .resolve_admission(record.tenant_id(), record.key(), record.digest())
+                .map_err(MutationAuthorityError::Admission)?
+            {
+                return Ok(MutationOutcome::new(
+                    outcome.sequence(),
+                    AppliedMutation::Admission(outcome),
+                ));
+            }
+            self.admission_limits
+                .validate_spec(record.request().task_spec(), record.request().dependencies().len())
+                .map_err(MutationAuthorityError::Admission)?;
+            self.projection
+                .validate_admission(&record, c.plan().runs())
+                .map_err(MutationAuthorityError::Admission)?;
+        }
         // Stage 1: validate command.
         let validated =
             self.validate_command(&command).map_err(MutationAuthorityError::Validation)?;
@@ -1184,6 +1302,25 @@ impl<W: WalWriter, P: MutationProjection> MutationAuthority for StorageMutationA
         // Stage 2: map validated command to canonical WAL event.
         let (event, applied) = Self::build_event_and_applied(validated);
 
+        if matches!(event.event(), WalEventType::AdmissionCommitted { .. }) {
+            let bytes = crate::wal::codec::encode(&event)
+                .map_err(|_| MutationAuthorityError::Admission(AdmissionRejection::TooLarge))?;
+            if bytes.len()
+                > self
+                    .admission_limits
+                    .record_bytes
+                    .min(actionqueue_core::limits::MAX_ADMISSION_RECORD_BYTES)
+            {
+                return Err(MutationAuthorityError::Admission(AdmissionRejection::TooLarge));
+            }
+            let profile = self
+                .store_session()
+                .map(|s| s.manifest().features.clone())
+                .unwrap_or_else(crate::store::capabilities);
+            crate::store::check_event_profile(event.event(), &profile).map_err(|_| {
+                MutationAuthorityError::Admission(AdmissionRejection::UnsupportedFeature)
+            })?;
+        }
         // Prepare the complete affected projection before any durable write.
         let mut prepared = self.projection.clone();
         prepared.apply_event(&event).map_err(|source| MutationAuthorityError::Apply {
@@ -1192,11 +1329,17 @@ impl<W: WalWriter, P: MutationProjection> MutationAuthority for StorageMutationA
         })?;
 
         // Stage 3: append WAL event.
-        self.wal_writer.append(&event).map_err(MutationAuthorityError::Append)?;
+        if let Err(error) = self.wal_writer.append(&event) {
+            self.recovery_required = true;
+            self.wal_writer.fence();
+            return Err(MutationAuthorityError::Append(error));
+        }
 
         // Stage 4: durability sync by policy.
         if durability == DurabilityPolicy::Immediate {
             if let Err(flush_error) = self.wal_writer.flush() {
+                self.recovery_required = true;
+                self.wal_writer.fence();
                 return Err(MutationAuthorityError::PartialDurability {
                     sequence: event.sequence(),
                     flush_error,
@@ -1205,15 +1348,27 @@ impl<W: WalWriter, P: MutationProjection> MutationAuthority for StorageMutationA
         }
 
         crate::store::fault::checkpoint("authority_before_publish").map_err(|error| {
-            MutationAuthorityError::PartialDurability {
+            self.recovery_required = true;
+            self.wal_writer.fence();
+            MutationAuthorityError::Publication {
                 sequence: event.sequence(),
-                flush_error: WalWriterError::IoError(error.to_string()),
+                synced: durability == DurabilityPolicy::Immediate,
+                error: error.to_string(),
             }
         })?;
 
         // Publish the already validated state only after durability succeeds.
         self.projection = prepared;
 
+        crate::store::fault::checkpoint("authority_after_publish").map_err(|error| {
+            self.recovery_required = true;
+            self.wal_writer.fence();
+            MutationAuthorityError::Publication {
+                sequence: event.sequence(),
+                synced: durability == DurabilityPolicy::Immediate,
+                error: error.to_string(),
+            }
+        })?;
         tracing::debug!(sequence = event.sequence(), "command submitted");
         Ok(MutationOutcome::new(event.sequence(), applied))
     }
@@ -1221,6 +1376,7 @@ impl<W: WalWriter, P: MutationProjection> MutationAuthority for StorageMutationA
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ValidatedCommand {
+    AdmissionCommit(AdmissionCommitCommand),
     TaskCreate(TaskCreateCommand),
     RunCreate(RunCreateCommand),
     RunStateTransition(RunStateTransitionCommand),
@@ -1684,6 +1840,10 @@ impl std::error::Error for MutationValidationError {}
 /// Typed stage-aware authority failures.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MutationAuthorityError<ProjectionError> {
+    /// Complete admission was rejected before append.
+    Admission(AdmissionRejection),
+    /// An uncertain write fences the authority until recovery.
+    RecoveryRequired,
     /// Validation stage failure.
     Validation(MutationValidationError),
     /// WAL append stage failure.
@@ -1696,9 +1856,18 @@ pub enum MutationAuthorityError<ProjectionError> {
         /// Underlying flush error.
         flush_error: WalWriterError,
     },
-    /// Projection apply stage failure after append.
+    /// Publication/response failed after append. The writer and authority are fenced.
+    Publication {
+        /// Sequence whose publication did not finish normally.
+        sequence: u64,
+        /// Whether fsync completed successfully before the failure.
+        synced: bool,
+        /// Publication failure, without request data.
+        error: String,
+    },
+    /// Projection preparation failed before append.
     Apply {
-        /// Sequence that was already appended durably.
+        /// Proposed sequence (no record was appended).
         sequence: u64,
         /// Underlying projection apply error.
         source: ProjectionError,
@@ -1710,6 +1879,10 @@ impl<ProjectionError: std::fmt::Display> std::fmt::Display
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Admission(e) => write!(f, "{e}"),
+            Self::RecoveryRequired => {
+                write!(f, "mutation authority requires recovery after an uncertain write")
+            }
             MutationAuthorityError::Validation(error) => {
                 write!(f, "mutation validation failed: {error}")
             }
@@ -1723,10 +1896,14 @@ impl<ProjectionError: std::fmt::Display> std::fmt::Display
                      flush failed: {flush_error}"
                 )
             }
+            Self::Publication { sequence, synced, error } => write!(
+                f,
+                "mutation publication failed at sequence {sequence} (synced={synced}): {error}"
+            ),
             MutationAuthorityError::Apply { sequence, source } => {
                 write!(
                     f,
-                    "mutation apply stage failed after durable append sequence {sequence}: \
+                    "mutation preparation failed before append sequence {sequence}: \
                      {source}"
                 )
             }

@@ -47,6 +47,9 @@ impl std::error::Error for WalReaderError {}
 impl std::convert::From<crate::recovery::reducer::ReplayReducerError> for WalReaderError {
     fn from(err: crate::recovery::reducer::ReplayReducerError) -> Self {
         match err {
+            crate::recovery::reducer::ReplayReducerError::Admission(e) => {
+                WalReaderError::ReducerError(e.to_string())
+            }
             crate::recovery::reducer::ReplayReducerError::InvalidTransition => {
                 WalReaderError::ReducerError("Invalid state transition during replay".to_string())
             }

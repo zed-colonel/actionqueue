@@ -6,7 +6,7 @@
 # increments `package_revision`; normative change requires a contract amendment.
 schema_version: 1
 package: conformance/aq-cont-1
-package_revision: 1
+package_revision: 2
 status: scaffold
 contract: AQ-CONT-1
 contract_revision: STACK-2026-07-20-CLEAN-1
@@ -39,8 +39,40 @@ fixture_schema:
     sha256: content hash of the fixture file
     variants: subset of [replay, crash, race]
     introduced_by: pull request identifier
-# Fixture inventory. Intentionally empty at AQ-01; populated from AQ-04 onward.
-fixtures: []
+# AQ-04 admission vectors and replay/crash/race fixtures.
+fixtures:
+- id: AQ-CF-ADMISSION-001
+  title: Canonical admission bytes and SHA-256
+  invariants: [AQ-H2, AQ-H6, AQ-H7, AQ-H10]
+  driver: embedded
+  path: admission-v1-vector.json
+  sha256: cfc905ca4cb36beafa7d5b0a945afeb002f61acf853913651c0bbc819c293463
+  variants: [replay, crash, race]
+  introduced_by: AQ-04
+- id: AQ-CF-ADMISSION-002
+  title: Opaque stable execution-unit retries and changed meaning
+  invariants: [AQ-H2, AQ-H6, AQ-H7, AQ-H10]
+  driver: embedded
+  path: developmental-admission.json
+  sha256: dad7ff50ad70480b15a69b9cca165d6877c5d07f072bb3907853024648f35632
+  variants: [replay, crash, race]
+  introduced_by: AQ-04
+- id: AQ-CF-ADMISSION-003
+  title: Projection v2 known-answer vector
+  invariants: [AQ-H2, AQ-H6, AQ-H7, AQ-H10]
+  driver: embedded
+  path: projection-v2-vector.json
+  sha256: 7a50d107a210b2052694f1ab68a461179711bb58e45948fea83bbae58956f662
+  variants: [replay, crash, race]
+  introduced_by: AQ-04
+- id: AQ-CF-ADMISSION-004
+  title: Retained AQ-03 projection evidence
+  invariants: [AQ-H2, AQ-H6, AQ-H7, AQ-H10]
+  driver: embedded
+  path: projection-v1-vector.json
+  sha256: ceeb2d5999182cbc807597743fdd0da604322ca4ced6772dc86a1106fa50f73a
+  variants: [replay, crash, race]
+  introduced_by: AQ-04
 # Black-box drivers. Intentionally empty at AQ-01; populated by AQ-13.
 drivers: []
 acceptance_matrices:
@@ -76,3 +108,16 @@ target_persistence:
   - exact_snapshot_hydration_and_projection_equivalence
   - verified_offline_backup_restore
   - immutable_store_feature_profiles_and_stable_wire_ids
+
+admission:
+  introduced_by: AQ-04
+  wal_kind: 256
+  wal_record_schema: 1
+  wal_frame_version: 1
+  snapshot_schema: 2
+  projection_version: 2
+  tests:
+  - tests/acceptance/idempotent_admission.rs
+  - tests/acceptance/admission_conflict.rs
+  - tests/acceptance/compound_admission_crash.rs
+  developmental_cases: [AQ-DD-009, AQ-DD-010]

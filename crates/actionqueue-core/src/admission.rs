@@ -1,23 +1,50 @@
-//! Pure admission planning. Store-dependent rejection checks land in AQ-04.
+//! Bounded, canonical task admission contracts.
 use crate::bounded::ContentHash;
 use crate::causal::{CausalContext, ControlMutationContext};
 use crate::ids::{AdmissionKey, TaskId};
 use crate::run::RunInstance;
 use crate::task::task_spec::{TaskSpec, TaskSpecError};
-/// Digest of versioned canonical admission bytes (ADR-002).
-/// Canonical encoding and hashing are AQ-04 obligations, not core operations.
+pub mod canonical;
+/// Digest of the explicitly versioned canonical admission bytes (ADR-002/003).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(transparent))]
-pub struct AdmissionDigest(ContentHash);
+#[cfg_attr(feature = "serde", serde(try_from = "AdmissionDigestWire"))]
+pub struct AdmissionDigest {
+    canonical_version: u32,
+    hash: ContentHash,
+}
 impl AdmissionDigest {
-    /// Wraps a structurally validated digest.
+    /// Declares a v1 SHA-256 digest. Commit always recomputes and verifies it.
     pub fn new(hash: ContentHash) -> Self {
-        Self(hash)
+        Self { canonical_version: 1, hash }
+    }
+    /// Validates a declared canonical version. Unsupported algorithms are rejected by ContentHash.
+    pub fn versioned(version: u32, hash: ContentHash) -> Result<Self, AdmissionRejection> {
+        if version != 1 {
+            return Err(AdmissionRejection::UnsupportedCanonicalVersion(version));
+        }
+        Ok(Self::new(hash))
+    }
+    /// Returns the canonical version.
+    pub fn canonical_version(&self) -> u32 {
+        self.canonical_version
     }
     /// Returns the declared digest.
     pub fn hash(&self) -> &ContentHash {
-        &self.0
+        &self.hash
+    }
+}
+#[cfg(feature = "serde")]
+#[derive(serde::Deserialize)]
+struct AdmissionDigestWire {
+    canonical_version: u32,
+    hash: ContentHash,
+}
+#[cfg(feature = "serde")]
+impl TryFrom<AdmissionDigestWire> for AdmissionDigest {
+    type Error = AdmissionRejection;
+    fn try_from(w: AdmissionDigestWire) -> Result<Self, Self::Error> {
+        Self::versioned(w.canonical_version, w.hash)
     }
 }
 /// Pure rejection vocabulary; existence, ancestry and tenant checks require the store.
@@ -25,6 +52,8 @@ impl AdmissionDigest {
 pub enum AdmissionRejection {
     /// Existing key has different canonical content.
     Conflict {
+        /// Original task identity.
+        existing_task_id: TaskId,
         /// Conflicting key.
         admission_key: AdmissionKey,
         /// Stored digest.
@@ -32,6 +61,24 @@ pub enum AdmissionRejection {
         /// Proposed digest.
         proposed_digest: AdmissionDigest,
     },
+    /// Digest did not match the canonical request.
+    InvalidDigest,
+    /// Canonical version is unsupported.
+    UnsupportedCanonicalVersion(u32),
+    /// A task UUID already exists (no foreign admission details are returned).
+    TaskIdCollision,
+    /// A run UUID already exists.
+    RunIdCollision,
+    /// Run state, count, timestamp, or schedule is inconsistent with initial admission.
+    InvalidRuns,
+    /// Invalid non-task reference identity.
+    InvalidIdentity,
+    /// Hierarchy would exceed eight edges.
+    HierarchyDepth,
+    /// A required store or binary feature is unavailable.
+    UnsupportedFeature,
+    /// Admission must be synced immediately.
+    ImmediateDurabilityRequired,
     /// Task invariants failed.
     InvalidTask(TaskSpecError),
     /// Invalid structural parent.
@@ -62,7 +109,14 @@ pub(crate) fn validate_dependencies(
     spec: &TaskSpec,
     dependencies: &mut Vec<TaskId>,
 ) -> Result<(), AdmissionRejection> {
+    crate::limits::AdmissionLimits::default().validate_spec(spec, dependencies.len())?;
     spec.validate().map_err(AdmissionRejection::InvalidTask)?;
+    if spec.parent_task_id().is_some_and(|id| id.is_nil())
+        || spec.tenant_id().is_some_and(|id| id.as_uuid().is_nil())
+        || dependencies.iter().any(|id| id.is_nil())
+    {
+        return Err(AdmissionRejection::InvalidIdentity);
+    }
     if spec.parent_task_id() == Some(spec.id()) {
         return Err(AdmissionRejection::InvalidParent);
     }
@@ -102,7 +156,36 @@ impl EnsureTaskRequest {
         control_context: Option<ControlMutationContext>,
     ) -> Result<Self, AdmissionRejection> {
         validate_dependencies(&task_spec, &mut dependencies)?;
+        if let Some(link) = causal_context.causation() {
+            if link.parent_task_id().is_some_and(|id| id.is_nil())
+                || link.parent_run_id().is_some_and(|id| id.as_uuid().is_nil())
+                || link.parent_attempt_id().is_some_and(|id| id.as_uuid().is_nil())
+            {
+                return Err(AdmissionRejection::InvalidIdentity);
+            }
+        }
         Ok(Self { admission_key, task_spec, dependencies, causal_context, control_context })
+    }
+    /// Computes canonical v1 meaning, ignoring lookup key and control attribution.
+    pub fn digest(&self) -> Result<AdmissionDigest, AdmissionRejection> {
+        canonical::CanonicalAdmissionV1::new(self)?.digest()
+    }
+    /// Stable convenience identity for callers retaining a preallocated task UUID.
+    pub fn for_task(
+        task_spec: TaskSpec,
+        dependencies: Vec<TaskId>,
+    ) -> Result<Self, AdmissionRejection> {
+        let identity = format!("task/{}", task_spec.id());
+        Self::new(
+            AdmissionKey::new(identity.clone()).expect("bounded UUID key"),
+            task_spec,
+            dependencies,
+            CausalContext::new(
+                crate::ids::TraceId::new(identity.clone()).expect("bounded UUID trace"),
+                crate::ids::CorrelationId::new(identity).expect("bounded UUID correlation"),
+            ),
+            None,
+        )
     }
     /// Returns admission key.
     pub fn admission_key(&self) -> &AdmissionKey {
@@ -252,6 +335,8 @@ impl TryFrom<AdmissionPlanWire> for AdmissionPlan {
 pub enum EnsureTaskOutcome {
     /// Created admission.
     Created {
+        /// Original durable admission sequence.
+        sequence: u64,
         /// Task id.
         task_id: TaskId,
         /// Admission key.
@@ -261,6 +346,8 @@ pub enum EnsureTaskOutcome {
     },
     /// AlreadyExists admission.
     AlreadyExists {
+        /// Original durable admission sequence.
+        sequence: u64,
         /// Task id.
         task_id: TaskId,
         /// Admission key.
@@ -268,4 +355,23 @@ pub enum EnsureTaskOutcome {
         /// Digest.
         digest: AdmissionDigest,
     },
+}
+
+impl EnsureTaskOutcome {
+    /// Original task identity.
+    pub fn task_id(&self) -> TaskId {
+        match self {
+            Self::Created { task_id, .. } | Self::AlreadyExists { task_id, .. } => *task_id,
+        }
+    }
+    /// Original durable sequence.
+    pub fn sequence(&self) -> u64 {
+        match self {
+            Self::Created { sequence, .. } | Self::AlreadyExists { sequence, .. } => *sequence,
+        }
+    }
+    /// Whether this call created a new admission.
+    pub fn is_created(&self) -> bool {
+        matches!(self, Self::Created { .. })
+    }
 }
