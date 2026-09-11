@@ -1,6 +1,6 @@
 # actionqueue-storage
 
-AQ-CONT-1 uses WAL framing v1 and, since AQ-04, snapshot/projection schema v2. Pre-contract WAL v5 and snapshot schema 8
+AQ-CONT-1 uses WAL framing v1 and, since AQ-05, snapshot/projection schema v3. Pre-contract WAL v5 and snapshot schema 8
 are evidence only: this crate has no compatibility reader or migration path.
 
 ## Ownership and opening
@@ -52,8 +52,9 @@ policy uses an explicit always-present wire layout, including cron with an absen
 occurrence limit. Existing bounded domain values retain their validation.
 
 Kinds 16–46 carry retained task/run, attempt, lease, engine, dependency, suspension,
-budget, subscription, actor, and platform records. Reserved unsupported kinds are
-272/273 (compound attempt start/disposition), 288 (signal), 304–307
+budget, subscription, actor, and platform records. Kind 256 carries admissions;
+288–291 carry signal admission and retention. Reserved unsupported kinds are
+272/273 (compound attempt start/disposition), 304–307
 (wait lifecycle), and 320/321 (attributed controls). A reserved/unknown kind or schema
 fails; none is treated as a no-op. Each owning work item must add encoding, semantic
 validation, reduction, snapshot representation, and replay tests together.
@@ -81,11 +82,11 @@ snapshot-only stores are rejected.
 Snapshots use `AQCONT1S`, u32 frame version, u32 payload length, u32 payload CRC, and a
 strict JSON envelope, with a symmetric 256 MiB writer/reader payload limit. The envelope
 binds store UUID, snapshot/projection versions, covered sequence, and projection digest.
-It includes admission records and reserves empty signal, wait, checkpoint, resume-assignment and causal/control
-sections; nonempty reserved sections are unsupported. These reservations do not provide
+It includes admission and signal records and reserves empty wait, checkpoint,
+resume-assignment and causal/control sections; nonempty reserved sections are unsupported. These reservations do not provide
 continuation recovery before their owning work items land.
 
-`ProjectionImageV2` restores complete state directly without synthesizing events:
+`ProjectionImageV3` restores complete state directly without synthesizing events:
 run priority and transition times, full attempt/output history, active leases, control
 state, original dependency timestamps, and feature records. Derived indexes are rebuilt;
 hydration must reproduce the original image digest. Snapshot writers verify their image
@@ -93,7 +94,7 @@ against the covered WAL prefix and sync that WAL before snapshot publication. Th
 temp-file write, sync, rename, and parent-directory sync. Only physical snapshot damage
 permits fallback. Identity, compatibility, and semantic failures halt recovery.
 
-Projection SHA-256 uses domain bytes `AQ-CONT-1\0projection\0v2\0`, followed by the
+Projection SHA-256 uses domain bytes `AQ-CONT-1\0projection\0v3\0`, followed by the
 following canonical **typed tree**, not JSON serializer output:
 
 - Null: tag 0. Boolean: tag 1 followed by byte 0/1.
@@ -102,13 +103,13 @@ following canonical **typed tree**, not JSON serializer output:
 - Array: tag 5 + u64 LE item count + items in order.
 - Object: tag 6 + u64 LE field count + string-key/value pairs, sorted by UTF-8 key.
 
-The fixed v1 image fields are defined by `snapshot/model.rs`. Every field is included;
+The fixed v3 image fields are defined by `snapshot/model.rs`. Every field is included;
 snapshot creation time is normalized to zero. Task/run/dependency/subscription/actor/
 tenant maps are ordered by UUID; dependency sets are ordered by UUID. Budgets, roles,
 and capability grants are ordered by canonical record bytes. Chronological state,
 attempt and ledger vectors retain order. Sequence and durable state are included;
 paths, metrics and recovery duration are excluded. The independent Python-generated
-current vector is `conformance/aq-cont-1/projection-v2-vector.json`; the v1 evidence remains retained.
+current vector is `conformance/aq-cont-1/projection-v3-vector.json`; the v1/v2 evidence remains retained.
 
 AQ-03 verifies snapshot-plus-tail against full WAL replay at opening. It intentionally
 pays full-history replay cost while the complete WAL is required. Compaction and a
@@ -156,8 +157,30 @@ creation limits but cannot raise hard ceilings or invalidate successful duplicat
 Metadata and other variable strings are bounded in aggregate before copying; encoded
 record size is checked exactly before append. Immediate sync is mandatory.
 
-Snapshot schema/image and projection version are 2. AQ-03 stores with version 1
-manifests are refused untouched. Projection cloning remains the preparation strategy;
+AQ-04 introduced snapshot/projection version 2; AQ-05 advances it to 3. Earlier
+development manifests are refused untouched. Projection cloning remains the preparation strategy;
 full WAL verification remains part of snapshot recovery. A fenced authority must be
 dropped and reopened; neither additional writes nor cached admission success is safe
 until recovery reconciles the WAL.
+
+### AQ-05 durable signals (projection v3)
+
+Signal admission and retention use the storage mutation authority and immediately
+sync before publication. Kinds 288/289/290/291, schema 1, encode admission, pin,
+unpin and retirement through frozen `signal_v1` DTOs. Snapshot/projection versions
+are 3; frame versions remain 1. Earlier development manifests are refused without
+writes or migration. The projection digest domain is `AQ-CONT-1\0projection\0v3\0`;
+typed tree encoding is otherwise unchanged.
+
+`ReplayReducer::signals()` exposes tenant/id lookup, sequence-paginated listing,
+retained candidates, retirement planning and counters. Matching indexes cover
+namespace/kind and optional exact correlation/source combinations. Queries are
+bounded to 1,024 results, use exclusive cursors and never consume signals.
+
+Retirement removes matching membership only. Immutable content, deduplication
+identity and WAL history remain resident and count against quotas. Explicit pins
+are durable; future wait/resume/history protections must extend the separate
+protection seam before AQ-06 enables waits. Snapshot hydration rebuilds derived
+indexes/counters and validates against complete WAL history. Authority preparation
+clones the full projection, so total mutation cost still grows with store size.
+See ADR-005/006 for canonical bytes, default quotas and retention thresholds.

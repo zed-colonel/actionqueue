@@ -26,13 +26,15 @@ use crate::snapshot::model::{
 ///   required_executor_traits in AQ-02)
 /// - v6: Sprint 2 review — dependency declarations persisted in snapshots
 /// - v7: Sprint 3 — budgets, subscriptions, Suspended run state
-pub const SNAPSHOT_SCHEMA_VERSION: u32 = 2;
+pub const SNAPSHOT_SCHEMA_VERSION: u32 = 3;
 
 /// Typed mapping and validation errors for snapshot/core parity enforcement.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SnapshotMappingError {
     /// Invalid immutable admission facts.
     InvalidAdmission,
+    /// Invalid signal projection image.
+    InvalidSignal,
     /// Snapshot metadata schema version is unknown to this mapping boundary.
     UnsupportedSchemaVersion {
         /// Schema version expected by the current implementation.
@@ -207,6 +209,7 @@ pub enum SnapshotMappingError {
 impl std::fmt::Display for SnapshotMappingError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::InvalidSignal => write!(f, "invalid signal snapshot"),
             Self::InvalidAdmission => write!(f, "invalid admission snapshot"),
             Self::UnsupportedSchemaVersion { expected, found } => {
                 write!(f, "unsupported snapshot schema version: expected {expected}, found {found}")
@@ -336,6 +339,12 @@ pub fn validate_snapshot(snapshot: &Snapshot) -> Result<(), SnapshotMappingError
         });
     }
 
+    crate::recovery::signals::SignalIndex::hydrate(
+        &snapshot.signals,
+        snapshot.last_signal_sequence,
+        snapshot.metadata.wal_sequence,
+    )
+    .map_err(|_| SnapshotMappingError::InvalidSignal)?;
     let task_count = snapshot.tasks.len() as u64;
     if snapshot.metadata.task_count != task_count {
         return Err(SnapshotMappingError::TaskCountMismatch {

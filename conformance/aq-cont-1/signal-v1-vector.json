@@ -1,0 +1,243 @@
+{
+  "cases": [
+    {
+      "envelope": {
+        "signal_id": "event/1",
+        "tenant_id": null,
+        "namespace": "remote",
+        "kind": "complete",
+        "correlation_id": null,
+        "causation": null,
+        "source_ref": null,
+        "payload": null,
+        "payload_hash": null,
+        "occurred_at": null,
+        "received_at": 42,
+        "control_context": null
+      },
+      "canonical_hex": "41512d434f4e542d31007369676e616c00010000000007000000000000006576656e742f31060000000000000072656d6f74650800000000000000636f6d706c657465000000000000",
+      "sha256": "fb57e6be9caae68f6e0ff8332907782059bfac704e43efae8cb38482dd8a6980"
+    },
+    {
+      "envelope": {
+        "signal_id": "event/inline",
+        "tenant_id": null,
+        "namespace": "remote",
+        "kind": "complete",
+        "correlation_id": "job/λ",
+        "causation": null,
+        "source_ref": null,
+        "payload": {
+          "Inline": {
+            "content_type": "application/octet-stream",
+            "bytes": [
+              0,
+              1,
+              255
+            ],
+            "hash": {
+              "algorithm": "Sha256",
+              "bytes": [
+                38,
+                166,
+                107,
+                6,
+                30,
+                143,
+                72,
+                243,
+                153,
+                39,
+                195,
+                18,
+                242,
+                82,
+                147,
+                149,
+                151,
+                41,
+                238,
+                233,
+                89,
+                120,
+                226,
+                137,
+                45,
+                73,
+                211,
+                81,
+                42,
+                92,
+                192,
+                146
+              ]
+            }
+          }
+        },
+        "payload_hash": null,
+        "occurred_at": 0,
+        "received_at": 42,
+        "control_context": null
+      },
+      "canonical_hex": "41512d434f4e542d31007369676e616c0001000000000c000000000000006576656e742f696e6c696e65060000000000000072656d6f74650800000000000000636f6d706c6574650106000000000000006a6f622fcebb000001000118000000000000006170706c69636174696f6e2f6f637465742d73747265616d03000000000000000001ff01200000000000000026a66b061e8f48f39927c312f25293959729eee95978e2892d49d3512a5cc0920101200000000000000026a66b061e8f48f39927c312f25293959729eee95978e2892d49d3512a5cc092010000000000000000",
+      "sha256": "d570f70601fbe323ef01607686d0ce1e1c7690f3b90da41dd3565d41d8a528bd"
+    },
+    {
+      "envelope": {
+        "signal_id": "event/external",
+        "tenant_id": "00000000-0000-0000-0000-000000000005",
+        "namespace": "remote",
+        "kind": "complete",
+        "correlation_id": "job/1",
+        "causation": {
+          "parent_task_id": "00000000-0000-0000-0000-000000000001",
+          "parent_run_id": "00000000-0000-0000-0000-000000000002",
+          "parent_attempt_id": "00000000-0000-0000-0000-000000000003",
+          "external_ref": "origin/1"
+        },
+        "source_ref": "source/1",
+        "payload": {
+          "External": {
+            "scheme": "blob",
+            "locator": "opaque/object",
+            "hash": {
+              "algorithm": "Sha256",
+              "bytes": [
+                38,
+                166,
+                107,
+                6,
+                30,
+                143,
+                72,
+                243,
+                153,
+                39,
+                195,
+                18,
+                242,
+                82,
+                147,
+                149,
+                151,
+                41,
+                238,
+                233,
+                89,
+                120,
+                226,
+                137,
+                45,
+                73,
+                211,
+                81,
+                42,
+                92,
+                192,
+                146
+              ]
+            },
+            "size_bytes": 18446744073709551615,
+            "content_type": "application/octet-stream"
+          }
+        },
+        "payload_hash": {
+          "algorithm": "Sha256",
+          "bytes": [
+            38,
+            166,
+            107,
+            6,
+            30,
+            143,
+            72,
+            243,
+            153,
+            39,
+            195,
+            18,
+            242,
+            82,
+            147,
+            149,
+            151,
+            41,
+            238,
+            233,
+            89,
+            120,
+            226,
+            137,
+            45,
+            73,
+            211,
+            81,
+            42,
+            92,
+            192,
+            146
+          ]
+        },
+        "occurred_at": 100,
+        "received_at": 42,
+        "control_context": null
+      },
+      "canonical_hex": "41512d434f4e542d31007369676e616c000100000001000000000000000000000000000000050e000000000000006576656e742f65787465726e616c060000000000000072656d6f74650800000000000000636f6d706c6574650105000000000000006a6f622f31010100000000000000000000000000000001010000000000000000000000000000000201000000000000000000000000000000030108000000000000006f726967696e2f31010800000000000000736f757263652f3101010400000000000000626c6f620d000000000000006f70617175652f6f626a65637401200000000000000026a66b061e8f48f39927c312f25293959729eee95978e2892d49d3512a5cc09201ffffffffffffffff0118000000000000006170706c69636174696f6e2f6f637465742d73747265616d0101200000000000000026a66b061e8f48f39927c312f25293959729eee95978e2892d49d3512a5cc092016400000000000000",
+      "sha256": "afc2d859cc4c89a7411807d506dc58b5fa53242777e4b6658d79ecdbedad7da9"
+    },
+    {
+      "envelope": {
+        "signal_id": "hash-only",
+        "tenant_id": null,
+        "namespace": "remote",
+        "kind": "complete",
+        "correlation_id": null,
+        "causation": null,
+        "source_ref": null,
+        "payload": null,
+        "payload_hash": {
+          "algorithm": "Sha256",
+          "bytes": [
+            38,
+            166,
+            107,
+            6,
+            30,
+            143,
+            72,
+            243,
+            153,
+            39,
+            195,
+            18,
+            242,
+            82,
+            147,
+            149,
+            151,
+            41,
+            238,
+            233,
+            89,
+            120,
+            226,
+            137,
+            45,
+            73,
+            211,
+            81,
+            42,
+            92,
+            192,
+            146
+          ]
+        },
+        "occurred_at": null,
+        "received_at": 42,
+        "control_context": null
+      },
+      "canonical_hex": "41512d434f4e542d31007369676e616c0001000000000900000000000000686173682d6f6e6c79060000000000000072656d6f74650800000000000000636f6d706c657465000000000101200000000000000026a66b061e8f48f39927c312f25293959729eee95978e2892d49d3512a5cc09200",
+      "sha256": "b9b9225a2d1ccc19f45cd75baea3b2994472bd516c898c744223bb7ae8e42174"
+    }
+  ]
+}

@@ -105,6 +105,8 @@ impl<H: ExecutorHandler + 'static> ActionQueueEngine<H> {
         );
 
         authority.set_admission_limits(self.config.admission_limits);
+        authority.set_signal_limits(self.config.signal_limits);
+        authority.set_signal_retention_policy(self.config.signal_retention);
 
         // Compute snapshot path — must match bootstrap.rs snapshot_dir / "snapshot.bin"
         let snapshot_path = self
@@ -150,6 +152,64 @@ impl<H: ExecutorHandler + 'static, C: Clock> BootstrappedEngine<H, C> {
         self.dispatch.submit_task(spec)
     }
 
+    /// Inspect a signal in its tenant namespace, including retired records.
+    pub fn get_signal(
+        &self,
+        tenant: Option<actionqueue_core::ids::TenantId>,
+        id: &actionqueue_core::ids::SignalId,
+    ) -> Option<&actionqueue_storage::mutation::signal::SignalRecord> {
+        self.projection().signals().get_signal(tenant, id)
+    }
+    /// Bounded sequence-paginated inspection with an exclusive cursor.
+    pub fn list_signals(
+        &self,
+        tenant: Option<actionqueue_core::ids::TenantId>,
+        after: actionqueue_core::ids::SignalSequence,
+        limit: usize,
+    ) -> Vec<&actionqueue_storage::mutation::signal::SignalRecord> {
+        self.projection().signals().list_signals(tenant, after, limit)
+    }
+    /// Resident signal and live capacity-rejection counters.
+    pub fn signal_statistics(&self) -> actionqueue_storage::recovery::signals::SignalStatistics {
+        self.dispatch.signal_statistics()
+    }
+    /// Admits a durable signal with host-attested scope and attribution.
+    pub fn admit_signal(
+        &mut self,
+        request: actionqueue_core::continuation::AdmitSignalRequest,
+        ingress: actionqueue_core::continuation::SignalIngressContext,
+    ) -> Result<
+        actionqueue_core::continuation::AdmitSignalOutcome,
+        crate::signals::SignalAdmissionError,
+    > {
+        self.dispatch.admit_signal(request, ingress)
+    }
+    /// Explicit durable retention control through the mutation authority.
+    pub fn pin_signal(
+        &mut self,
+        signal_id: actionqueue_core::ids::SignalId,
+        pin_id: actionqueue_core::continuation::SignalPinId,
+        ingress: actionqueue_core::continuation::SignalIngressContext,
+    ) -> Result<usize, crate::signals::SignalAdmissionError> {
+        self.dispatch.pin_signal(signal_id, pin_id, ingress)
+    }
+    /// Explicit durable retention control through the mutation authority.
+    pub fn unpin_signal(
+        &mut self,
+        signal_id: actionqueue_core::ids::SignalId,
+        pin_id: actionqueue_core::continuation::SignalPinId,
+        ingress: actionqueue_core::continuation::SignalIngressContext,
+    ) -> Result<usize, crate::signals::SignalAdmissionError> {
+        self.dispatch.unpin_signal(signal_id, pin_id, ingress)
+    }
+    /// Explicit durable retention control through the mutation authority.
+    pub fn retire_signals(
+        &mut self,
+        sequences: Vec<actionqueue_core::ids::SignalSequence>,
+        ingress: actionqueue_core::continuation::SignalIngressContext,
+    ) -> Result<usize, crate::signals::SignalAdmissionError> {
+        self.dispatch.retire_signals(sequences, ingress)
+    }
     /// Ensures a durable tenant-scoped admission; changed meaning returns a typed conflict.
     pub fn ensure_task(
         &mut self,

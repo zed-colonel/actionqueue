@@ -64,6 +64,7 @@ http-body-util = "0.1"
 serde_json = "1.0"
 tempfile = "3.10"
 proptest = "1.4"
+sha2 = "0.10"
 # AQ-CONT-1 boundary checks parse target sources instead of lexing them; these are already
 # transitive dependencies of the workspace (serde_derive, tokio-macros, async-trait).
 syn = { version = "2", features = ["full", "visit"] }
@@ -343,3 +344,15 @@ path = "tests/acceptance/admission_conflict.rs"
 [[test]]
 name = "acceptance_compound_admission_crash"
 path = "tests/acceptance/compound_admission_crash.rs"
+
+[[test]]
+name = "acceptance_signal_admission"
+path = "tests/acceptance/signal_admission.rs"
+
+[[test]]
+name = "acceptance_signal_retention"
+path = "tests/acceptance/signal_retention.rs"
+
+[[test]]
+name = "acceptance_signal_crash"
+path = "tests/acceptance/signal_crash.rs"

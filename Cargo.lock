@@ -23,6 +23,7 @@ dependencies = [
  "proptest",
  "quote",
  "serde_json",
+ "sha2",
  "syn",
  "tempfile",
  "tokio",

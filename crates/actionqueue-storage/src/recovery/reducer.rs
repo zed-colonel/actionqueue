@@ -264,6 +264,7 @@ impl TaskRecord {
 /// A reducer that applies WAL events to reconstruct state.
 #[derive(Debug, Clone)]
 pub struct ReplayReducer {
+    pub(crate) signals: super::signals::SignalIndex,
     pub(crate) admissions: HashMap<
         (Option<TenantId>, actionqueue_core::ids::AdmissionKey),
         crate::mutation::admission::AdmissionRecord,
@@ -323,6 +324,7 @@ impl ReplayReducer {
     /// Creates a new replay reducer.
     pub fn new() -> Self {
         ReplayReducer {
+            signals: super::signals::SignalIndex::default(),
             admissions: HashMap::new(),
             admission_by_task: HashMap::new(),
             runs: HashMap::new(),
@@ -507,6 +509,10 @@ impl ReplayReducer {
         self.tasks.values()
     }
 
+    /// Durable signals and derived retained indexes.
+    pub fn signals(&self) -> &super::signals::SignalIndex {
+        &self.signals
+    }
     /// Looks up immutable admission facts in the caller's tenant namespace.
     pub fn admission(
         &self,
@@ -541,6 +547,33 @@ impl ReplayReducer {
         }
 
         match event.event() {
+            WalEventType::SignalAdmitted { record } => {
+                if record.wal_sequence() != event.sequence()
+                    || !record.is_retained()
+                    || !record.pins().is_empty()
+                {
+                    return Err(ReplayReducerError::Signal(
+                        actionqueue_core::continuation::SignalRejection::InvalidEnvelope,
+                    ));
+                }
+                self.validate_signal_references(record.envelope())
+                    .map_err(ReplayReducerError::Signal)?;
+                self.signals.insert(record.clone()).map_err(ReplayReducerError::Signal)?;
+            }
+            WalEventType::SignalPinned { record } | WalEventType::SignalUnpinned { record } => {
+                if record.control.wal_sequence != event.sequence() {
+                    return Err(ReplayReducerError::CorruptedData);
+                }
+                self.signals
+                    .apply_pin(record, matches!(event.event(), WalEventType::SignalPinned { .. }))
+                    .map_err(ReplayReducerError::Signal)?;
+            }
+            WalEventType::SignalsRetired { record } => {
+                if record.control.wal_sequence != event.sequence() {
+                    return Err(ReplayReducerError::CorruptedData);
+                }
+                self.signals.apply_retirement(record).map_err(ReplayReducerError::Signal)?;
+            }
             WalEventType::AdmissionCommitted { record, runs } => {
                 if record.sequence() != event.sequence() {
                     return Err(ReplayReducerError::CorruptedData);
@@ -1565,6 +1598,8 @@ impl Default for ReplayReducer {
 pub enum ReplayReducerError {
     /// Invalid compound admission.
     Admission(actionqueue_core::admission::AdmissionRejection),
+    /// Invalid durable signal record.
+    Signal(actionqueue_core::continuation::SignalRejection),
     /// Invalid state transition during replay.
     InvalidTransition,
     /// Duplicate event detected.
@@ -1831,6 +1866,7 @@ impl std::fmt::Display for ReplayReducerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Admission(e) => write!(f, "{e}"),
+            Self::Signal(e) => write!(f, "{e}"),
             ReplayReducerError::InvalidTransition => {
                 write!(f, "Invalid state transition during replay")
             }

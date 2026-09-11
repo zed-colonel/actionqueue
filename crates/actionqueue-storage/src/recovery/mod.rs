@@ -10,4 +10,5 @@ pub mod replay;
 
 pub mod projection;
 
+pub mod signals;
 mod validation;

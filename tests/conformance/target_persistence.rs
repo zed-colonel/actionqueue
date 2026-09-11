@@ -1090,7 +1090,7 @@ fn malformed_backup_descriptors_refuse_before_destination_creation() {
 #[test]
 fn canonical_projection_matches_independent_sha256_vector() {
     let vector: serde_json::Value =
-        serde_json::from_str(include_str!("../../conformance/aq-cont-1/projection-v2-vector.json"))
+        serde_json::from_str(include_str!("../../conformance/aq-cont-1/projection-v3-vector.json"))
             .unwrap();
     let dir = tempfile::tempdir().unwrap();
     let session = init(dir.path());

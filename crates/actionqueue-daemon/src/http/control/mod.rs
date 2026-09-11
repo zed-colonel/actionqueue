@@ -62,6 +62,7 @@ pub(crate) fn internal_authority_error(
             "authority publication failed"
         }
         actionqueue_storage::mutation::MutationAuthorityError::Admission(_) => "admission rejected",
+        actionqueue_storage::mutation::MutationAuthorityError::Signal(_) => "signal rejected",
         actionqueue_storage::mutation::MutationAuthorityError::RecoveryRequired => {
             "mutation authority requires recovery"
         }

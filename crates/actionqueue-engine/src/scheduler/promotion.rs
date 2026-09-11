@@ -239,7 +239,11 @@ mod tests {
                 MutationCommand::RunStateTransition(details) => {
                     (details.sequence(), details.run_id())
                 }
-                MutationCommand::TaskCreate(_)
+                MutationCommand::SignalAdmit(_)
+                | MutationCommand::SignalPin(_)
+                | MutationCommand::SignalUnpin(_)
+                | MutationCommand::RetireSignals(_)
+                | MutationCommand::TaskCreate(_)
                 | MutationCommand::RunCreate(_)
                 | MutationCommand::AttemptStart(_)
                 | MutationCommand::AttemptFinish(_)

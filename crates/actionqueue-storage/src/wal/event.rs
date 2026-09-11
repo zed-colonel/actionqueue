@@ -42,6 +42,14 @@ impl WalEvent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum WalEventType {
+    /// Immutable signal admitted with independent store signal order.
+    SignalAdmitted { record: crate::mutation::signal::SignalRecord },
+    /// Independent retention pin acquired.
+    SignalPinned { record: crate::mutation::signal::SignalPinRecord },
+    /// Independent retention pin released.
+    SignalUnpinned { record: crate::mutation::signal::SignalPinRecord },
+    /// Bounded retirement from retained matching.
+    SignalsRetired { record: crate::mutation::signal::SignalsRetiredRecord },
     /// One durable task admission, including all initial run identities.
     AdmissionCommitted {
         /// Immutable admission facts.

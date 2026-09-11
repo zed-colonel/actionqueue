@@ -241,6 +241,10 @@ struct LedgerEntryAppendedV1 {
 }
 pub fn kind(event: &WalEventType) -> u16 {
     match event {
+        WalEventType::SignalAdmitted { .. } => 288,
+        WalEventType::SignalPinned { .. } => 289,
+        WalEventType::SignalUnpinned { .. } => 290,
+        WalEventType::SignalsRetired { .. } => 291,
         WalEventType::AdmissionCommitted { .. } => 256,
         WalEventType::StoreInitialized { .. } => 1,
         WalEventType::TaskCreated { .. } => 16,
@@ -279,12 +283,22 @@ pub fn kind(event: &WalEventType) -> u16 {
 pub fn check_kind(kind: u16) -> Result<(), DecodeError> {
     match kind {
         1 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32
-        | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 256 => Ok(()),
+        | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 256 | 288 | 289
+        | 290 | 291 => Ok(()),
         _ => Err(DecodeError::UnsupportedRecordKind(kind)),
     }
 }
 pub fn encode_payload(event: &WalEventType) -> Result<Vec<u8>, EncodeError> {
     match event {
+        WalEventType::SignalAdmitted { record } => {
+            bounded(&super::signal_v1::SignalRecordV1::from(record.clone()))
+        }
+        WalEventType::SignalPinned { record } | WalEventType::SignalUnpinned { record } => {
+            bounded(&super::signal_v1::PinV1::from(record.clone()))
+        }
+        WalEventType::SignalsRetired { record } => {
+            bounded(&super::signal_v1::RetiredV1::from(record.clone()))
+        }
         WalEventType::AdmissionCommitted { record, runs } => {
             bounded(&super::admission_v1::AdmissionCommittedV1::new(record, runs))
         }
@@ -505,6 +519,50 @@ pub fn encode_payload(event: &WalEventType) -> Result<Vec<u8>, EncodeError> {
 }
 pub fn decode_payload(kind: u16, payload: &[u8]) -> Result<WalEventType, DecodeError> {
     match kind {
+        288 => {
+            if payload.len() + 52 > actionqueue_core::limits::MAX_SIGNAL_RECORD_BYTES {
+                return Err(DecodeError::Decode("signal frame too large".into()));
+            }
+            let (v, rest) = postcard::take_from_bytes::<super::signal_v1::SignalRecordV1>(payload)
+                .map_err(|e| DecodeError::Decode(e.to_string()))?;
+            if !rest.is_empty() {
+                return Err(DecodeError::Decode("trailing signal bytes".into()));
+            }
+            Ok(WalEventType::SignalAdmitted { record: v.try_into()? })
+        }
+        289 => {
+            if payload.len() + 52 > actionqueue_core::limits::MAX_SIGNAL_RECORD_BYTES {
+                return Err(DecodeError::Decode("signal frame too large".into()));
+            }
+            let (v, rest) = postcard::take_from_bytes::<super::signal_v1::PinV1>(payload)
+                .map_err(|e| DecodeError::Decode(e.to_string()))?;
+            if !rest.is_empty() {
+                return Err(DecodeError::Decode("trailing signal bytes".into()));
+            }
+            Ok(WalEventType::SignalPinned { record: v.try_into()? })
+        }
+        290 => {
+            if payload.len() + 52 > actionqueue_core::limits::MAX_SIGNAL_RECORD_BYTES {
+                return Err(DecodeError::Decode("signal frame too large".into()));
+            }
+            let (v, rest) = postcard::take_from_bytes::<super::signal_v1::PinV1>(payload)
+                .map_err(|e| DecodeError::Decode(e.to_string()))?;
+            if !rest.is_empty() {
+                return Err(DecodeError::Decode("trailing signal bytes".into()));
+            }
+            Ok(WalEventType::SignalUnpinned { record: v.try_into()? })
+        }
+        291 => {
+            if payload.len() + 52 > actionqueue_core::limits::MAX_SIGNAL_RECORD_BYTES {
+                return Err(DecodeError::Decode("signal frame too large".into()));
+            }
+            let (v, rest) = postcard::take_from_bytes::<super::signal_v1::RetiredV1>(payload)
+                .map_err(|e| DecodeError::Decode(e.to_string()))?;
+            if !rest.is_empty() {
+                return Err(DecodeError::Decode("trailing signal bytes".into()));
+            }
+            Ok(WalEventType::SignalsRetired { record: v.try_into()? })
+        }
         256 => {
             let (v, rest) =
                 postcard::take_from_bytes::<super::admission_v1::AdmissionCommittedV1>(payload)
@@ -885,9 +943,9 @@ pub fn decode_payload(kind: u16, payload: &[u8]) -> Result<WalEventType, DecodeE
     }
 }
 /// Kind 256 is admission. Reserved IDs: compound attempt start/disposition 272/273;
-/// signal 288; wait establish/satisfy/timeout/cancel 304..=307;
+/// signal kinds 288–291 are active; wait establish/satisfy/timeout/cancel 304..=307;
 /// attributed task/run control 320/321. All are unsupported until their owners land.
-pub const RESERVED_KINDS: &[u16] = &[272, 273, 288, 304, 305, 306, 307, 320, 321];
+pub const RESERVED_KINDS: &[u16] = &[272, 273, 304, 305, 306, 307, 320, 321];
 
 fn bounded<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, EncodeError> {
     let size = postcard::serialize_with_flavor::<_, postcard::ser_flavors::Size, usize>(
