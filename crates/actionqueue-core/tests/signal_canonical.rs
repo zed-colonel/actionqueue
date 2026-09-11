@@ -3,10 +3,12 @@ use actionqueue_core::{
     continuation::*,
     data_ref::{DataRef, InlineData},
 };
+#[cfg(feature = "serde")]
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 #[test]
+#[cfg(feature = "serde")]
 fn independent_signal_vectors_cover_options_scope_inline_external_and_hash_only() {
     let vectors: serde_json::Value =
         serde_json::from_str(include_str!("../../../conformance/aq-cont-1/signal-v1-vector.json"))
@@ -43,12 +45,39 @@ fn inline_hard_limit_and_hash_verification() {
 #[test]
 fn canonical_digest_covers_every_external_representation_field() {
     use actionqueue_core::bounded::*;
-    let vectors: serde_json::Value =
-        serde_json::from_str(include_str!("../../../conformance/aq-cont-1/signal-v1-vector.json"))
-            .unwrap();
-    let original: SignalEnvelope =
-        serde_json::from_value(vectors["cases"][2]["envelope"].clone()).unwrap();
+    use actionqueue_core::data_ref::ExternalDataRef;
+    use actionqueue_core::ids::{SignalId, TenantId};
+
+    // Construct through the domain API so canonicalization remains covered without serde.
+    let hash = ContentHash::new(HashAlgorithm::Sha256, vec![1; 32]).unwrap();
+    let original = SignalEnvelope {
+        signal_id: SignalId::new("event/external").unwrap(),
+        tenant_id: Some(TenantId::new()),
+        namespace: SignalNamespace::new("remote").unwrap(),
+        kind: SignalKind::new("complete").unwrap(),
+        correlation_id: None,
+        causation: None,
+        source_ref: None,
+        payload: Some(DataRef::External(ExternalDataRef {
+            scheme: DataScheme::new("blob").unwrap(),
+            locator: OpaqueRef::new("opaque/object").unwrap(),
+            hash: hash.clone(),
+            size_bytes: Some(u64::MAX),
+            content_type: Some(ContentType::new("application/octet-stream").unwrap()),
+        })),
+        payload_hash: Some(hash),
+        occurred_at: Some(100),
+        received_at: 42,
+        control_context: None,
+    };
     let digest = CanonicalSignalV1::new(&original).unwrap().digest();
+    let mut retry = original.clone();
+    retry.received_at = u64::MAX;
+    retry.control_context = Some(actionqueue_core::causal::ControlMutationContext::new(
+        OpaqueRef::new("another/session").unwrap(),
+    ));
+    retry.payload_hash = None;
+    assert_eq!(CanonicalSignalV1::new(&retry).unwrap().digest(), digest);
     for field in 0..7 {
         let mut e = original.clone();
         let Some(DataRef::External(d)) = &mut e.payload else { unreachable!() };
