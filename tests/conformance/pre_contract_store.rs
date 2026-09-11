@@ -1,11 +1,12 @@
 //! Pre-contract stores are historical evidence, never a target compatibility path.
 mod support;
+use std::{fs, path::Path};
+
 use actionqueue_storage::{
     recovery::bootstrap::load_projection_from_storage,
     store::*,
     wal::{fs_writer::WalFsWriter, repair::RepairPolicy},
 };
-use std::{fs, path::Path};
 fn tree(root: &Path) -> Vec<(String, Vec<u8>)> {
     fn visit(root: &Path, dir: &Path, out: &mut Vec<(String, Vec<u8>)>) {
         for entry in fs::read_dir(dir).unwrap() {

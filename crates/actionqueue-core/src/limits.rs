@@ -117,3 +117,79 @@ impl AdmissionLimits {
         Ok(())
     }
 }
+
+/// Total framed signal record ceiling, including the 52-byte WAL header.
+pub const MAX_SIGNAL_RECORD_BYTES: usize = 128 * 1024;
+/// Hard bound on one retirement proposal and query page.
+pub const MAX_SIGNAL_BATCH: usize = 1024;
+/// Hard bound on independent pins on one signal.
+pub const MAX_SIGNAL_PINS: usize = 64;
+/// Operational signal limits. Hard format limits always apply, including during replay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SignalLimits {
+    /// Includes retired identities, which remain resident.
+    pub identities: usize,
+    /// Sum of framed immutable admission record sizes, including retired records.
+    pub bytes: usize,
+    /// Per-record creation limit, clamped to the hard ceiling.
+    pub record_bytes: usize,
+    /// Inline creation limit, clamped to the hard ceiling.
+    pub inline_bytes: usize,
+    /// Independent pins per signal, clamped to the hard ceiling.
+    pub pins_per_signal: usize,
+    /// Total pins in the store.
+    pub pins: usize,
+    /// Retirement batch size, clamped to the hard ceiling.
+    pub retirement_batch: usize,
+}
+impl Default for SignalLimits {
+    fn default() -> Self {
+        Self {
+            identities: 100_000,
+            bytes: 16 * 1024 * 1024,
+            record_bytes: MAX_SIGNAL_RECORD_BYTES,
+            inline_bytes: MAX_INLINE_DATA_BYTES,
+            pins_per_signal: MAX_SIGNAL_PINS,
+            pins: 100_000,
+            retirement_batch: MAX_SIGNAL_BATCH,
+        }
+    }
+}
+/// Both thresholds must be exceeded; retirement is explicit, never automatic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SignalRetentionPolicy {
+    /// Minimum elapsed receipt age in seconds.
+    pub minimum_age_secs: u64,
+    /// Protect the newest sequence window.
+    pub minimum_sequence_window: u64,
+}
+impl Default for SignalRetentionPolicy {
+    fn default() -> Self {
+        Self { minimum_age_secs: 7 * 24 * 60 * 60, minimum_sequence_window: 10_000 }
+    }
+}
+/// Receipt and protection facts for one signal, independent of routing fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SignalRetentionCandidate {
+    /// Store-assigned receipt time in seconds.
+    pub received_at: u64,
+    /// Store-assigned signal sequence.
+    pub sequence: u64,
+    /// Whether pins or durable references prevent retirement.
+    pub protected: bool,
+}
+impl SignalRetentionPolicy {
+    /// Conservative receipt-age/sequence arithmetic; clock rollback is ineligible.
+    pub fn permits(
+        &self,
+        candidate: SignalRetentionCandidate,
+        last_sequence: u64,
+        now: u64,
+    ) -> bool {
+        !candidate.protected
+            && now.checked_sub(candidate.received_at).is_some_and(|age| age > self.minimum_age_secs)
+            && last_sequence
+                .checked_sub(candidate.sequence)
+                .is_some_and(|distance| distance > self.minimum_sequence_window)
+    }
+}

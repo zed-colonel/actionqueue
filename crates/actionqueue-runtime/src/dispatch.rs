@@ -11,7 +11,6 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::admission::AdmissionError;
 use actionqueue_core::admission::{EnsureTaskOutcome, EnsureTaskRequest};
 use actionqueue_core::ids::{AttemptId, RunId, TaskId};
 #[cfg(feature = "workflow")]
@@ -55,6 +54,7 @@ use actionqueue_workflow::hierarchy::HierarchyTracker;
 use actionqueue_workflow::submission::{submission_channel, SubmissionChannel, SubmissionReceiver};
 use tokio::sync::mpsc;
 
+use crate::admission::AdmissionError;
 use crate::config::BackoffStrategyConfig;
 use crate::worker::{InFlightRun, WorkerResult};
 
@@ -196,7 +196,7 @@ pub enum DispatchError {
     /// A mutation command submitted to the storage authority failed.
     Authority(AuthorityError),
     /// Scheduled-to-ready promotion via authority failed.
-    ScheduledPromotion(AuthorityPromotionError<AuthorityError>),
+    ScheduledPromotion(Box<AuthorityPromotionError<AuthorityError>>),
     /// RetryWait-to-ready promotion failed due to an invalid state transition.
     RetryPromotion(RunInstanceError),
     /// Run derivation from a task's run policy failed.
@@ -1464,7 +1464,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
                 ),
                 &mut self.authority,
             )
-            .map_err(DispatchError::ScheduledPromotion)?;
+            .map_err(|e| DispatchError::ScheduledPromotion(Box::new(e)))?;
             result.promoted_scheduled = promo_result.outcomes().len();
         }
 
@@ -1969,6 +1969,64 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         self.ensure_task(
             EnsureTaskRequest::for_task(spec, vec![]).map_err(AdmissionError::Rejected)?,
         )
+    }
+    /// Inspect a signal in its tenant namespace, including retired records.
+    pub fn get_signal(
+        &self,
+        tenant: Option<actionqueue_core::ids::TenantId>,
+        id: &actionqueue_core::ids::SignalId,
+    ) -> Option<&actionqueue_storage::mutation::signal::SignalRecord> {
+        self.projection().signals().get_signal(tenant, id)
+    }
+    /// Bounded sequence-paginated inspection with an exclusive cursor.
+    pub fn list_signals(
+        &self,
+        tenant: Option<actionqueue_core::ids::TenantId>,
+        after: actionqueue_core::ids::SignalSequence,
+        limit: usize,
+    ) -> Vec<&actionqueue_storage::mutation::signal::SignalRecord> {
+        self.projection().signals().list_signals(tenant, after, limit)
+    }
+    /// Resident signal and live capacity-rejection counters.
+    pub fn signal_statistics(&self) -> actionqueue_storage::recovery::signals::SignalStatistics {
+        self.authority.signal_statistics()
+    }
+    /// Admits a durable signal with host-attested scope and attribution.
+    pub fn admit_signal(
+        &mut self,
+        request: actionqueue_core::continuation::AdmitSignalRequest,
+        ingress: actionqueue_core::continuation::SignalIngressContext,
+    ) -> Result<
+        actionqueue_core::continuation::AdmitSignalOutcome,
+        crate::signals::SignalAdmissionError,
+    > {
+        crate::signals::admit_signal(&mut self.authority, request, ingress, &self.clock)
+    }
+    /// Explicit durable retention control through the mutation authority.
+    pub fn pin_signal(
+        &mut self,
+        signal_id: actionqueue_core::ids::SignalId,
+        pin_id: actionqueue_core::continuation::SignalPinId,
+        ingress: actionqueue_core::continuation::SignalIngressContext,
+    ) -> Result<usize, crate::signals::SignalAdmissionError> {
+        crate::signals::pin_signal(&mut self.authority, signal_id, pin_id, ingress, &self.clock)
+    }
+    /// Explicit durable retention control through the mutation authority.
+    pub fn unpin_signal(
+        &mut self,
+        signal_id: actionqueue_core::ids::SignalId,
+        pin_id: actionqueue_core::continuation::SignalPinId,
+        ingress: actionqueue_core::continuation::SignalIngressContext,
+    ) -> Result<usize, crate::signals::SignalAdmissionError> {
+        crate::signals::unpin_signal(&mut self.authority, signal_id, pin_id, ingress, &self.clock)
+    }
+    /// Explicit durable retention control through the mutation authority.
+    pub fn retire_signals(
+        &mut self,
+        sequences: Vec<actionqueue_core::ids::SignalSequence>,
+        ingress: actionqueue_core::continuation::SignalIngressContext,
+    ) -> Result<usize, crate::signals::SignalAdmissionError> {
+        crate::signals::retire_signals(&mut self.authority, sequences, ingress, &self.clock)
     }
     /// Commits one complete admission and publishes scheduling caches before another tick.
     pub fn ensure_task(

@@ -7,3 +7,7 @@ pub mod checkpoint;
 pub use checkpoint::*;
 pub mod resume;
 pub use resume::*;
+pub mod signal_admission;
+pub use signal_admission::*;
+pub mod signal_canonical;
+pub use signal_canonical::*;

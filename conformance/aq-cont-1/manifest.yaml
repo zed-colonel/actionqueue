@@ -73,6 +73,22 @@ fixtures:
   sha256: ceeb2d5999182cbc807597743fdd0da604322ca4ced6772dc86a1106fa50f73a
   variants: [replay, crash, race]
   introduced_by: AQ-04
+- id: AQ-CF-SIGNAL-001
+  title: Canonical signal bytes and SHA-256
+  invariants: [AQ-H3, AQ-H5, AQ-H10]
+  driver: embedded
+  path: signal-v1-vector.json
+  sha256: 3348070620ad4c33fd62824583b2ff49dcabb2dc2c3e634f97df6ee558bb610e
+  variants: [replay, crash, race]
+  introduced_by: AQ-05
+- id: AQ-CF-SIGNAL-002
+  title: Projection v3 known-answer vector
+  invariants: [AQ-H3, AQ-H5, AQ-H10]
+  driver: embedded
+  path: projection-v3-vector.json
+  sha256: bc045ace9a2ae82ccf095287580172f79c2bdde9f189bdf9241c9c57962b6904
+  variants: [replay, crash, race]
+  introduced_by: AQ-05
 # Black-box drivers. Intentionally empty at AQ-01; populated by AQ-13.
 drivers: []
 acceptance_matrices:
@@ -122,3 +138,26 @@ admission:
   - tests/acceptance/admission_conflict.rs
   - tests/acceptance/compound_admission_crash.rs
   developmental_cases: [AQ-DD-009, AQ-DD-010]
+
+signals:
+  introduced_by: AQ-05
+  wal_kinds: [288, 289, 290, 291]
+  wal_record_schema: 1
+  wal_frame_version: 1
+  snapshot_schema: 3
+  projection_version: 3
+  tests:
+  - crates/actionqueue-core/tests/signal_canonical.rs
+  - tests/acceptance/signal_admission.rs
+  - tests/acceptance/signal_retention.rs
+  - tests/acceptance/signal_crash.rs
+  guarantees:
+  - tenant_scoped_identity_and_canonical_conflict_detection
+  - independent_global_signal_sequence_and_exclusive_cursors
+  - retained_index_matching_equivalent_to_pure_filter
+  - bounded_explicit_pins_retirement_and_backpressure
+  - immediate_durability_and_uncertainty_fencing
+  - replay_snapshot_and_backup_equivalence
+  deferred:
+  - active_wait_resume_and_historical_attempt_retention_protection_AQ_06
+  - physical_WAL_truncation

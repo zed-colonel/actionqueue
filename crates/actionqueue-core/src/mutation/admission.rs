@@ -5,7 +5,7 @@ use crate::causal::ControlMutationContext;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdmissionCommitCommand {
     expected_sequence: u64,
-    plan: AdmissionPlan,
+    plan: Box<AdmissionPlan>,
     control_context: Option<ControlMutationContext>,
     timestamp: u64,
 }
@@ -17,7 +17,7 @@ impl AdmissionCommitCommand {
         control_context: Option<ControlMutationContext>,
         timestamp: u64,
     ) -> Self {
-        Self { expected_sequence, plan, control_context, timestamp }
+        Self { expected_sequence, plan: Box::new(plan), control_context, timestamp }
     }
     /// Returns expected sequence.
     pub fn expected_sequence(&self) -> u64 {

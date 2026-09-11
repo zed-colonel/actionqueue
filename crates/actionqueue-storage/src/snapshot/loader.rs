@@ -1,6 +1,7 @@
 //! Target-only snapshot loading. Compatibility and semantic failures never fall back.
-use super::{envelope, mapping::SnapshotMappingError, model::Snapshot};
 use std::{fs::File, io::Read};
+
+use super::{envelope, mapping::SnapshotMappingError, model::Snapshot};
 pub trait SnapshotLoader {
     fn load(&mut self) -> Result<Option<Snapshot>, SnapshotLoaderError>;
 }

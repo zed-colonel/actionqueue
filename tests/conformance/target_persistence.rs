@@ -2,6 +2,8 @@
 //!
 //! Keep subprocess tests in `store_process_lock.rs`: spawning here can briefly
 //! inherit unrelated tests' store-lock descriptors and delay their lock release.
+use std::{collections::BTreeMap, fs, path::Path};
+
 use actionqueue_core::{
     ids::{AttemptId, RunId, TaskId},
     mutation::AttemptResultKind,
@@ -28,7 +30,6 @@ use actionqueue_storage::{
         writer::WalWriter,
     },
 };
-use std::{collections::BTreeMap, fs, path::Path};
 fn tree(root: &Path) -> BTreeMap<String, Vec<u8>> {
     fn visit(root: &Path, dir: &Path, v: &mut BTreeMap<String, Vec<u8>>) {
         for e in fs::read_dir(dir).unwrap() {
@@ -1090,7 +1091,7 @@ fn malformed_backup_descriptors_refuse_before_destination_creation() {
 #[test]
 fn canonical_projection_matches_independent_sha256_vector() {
     let vector: serde_json::Value =
-        serde_json::from_str(include_str!("../../conformance/aq-cont-1/projection-v2-vector.json"))
+        serde_json::from_str(include_str!("../../conformance/aq-cont-1/projection-v3-vector.json"))
             .unwrap();
     let dir = tempfile::tempdir().unwrap();
     let session = init(dir.path());

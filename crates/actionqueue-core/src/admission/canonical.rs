@@ -1,4 +1,6 @@
 //! ADR-002 CanonicalAdmissionV1. No serde output or Rust discriminants are hashed.
+use sha2::{Digest, Sha256};
+
 use super::{AdmissionDigest, AdmissionRejection, EnsureTaskRequest};
 use crate::bounded::{ContentHash, HashAlgorithm};
 use crate::task::{
@@ -6,7 +8,6 @@ use crate::task::{
     run_policy::RunPolicy,
     safety::SafetyLevel,
 };
-use sha2::{Digest, Sha256};
 
 /// Owned, bounded canonical bytes. Collection ordering has already been normalized.
 #[derive(Debug, Clone, PartialEq, Eq)]

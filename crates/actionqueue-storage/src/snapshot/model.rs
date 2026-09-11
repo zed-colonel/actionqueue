@@ -22,6 +22,10 @@ use crate::recovery::reducer::{AttemptHistoryEntry, LeaseMetadata, RunStateHisto
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct Snapshot {
+    /// Immutable signal facts, explicit pins and retirement state in signal sequence order.
+    pub signals: Vec<crate::mutation::signal::SignalRecord>,
+    /// Signal high-water mark, independent of WAL sequence.
+    pub last_signal_sequence: u64,
     /// Immutable admission facts and the inputs needed to verify their digests.
     pub admissions: Vec<crate::mutation::admission::AdmissionRecord>,
     /// The format version of this snapshot.

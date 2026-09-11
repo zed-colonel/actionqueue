@@ -87,3 +87,20 @@ Admission is an immediate-sync operation; Deferred commits are rejected. Duplica
 resolution under the exclusive mutation owner precedes stale sequence and current
 parent status checks. Uncertain append, sync, or publication failures fence the whole
 authority, including cached duplicate reads, until it is reconstructed by recovery.
+
+## AQ-05 addendum: durable signal lineage
+
+Activate kinds 288–291/schema 1 for admitted signals, pin, unpin and bounded
+retirement. Their storage-owned DTOs freeze all producer content and retention
+attribution. Snapshot schema, projection image and projection digest advance to 3;
+WAL and snapshot framing stay version 1. Version-2 development manifests are
+rejected before writable access, without migration or rewriting. Existing v1/v2
+vectors and frozen contract/archive evidence remain unchanged.
+
+Projection v3 includes immutable signal records, pins, retirement state and an
+independent signal high-water mark. Hydration checks digests, unique identities,
+consecutive signal sequences, WAL bounds, ordered pins and retention transitions,
+then rebuilds all indexes and resident counters. Recovery verifies against complete
+WAL history and does not sample a clock or rerun current retention policy.
+Signal operations use the existing prepare/append/immediate-sync/publish lane and
+fence both writer and authority after uncertainty.

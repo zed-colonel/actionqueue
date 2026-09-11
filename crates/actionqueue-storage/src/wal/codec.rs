@@ -73,6 +73,11 @@ pub(crate) fn header(bytes: &[u8]) -> Result<Header, DecodeError> {
         return Err(DecodeError::UnsupportedRecordSchema { kind, found: schema });
     }
     let length = u32::from_le_bytes(bytes[40..44].try_into().unwrap()) as usize;
+    if matches!(kind, 288..=291)
+        && length + HEADER_LEN > actionqueue_core::limits::MAX_SIGNAL_RECORD_BYTES
+    {
+        return Err(DecodeError::InvalidLength("signal frame exceeds hard ceiling".into()));
+    }
     if length > MAX_PAYLOAD_SIZE {
         return Err(DecodeError::InvalidLength(format!(
             "payload {length} exceeds {MAX_PAYLOAD_SIZE}"
@@ -92,6 +97,11 @@ pub fn encode(event: &WalEvent) -> Result<Vec<u8>, EncodeError> {
 }
 pub fn encode_for_store(event: &WalEvent, store_id: uuid::Uuid) -> Result<Vec<u8>, EncodeError> {
     let payload = wire_v1::encode_payload(event.event())?;
+    if matches!(wire_v1::kind(event.event()), 288..=291)
+        && payload.len() + HEADER_LEN > actionqueue_core::limits::MAX_SIGNAL_RECORD_BYTES
+    {
+        return Err(EncodeError::PayloadTooLarge(payload.len()));
+    }
     if payload.len() > MAX_PAYLOAD_SIZE {
         return Err(EncodeError::PayloadTooLarge(payload.len()));
     }

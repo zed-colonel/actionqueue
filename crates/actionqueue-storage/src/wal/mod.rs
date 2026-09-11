@@ -20,3 +20,5 @@ pub use wire_v1::RESERVED_KINDS;
 mod domain_v1;
 
 pub(crate) mod admission_v1;
+
+pub(crate) mod signal_v1;

@@ -1,13 +1,13 @@
 //! Target snapshot framing, identity binding and reserved continuation sections.
+use serde::{Deserialize, Serialize};
+
 use super::{loader::SnapshotLoaderError, model::Snapshot};
 use crate::recovery::projection::{snapshot_digest, ProjectionDigest};
-use serde::{Deserialize, Serialize};
 pub const MAGIC: &[u8; 8] = b"AQCONT1S";
 pub const MAX_SNAPSHOT_BYTES: usize = 256 * 1024 * 1024;
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ReservedSections {
-    signals: Vec<Vec<u8>>,
     waits: Vec<Vec<u8>>,
     checkpoints: Vec<Vec<u8>>,
     resume_assignments: Vec<Vec<u8>>,
@@ -15,8 +15,7 @@ pub(crate) struct ReservedSections {
 }
 impl ReservedSections {
     fn is_empty(&self) -> bool {
-        self.signals.is_empty()
-            && self.waits.is_empty()
+        self.waits.is_empty()
             && self.checkpoints.is_empty()
             && self.resume_assignments.is_empty()
             && self.causal_control.is_empty()
@@ -36,8 +35,8 @@ pub(crate) struct Envelope {
 pub(crate) fn encode(snapshot: &Snapshot, store_id: uuid::Uuid) -> Result<Vec<u8>, String> {
     let envelope = Envelope {
         store_id,
-        snapshot_schema: 2,
-        projection_version: 2,
+        snapshot_schema: 3,
+        projection_version: 3,
         wal_sequence: snapshot.metadata.wal_sequence,
         digest: snapshot_digest(snapshot).map_err(|e| e.to_string())?,
         reserved: ReservedSections::default(),
@@ -66,17 +65,17 @@ pub(crate) fn decode(
     if identity.is_some_and(|id| id != envelope.store_id) {
         return Err(invalid("store identity mismatch".into()));
     }
-    if envelope.snapshot_schema != 2 {
+    if envelope.snapshot_schema != 3 {
         return Err(SnapshotLoaderError::IncompatibleVersion {
             component: "snapshot_schema",
-            expected: 2,
+            expected: 3,
             found: envelope.snapshot_schema,
         });
     }
-    if envelope.projection_version != 2 {
+    if envelope.projection_version != 3 {
         return Err(SnapshotLoaderError::IncompatibleVersion {
             component: "projection_version",
-            expected: 2,
+            expected: 3,
             found: envelope.projection_version,
         });
     }
@@ -85,10 +84,10 @@ pub(crate) fn decode(
     }
     let snapshot: Snapshot =
         serde_json::from_value(envelope.projection).map_err(|e| invalid(e.to_string()))?;
-    if snapshot.version != 2 {
+    if snapshot.version != 3 {
         return Err(SnapshotLoaderError::IncompatibleVersion {
             component: "projection_image",
-            expected: 2,
+            expected: 3,
             found: snapshot.version,
         });
     }

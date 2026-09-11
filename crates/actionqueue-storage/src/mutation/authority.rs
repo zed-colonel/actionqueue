@@ -3,7 +3,6 @@
 //! This module implements the D-04 WAL-first authority lane:
 //! validate command -> map event -> append -> durability sync policy -> apply projection.
 
-use super::admission::AdmissionRecord;
 use actionqueue_core::budget::BudgetDimension;
 use actionqueue_core::ids::{AttemptId, RunId, TaskId};
 use actionqueue_core::mutation::{
@@ -28,6 +27,7 @@ use actionqueue_core::{
     run::RunInstance,
 };
 
+use super::admission::AdmissionRecord;
 use crate::recovery::reducer::ReplayReducer;
 use crate::recovery::reducer::ReplayReducerError;
 use crate::wal::event::{WalEvent, WalEventType};
@@ -91,6 +91,17 @@ pub trait MutationProjection: Clone {
     ) -> Result<(), AdmissionRejection> {
         Err(AdmissionRejection::UnsupportedFeature)
     }
+    /// Signal indexes, if this projection supports durable signals.
+    fn signal_index(&self) -> Option<&crate::recovery::signals::SignalIndex> {
+        None
+    }
+    /// Validates local causation and tenant ownership before signal admission.
+    fn validate_signal_references(
+        &self,
+        _e: &actionqueue_core::continuation::SignalEnvelope,
+    ) -> Result<(), actionqueue_core::continuation::SignalRejection> {
+        Err(actionqueue_core::continuation::SignalRejection::UnsupportedFeature)
+    }
     /// Applies a durable event to the in-memory projection.
     fn apply_event(&mut self, event: &WalEvent) -> Result<(), Self::Error>;
 }
@@ -153,6 +164,15 @@ impl MutationProjection for ReplayReducer {
     ) -> Result<(), AdmissionRejection> {
         ReplayReducer::validate_admission(self, record, runs)
     }
+    fn signal_index(&self) -> Option<&crate::recovery::signals::SignalIndex> {
+        Some(self.signals())
+    }
+    fn validate_signal_references(
+        &self,
+        e: &actionqueue_core::continuation::SignalEnvelope,
+    ) -> Result<(), actionqueue_core::continuation::SignalRejection> {
+        ReplayReducer::validate_signal_references(self, e)
+    }
     fn apply_event(&mut self, event: &WalEvent) -> Result<(), Self::Error> {
         self.apply(event)
     }
@@ -165,6 +185,9 @@ pub struct StorageMutationAuthority<W: WalWriter, P: MutationProjection> {
     projection: P,
     recovery_required: bool,
     admission_limits: AdmissionLimits,
+    pub(super) signal_limits: actionqueue_core::limits::SignalLimits,
+    pub(super) signal_retention: actionqueue_core::limits::SignalRetentionPolicy,
+    pub(super) signal_capacity_rejections: u64,
 }
 
 impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
@@ -176,6 +199,9 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
             projection,
             recovery_required,
             admission_limits: AdmissionLimits::default(),
+            signal_limits: Default::default(),
+            signal_retention: Default::default(),
+            signal_capacity_rejections: 0,
         }
     }
 
@@ -231,6 +257,12 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
         command: &MutationCommand,
     ) -> Result<ValidatedCommand, MutationValidationError> {
         match command {
+            MutationCommand::SignalAdmit(_)
+            | MutationCommand::SignalPin(_)
+            | MutationCommand::SignalUnpin(_)
+            | MutationCommand::RetireSignals(_) => {
+                unreachable!("signal commands prepared separately")
+            }
             MutationCommand::AdmissionCommit(details) => {
                 self.validate_sequence(details.expected_sequence())?;
                 Ok(ValidatedCommand::AdmissionCommit(details.clone()))
@@ -1295,12 +1327,29 @@ impl<W: WalWriter, P: MutationProjection> MutationAuthority for StorageMutationA
                 .validate_admission(&record, c.plan().runs())
                 .map_err(MutationAuthorityError::Admission)?;
         }
-        // Stage 1: validate command.
-        let validated =
-            self.validate_command(&command).map_err(MutationAuthorityError::Validation)?;
+        let signal_preparation = self.prepare_signal(&command, durability).map_err(|e| {
+            if e == actionqueue_core::continuation::SignalRejection::Capacity {
+                self.signal_capacity_rejections = self.signal_capacity_rejections.saturating_add(1);
+            }
+            MutationAuthorityError::Signal(e)
+        })?;
+        if let Some(super::signal_authority::SignalPreparation::Noop(outcome)) = signal_preparation
+        {
+            return Ok(outcome);
+        }
+        let (event, applied) =
+            if let Some(super::signal_authority::SignalPreparation::Event(event, applied)) =
+                signal_preparation
+            {
+                (*event, applied)
+            } else {
+                // Stage 1: validate command.
+                let validated =
+                    self.validate_command(&command).map_err(MutationAuthorityError::Validation)?;
 
-        // Stage 2: map validated command to canonical WAL event.
-        let (event, applied) = Self::build_event_and_applied(validated);
+                // Stage 2: map validated command to canonical WAL event.
+                Self::build_event_and_applied(validated)
+            };
 
         if matches!(event.event(), WalEventType::AdmissionCommitted { .. }) {
             let bytes = crate::wal::codec::encode(&event)
@@ -1842,6 +1891,8 @@ impl std::error::Error for MutationValidationError {}
 pub enum MutationAuthorityError<ProjectionError> {
     /// Complete admission was rejected before append.
     Admission(AdmissionRejection),
+    /// Definitive signal rejection before append.
+    Signal(actionqueue_core::continuation::SignalRejection),
     /// An uncertain write fences the authority until recovery.
     RecoveryRequired,
     /// Validation stage failure.
@@ -1880,6 +1931,7 @@ impl<ProjectionError: std::fmt::Display> std::fmt::Display
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Admission(e) => write!(f, "{e}"),
+            Self::Signal(e) => write!(f, "{e}"),
             Self::RecoveryRequired => {
                 write!(f, "mutation authority requires recovery after an uncertain write")
             }
@@ -1901,11 +1953,7 @@ impl<ProjectionError: std::fmt::Display> std::fmt::Display
                 "mutation publication failed at sequence {sequence} (synced={synced}): {error}"
             ),
             MutationAuthorityError::Apply { sequence, source } => {
-                write!(
-                    f,
-                    "mutation preparation failed before append sequence {sequence}: \
-                     {source}"
-                )
+                write!(f, "mutation preparation failed before append sequence {sequence}: {source}")
             }
         }
     }

@@ -29,8 +29,11 @@
 //! use actionqueue_storage::wal::fs_writer::WalFsWriter;
 //!
 //! let root = std::env::temp_dir().join(format!("aq-example-{}", TaskId::new()));
-//! let session = actionqueue_storage::store::open_store(&root,
-//!     actionqueue_storage::store::OpenOptions::Initialize { features: vec![] }).unwrap();
+//! let session = actionqueue_storage::store::open_store(
+//!     &root,
+//!     actionqueue_storage::store::OpenOptions::Initialize { features: vec![] },
+//! )
+//! .unwrap();
 //! let mut authority = session.into_authority().unwrap();
 //!
 //! let task_id = TaskId::new();

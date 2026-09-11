@@ -1,4 +1,9 @@
 //! Session-bound filesystem WAL writer. All recovery validation precedes writable access.
+use std::{
+    fs::{File, OpenOptions},
+    io::{Seek, SeekFrom, Write},
+};
+
 use super::{
     event::WalEvent,
     repair::RepairPolicy,
@@ -8,10 +13,6 @@ use super::{
 use crate::{
     recovery::reducer::ReplayReducer,
     store::{StoreError, StoreSession},
-};
-use std::{
-    fs::{File, OpenOptions},
-    io::{Seek, SeekFrom, Write},
 };
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WalFsWriterInitError {

@@ -6,7 +6,7 @@ use crate::ids::{SignalSequence, WaitId};
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum WaitMatchPolicy {
-    /// Consume the earliest eligible matching signal.
+    /// Select the earliest eligible matching signal without consuming it.
     FirstMatch,
 }
 /// Signal eligibility is store order, never wall-clock order.

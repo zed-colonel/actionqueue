@@ -1,10 +1,11 @@
 //! One parser and corruption classification for readers, recovery, and repair.
+use std::io::{Read, Seek};
+
 use super::{
     codec::{self, DecodeError, HEADER_LEN},
     event::WalEvent,
     reader::WalReaderError,
 };
-use std::io::{Read, Seek};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WalCorruptionReasonCode {
     IncompleteHeader,

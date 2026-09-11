@@ -31,6 +31,14 @@ pub enum DurabilityPolicy {
 pub enum MutationCommand {
     /// Atomically admit a task and its initial runs.
     AdmissionCommit(AdmissionCommitCommand),
+    /// Admit a durable signal.
+    SignalAdmit(SignalAdmitCommand),
+    /// Acquire an independent retention pin.
+    SignalPin(SignalPinCommand),
+    /// Release one retention pin.
+    SignalUnpin(SignalPinCommand),
+    /// Retire a bounded batch from matching.
+    RetireSignals(RetireSignalsCommand),
     /// Request durable creation of a task specification.
     TaskCreate(TaskCreateCommand),
     /// Request durable creation of a run instance.
@@ -767,6 +775,10 @@ impl MutationOutcome {
 pub enum AppliedMutation {
     /// Durable admission result.
     Admission(crate::admission::EnsureTaskOutcome),
+    /// Durable signal admission result.
+    Signal(crate::continuation::AdmitSignalOutcome),
+    /// Number of pin or retirement state changes (zero for an idempotent no-op).
+    SignalRetention { changed: usize },
     /// Task specification was durably created.
     TaskCreate {
         /// Created task identifier.

@@ -12,3 +12,10 @@ continuation semantics.
 
 Fixture directories and black-box drivers are added by later pull requests. The manifest's
 fixture inventory is intentionally empty at `AQ-01`.
+
+AQ-05 adds signal canonical and projection-v3 vectors while preserving v1/v2
+evidence. `generate-signal-vectors.py` independently computes the bytes/digests.
+The signal admission, retention and crash acceptance binaries are included in
+`cargo aq-conformance`; full feature tests cover tenant/profile isolation.
+These prove retained signal admission/indexing and explicit protection, not wait
+resolution or physical WAL compaction.

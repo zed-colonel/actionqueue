@@ -62,11 +62,11 @@ pub fn ensure_task<W: WalWriter>(
         AdmissionPlanningError::Rejected(e) => AdmissionError::Rejected(e),
         AdmissionPlanningError::Derivation(e) => AdmissionError::Derivation(e),
     })?;
-    let sequence = authority.projection().latest_sequence().checked_add(1).ok_or_else(|| {
+    let sequence = authority.projection().latest_sequence().checked_add(1).ok_or(
         AdmissionError::Storage(MutationAuthorityError::Validation(
             actionqueue_storage::mutation::authority::MutationValidationError::SequenceOverflow,
-        ))
-    })?;
+        )),
+    )?;
     let result = authority.submit_command(
         MutationCommand::AdmissionCommit(AdmissionCommitCommand::new(
             sequence, plan, control, timestamp,

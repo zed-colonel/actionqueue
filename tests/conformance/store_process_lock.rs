@@ -5,6 +5,8 @@
 //! before exec, delaying release after another test drops its final session.
 //! Keep close/reopen persistence tests in `target_persistence.rs`.
 
+use std::{fs, path::Path};
+
 use actionqueue_storage::{
     store::{inspect_store, open_store, OpenOptions, StoreError},
     wal::{
@@ -13,7 +15,6 @@ use actionqueue_storage::{
         writer::WalWriter,
     },
 };
-use std::{fs, path::Path};
 
 #[test]
 fn process_lock_holder() {
