@@ -413,12 +413,10 @@ fn classify_response(
 ) -> (ExecutorResponse, Vec<BudgetConsumption>) {
     let consumption = output.consumption().to_vec();
 
-    // Timeout overrides all non-Suspended handler responses. A handler that
-    // explicitly suspends takes priority — budget-based suspension is voluntary.
+    // An elapsed timeout is authoritative, including when the handler observed
+    // budget cancellation and proposed suspension. Preserve consumption only.
     if let TimeoutClassification::TimedOut(TimeoutFailure { timeout_secs, .. }) = timeout {
-        if !matches!(output, HandlerOutput::Suspended { .. }) {
-            return (ExecutorResponse::Timeout { timeout_secs: *timeout_secs }, consumption);
-        }
+        return (ExecutorResponse::Timeout { timeout_secs: *timeout_secs }, consumption);
     }
 
     let response = match output {
@@ -725,17 +723,78 @@ mod tests {
     }
 
     #[test]
-    fn classify_response_suspended_takes_priority_over_timeout() {
-        let output = HandlerOutput::Suspended { output: Some(vec![1, 2, 3]), consumption: vec![] };
-        let timeout = TimeoutClassification::TimedOut(TimeoutFailure {
-            timeout_secs: 10,
-            elapsed: Duration::from_secs(15),
-            reason_code: TimeoutReasonCode::DeadlineExceeded,
-        });
-        let (response, _) = super::classify_response(output, &timeout);
-        assert!(
-            matches!(response, crate::types::ExecutorResponse::Suspended { .. }),
-            "Suspended should take priority over Timeout, got: {response:?}"
+    fn timeout_overrides_every_handler_outcome_and_retains_consumption() {
+        use actionqueue_core::budget::{BudgetConsumption, BudgetDimension};
+        let consumption = vec![BudgetConsumption::new(BudgetDimension::Token, 42)];
+        let outputs = [
+            HandlerOutput::Success {
+                output: Some(vec![1, 2, 3]),
+                consumption: consumption.clone(),
+            },
+            HandlerOutput::RetryableFailure {
+                error: "transient".into(),
+                consumption: consumption.clone(),
+            },
+            HandlerOutput::TerminalFailure {
+                error: "permanent".into(),
+                consumption: consumption.clone(),
+            },
+            HandlerOutput::Suspended {
+                output: Some(vec![1, 2, 3]),
+                consumption: consumption.clone(),
+            },
+        ];
+        for output in outputs {
+            let run_id = RunId::new();
+            let attempt_id = AttemptId::new();
+            let runner = AttemptRunner::with_timer(
+                RecordingHandler::new(output),
+                FixedTimer { elapsed: Duration::from_secs(15) },
+            );
+            let record = runner.run_attempt(ExecutorRequest {
+                resume_context: None,
+                causal_context: None,
+                run_id,
+                attempt_id,
+                payload: vec![],
+                constraints: TaskConstraints::new(2, Some(10), None).unwrap(),
+                attempt_number: 1,
+                submission: None,
+                children: None,
+                cancellation_context: None,
+            });
+            assert_eq!(
+                record.response,
+                crate::types::ExecutorResponse::Timeout { timeout_secs: 10 }
+            );
+            assert_eq!(record.consumption, consumption);
+            assert_eq!(record.retry_decision, Ok(RetryDecision::Retry));
+            assert!(record.timeout_classification.is_timed_out());
+        }
+    }
+
+    #[test]
+    fn budget_cancellation_without_timeout_preserves_suspension() {
+        let cancellation = crate::handler::CancellationContext::new();
+        cancellation.cancel();
+        let runner = AttemptRunner::with_timer(
+            RecordingHandler::new(HandlerOutput::suspended()),
+            FixedTimer { elapsed: Duration::from_secs(1) },
         );
+        let record = runner.run_attempt(ExecutorRequest {
+            resume_context: None,
+            causal_context: None,
+            run_id: RunId::new(),
+            attempt_id: AttemptId::new(),
+            payload: vec![],
+            constraints: TaskConstraints::new(1, None, None).unwrap(),
+            attempt_number: 1,
+            submission: None,
+            children: None,
+            cancellation_context: Some(cancellation),
+        });
+        assert!(matches!(record.response, crate::types::ExecutorResponse::Suspended { .. }));
+        assert_eq!(record.retry_decision, Ok(RetryDecision::Suspend));
+        assert!(!record.timeout_classification.is_timed_out());
     }
 }
