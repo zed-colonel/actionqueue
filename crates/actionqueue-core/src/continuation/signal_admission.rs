@@ -1,5 +1,4 @@
 //! Producer requests, host attestation, and typed durable signal results.
-use sha2::{Digest, Sha256};
 
 use super::{SignalEnvelope, SignalKind, SignalNamespace};
 use crate::{
@@ -80,16 +79,14 @@ pub fn effective_payload_hash(
     payload: Option<&DataRef>,
     supplied: Option<&ContentHash>,
 ) -> Result<Option<ContentHash>, SignalRejection> {
+    if let Some(data) = payload {
+        data.validate().map_err(|e| match e {
+            crate::data_ref::DataValidationError::TooLarge => SignalRejection::TooLarge,
+            _ => SignalRejection::InvalidHash,
+        })?;
+    }
     let hash = match payload {
-        Some(DataRef::Inline(data)) => {
-            if data.bytes().len() > crate::limits::MAX_INLINE_DATA_BYTES {
-                return Err(SignalRejection::TooLarge);
-            }
-            if Sha256::digest(data.bytes()).as_slice() != data.hash().bytes() {
-                return Err(SignalRejection::InvalidHash);
-            }
-            Some(data.hash())
-        }
+        Some(DataRef::Inline(data)) => Some(data.hash()),
         Some(DataRef::External(data)) => Some(&data.hash),
         None => None,
     };
