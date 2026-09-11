@@ -1,6 +1,6 @@
 //! Wait resolution proposals, wired into mutation authority in AQ-06.
 use crate::causal::ControlMutationContext;
-use crate::ids::{RunId, SignalSequence, WaitId};
+use crate::ids::{RunId, SignalSequence, TenantId, WaitId};
 /// Pure WaitSatisfyCommand proposal; no mutation authority implementation yet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WaitSatisfyCommand {
@@ -79,9 +79,20 @@ pub struct WaitCancelCommand {
     run_id: RunId,
     wait_id: WaitId,
     control_context: ControlMutationContext,
+    tenant_id: Option<TenantId>,
     timestamp: u64,
 }
 impl WaitCancelCommand {
+    /// Attests the target tenant at ingress.
+    pub fn with_tenant(mut self, tenant: Option<TenantId>) -> Self {
+        self.tenant_id = tenant;
+        self
+    }
+    /// Host-attested tenant scope.
+    pub fn tenant_id(&self) -> Option<TenantId> {
+        self.tenant_id
+    }
+
     /// Constructs an immutable proposal. Store checks occur at commit.
     pub fn new(
         expected_sequence: u64,
@@ -90,7 +101,7 @@ impl WaitCancelCommand {
         control_context: ControlMutationContext,
         timestamp: u64,
     ) -> Self {
-        Self { expected_sequence, run_id, wait_id, control_context, timestamp }
+        Self { expected_sequence, run_id, wait_id, control_context, tenant_id: None, timestamp }
     }
     /// Returns expected sequence.
     pub fn expected_sequence(&self) -> u64 {

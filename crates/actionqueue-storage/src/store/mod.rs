@@ -12,6 +12,10 @@ pub(crate) fn check_event_profile(
 ) -> Result<(), StoreError> {
     use crate::wal::event::WalEventType as E;
     let required = match event {
+        E::WaitEstablished { record } => record.spec.filter().tenant_id.map(|_| "platform"),
+        E::TaskCancellationCommitted { record } | E::RunCancellationCommitted { record } => {
+            record.tenant_id.map(|_| "platform")
+        }
         E::SignalAdmitted { record } => record.envelope().tenant_id.map(|_| "platform"),
         E::SignalPinned { record } | E::SignalUnpinned { record } => {
             record.tenant_id.map(|_| "platform")

@@ -193,3 +193,6 @@ impl SignalRetentionPolicy {
                 .is_some_and(|distance| distance > self.minimum_sequence_window)
     }
 }
+
+/// Hard ceiling for compound continuation/control frames, including checkpoint references.
+pub const MAX_WAIT_RECORD_BYTES: usize = 128 * 1024;

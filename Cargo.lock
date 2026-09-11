@@ -82,6 +82,7 @@ dependencies = [
  "actionqueue-actor",
  "actionqueue-core",
  "actionqueue-platform",
+ "actionqueue-runtime",
  "actionqueue-storage",
  "axum",
  "http-body-util",

@@ -387,11 +387,13 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
     /// Returns [`DispatchError::InvalidBackoffConfig`] if the backoff strategy
     /// configuration is invalid (e.g., exponential base exceeds max).
     pub fn new(
-        authority: StorageMutationAuthority<W, ReplayReducer>,
+        mut authority: StorageMutationAuthority<W, ReplayReducer>,
         handler: H,
         clock: C,
         config: DispatchConfig,
     ) -> Result<Self, DispatchError> {
+        crate::waits::recover_execution(&mut authority, clock.now())
+            .map_err(DispatchError::Authority)?;
         let backoff: Box<dyn BackoffStrategy + Send + Sync> = match &config.backoff_config {
             BackoffStrategyConfig::Fixed { interval } => {
                 Box::new(actionqueue_executor_local::FixedBackoff::new(*interval))
@@ -560,7 +562,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
             ledger
         };
 
-        Ok(Self {
+        let mut dispatch = Self {
             authority,
             runner: Arc::new(AttemptRunner::new(handler)),
             clock,
@@ -601,9 +603,61 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
             #[cfg(feature = "platform")]
             ledger,
             pending_gc_tasks: std::collections::HashSet::new(),
-        })
+        };
+        let now = dispatch.clock.now();
+        crate::waits::recover_cancellations(&mut dispatch.authority, now)
+            .map_err(DispatchError::Authority)?;
+        dispatch.cancel_dependency_failed_runs(now)?;
+        dispatch.cascade_hierarchy_cancellations(now)?;
+        crate::waits::reconcile(&mut dispatch.authority, now).map_err(DispatchError::Authority)?;
+        dispatch.rebuild_key_gate()?;
+        Ok(dispatch)
     }
 
+    fn rebuild_key_gate(&mut self) -> Result<(), DispatchError> {
+        let mut gate = KeyGate::new();
+        for (run, key) in self.authority.projection().key_reservations() {
+            if matches!(
+                actionqueue_engine::concurrency::lifecycle::acquire_key(
+                    Some(key.into()),
+                    run,
+                    &mut gate
+                ),
+                actionqueue_engine::concurrency::lifecycle::LifecycleResult::KeyOccupied { .. }
+            ) {
+                return Err(DispatchError::Authority(MutationAuthorityError::Wait(
+                    actionqueue_core::mutation::WaitRejection::ConflictingKeyOwnership,
+                )));
+            }
+        }
+        self.key_gate = gate;
+        Ok(())
+    }
+    /// Next durable timer, even when paused or draining.
+    pub fn next_wait_deadline(&self) -> Option<u64> {
+        self.projection().waits().next_deadline()
+    }
+    /// Compound host-attested run/task cancellation.
+    pub fn cancel(
+        &mut self,
+        command: actionqueue_core::mutation::CancelCommand,
+    ) -> Result<(), DispatchError> {
+        let _ = self
+            .authority
+            .submit_command(MutationCommand::Cancel(command), DurabilityPolicy::Immediate)
+            .map_err(DispatchError::Authority)?;
+        self.rebuild_key_gate()
+    }
+    /// Handler-independent establishment; returned outcome remains committed on scan failure.
+    pub fn establish_wait(
+        &mut self,
+        command: actionqueue_core::mutation::WaitEstablishCommand,
+    ) -> Result<actionqueue_core::mutation::WaitOutcome, crate::waits::WaitError> {
+        crate::waits::establish(&mut self.authority, command)
+    }
+    pub fn reconcile_waits(&mut self) -> Result<usize, crate::waits::WaitError> {
+        crate::waits::reconcile(&mut self.authority, self.clock.now())
+    }
     /// Returns a reference to the projection (current state view).
     pub fn projection(&self) -> &ReplayReducer {
         self.authority.projection()
@@ -1422,6 +1476,9 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         // Step 1: Heartbeat in-flight leases approaching expiry
         self.heartbeat_in_flight_leases(current_time)?;
 
+        crate::waits::reconcile(&mut self.authority, current_time)
+            .map_err(DispatchError::Authority)?;
+        self.rebuild_key_gate()?;
         // Step 2: Check engine paused state or draining mode — skip promotion and dispatch.
         if self.authority.projection().is_engine_paused() {
             result.engine_paused = true;
@@ -1532,6 +1589,11 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         let available_slots = self.max_concurrent.saturating_sub(self.in_flight.len());
         let mut dispatched = 0usize;
         for run in selection.into_selected() {
+            // Accepted-start wake delivery belongs to AQ-07. Never call a legacy handler
+            // with a continuation whose input would otherwise be silently discarded.
+            if self.authority.projection().waits().pending_wait(run.id()).is_some() {
+                continue;
+            }
             if dispatched >= available_slots {
                 break;
             }
@@ -1884,7 +1946,11 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
                 && tick.dispatched == 0
                 && !self.in_flight.is_empty()
             {
-                if let Some(worker_result) = self.result_rx.recv().await {
+                let received = tokio::select! {
+                    result=self.result_rx.recv()=>result,
+                    _=tokio::time::sleep(std::time::Duration::from_millis(100))=>{ continue; }
+                };
+                if let Some(worker_result) = received {
                     self.pending_result = Some(worker_result);
                 } else {
                     // All worker senders dropped — no more results possible.
@@ -1941,7 +2007,12 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
             if tick.completed == 0 && !self.in_flight.is_empty() {
                 // Wait for a result with the remaining timeout.
                 let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-                match tokio::time::timeout(remaining, self.result_rx.recv()).await {
+                match tokio::time::timeout(
+                    remaining.min(std::time::Duration::from_millis(100)),
+                    self.result_rx.recv(),
+                )
+                .await
+                {
                     Ok(Some(result)) => {
                         self.pending_result = Some(result);
                     }
@@ -1949,6 +2020,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
                         self.in_flight.clear();
                         break;
                     }
+                    Err(_) if tokio::time::Instant::now() < deadline => continue,
                     Err(_) => {
                         tracing::warn!(
                             remaining_in_flight = self.in_flight.len(),

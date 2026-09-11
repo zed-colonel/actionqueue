@@ -9,7 +9,7 @@ fn invalid(e: impl std::fmt::Display) -> DecodeError {
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct HashV1 {
+pub(crate) struct HashV1 {
     algorithm: u8,
     bytes: [u8; 32],
 }
@@ -59,7 +59,7 @@ impl TryFrom<LinkV1> for CausationLink {
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ControlV1 {
+pub(crate) struct ControlV1 {
     caller: String,
     session: Option<String>,
     request: Option<String>,
@@ -93,7 +93,7 @@ impl TryFrom<ControlV1> for ControlMutationContext {
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-enum PayloadV1 {
+pub(crate) enum PayloadV1 {
     Inline {
         content_type: Option<String>,
         bytes: Vec<u8>,

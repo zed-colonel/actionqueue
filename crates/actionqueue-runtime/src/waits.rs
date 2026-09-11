@@ -1,0 +1,235 @@
+//! Handler-independent continuation service. AQ-07 owns accepted-start delivery.
+use actionqueue_core::{mutation::*, run::RunState};
+use actionqueue_storage::{
+    mutation::{MutationAuthorityError, StorageMutationAuthority},
+    recovery::reducer::{ReplayReducer, ReplayReducerError},
+    wal::writer::WalWriter,
+};
+pub type WaitError = MutationAuthorityError<ReplayReducerError>;
+pub const MATCH_BATCH: usize = 128;
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Reconciliation {
+    pub resolved: usize,
+    pub remaining: bool,
+}
+fn next<W: WalWriter>(a: &StorageMutationAuthority<W, ReplayReducer>) -> Result<u64, WaitError> {
+    if a.recovery_required() {
+        return Err(WaitError::RecoveryRequired);
+    }
+    a.projection()
+        .latest_sequence()
+        .checked_add(1)
+        .ok_or(WaitError::Wait(WaitRejection::StaleSequence))
+}
+/// One bounded batch, matching retained facts before deadlines. Persistent indexes retain
+/// additional work; notifications are optional and a tick always checks the indexes.
+pub fn reconcile_batch<W: WalWriter>(
+    a: &mut StorageMutationAuthority<W, ReplayReducer>,
+    now: u64,
+    limit: usize,
+) -> Result<Reconciliation, WaitError> {
+    next(a)?;
+    let mut n = 0;
+    for (signal, id) in a.projection().waits().matches(limit.max(1).min(MATCH_BATCH)) {
+        let run = a.projection().waits().get(id).expect("indexed").run_id;
+        let _ = a.submit_command(
+            actionqueue_engine::continuation::satisfy(next(a)?, run, id, signal, now),
+            DurabilityPolicy::Immediate,
+        )?;
+        n += 1;
+    }
+    if a.projection().waits().matches(1).is_empty() {
+        for id in a.projection().waits().due(now, limit.max(1).min(MATCH_BATCH) - n) {
+            let run = a.projection().waits().get(id).expect("indexed").run_id;
+            let _ = a.submit_command(
+                actionqueue_engine::continuation::timeout(next(a)?, run, id, now),
+                DurabilityPolicy::Immediate,
+            )?;
+            n += 1;
+        }
+    }
+    Ok(Reconciliation {
+        resolved: n,
+        remaining: !a.projection().waits().matches(1).is_empty()
+            || !a.projection().waits().due(now, 1).is_empty(),
+    })
+}
+/// Bootstrap and explicit service calls drain every page before returning.
+pub fn reconcile<W: WalWriter>(
+    a: &mut StorageMutationAuthority<W, ReplayReducer>,
+    now: u64,
+) -> Result<usize, WaitError> {
+    let mut count = 0;
+    loop {
+        let batch = reconcile_batch(a, now, MATCH_BATCH)?;
+        count += batch.resolved;
+        if !batch.remaining {
+            return Ok(count);
+        }
+    }
+}
+/// Establishment acknowledgement is independent of subsequent reconciliation failures.
+/// A caller may inspect/retry this operation, then call `reconcile`; no wake input is consumed.
+pub fn establish<W: WalWriter>(
+    a: &mut StorageMutationAuthority<W, ReplayReducer>,
+    command: WaitEstablishCommand,
+) -> Result<WaitOutcome, WaitError> {
+    match a
+        .submit_command(MutationCommand::WaitEstablish(command), DurabilityPolicy::Immediate)?
+        .applied()
+    {
+        AppliedMutation::Wait(o) => Ok(*o),
+        _ => unreachable!(),
+    }
+}
+/// Finish ordinary interrupted execution before continuation reconciliation. Every prefix
+/// remains recoverable; an absent wait establishment never implies a yielded attempt.
+pub fn recover_execution<W: WalWriter>(
+    a: &mut StorageMutationAuthority<W, ReplayReducer>,
+    now: u64,
+) -> Result<(), WaitError> {
+    let mut ids: Vec<_> = a
+        .projection()
+        .run_instances()
+        .filter(|r| matches!(r.state(), RunState::Running | RunState::Leased))
+        .map(|r| r.id())
+        .collect();
+    ids.sort();
+    for id in ids {
+        let state = *a.projection().get_run_state(&id).unwrap();
+        if state == RunState::Running {
+            if let Some(attempt) =
+                a.projection().get_run_instance(&id).unwrap().current_attempt_id()
+            {
+                let _ = a.submit_command(
+                    MutationCommand::AttemptFinish(AttemptFinishCommand::new(
+                        next(a)?,
+                        id,
+                        attempt,
+                        AttemptOutcome::failure("executor interrupted before durable disposition"),
+                        now,
+                    )),
+                    DurabilityPolicy::Immediate,
+                )?;
+            }
+        }
+        if let Some((owner, expiry)) = a.projection().get_lease(&id).cloned() {
+            let _ = a.submit_command(
+                MutationCommand::LeaseRelease(LeaseReleaseCommand::new(
+                    next(a)?,
+                    id,
+                    owner,
+                    expiry,
+                    now,
+                )),
+                DurabilityPolicy::Immediate,
+            )?;
+        }
+        let target = if state == RunState::Leased {
+            RunState::Ready
+        } else {
+            let r = a.projection().get_run_instance(&id).unwrap();
+            let last = a
+                .projection()
+                .get_attempt_history(&id)
+                .and_then(|h| h.last())
+                .and_then(|a| a.result());
+            if last == Some(AttemptResultKind::Success) {
+                RunState::Completed
+            } else if last == Some(AttemptResultKind::Suspended) {
+                RunState::Suspended
+            } else {
+                let failures = a
+                    .projection()
+                    .get_attempt_history(&id)
+                    .map(|h| {
+                        h.iter()
+                            .filter(|a| {
+                                matches!(
+                                    a.result(),
+                                    Some(AttemptResultKind::Failure | AttemptResultKind::Timeout)
+                                )
+                            })
+                            .count()
+                    })
+                    .unwrap_or(0);
+                if failures
+                    < a.projection().get_task(&r.task_id()).unwrap().constraints().max_attempts()
+                        as usize
+                {
+                    RunState::RetryWait
+                } else {
+                    RunState::Failed
+                }
+            }
+        };
+        let _ = a.submit_command(
+            MutationCommand::RunStateTransition(RunStateTransitionCommand::new(
+                next(a)?,
+                id,
+                state,
+                target,
+                now,
+            )),
+            DurabilityPolicy::Immediate,
+        )?;
+    }
+    Ok(())
+}
+/// Complete legacy partial task controls and descendant/dependency cascades before matching.
+/// Each task boundary is atomic; restart repeats the remaining tasks without changing winners.
+pub fn recover_cancellations<W: WalWriter>(
+    a: &mut StorageMutationAuthority<W, ReplayReducer>,
+    now: u64,
+) -> Result<(), WaitError> {
+    loop {
+        let mut targets = std::collections::HashSet::new();
+        for task in a.projection().task_records() {
+            let id = task.task_spec().id();
+            let unfinished = a.projection().runs_for_task(id).any(|r| !r.state().is_terminal());
+            if a.projection().is_task_canceled(id) && unfinished {
+                targets.insert(id);
+            }
+            if !a.projection().is_task_canceled(id)
+                && task
+                    .task_spec()
+                    .parent_task_id()
+                    .is_some_and(|p| a.projection().is_task_canceled(p))
+            {
+                targets.insert(id);
+            }
+        }
+        for (task, deps) in a.projection().dependency_declarations() {
+            if a.projection().is_task_canceled(task) {
+                continue;
+            }
+            let failed = deps.iter().any(|dep| {
+                let runs: Vec<_> = a.projection().runs_for_task(*dep).collect();
+                !runs.is_empty()
+                    && runs.iter().all(|r| r.state().is_terminal())
+                    && runs.iter().all(|r| r.state() != RunState::Completed)
+            });
+            if failed {
+                targets.insert(task);
+            }
+        }
+        if targets.is_empty() {
+            return Ok(());
+        }
+        let mut targets: Vec<_> = targets.into_iter().collect();
+        targets.sort_by_key(|id| *id.as_uuid());
+        for task in targets {
+            let tenant_id = a.projection().get_task(&task).expect("indexed task").tenant_id();
+            let _ = a.submit_command(
+                MutationCommand::Cancel(CancelCommand {
+                    expected_sequence: next(a)?,
+                    target: CancelTarget::Task(task),
+                    tenant_id,
+                    control_context: None,
+                    timestamp: now,
+                }),
+                DurabilityPolicy::Immediate,
+            )?;
+        }
+    }
+}

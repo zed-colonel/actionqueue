@@ -1,6 +1,6 @@
 # actionqueue-storage
 
-AQ-CONT-1 uses WAL framing v1 and, since AQ-05, snapshot/projection schema v3. Pre-contract WAL v5 and snapshot schema 8
+AQ-CONT-1 uses WAL framing v1 and, since AQ-06, snapshot/projection schema v4. Pre-contract WAL v5 and snapshot schema 8
 are evidence only: this crate has no compatibility reader or migration path.
 
 ## Ownership and opening
@@ -94,7 +94,7 @@ against the covered WAL prefix and sync that WAL before snapshot publication. Th
 temp-file write, sync, rename, and parent-directory sync. Only physical snapshot damage
 permits fallback. Identity, compatibility, and semantic failures halt recovery.
 
-Projection SHA-256 uses domain bytes `AQ-CONT-1\0projection\0v3\0`, followed by the
+Projection SHA-256 uses domain bytes `AQ-CONT-1\0projection\0v4\0`, followed by the
 following canonical **typed tree**, not JSON serializer output:
 
 - Null: tag 0. Boolean: tag 1 followed by byte 0/1.
@@ -103,13 +103,13 @@ following canonical **typed tree**, not JSON serializer output:
 - Array: tag 5 + u64 LE item count + items in order.
 - Object: tag 6 + u64 LE field count + string-key/value pairs, sorted by UTF-8 key.
 
-The fixed v3 image fields are defined by `snapshot/model.rs`. Every field is included;
+The fixed v4 image fields are defined by `snapshot/model.rs`. Every field is included;
 snapshot creation time is normalized to zero. Task/run/dependency/subscription/actor/
 tenant maps are ordered by UUID; dependency sets are ordered by UUID. Budgets, roles,
 and capability grants are ordered by canonical record bytes. Chronological state,
 attempt and ledger vectors retain order. Sequence and durable state are included;
 paths, metrics and recovery duration are excluded. The independent Python-generated
-current vector is `conformance/aq-cont-1/projection-v3-vector.json`; the v1/v2 evidence remains retained.
+current vector is `conformance/aq-cont-1/projection-v4-vector.json`; the v1/v2/v3 evidence remains retained.
 
 AQ-03 verifies snapshot-plus-tail against full WAL replay at opening. It intentionally
 pays full-history replay cost while the complete WAL is required. Compaction and a
@@ -169,7 +169,7 @@ Signal admission and retention use the storage mutation authority and immediatel
 sync before publication. Kinds 288/289/290/291, schema 1, encode admission, pin,
 unpin and retirement through frozen `signal_v1` DTOs. Snapshot/projection versions
 are 3; frame versions remain 1. Earlier development manifests are refused without
-writes or migration. The projection digest domain is `AQ-CONT-1\0projection\0v3\0`;
+writes or migration. The projection digest domain is `AQ-CONT-1\0projection\0v4\0`;
 typed tree encoding is otherwise unchanged.
 
 `ReplayReducer::signals()` exposes tenant/id lookup, sequence-paginated listing,
@@ -184,3 +184,13 @@ protection seam before AQ-06 enables waits. Snapshot hydration rebuilds derived
 indexes/counters and validates against complete WAL history. Authority preparation
 clones the full projection, so total mutation cost still grows with store size.
 See ADR-005/006 for canonical bytes, default quotas and retention thresholds.
+
+### AQ-06 continuations (projection v4)
+
+Wait establishment and all resolutions use the same prepared, synced, fenced authority
+lane. Task/run cancellation is compound and continuation-aware. Lease grant sequences,
+wait history, pending delivery and concurrency reservations survive recovery. Retention
+planning should use `ReplayReducer::signal_retirement_candidates`, which includes
+continuation references; authority and replay repeat these protection checks.
+
+See [continuation semantics and milestone boundaries](../../docs/aq-06-continuations.md).

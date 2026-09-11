@@ -26,7 +26,7 @@ use crate::snapshot::model::{
 ///   required_executor_traits in AQ-02)
 /// - v6: Sprint 2 review — dependency declarations persisted in snapshots
 /// - v7: Sprint 3 — budgets, subscriptions, Suspended run state
-pub const SNAPSHOT_SCHEMA_VERSION: u32 = 3;
+pub const SNAPSHOT_SCHEMA_VERSION: u32 = 4;
 
 /// Typed mapping and validation errors for snapshot/core parity enforcement.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -418,6 +418,14 @@ pub fn validate_snapshot(snapshot: &Snapshot) -> Result<(), SnapshotMappingError
     }
     let mut run_ids = HashSet::new();
     for run in &snapshot.runs {
+        if run.lease.as_ref().is_some_and(|l| {
+            l.granted_at_sequence == 0 || l.granted_at_sequence > snapshot.metadata.wal_sequence
+        }) {
+            return Err(SnapshotMappingError::InvalidLeasePresence {
+                run_id: run.run_id(),
+                state: run.run_instance.state(),
+            });
+        }
         let core_run = map_snapshot_run_to_core(run)?;
         let run_id = core_run.id();
         let task_id = core_run.task_id();
@@ -677,6 +685,7 @@ pub fn map_snapshot_lease_metadata(
     lease: Option<SnapshotLeaseMetadata>,
 ) -> Option<crate::recovery::reducer::LeaseMetadata> {
     lease.map(|metadata| crate::recovery::reducer::LeaseMetadata {
+        granted_at_sequence: metadata.granted_at_sequence,
         owner: metadata.owner,
         expiry: metadata.expiry,
         acquired_at: metadata.acquired_at,

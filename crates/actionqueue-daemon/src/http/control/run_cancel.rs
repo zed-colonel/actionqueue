@@ -9,7 +9,7 @@ use std::str::FromStr;
 
 use actionqueue_core::ids::RunId;
 use actionqueue_core::mutation::{
-    DurabilityPolicy, MutationAuthority, MutationCommand, RunStateTransitionCommand,
+    CancelCommand, CancelTarget, DurabilityPolicy, MutationAuthority, MutationCommand,
 };
 use actionqueue_core::run::state::RunState;
 use actionqueue_core::run::transitions::is_valid_transition;
@@ -107,9 +107,7 @@ pub async fn handle(
         return run_not_found_response(&run_id_str);
     };
 
-    // AQ-06: before Awaiting becomes reachable, cancel through WaitCancel and map
-    // AwaitingTransitionRequiresContinuationRecord explicitly instead of HTTP 500.
-    // The generic transition below cannot atomically cancel the active wait.
+    // Cancellation is prepared as one continuation-aware compound control.
     match classify_cancel_disposition(current_state) {
         CancelDisposition::AlreadyCanceled => {
             return success_response(run_id, "already_canceled");
@@ -120,18 +118,24 @@ pub async fn handle(
         CancelDisposition::InvariantViolation => {
             return internal_error_response("run cancel transition invariant violation");
         }
-        CancelDisposition::CancelEligible { previous_state } => {
+        CancelDisposition::CancelEligible { previous_state: _ } => {
             let sequence = match authority.projection().latest_sequence().checked_add(1) {
                 Some(sequence) => sequence,
                 None => return internal_error_response("control sequence overflow"),
             };
-            let command = MutationCommand::RunStateTransition(RunStateTransitionCommand::new(
-                sequence,
-                run_id,
-                previous_state,
-                RunState::Canceled,
-                sequence,
-            ));
+            let command = MutationCommand::Cancel(CancelCommand {
+                expected_sequence: sequence,
+                target: CancelTarget::Run(run_id),
+                tenant_id: authority
+                    .projection()
+                    .get_run_instance(&run_id)
+                    .and_then(|r| authority.projection().get_task(&r.task_id()))
+                    .and_then(|t| t.tenant_id()),
+                control_context: Some(actionqueue_core::causal::ControlMutationContext::new(
+                    actionqueue_core::bounded::OpaqueRef::new("daemon-control").expect("bounded"),
+                )),
+                timestamp: state.clock.now(),
+            });
 
             match authority.submit_command(command, DurabilityPolicy::Immediate) {
                 Ok(_) => {
@@ -159,19 +163,24 @@ pub async fn handle(
         CancelDisposition::InvariantViolation => {
             internal_error_response("run cancel transition invariant violation")
         }
-        CancelDisposition::CancelEligible { previous_state } => {
+        CancelDisposition::CancelEligible { previous_state: _ } => {
             let retry_sequence = match authority.projection().latest_sequence().checked_add(1) {
                 Some(sequence) => sequence,
                 None => return internal_error_response("control sequence overflow"),
             };
-            let retry_command =
-                MutationCommand::RunStateTransition(RunStateTransitionCommand::new(
-                    retry_sequence,
-                    run_id,
-                    previous_state,
-                    RunState::Canceled,
-                    retry_sequence,
-                ));
+            let retry_command = MutationCommand::Cancel(CancelCommand {
+                expected_sequence: retry_sequence,
+                target: CancelTarget::Run(run_id),
+                tenant_id: authority
+                    .projection()
+                    .get_run_instance(&run_id)
+                    .and_then(|r| authority.projection().get_task(&r.task_id()))
+                    .and_then(|t| t.tenant_id()),
+                control_context: Some(actionqueue_core::causal::ControlMutationContext::new(
+                    actionqueue_core::bounded::OpaqueRef::new("daemon-control").expect("bounded"),
+                )),
+                timestamp: state.clock.now(),
+            });
 
             match authority.submit_command(retry_command, DurabilityPolicy::Immediate) {
                 Ok(_) => {

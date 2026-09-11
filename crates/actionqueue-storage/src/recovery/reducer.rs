@@ -123,6 +123,7 @@ impl AttemptHistoryEntry {
 /// A deterministic lease metadata record for a run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LeaseMetadata {
+    pub(crate) granted_at_sequence: u64,
     /// Lease owner string.
     pub(crate) owner: String,
     /// Lease expiry timestamp.
@@ -134,6 +135,10 @@ pub struct LeaseMetadata {
 }
 
 impl LeaseMetadata {
+    /// Original grant fence, unchanged by heartbeats.
+    pub fn granted_at_sequence(&self) -> u64 {
+        self.granted_at_sequence
+    }
     /// Returns the lease owner.
     pub fn owner(&self) -> &str {
         &self.owner
@@ -264,6 +269,9 @@ impl TaskRecord {
 /// A reducer that applies WAL events to reconstruct state.
 #[derive(Debug, Clone)]
 pub struct ReplayReducer {
+    pub(crate) waits: super::waits::WaitIndex,
+    pub(crate) cancellations: Vec<crate::mutation::wait::CancelRecord>,
+    pub(crate) key_reservations: std::collections::BTreeMap<RunId, String>,
     pub(crate) signals: super::signals::SignalIndex,
     pub(crate) admissions: HashMap<
         (Option<TenantId>, actionqueue_core::ids::AdmissionKey),
@@ -324,6 +332,9 @@ impl ReplayReducer {
     /// Creates a new replay reducer.
     pub fn new() -> Self {
         ReplayReducer {
+            waits: Default::default(),
+            cancellations: Vec::new(),
+            key_reservations: Default::default(),
             signals: super::signals::SignalIndex::default(),
             admissions: HashMap::new(),
             admission_by_task: HashMap::new(),
@@ -547,6 +558,73 @@ impl ReplayReducer {
         }
 
         match event.event() {
+            WalEventType::RunStateChanged { run_id, previous_state, new_state, .. }
+                if *previous_state == RunState::Awaiting
+                    || *new_state == RunState::Awaiting
+                    || self.waits.pending_wait(*run_id).is_some() =>
+            {
+                return Err(ReplayReducerError::InvalidTransition)
+            }
+            WalEventType::RunCanceled { run_id, .. }
+                if self.waits.active(*run_id).is_some()
+                    || self.waits.pending_wait(*run_id).is_some() =>
+            {
+                return Err(ReplayReducerError::InvalidTransition)
+            }
+            WalEventType::TaskCanceled { task_id, .. }
+                if self.runs_for_task(*task_id).any(|r| {
+                    self.waits.active(r.id()).is_some() || self.waits.pending_wait(r.id()).is_some()
+                }) =>
+            {
+                return Err(ReplayReducerError::InvalidTransition)
+            }
+            WalEventType::AttemptFinished {
+                result: actionqueue_core::mutation::AttemptResultKind::Awaiting,
+                ..
+            } => return Err(ReplayReducerError::InvalidTransition),
+            _ => {}
+        }
+        match event.event() {
+            WalEventType::WaitEstablished { record } => {
+                if record.sequence != event.sequence() {
+                    return Err(ReplayReducerError::CorruptedData);
+                }
+                self.apply_wait_established(record)?;
+            }
+            WalEventType::WaitSatisfied { record }
+            | WalEventType::WaitTimedOut { record }
+            | WalEventType::WaitCanceled { record } => {
+                use crate::mutation::wait::WaitResolutionKind as K;
+                let valid = matches!(
+                    (event.event(), &record.kind),
+                    (WalEventType::WaitSatisfied { .. }, K::Signal(_) | K::Control(_))
+                        | (WalEventType::WaitTimedOut { .. }, K::Deadline)
+                        | (WalEventType::WaitCanceled { .. }, K::Canceled(_))
+                );
+                if record.sequence != event.sequence() || !valid {
+                    return Err(ReplayReducerError::CorruptedData);
+                }
+                self.apply_wait_resolution(record)?;
+            }
+            WalEventType::TaskCancellationCommitted { record }
+            | WalEventType::RunCancellationCommitted { record } => {
+                if record.sequence != event.sequence() {
+                    return Err(ReplayReducerError::CorruptedData);
+                }
+                if !matches!(
+                    (event.event(), record.target),
+                    (
+                        WalEventType::TaskCancellationCommitted { .. },
+                        actionqueue_core::mutation::CancelTarget::Task(_)
+                    ) | (
+                        WalEventType::RunCancellationCommitted { .. },
+                        actionqueue_core::mutation::CancelTarget::Run(_)
+                    )
+                ) {
+                    return Err(ReplayReducerError::CorruptedData);
+                }
+                self.apply_cancellation(record)?;
+            }
             WalEventType::SignalAdmitted { record } => {
                 if record.wal_sequence() != event.sequence()
                     || !record.is_retained()
@@ -559,6 +637,7 @@ impl ReplayReducer {
                 self.validate_signal_references(record.envelope())
                     .map_err(ReplayReducerError::Signal)?;
                 self.signals.insert(record.clone()).map_err(ReplayReducerError::Signal)?;
+                self.signal_arrived(record.envelope());
             }
             WalEventType::SignalPinned { record } | WalEventType::SignalUnpinned { record } => {
                 if record.control.wal_sequence != event.sequence() {
@@ -571,6 +650,11 @@ impl ReplayReducer {
             WalEventType::SignalsRetired { record } => {
                 if record.control.wal_sequence != event.sequence() {
                     return Err(ReplayReducerError::CorruptedData);
+                }
+                if record.sequences.iter().any(|s| self.signal_is_protected(*s)) {
+                    return Err(ReplayReducerError::Signal(
+                        actionqueue_core::continuation::SignalRejection::Protected,
+                    ));
                 }
                 self.signals.apply_retirement(record).map_err(ReplayReducerError::Signal)?;
             }
@@ -638,6 +722,8 @@ impl ReplayReducer {
             }
             WalEventType::LeaseAcquired { run_id, owner, expiry, timestamp } => {
                 self.apply_lease_acquired(run_id, owner.clone(), *expiry, *timestamp)?;
+                self.lease_metadata.get_mut(run_id).expect("acquired").granted_at_sequence =
+                    event.sequence();
             }
             WalEventType::LeaseHeartbeat { run_id, owner, expiry, timestamp } => {
                 self.apply_lease_heartbeat(run_id, owner.clone(), *expiry, *timestamp)?;
@@ -831,7 +917,7 @@ impl ReplayReducer {
         Ok(())
     }
 
-    fn apply_task_canceled(
+    pub(super) fn apply_task_canceled(
         &mut self,
         task_id: &TaskId,
         timestamp: u64,
@@ -893,7 +979,7 @@ impl ReplayReducer {
         Ok(())
     }
 
-    fn apply_run_state_changed(
+    pub(super) fn apply_run_state_changed(
         &mut self,
         run_id: &actionqueue_core::ids::RunId,
         previous_state: &RunState,
@@ -934,6 +1020,33 @@ impl ReplayReducer {
             }
         }
 
+        let task_id =
+            self.run_instances.get(run_id).ok_or(ReplayReducerError::CorruptedData)?.task_id();
+        let constraints = self
+            .tasks
+            .get(&task_id)
+            .ok_or(ReplayReducerError::CorruptedData)?
+            .task_spec()
+            .constraints();
+        if *new_state == RunState::Running {
+            if let Some(key) = constraints.concurrency_key() {
+                if self.key_reservations.iter().any(|(id, k)| id != run_id && k == key) {
+                    return Err(ReplayReducerError::Wait(
+                        actionqueue_core::mutation::WaitRejection::ConflictingKeyOwnership,
+                    ));
+                }
+                self.key_reservations.insert(*run_id, key.into());
+            }
+        } else if matches!(new_state, RunState::RetryWait | RunState::Suspended)
+            && constraints.concurrency_key_hold_policy()
+                == actionqueue_core::task::constraints::ConcurrencyKeyHoldPolicy::ReleaseOnRetry
+        {
+            self.key_reservations.remove(run_id);
+        } else if *new_state == RunState::Awaiting
+            && constraints.concurrency_key_wait_policy().releases_while_awaiting()
+        {
+            self.key_reservations.remove(run_id);
+        }
         // Update the run state
         self.runs.insert(*run_id, *new_state);
 
@@ -1003,7 +1116,7 @@ impl ReplayReducer {
         Ok(())
     }
 
-    fn apply_attempt_finished(
+    pub(super) fn apply_attempt_finished(
         &mut self,
         run_id: &actionqueue_core::ids::RunId,
         attempt_id: &actionqueue_core::ids::AttemptId,
@@ -1045,7 +1158,7 @@ impl ReplayReducer {
         Ok(())
     }
 
-    fn apply_run_canceled(
+    pub(super) fn apply_run_canceled(
         &mut self,
         run_id: &actionqueue_core::ids::RunId,
         timestamp: u64,
@@ -1097,6 +1210,7 @@ impl ReplayReducer {
         self.lease_metadata.insert(
             *run_id,
             LeaseMetadata {
+                granted_at_sequence: self.latest_sequence + 1,
                 owner: metadata_owner,
                 expiry,
                 acquired_at: timestamp,
@@ -1350,6 +1464,8 @@ impl ReplayReducer {
 
         self.leases.remove(run_id);
         self.lease_metadata.remove(run_id);
+        self.key_reservations.remove(run_id);
+        self.waits.pending.remove(run_id);
 
         Ok(())
     }
@@ -1364,6 +1480,9 @@ impl ReplayReducer {
             self.runs.iter().filter(|(_, state)| state.is_terminal()).map(|(id, _)| *id).collect();
 
         for run_id in &terminal_run_ids {
+            if self.waits.records().any(|w| w.run_id == *run_id) {
+                continue;
+            }
             self.run_history.remove(run_id);
             self.attempt_history.remove(run_id);
             self.lease_metadata.remove(run_id);
@@ -1596,6 +1715,8 @@ impl Default for ReplayReducer {
 /// Errors that can occur during replay reduction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReplayReducerError {
+    /// Invalid durable continuation.
+    Wait(actionqueue_core::mutation::WaitRejection),
     /// Invalid compound admission.
     Admission(actionqueue_core::admission::AdmissionRejection),
     /// Invalid durable signal record.
@@ -1870,6 +1991,7 @@ impl std::fmt::Display for ReplayReducerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Admission(e) => write!(f, "{e}"),
+            Self::Wait(e) => write!(f, "{e}"),
             Self::Signal(e) => write!(f, "{e}"),
             ReplayReducerError::InvalidTransition => {
                 write!(f, "Invalid state transition during replay")

@@ -49,6 +49,7 @@
 //! // (HTTP server startup is not part of bootstrap)
 //! ```
 
+use actionqueue_core::time::clock::Clock;
 use std::path::PathBuf;
 
 use actionqueue_storage::mutation::authority::StorageMutationAuthority;
@@ -267,16 +268,19 @@ pub fn bootstrap(config: DaemonConfig) -> Result<BootstrapState, BootstrapError>
     let recovery = load_projection_from_storage(&config.data_dir).map_err(map_recovery_error)?;
     let wal_path = recovery.wal_path.clone();
     let snapshot_path = recovery.snapshot_path.clone();
-    let projection = recovery.projection.clone();
+
     let wal_append_telemetry = recovery.wal_append_telemetry.clone();
     let recovery_observations = recovery.recovery_observations;
 
     let store_session = recovery.wal_writer.inner().session().cloned();
+    let mut authority = StorageMutationAuthority::new(recovery.wal_writer, recovery.projection);
+    actionqueue_runtime::waits::recover_cancellations(&mut authority, SystemClock.now())
+        .map_err(|e| BootstrapError::Dependency(format!("control_reconciliation: {e}")))?;
+    actionqueue_runtime::waits::reconcile(&mut authority, SystemClock.now())
+        .map_err(|e| BootstrapError::Dependency(format!("wait_reconciliation: {e}")))?;
+    let projection = authority.projection().clone();
     let control_authority = if config.enable_control {
-        Some(std::sync::Arc::new(std::sync::Mutex::new(StorageMutationAuthority::new(
-            recovery.wal_writer,
-            projection.clone(),
-        ))))
+        Some(std::sync::Arc::new(std::sync::Mutex::new(authority)))
     } else {
         None
     };

@@ -63,3 +63,7 @@ record storage or WAL bytes. Capacity errors require operator/application action
 Storage uncertainty is distinct from definitive rejection. Reopen/recover a fenced
 authority before retrying. Wait establishment, wake promotion and daemon/CLI signal
 endpoints are deferred to their designated work items.
+
+AQ-06 adds the handler-independent `waits` service and pre-dispatch recovery
+reconciliation. See [continuation semantics](../../docs/aq-06-continuations.md), including
+the pending-input guard until accepted-start delivery lands.

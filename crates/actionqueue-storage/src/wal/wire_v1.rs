@@ -21,6 +21,11 @@ struct TaskCreatedV1 {
     timestamp: u64,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+struct TaskCreatedV2 {
+    task_spec: super::task_v2::TaskSpecV2,
+    timestamp: u64,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RunCreatedV1 {
     run_instance: super::domain_v1::RunV1,
@@ -241,6 +246,12 @@ struct LedgerEntryAppendedV1 {
 }
 pub fn kind(event: &WalEventType) -> u16 {
     match event {
+        WalEventType::WaitEstablished { .. } => 304,
+        WalEventType::WaitSatisfied { .. } => 305,
+        WalEventType::WaitTimedOut { .. } => 306,
+        WalEventType::WaitCanceled { .. } => 307,
+        WalEventType::TaskCancellationCommitted { .. } => 320,
+        WalEventType::RunCancellationCommitted { .. } => 321,
         WalEventType::SignalAdmitted { .. } => 288,
         WalEventType::SignalPinned { .. } => 289,
         WalEventType::SignalUnpinned { .. } => 290,
@@ -282,14 +293,63 @@ pub fn kind(event: &WalEventType) -> u16 {
 }
 pub fn check_kind(kind: u16) -> Result<(), DecodeError> {
     match kind {
-        1 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32
-        | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 256 | 288 | 289
-        | 290 | 291 => Ok(()),
+        1
+        | 16
+        | 17
+        | 18
+        | 19
+        | 20
+        | 21
+        | 22
+        | 23
+        | 24
+        | 25
+        | 26
+        | 27
+        | 28
+        | 29
+        | 30
+        | 31
+        | 32
+        | 33
+        | 34
+        | 35
+        | 36
+        | 37
+        | 38
+        | 39
+        | 40
+        | 41
+        | 42
+        | 43
+        | 44
+        | 45
+        | 46
+        | 256
+        | 288
+        | 289
+        | 290
+        | 291
+        | 304..=307
+        | 320
+        | 321 => Ok(()),
         _ => Err(DecodeError::UnsupportedRecordKind(kind)),
     }
 }
 pub fn encode_payload(event: &WalEventType) -> Result<Vec<u8>, EncodeError> {
     match event {
+        WalEventType::WaitEstablished { record } => {
+            bounded(&super::wait_v1::WaitV1::from(record.clone()))
+        }
+        WalEventType::WaitSatisfied { record }
+        | WalEventType::WaitTimedOut { record }
+        | WalEventType::WaitCanceled { record } => {
+            bounded(&super::wait_v1::ResolutionV1::from(record.clone()))
+        }
+        WalEventType::TaskCancellationCommitted { record }
+        | WalEventType::RunCancellationCommitted { record } => {
+            bounded(&super::wait_v1::CancelV1::from(record.clone()))
+        }
         WalEventType::SignalAdmitted { record } => {
             bounded(&super::signal_v1::SignalRecordV1::from(record.clone()))
         }
@@ -300,13 +360,13 @@ pub fn encode_payload(event: &WalEventType) -> Result<Vec<u8>, EncodeError> {
             bounded(&super::signal_v1::RetiredV1::from(record.clone()))
         }
         WalEventType::AdmissionCommitted { record, runs } => {
-            bounded(&super::admission_v1::AdmissionCommittedV1::new(record, runs))
+            bounded(&super::admission_v2::AdmissionCommittedV2::new(record, runs))
         }
         WalEventType::StoreInitialized { manifest_digest } => {
             bounded(&StoreInitializedV1 { manifest_digest: *manifest_digest })
         }
-        WalEventType::TaskCreated { task_spec, timestamp } => bounded(&TaskCreatedV1 {
-            task_spec: TaskSpecV1::from(task_spec),
+        WalEventType::TaskCreated { task_spec, timestamp } => bounded(&TaskCreatedV2 {
+            task_spec: super::task_v2::TaskSpecV2::from(task_spec),
             timestamp: *timestamp,
         }),
         WalEventType::RunCreated { run_instance } => {
@@ -518,6 +578,28 @@ pub fn encode_payload(event: &WalEventType) -> Result<Vec<u8>, EncodeError> {
 }
 pub fn decode_payload(kind: u16, payload: &[u8]) -> Result<WalEventType, DecodeError> {
     match kind {
+        304 => {
+            let r: super::wait_v1::WaitV1 = take(payload)?;
+            Ok(WalEventType::WaitEstablished { record: r.try_into()? })
+        }
+        305..=307 => {
+            let r: super::wait_v1::ResolutionV1 = take(payload)?;
+            let record = r.try_into()?;
+            Ok(match kind {
+                305 => WalEventType::WaitSatisfied { record },
+                306 => WalEventType::WaitTimedOut { record },
+                _ => WalEventType::WaitCanceled { record },
+            })
+        }
+        320..=321 => {
+            let r: super::wait_v1::CancelV1 = take(payload)?;
+            let record = r.try_into()?;
+            Ok(if kind == 320 {
+                WalEventType::TaskCancellationCommitted { record }
+            } else {
+                WalEventType::RunCancellationCommitted { record }
+            })
+        }
         288 => {
             if payload.len() + 52 > actionqueue_core::limits::MAX_SIGNAL_RECORD_BYTES {
                 return Err(DecodeError::Decode("signal frame too large".into()));
@@ -944,7 +1026,7 @@ pub fn decode_payload(kind: u16, payload: &[u8]) -> Result<WalEventType, DecodeE
 /// Kind 256 is admission. Reserved IDs: compound attempt start/disposition 272/273;
 /// signal kinds 288–291 are active; wait establish/satisfy/timeout/cancel 304..=307;
 /// attributed task/run control 320/321. All are unsupported until their owners land.
-pub const RESERVED_KINDS: &[u16] = &[272, 273, 304, 305, 306, 307, 320, 321];
+pub const RESERVED_KINDS: &[u16] = &[272, 273];
 
 fn bounded<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, EncodeError> {
     let size = postcard::serialize_with_flavor::<_, postcard::ser_flavors::Size, usize>(
@@ -956,4 +1038,54 @@ fn bounded<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, EncodeError> {
         return Err(EncodeError::PayloadTooLarge(size));
     }
     postcard::to_allocvec(value).map_err(|e| EncodeError::Serialization(e.to_string()))
+}
+
+/// Schemas 1 remain readable for frozen evidence; new task/admission writes use 2.
+pub(crate) fn schema(kind: u16) -> u16 {
+    if matches!(kind, 16 | 256) {
+        2
+    } else {
+        1
+    }
+}
+pub(crate) fn decode_schema(
+    kind: u16,
+    schema: u16,
+    payload: &[u8],
+) -> Result<WalEventType, DecodeError> {
+    if schema == 1 {
+        return decode_payload(kind, payload);
+    }
+    match kind {
+        16 => {
+            let (v, rest) = postcard::take_from_bytes::<TaskCreatedV2>(payload)
+                .map_err(|e| DecodeError::Decode(e.to_string()))?;
+            if !rest.is_empty() {
+                return Err(DecodeError::Decode("trailing payload".into()));
+            }
+            Ok(WalEventType::TaskCreated {
+                task_spec: v.task_spec.try_into()?,
+                timestamp: v.timestamp,
+            })
+        }
+        256 => {
+            let (v, rest) =
+                postcard::take_from_bytes::<super::admission_v2::AdmissionCommittedV2>(payload)
+                    .map_err(|e| DecodeError::Decode(e.to_string()))?;
+            if !rest.is_empty() {
+                return Err(DecodeError::Decode("trailing payload".into()));
+            }
+            v.into_event()
+        }
+        _ => Err(DecodeError::UnsupportedRecordSchema { kind, found: schema }),
+    }
+}
+
+fn take<T: serde::de::DeserializeOwned>(payload: &[u8]) -> Result<T, DecodeError> {
+    let (v, rest) =
+        postcard::take_from_bytes(payload).map_err(|e| DecodeError::Decode(e.to_string()))?;
+    if !rest.is_empty() {
+        return Err(DecodeError::Decode("trailing payload".into()));
+    }
+    Ok(v)
 }

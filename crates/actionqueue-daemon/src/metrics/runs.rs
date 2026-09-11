@@ -225,33 +225,76 @@ mod tests {
             RunState::Suspended | RunState::Awaiting => {
                 transition_state(reducer, sequence, run_id, RunState::Scheduled, RunState::Ready);
                 transition_state(reducer, sequence, run_id, RunState::Ready, RunState::Leased);
-                transition_state(reducer, sequence, run_id, RunState::Leased, RunState::Running);
                 if target_state == RunState::Awaiting {
                     finish_awaiting_attempt(reducer, sequence, run_id);
+                    return;
                 }
+                transition_state(reducer, sequence, run_id, RunState::Leased, RunState::Running);
                 transition_state(reducer, sequence, run_id, RunState::Running, target_state);
             }
         }
     }
 
     fn finish_awaiting_attempt(reducer: &mut ReplayReducer, sequence: &mut u64, run_id: RunId) {
-        let attempt_id = actionqueue_core::ids::AttemptId::new();
+        let grant = *sequence;
         apply_event(
             reducer,
             *sequence,
-            WalEventType::AttemptStarted { run_id, attempt_id, timestamp: *sequence + 1_000 },
+            WalEventType::LeaseAcquired {
+                run_id,
+                owner: "metrics".into(),
+                expiry: 10000,
+                timestamp: *sequence + 1000,
+            },
         );
         *sequence += 1;
         apply_event(
             reducer,
             *sequence,
-            WalEventType::AttemptFinished {
+            WalEventType::RunStateChanged {
                 run_id,
-                attempt_id,
-                result: actionqueue_core::mutation::AttemptResultKind::Awaiting,
-                error: None,
-                output: None,
-                timestamp: *sequence + 1_000,
+                previous_state: actionqueue_core::run::RunState::Leased,
+                new_state: actionqueue_core::run::RunState::Running,
+                timestamp: *sequence + 1000,
+            },
+        );
+        *sequence += 1;
+        let attempt_id = actionqueue_core::ids::AttemptId::new();
+        apply_event(
+            reducer,
+            *sequence,
+            WalEventType::AttemptStarted { run_id, attempt_id, timestamp: *sequence + 1000 },
+        );
+        *sequence += 1;
+        use actionqueue_core::{continuation::*, ids::*};
+        apply_event(
+            reducer,
+            *sequence,
+            WalEventType::WaitEstablished {
+                record: actionqueue_storage::mutation::wait::WaitRecord {
+                    run_id,
+                    attempt_id,
+                    lease_owner: "metrics".into(),
+                    lease_granted_at_sequence: grant,
+                    sequence: *sequence,
+                    timestamp: *sequence + 1000,
+                    spec: WaitSpec::new(
+                        WaitId::new(),
+                        SignalFilter {
+                            tenant_id: None,
+                            namespace: SignalNamespace::new("metrics").unwrap(),
+                            kind: SignalKind::new("ready").unwrap(),
+                            correlation_id: None,
+                            source_ref: None,
+                        },
+                        WaitMatchPolicy::FirstMatch,
+                        SignalEligibility::After(SignalSequence::new(0)),
+                        None,
+                    )
+                    .unwrap(),
+                    checkpoint: None,
+                    resolution: None,
+                },
             },
         );
         *sequence += 1;

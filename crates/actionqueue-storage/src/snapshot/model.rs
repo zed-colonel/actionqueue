@@ -22,6 +22,10 @@ use crate::recovery::reducer::{AttemptHistoryEntry, LeaseMetadata, RunStateHisto
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct Snapshot {
+    pub waits: Vec<crate::mutation::wait::WaitRecord>,
+    pub cancellations: Vec<crate::mutation::wait::CancelRecord>,
+    pub pending_resumes: Vec<(RunId, actionqueue_core::ids::WaitId)>,
+    pub key_reservations: Vec<(RunId, String)>,
     /// Immutable signal facts, explicit pins and retirement state in signal sequence order.
     pub signals: Vec<crate::mutation::signal::SignalRecord>,
     /// Signal high-water mark, independent of WAL sequence.
@@ -225,6 +229,7 @@ impl From<AttemptHistoryEntry> for SnapshotAttemptHistoryEntry {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct SnapshotLeaseMetadata {
+    pub granted_at_sequence: u64,
     /// Lease owner string.
     pub owner: String,
     /// Lease expiry timestamp.
@@ -238,6 +243,7 @@ pub struct SnapshotLeaseMetadata {
 impl From<LeaseMetadata> for SnapshotLeaseMetadata {
     fn from(metadata: LeaseMetadata) -> Self {
         Self {
+            granted_at_sequence: metadata.granted_at_sequence,
             owner: metadata.owner,
             expiry: metadata.expiry,
             acquired_at: metadata.acquired_at,

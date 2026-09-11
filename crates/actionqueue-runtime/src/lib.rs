@@ -13,3 +13,5 @@ pub mod worker;
 pub mod admission;
 
 pub mod signals;
+
+pub mod waits;

@@ -9,8 +9,8 @@ use actionqueue_core::{
 /// The original specification is retained so future controls cannot change its digest.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(
-    try_from = "crate::wal::admission_v1::AdmissionRecordV1",
-    into = "crate::wal::admission_v1::AdmissionRecordV1"
+    try_from = "crate::wal::admission_v2::AdmissionRecordV2",
+    into = "crate::wal::admission_v2::AdmissionRecordV2"
 )]
 pub struct AdmissionRecord {
     request: EnsureTaskRequest,

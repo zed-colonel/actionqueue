@@ -21,20 +21,9 @@ fn reserved_kinds_schemas_sequences_and_oversized_lengths_refuse_repair() {
         id,
     )
     .unwrap();
-    for (offset, value) in [
-        (12, 272u32),
-        (12, 273),
-        (12, 304),
-        (12, 305),
-        (12, 306),
-        (12, 307),
-        (12, 320),
-        (12, 321),
-        (12, 65535),
-        (14, 2),
-        (32, 7),
-        (40, 16 * 1024 * 1024 + 1),
-    ] {
+    for (offset, value) in
+        [(12, 272u32), (12, 273), (12, 65535), (14, 99), (32, 7), (40, 16 * 1024 * 1024 + 1)]
+    {
         let mut bad = frame.clone();
         let width = if offset == 12 || offset == 14 { 2 } else { 4 };
         bad[offset..offset + width].copy_from_slice(&value.to_le_bytes()[..width]);
