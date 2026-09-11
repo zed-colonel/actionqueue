@@ -1,10 +1,11 @@
 //! Durable assignment of immutable wake input at the accepted-start boundary.
+use actionqueue_core::{continuation::*, ids::*, mutation::*, run::RunState};
+
 use super::reducer::{ReplayReducer, ReplayReducerError};
 use crate::{
     mutation::wait::WaitPreparation,
     wal::event::{WalEvent, WalEventType},
 };
-use actionqueue_core::{continuation::*, ids::*, mutation::*, run::RunState};
 
 /// Schema-2 accepted start. No checkpoint bytes or signal envelopes are copied here.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

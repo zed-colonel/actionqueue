@@ -1,9 +1,10 @@
 //! Immutable checkpoint registry derived atomically from wait establishment.
-use super::reducer::{ReplayReducer, ReplayReducerError};
 use actionqueue_core::{
     continuation::CheckpointRef,
     ids::{AttemptId, CheckpointId, RunId},
 };
+
+use super::reducer::{ReplayReducer, ReplayReducerError};
 
 /// Producing operation and immutable checkpoint data, retained with history.
 #[derive(Debug, Clone, PartialEq, Eq)]

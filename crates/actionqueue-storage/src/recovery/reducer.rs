@@ -1137,8 +1137,8 @@ impl ReplayReducer {
         } else if (matches!(new_state, RunState::RetryWait | RunState::Suspended)
             && constraints.concurrency_key_hold_policy()
                 == actionqueue_core::task::constraints::ConcurrencyKeyHoldPolicy::ReleaseOnRetry
-            && !(self.waits.pending_wait(*run_id).is_some()
-                && !constraints.concurrency_key_wait_policy().releases_while_awaiting()))
+            && (self.waits.pending_wait(*run_id).is_none()
+                || constraints.concurrency_key_wait_policy().releases_while_awaiting()))
             || (*new_state == RunState::Awaiting
                 && constraints.concurrency_key_wait_policy().releases_while_awaiting())
         {

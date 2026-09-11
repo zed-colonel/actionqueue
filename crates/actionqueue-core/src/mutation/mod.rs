@@ -274,6 +274,9 @@ pub struct AttemptStartCommand {
 
 impl AttemptStartCommand {
     /// Creates a new attempt-start command.
+    // Require both fencing expectations at construction so callers cannot
+    // accidentally omit the expected resume identity through a builder default.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         sequence: u64,
         run_id: RunId,
