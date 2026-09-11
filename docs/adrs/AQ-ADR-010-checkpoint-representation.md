@@ -70,3 +70,11 @@ wake identity. Legacy suspended output bytes are never interpreted as checkpoint
 The handler receives optional causal context because legacy `TaskCreated` records
 have no admission attribution; admitted tasks receive their exact original context.
 Compound handler disposition and new suspension checkpoints remain AQ-08.
+
+Runtime configuration rejects disposition quotas below the encoded size needed for
+both output-free executor-limit failures and interrupted-execution closures. The
+minimum uses the actual WAL encoder and the largest timestamp, so every accepted
+quota permits durable failure and recovery. Bootstrap validates before opening the
+store; direct dispatch-loop construction validates before recovery. Output and
+checkpoint byte quotas may still be zero. Storage-only creation quotas remain
+independent of this runtime liveness requirement.

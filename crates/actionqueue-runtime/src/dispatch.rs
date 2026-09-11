@@ -214,6 +214,8 @@ pub enum DispatchError {
         /// Human-readable context for diagnostics.
         context: String,
     },
+    /// Continuation limits cannot guarantee durable attempt closure.
+    InvalidContinuationLimits(crate::config::ConfigError),
     /// Backoff strategy configuration is invalid (e.g., base exceeds max).
     InvalidBackoffConfig,
     /// Dependency declaration would introduce a cycle in the task DAG.
@@ -232,6 +234,7 @@ pub enum DispatchError {
 impl std::fmt::Display for DispatchError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::InvalidContinuationLimits(e) => write!(f, "{e}"),
             Self::Admission(e) => write!(f, "{e}"),
             DispatchError::RecoveryInvariant(message) => write!(f, "recovery invariant: {message}"),
             DispatchError::SequenceOverflow => write!(f, "WAL sequence counter overflow"),
@@ -385,13 +388,17 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
     /// # Errors
     ///
     /// Returns [`DispatchError::InvalidBackoffConfig`] if the backoff strategy
-    /// configuration is invalid (e.g., exponential base exceeds max).
+    /// configuration is invalid (e.g., exponential base exceeds max), or
+    /// [`DispatchError::InvalidContinuationLimits`] before recovery if the
+    /// disposition quota cannot accommodate durable failure and recovery.
     pub fn new(
         mut authority: StorageMutationAuthority<W, ReplayReducer>,
         handler: H,
         clock: C,
         config: DispatchConfig,
     ) -> Result<Self, DispatchError> {
+        crate::config::RuntimeConfig::validate_continuation_limits(authority.continuation_limits())
+            .map_err(DispatchError::InvalidContinuationLimits)?;
         crate::waits::recover_execution(&mut authority, clock.now())
             .map_err(DispatchError::Authority)?;
         // Settle controls, retained matches, overdue deadlines and their cascades
@@ -824,7 +831,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
                 // Never substitute a result after an ambiguous persistence error.
                 worker_result.response =
                     actionqueue_executor_local::ExecutorResponse::RetryableFailure {
-                        error: "handler result exceeds configured size limit".into(),
+                        error: crate::config::RESULT_TOO_LARGE.into(),
                     };
                 let failure =
                     actionqueue_engine::scheduler::attempt_finish::build_attempt_finish_command(
@@ -2971,6 +2978,74 @@ mod tests {
             .finish();
         let guard = tracing::subscriber::set_default(subscriber);
         (buffer, guard)
+    }
+
+    #[test]
+    fn unsafe_disposition_limit_does_not_create_a_store() {
+        use crate::{
+            config::{ConfigError, RuntimeConfig},
+            engine::{ActionQueueEngine, BootstrapError},
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().join("unopened");
+        let minimum = RuntimeConfig::minimum_disposition_bytes();
+        for limit in [0, 91, 99, minimum - 1, minimum, minimum + 1, usize::MAX] {
+            let config = RuntimeConfig {
+                data_dir: data_dir.clone(),
+                continuation_limits: actionqueue_core::limits::ContinuationLimits {
+                    output_bytes: 0,
+                    checkpoint_bytes: 0,
+                    disposition_bytes: limit,
+                },
+                ..Default::default()
+            };
+            if limit >= minimum {
+                assert!(config.validate().is_ok());
+                continue;
+            }
+            let error = ActionQueueEngine::new(config, DependencyHandler)
+                .bootstrap()
+                .err()
+                .expect("unsafe quota must reject");
+            assert!(
+                matches!(error, BootstrapError::Config(ConfigError::DispositionLimitTooLow { minimum: m }) if m == minimum)
+            );
+            assert!(!data_dir.exists());
+        }
+    }
+
+    #[test]
+    fn direct_dispatch_rejects_unsafe_continuation_limits() {
+        let dir = tempfile::tempdir().unwrap();
+        let recovery = load_projection_from_storage(dir.path()).unwrap();
+        let mut authority = StorageMutationAuthority::new(recovery.wal_writer, recovery.projection);
+        let digest = authority.projection().projection_digest().unwrap();
+        authority.set_continuation_limits(actionqueue_core::limits::ContinuationLimits {
+            disposition_bytes: 99,
+            ..Default::default()
+        });
+        let error = DispatchLoop::new(
+            authority,
+            DependencyHandler,
+            MockClock::new(1000),
+            DispatchConfig::new(
+                BackoffStrategyConfig::Fixed { interval: Duration::ZERO },
+                1,
+                30,
+                None,
+                None,
+            ),
+        )
+        .err()
+        .expect("unsafe quota must reject");
+        assert!(matches!(
+            error,
+            DispatchError::InvalidContinuationLimits(
+                crate::config::ConfigError::DispositionLimitTooLow { .. }
+            )
+        ));
+        let recovery = load_projection_from_storage(dir.path()).unwrap();
+        assert_eq!(recovery.projection.projection_digest().unwrap(), digest);
     }
 
     fn new_dispatch<H: ExecutorHandler + 'static>(

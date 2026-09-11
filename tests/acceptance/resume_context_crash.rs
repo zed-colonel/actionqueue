@@ -28,6 +28,11 @@ fn resume_crash_child() {
     let stage: usize = std::env::var("AQ_RESUME_STAGE").unwrap().parse().unwrap();
     let mut a = s::open(&path);
     let (r, _) = wake(&mut a);
+    a.set_continuation_limits(actionqueue_core::limits::ContinuationLimits {
+        output_bytes: 0,
+        disposition_bytes: std::env::var("AQ_RESUME_LIMIT").unwrap().parse().unwrap(),
+        ..Default::default()
+    });
     parity(&a);
     transition(&mut a, r, RunState::Leased, 31);
     commit!(
@@ -107,13 +112,18 @@ fn exactly_once_assignment_and_recovery_redelivery_at_every_prefix_aq_dd_011_012
         io::{BufRead, BufReader},
         process::{Command, Stdio},
     };
-    for stage in 0..10 {
+    let limits = [
+        actionqueue_core::limits::ContinuationLimits::default().disposition_bytes,
+        actionqueue_runtime::config::RuntimeConfig::minimum_disposition_bytes(),
+    ];
+    for (stage, limit) in (0..10).flat_map(|stage| limits.map(|limit| (stage, limit))) {
         let dir = resume_dir();
         let path = dir.path().join("store");
         let mut child = Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "resume_crash_child", "--ignored", "--nocapture"])
             .env("AQ_RESUME_ROOT", &path)
             .env("AQ_RESUME_STAGE", stage.to_string())
+            .env("AQ_RESUME_LIMIT", limit.to_string())
             .stdout(Stdio::piped())
             .spawn()
             .unwrap();
@@ -133,6 +143,11 @@ fn exactly_once_assignment_and_recovery_redelivery_at_every_prefix_aq_dd_011_012
         reader.join().unwrap();
         ready.unwrap();
         let mut a = s::reopen(&path);
+        a.set_continuation_limits(actionqueue_core::limits::ContinuationLimits {
+            output_bytes: 0,
+            disposition_bytes: limit,
+            ..Default::default()
+        });
         let r = a.projection().waits().records().next().unwrap().run_id;
         parity(&a);
         let original =

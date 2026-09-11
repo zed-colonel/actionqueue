@@ -230,6 +230,11 @@ pub struct StorageMutationAuthority<W: WalWriter, P: MutationProjection> {
 }
 
 impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
+    /// Current continuation creation limits (hard ceilings still apply).
+    pub fn continuation_limits(&self) -> actionqueue_core::limits::ContinuationLimits {
+        self.continuation_limits
+    }
+
     /// Configures creation limits; exact retries and replay retain hard format rules.
     pub fn set_continuation_limits(
         &mut self,

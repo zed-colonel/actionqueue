@@ -538,6 +538,7 @@ fn corrupted_checkpoint_or_assignment_cannot_publish_a_snapshot() {
 struct OversizedResult {
     run: RunId,
     bytes: usize,
+    rejected_bytes: usize,
     failures: usize,
     suspended: bool,
     seen: Recording,
@@ -552,7 +553,7 @@ impl actionqueue_executor_local::handler::ExecutorHandler for OversizedResult {
             let mut seen = self.seen.0.lock().unwrap();
             seen.push(c.input);
             if seen.len() <= self.failures {
-                let output = Some(vec![b'x'; self.bytes + 1]);
+                let output = Some(vec![b'x'; self.rejected_bytes]);
                 return if self.suspended {
                     HandlerOutput::Suspended { output, consumption: vec![] }
                 } else {
@@ -565,7 +566,13 @@ impl actionqueue_executor_local::handler::ExecutorHandler for OversizedResult {
     }
 }
 
-async fn output_limit_case(limit: usize, resumed: bool, failures: usize, suspended: bool) {
+async fn output_limit_case(
+    limit: usize,
+    resumed: bool,
+    failures: usize,
+    suspended: bool,
+    record_limit: Option<usize>,
+) {
     use actionqueue_core::limits::ContinuationLimits;
     use actionqueue_runtime::{config::RuntimeConfig, engine::ActionQueueEngine};
     let dir = resume_dir();
@@ -594,14 +601,27 @@ async fn output_limit_case(limit: usize, resumed: bool, failures: usize, suspend
     let config = RuntimeConfig {
         data_dir: dir.path().into(),
         dispatch_concurrency: std::num::NonZeroUsize::new(1).unwrap(),
-        continuation_limits: ContinuationLimits { output_bytes: limit, ..Default::default() },
+        continuation_limits: ContinuationLimits {
+            output_bytes: limit,
+            disposition_bytes: record_limit
+                .unwrap_or(ContinuationLimits::default().disposition_bytes),
+            ..Default::default()
+        },
         backoff_strategy: actionqueue_runtime::config::BackoffStrategyConfig::Fixed {
             interval: std::time::Duration::ZERO,
         },
         ..Default::default()
     };
-    let handler =
-        OversizedResult { run, bytes: limit, failures, suspended, seen: Recording(seen.clone()) };
+    let bytes = if record_limit.is_some() { 0 } else { limit };
+    let rejected_bytes = if record_limit.is_some() { 1024 } else { limit + 1 };
+    let handler = OversizedResult {
+        run,
+        bytes,
+        rejected_bytes,
+        failures,
+        suspended,
+        seen: Recording(seen.clone()),
+    };
     let mut boot =
         ActionQueueEngine::new(config, handler).bootstrap_with_clock(MockClock::new(40)).unwrap();
     let _ = boot.run_until_idle().await.expect("oversized result must close normally");
@@ -649,7 +669,7 @@ async fn output_limit_case(limit: usize, resumed: bool, failures: usize, suspend
         boot.projection().get_attempt_history(&next_run.id()).unwrap()[0]
             .output()
             .map_or(0, <[u8]>::len),
-        limit
+        bytes
     );
     let digest = boot.projection().projection_digest().unwrap();
     boot.shutdown().unwrap();
@@ -663,7 +683,7 @@ async fn oversized_success_closes_attempt_and_preserves_resume_retry_lineage() {
     for limit in [actionqueue_core::limits::MAX_INLINE_DATA_BYTES, 8, 0] {
         for resumed in [false, true] {
             for failures in [1, usize::MAX] {
-                output_limit_case(limit, resumed, failures, false).await;
+                output_limit_case(limit, resumed, failures, false, None).await;
             }
         }
     }
@@ -671,5 +691,131 @@ async fn oversized_success_closes_attempt_and_preserves_resume_retry_lineage() {
 
 #[tokio::test]
 async fn oversized_suspension_closes_as_failure_instead_of_stranding_run() {
-    output_limit_case(8, true, usize::MAX, true).await;
+    output_limit_case(8, true, usize::MAX, true, None).await;
+}
+
+#[tokio::test]
+async fn total_record_limit_closes_fresh_and_resumed_results_and_releases_ownership() {
+    use actionqueue_runtime::config::RuntimeConfig;
+    let minimum = RuntimeConfig::minimum_disposition_bytes();
+    for record_limit in [minimum, minimum + 1] {
+        for resumed in [false, true] {
+            for failures in [1, usize::MAX] {
+                for suspended in [false, true] {
+                    // The output quota admits all 1,024 bytes. Only the framed
+                    // record quota rejects the worker result.
+                    output_limit_case(1024, resumed, failures, suspended, Some(record_limit)).await;
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn unsafe_record_limits_reject_before_bootstrap_and_minimum_recovers_active_attempts() {
+    use actionqueue_core::limits::ContinuationLimits;
+    use actionqueue_runtime::{
+        config::{ConfigError, RuntimeConfig},
+        engine::{ActionQueueEngine, BootstrapError},
+    };
+    let minimum = RuntimeConfig::minimum_disposition_bytes();
+    for resumed in [false, true] {
+        let dir = resume_dir();
+        let mut a = s::open(dir.path());
+        let run = running(&mut a, 1, Some("record-recovery"), false);
+        let context = if resumed {
+            let mut c = command(&a, run, spec(WaitId::new(), None));
+            c.checkpoint = Some(checkpoint(&a, run, b"preserved"));
+            establish(&mut a, c).unwrap();
+            let _ = s::submit(&mut a, s::envelope(1, 25)).unwrap();
+            reconcile(&mut a, 30).unwrap();
+            let context = a.projection().pending_resume(run);
+            lease(&mut a, run, 31);
+            start(&mut a, run, 32);
+            context
+        } else {
+            None
+        };
+        let interrupted =
+            a.projection().get_run_instance(&run).unwrap().current_attempt_id().unwrap();
+        let digest = a.projection().projection_digest().unwrap();
+        drop(a); // Restart with a durably started attempt and retained lease.
+        let seen = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let mut config = RuntimeConfig {
+            data_dir: dir.path().into(),
+            dispatch_concurrency: std::num::NonZeroUsize::new(1).unwrap(),
+            continuation_limits: ContinuationLimits {
+                output_bytes: 0,
+                disposition_bytes: minimum,
+                ..Default::default()
+            },
+            backoff_strategy: actionqueue_runtime::config::BackoffStrategyConfig::Fixed {
+                interval: std::time::Duration::ZERO,
+            },
+            ..Default::default()
+        };
+        for invalid in [0, 91, 99, minimum - 1] {
+            config.continuation_limits.disposition_bytes = invalid;
+            let error = ActionQueueEngine::new(config.clone(), Recording(seen.clone()))
+                .bootstrap_with_clock(MockClock::new(40))
+                .err()
+                .expect("unsafe quota must reject");
+            assert!(
+                matches!(error, BootstrapError::Config(ConfigError::DispositionLimitTooLow { minimum: m }) if m == minimum)
+            );
+            let a = s::open(dir.path());
+            assert_eq!(a.projection().projection_digest().unwrap(), digest);
+            assert_eq!(
+                a.projection().get_run_instance(&run).unwrap().current_attempt_id(),
+                Some(interrupted)
+            );
+            assert!(seen.lock().unwrap().is_empty());
+        }
+        config.continuation_limits.disposition_bytes = minimum;
+        let mut boot = ActionQueueEngine::new(config, Recording(seen.clone()))
+            .bootstrap_with_clock(MockClock::new(40))
+            .unwrap();
+        let closed = boot
+            .projection()
+            .get_attempt_history(&run)
+            .unwrap()
+            .iter()
+            .find(|a| a.attempt_id() == interrupted)
+            .unwrap();
+        assert_eq!(closed.result(), Some(AttemptResultKind::Failure));
+        assert_eq!(closed.finish_origin(), AttemptFinishOrigin::Recovery);
+        assert_eq!(closed.error(), Some("executor interrupted before durable disposition"));
+        assert!(boot.projection().get_lease_metadata(&run).is_none());
+        let _ = boot.run_until_idle().await.unwrap();
+        assert_eq!(boot.projection().get_run_state(&run), Some(&RunState::Completed));
+        {
+            let seen = seen.lock().unwrap();
+            let inputs: Vec<_> = seen.iter().filter(|i| i.run_id == run).collect();
+            assert_eq!(inputs.len(), 1);
+            assert_eq!(inputs[0].resume_context, context);
+            let attempt = boot.projection().get_attempt_history(&run).unwrap().last().unwrap();
+            if context.is_some() {
+                let assignment = attempt.accepted_start().unwrap().assignment.unwrap();
+                assert_eq!(assignment.delivery, ResumeDelivery::Recovery);
+                assert_eq!(assignment.previous_attempt_id, Some(interrupted));
+            }
+        }
+        let mut next = admission_support::request(2).task_spec().clone();
+        next.set_constraints(
+            TaskConstraints::new(1, None, Some("record-recovery".into())).unwrap(),
+        )
+        .unwrap();
+        let next_id = next.id();
+        boot.submit_task(next).unwrap();
+        let _ = boot.run_until_idle().await.unwrap();
+        assert_eq!(
+            boot.projection().runs_for_task(next_id).next().unwrap().state(),
+            RunState::Completed
+        );
+        let digest = boot.projection().projection_digest().unwrap();
+        boot.shutdown().unwrap();
+        let a = s::open(dir.path());
+        assert_eq!(a.projection().projection_digest().unwrap(), digest);
+        parity(&a);
+    }
 }

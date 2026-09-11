@@ -121,9 +121,7 @@ pub fn recover_execution<W: WalWriter>(
                             next(a)?,
                             id,
                             attempt,
-                            AttemptOutcome::failure(
-                                "executor interrupted before durable disposition",
-                            ),
+                            AttemptOutcome::failure(crate::config::EXECUTOR_INTERRUPTED),
                             now,
                         )
                         .with_recovery_origin(),
