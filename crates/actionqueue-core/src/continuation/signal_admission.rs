@@ -1,4 +1,6 @@
 //! Producer requests, host attestation, and typed durable signal results.
+use sha2::{Digest, Sha256};
+
 use super::{SignalEnvelope, SignalKind, SignalNamespace};
 use crate::{
     bounded::{ContentHash, OpaqueRef},
@@ -6,7 +8,6 @@ use crate::{
     data_ref::DataRef,
     ids::{CorrelationId, SignalId, SignalSequence, TenantId},
 };
-use sha2::{Digest, Sha256};
 
 /// The authenticated host assigns scope and attribution; references grant no permission.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -152,5 +153,7 @@ impl std::error::Error for SignalRejection {}
 
 crate::bounded::bounded_text!(
     /// Stable identity for an independent retention pin.
-    SignalPinId, crate::limits::MAX_SIGNAL_ID_BYTES, crate::bounded::TextGrammar::Opaque
+    SignalPinId,
+    crate::limits::MAX_SIGNAL_ID_BYTES,
+    crate::bounded::TextGrammar::Opaque
 );

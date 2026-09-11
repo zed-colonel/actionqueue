@@ -1,6 +1,4 @@
 //! Frozen kind 256/schema 1 payloads. No public admission plan is serialized.
-use super::{codec::DecodeError, domain_v1::RunV1, task_v1::TaskSpecV1};
-use crate::mutation::admission::AdmissionRecord;
 use actionqueue_core::{
     admission::{AdmissionDigest, EnsureTaskRequest},
     bounded::{BoundedCode, ContentHash, HashAlgorithm, OpaqueRef},
@@ -9,6 +7,9 @@ use actionqueue_core::{
     run::RunInstance,
 };
 use serde::{Deserialize, Serialize};
+
+use super::{codec::DecodeError, domain_v1::RunV1, task_v1::TaskSpecV1};
+use crate::mutation::admission::AdmissionRecord;
 fn invalid(e: impl std::fmt::Display) -> DecodeError {
     DecodeError::Decode(e.to_string())
 }

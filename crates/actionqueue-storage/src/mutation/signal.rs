@@ -1,10 +1,11 @@
 //! Immutable signal facts and durable retention state; wire DTOs are storage-owned.
+use std::collections::BTreeMap;
+
 use actionqueue_core::{
     causal::ControlMutationContext,
     continuation::*,
     ids::{SignalId, SignalSequence, TenantId},
 };
-use std::collections::BTreeMap;
 /// Attribution and WAL order of a retention transition.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(

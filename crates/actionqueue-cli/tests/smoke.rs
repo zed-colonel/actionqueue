@@ -269,6 +269,13 @@ fn storage_commands_verify_roundtrip_and_never_initialize_inspection() {
 #[cfg(unix)]
 #[test]
 fn restore_rejects_fifo_descriptor_and_inventory_without_blocking() {
+    use std::{
+        fs,
+        os::unix::fs::FileTypeExt,
+        process::Stdio,
+        time::{Duration, Instant},
+    };
+
     use actionqueue_storage::{
         recovery::bootstrap::recover_read_only,
         snapshot::{
@@ -277,12 +284,6 @@ fn restore_rejects_fifo_descriptor_and_inventory_without_blocking() {
         },
         store::{backup_store, open_store, OpenOptions},
         wal::repair::RepairPolicy,
-    };
-    use std::{
-        fs,
-        os::unix::fs::FileTypeExt,
-        process::Stdio,
-        time::{Duration, Instant},
     };
     let base = unique_data_dir("smoke-restore-fifo");
     let source = base.join("source");

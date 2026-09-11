@@ -1,8 +1,9 @@
 //! Frozen kinds 288–291/schema 1. Public domain structs are never serialized directly.
-use super::codec::DecodeError;
-use crate::mutation::signal::*;
 use actionqueue_core::{bounded::*, causal::*, continuation::*, data_ref::*, ids::*};
 use serde::{Deserialize, Serialize};
+
+use super::codec::DecodeError;
+use crate::mutation::signal::*;
 fn invalid(e: impl std::fmt::Display) -> DecodeError {
     DecodeError::Decode(e.to_string())
 }

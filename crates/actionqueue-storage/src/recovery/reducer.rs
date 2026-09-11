@@ -1708,7 +1708,11 @@ impl std::fmt::Display for TaskCausalityError {
                 write!(f, "task canceled rejected: unknown task {task_id}")
             }
             TaskCausalityError::CanceledBeforeCreation { task_id, created_at, canceled_at } => {
-                write!(f, "task canceled rejected for task {task_id}: canceled_at {canceled_at} precedes created_at {created_at}")
+                write!(
+                    f,
+                    "task canceled rejected for task {task_id}: canceled_at {canceled_at} \
+                     precedes created_at {created_at}"
+                )
             }
             TaskCausalityError::AlreadyCanceled {
                 task_id,

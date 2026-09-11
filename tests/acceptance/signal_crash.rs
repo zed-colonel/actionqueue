@@ -1,8 +1,9 @@
 mod signal_support;
+use std::sync::Mutex;
+
 use actionqueue_core::continuation::*;
 use actionqueue_storage::{mutation::MutationAuthorityError, store::fault};
 use signal_support::*;
-use std::sync::Mutex;
 static SERIAL: Mutex<()> = Mutex::new(());
 const POINTS: &[&str] = &[
     "wal_before_append",

@@ -1,7 +1,9 @@
 //! The immutable AQ-CONT-1 identity and compatibility boundary.
-use super::StoreError;
-use serde::{Deserialize, Serialize};
 use std::{fs::File, io::Read, path::Path};
+
+use serde::{Deserialize, Serialize};
+
+use super::StoreError;
 
 pub const MAX_MANIFEST_BYTES: u64 = 16 * 1024;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

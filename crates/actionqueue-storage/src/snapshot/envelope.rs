@@ -1,7 +1,8 @@
 //! Target snapshot framing, identity binding and reserved continuation sections.
+use serde::{Deserialize, Serialize};
+
 use super::{loader::SnapshotLoaderError, model::Snapshot};
 use crate::recovery::projection::{snapshot_digest, ProjectionDigest};
-use serde::{Deserialize, Serialize};
 pub const MAGIC: &[u8; 8] = b"AQCONT1S";
 pub const MAX_SNAPSHOT_BYTES: usize = 256 * 1024 * 1024;
 #[derive(Debug, Default, Serialize, Deserialize)]

@@ -1,11 +1,12 @@
 //! Exact v3 projection image, validated hydration, and canonical SHA-256.
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
 use super::reducer::*;
 use crate::{
     snapshot::{mapping::*, model::Snapshot},
     store::StoreError,
 };
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectionDigest {

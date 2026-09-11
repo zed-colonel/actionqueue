@@ -1,5 +1,4 @@
 //! Store sessions own the OS lock for the full writer or offline reader lifetime.
-use super::{StoreError, StoreManifest};
 use std::{
     fs::{self, File},
     io::Write,
@@ -9,6 +8,8 @@ use std::{
         Arc,
     },
 };
+
+use super::{StoreError, StoreManifest};
 
 #[derive(Debug, Clone)]
 pub enum OpenOptions {

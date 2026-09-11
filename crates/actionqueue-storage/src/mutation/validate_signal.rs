@@ -1,6 +1,7 @@
 //! Shared ancestry checks for live admission, replay and snapshot hydration.
-use crate::recovery::reducer::ReplayReducer;
 use actionqueue_core::continuation::{SignalEnvelope, SignalRejection as R};
+
+use crate::recovery::reducer::ReplayReducer;
 impl ReplayReducer {
     pub(crate) fn validate_signal_references(&self, e: &SignalEnvelope) -> Result<(), R> {
         if e.tenant_id.is_some() && !cfg!(feature = "platform") {

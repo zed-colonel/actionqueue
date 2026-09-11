@@ -1,6 +1,5 @@
 //! Frozen domain shapes used inside v1 payloads. Runtime struct evolution cannot
 //! silently append fields to these durable layouts.
-use super::codec::DecodeError;
 use actionqueue_core::{
     executor::ExecutorTraits,
     ids::{AttemptId, RunId, TaskId},
@@ -13,6 +12,8 @@ use actionqueue_core::{
     },
 };
 use serde::{Deserialize, Serialize};
+
+use super::codec::DecodeError;
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct PayloadV1 {

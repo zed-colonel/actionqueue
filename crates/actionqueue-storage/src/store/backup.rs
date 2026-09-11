@@ -1,4 +1,14 @@
 //! Verified offline inspection, backup, and restore. Sources are never repaired.
+use std::{
+    collections::BTreeSet,
+    fs::{self, File},
+    io::Read,
+    path::{Path, PathBuf},
+};
+
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
 use super::{open_store, session::*, OpenOptions, StoreError, StoreManifest, StoreSession};
 use crate::{
     recovery::{
@@ -6,14 +16,6 @@ use crate::{
         projection::ProjectionDigest,
     },
     wal::repair::RepairPolicy,
-};
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-use std::{
-    collections::BTreeSet,
-    fs::{self, File},
-    io::Read,
-    path::{Path, PathBuf},
 };
 #[derive(Debug, Serialize)]
 pub struct StoreInspection {

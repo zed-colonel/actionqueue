@@ -1,7 +1,8 @@
 //! CanonicalSignalV1: explicit tagged fields, independent of serde and Rust layouts.
+use sha2::{Digest, Sha256};
+
 use super::{effective_payload_hash, SignalEnvelope, SignalRejection};
 use crate::{bounded::ContentHash, data_ref::DataRef};
-use sha2::{Digest, Sha256};
 /// SHA-256 of domain-separated CanonicalSignalV1 bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignalDigest([u8; 32]);

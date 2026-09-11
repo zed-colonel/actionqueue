@@ -1,12 +1,13 @@
 //! Streaming target WAL reader, using the shared bounded frame parser.
+use std::{
+    fs::File,
+    io::{Seek, SeekFrom},
+};
+
 use super::{
     event::WalEvent,
     reader::{WalReader, WalReaderError},
     tail_validation::read_record,
-};
-use std::{
-    fs::File,
-    io::{Seek, SeekFrom},
 };
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WalFsReaderError {

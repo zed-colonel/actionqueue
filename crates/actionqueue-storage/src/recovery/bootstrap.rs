@@ -1,4 +1,6 @@
 //! Target-only recovery. Validate complete history and snapshot equivalence before writing.
+use std::{path::PathBuf, time::Instant};
+
 use super::{projection::ProjectionImageV3, reducer::ReplayReducer};
 use crate::{
     snapshot::{
@@ -16,7 +18,6 @@ use crate::{
         InstrumentedWalWriter, WalAppendTelemetry,
     },
 };
-use std::{path::PathBuf, time::Instant};
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RecoveryObservations {
     pub recovery_duration_seconds: f64,

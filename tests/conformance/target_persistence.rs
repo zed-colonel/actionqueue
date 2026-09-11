@@ -2,6 +2,8 @@
 //!
 //! Keep subprocess tests in `store_process_lock.rs`: spawning here can briefly
 //! inherit unrelated tests' store-lock descriptors and delay their lock release.
+use std::{collections::BTreeMap, fs, path::Path};
+
 use actionqueue_core::{
     ids::{AttemptId, RunId, TaskId},
     mutation::AttemptResultKind,
@@ -28,7 +30,6 @@ use actionqueue_storage::{
         writer::WalWriter,
     },
 };
-use std::{collections::BTreeMap, fs, path::Path};
 fn tree(root: &Path) -> BTreeMap<String, Vec<u8>> {
     fn visit(root: &Path, dir: &Path, v: &mut BTreeMap<String, Vec<u8>>) {
         for e in fs::read_dir(dir).unwrap() {

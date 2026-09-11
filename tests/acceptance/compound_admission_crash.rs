@@ -1,4 +1,6 @@
 mod admission_support;
+use std::sync::Mutex;
+
 use actionqueue_core::mutation::{DurabilityPolicy, MutationAuthority, MutationCommand};
 use actionqueue_storage::{
     mutation::MutationAuthorityError,
@@ -7,7 +9,6 @@ use actionqueue_storage::{
     wal::{fs_writer::WalFsWriter, repair::RepairPolicy},
 };
 use admission_support::*;
-use std::sync::Mutex;
 static SERIAL: Mutex<()> = Mutex::new(());
 fn reopen(path: &std::path::Path) -> Authority {
     let session = open_store(path, OpenOptions::ReadWrite).unwrap();

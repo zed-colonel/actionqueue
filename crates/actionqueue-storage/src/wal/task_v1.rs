@@ -1,11 +1,12 @@
-use super::domain_v1::{ConstraintsV1, MetadataV1, PayloadV1};
-// Frozen task payload layout, including feature-independent scheduling identifiers.
-use super::codec::DecodeError;
 use actionqueue_core::{
     ids::{TaskId, TenantId},
     task::{run_policy::RunPolicy, task_spec::TaskSpec},
 };
 use serde::{Deserialize, Serialize};
+
+// Frozen task payload layout, including feature-independent scheduling identifiers.
+use super::codec::DecodeError;
+use super::domain_v1::{ConstraintsV1, MetadataV1, PayloadV1};
 #[derive(Serialize, Deserialize)]
 pub(super) struct TaskSpecV1 {
     id: TaskId,
