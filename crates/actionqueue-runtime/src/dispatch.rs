@@ -685,7 +685,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
             if task.canceled_at().is_some() {
                 self.pending_hierarchy_cascade.insert(id);
             }
-            if self.authority.projection().runs_for_task(id).all(|r| r.state().is_terminal()) {
+            if self.hierarchy_tracker.is_terminal(id) {
                 self.pending_gc_tasks.insert(id);
             }
         }
@@ -3053,6 +3053,46 @@ mod tests {
             "an in-flight run keeps its key so no competitor starts under it"
         );
         release_tx.send(()).unwrap();
+    }
+
+    #[test]
+    fn coordination_refresh_preserves_uncanceled_tasks_without_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut dispatch = new_dispatch(dir.path(), DependencyHandler);
+        let parent = task(b"parent", None);
+        let parent_id = parent.id();
+        dispatch.submit_task(parent).unwrap();
+        let child = task(b"child", None).with_parent(parent_id);
+        let child_id = child.id();
+        let _ = dispatch
+            .authority
+            .submit_command(
+                MutationCommand::TaskCreate(actionqueue_core::mutation::TaskCreateCommand::new(
+                    dispatch.next_sequence().unwrap(),
+                    child,
+                    1000,
+                )),
+                DurabilityPolicy::Immediate,
+            )
+            .unwrap();
+
+        dispatch.refresh_coordination();
+        dispatch.gc_terminal_tasks();
+        assert_eq!(dispatch.hierarchy_tracker.depth(child_id), 1);
+        assert!(!dispatch.hierarchy_tracker.is_terminal(child_id));
+
+        dispatch
+            .cancel(actionqueue_core::mutation::CancelCommand {
+                expected_sequence: dispatch.next_sequence().unwrap(),
+                target: actionqueue_core::mutation::CancelTarget::Task(parent_id),
+                tenant_id: None,
+                control_context: None,
+                timestamp: 1000,
+            })
+            .unwrap();
+        assert!(dispatch.projection().is_task_canceled(child_id));
+        dispatch.gc_terminal_tasks();
+        assert_eq!(dispatch.hierarchy_tracker.depth(child_id), 0);
     }
 
     #[tokio::test]
