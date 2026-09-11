@@ -306,7 +306,7 @@ fn same_identity_across_tenants_isolated_with_local_ancestry_and_profile_validat
             .submit_command(
                 MutationCommand::TenantCreate(TenantCreateCommand::new(
                     seq,
-                    TenantRegistration::new(t, "tenant".into()),
+                    TenantRegistration::new(t, "tenant"),
                     1,
                 )),
                 DurabilityPolicy::Immediate,

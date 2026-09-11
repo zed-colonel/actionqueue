@@ -317,28 +317,32 @@ mod tests {
             received_at: 0,
             control_context: None,
         };
-        let mut p = ReplayReducer::new();
-        p.signals.insert(SignalRecord::new(e.clone(), SignalSequence::new(1), 1).unwrap()).unwrap();
-        p.signals.last_sequence = u64::MAX;
-        p.latest_sequence = u64::MAX;
-        let mut a = StorageMutationAuthority::new(NoWrites, p);
-        let c = SignalAdmitCommand::new(0, e.clone());
-        assert!(matches!(
-            a.submit_command(MutationCommand::SignalAdmit(c), DurabilityPolicy::Immediate)
-                .unwrap()
-                .applied(),
-            AppliedMutation::Signal(AdmitSignalOutcome::AlreadyExists { .. })
-        ));
-        let mut e = e;
-        e.signal_id = SignalId::new("two").unwrap();
-        assert!(matches!(
-            a.submit_command(
-                MutationCommand::SignalAdmit(SignalAdmitCommand::new(0, e)),
-                DurabilityPolicy::Immediate
-            ),
-            Err(crate::mutation::MutationAuthorityError::Signal(
-                SignalRejection::SequenceExhausted
-            ))
-        ));
+        for (last_signal, latest_wal, expected_wal) in [(u64::MAX, 1, 2), (1, u64::MAX, 0)] {
+            let mut p = ReplayReducer::new();
+            p.signals
+                .insert(SignalRecord::new(e.clone(), SignalSequence::new(1), 1).unwrap())
+                .unwrap();
+            p.signals.last_sequence = last_signal;
+            p.latest_sequence = latest_wal;
+            let mut a = StorageMutationAuthority::new(NoWrites, p);
+            let c = SignalAdmitCommand::new(0, e.clone());
+            assert!(matches!(
+                a.submit_command(MutationCommand::SignalAdmit(c), DurabilityPolicy::Immediate)
+                    .unwrap()
+                    .applied(),
+                AppliedMutation::Signal(AdmitSignalOutcome::AlreadyExists { .. })
+            ));
+            let mut new = e.clone();
+            new.signal_id = SignalId::new("two").unwrap();
+            assert!(matches!(
+                a.submit_command(
+                    MutationCommand::SignalAdmit(SignalAdmitCommand::new(expected_wal, new)),
+                    DurabilityPolicy::Immediate
+                ),
+                Err(crate::mutation::MutationAuthorityError::Signal(
+                    SignalRejection::SequenceExhausted
+                ))
+            ));
+        }
     }
 }
