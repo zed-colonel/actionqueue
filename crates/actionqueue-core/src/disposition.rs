@@ -1,4 +1,4 @@
-//! Target attempt dispositions; distinct from the legacy mutation outcome until AQ-08.
+//! Structurally validated attempt outcomes and their bounded effects.
 use crate::admission::{validate_dependencies, AdmissionRejection};
 use crate::bounded::{BoundedCode, BoundedError};
 use crate::budget::BudgetConsumption;
@@ -99,13 +99,26 @@ impl AttemptDisposition {
             return Err(DispositionError::TooLarge);
         }
         let valid = match &outcome {
-            DispositionOutcome::Complete => parts.wait.is_none() && parts.checkpoint.is_none(),
-            DispositionOutcome::Awaiting => parts.wait.is_some(),
-            DispositionOutcome::Suspended { .. } => parts.wait.is_none(),
+            DispositionOutcome::Complete => {
+                parts.wait.is_none()
+                    && parts.checkpoint.is_none()
+                    && parts.child_admissions.is_empty()
+            }
+            DispositionOutcome::Awaiting => parts.wait.is_some() && parts.output.is_none(),
+            DispositionOutcome::Suspended { .. } => {
+                parts.wait.is_none()
+                    && parts.output.is_none()
+                    && parts.child_admissions.is_empty()
+                    && parts.emitted_signals.is_empty()
+            }
             DispositionOutcome::RetryableFailure { .. }
             | DispositionOutcome::TerminalFailure { .. }
             | DispositionOutcome::Timeout { .. } => {
-                parts.wait.is_none() && parts.child_admissions.is_empty()
+                parts.wait.is_none()
+                    && parts.child_admissions.is_empty()
+                    && parts.output.is_none()
+                    && parts.checkpoint.is_none()
+                    && parts.emitted_signals.is_empty()
             }
         };
         if !valid {

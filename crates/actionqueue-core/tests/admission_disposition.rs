@@ -136,40 +136,80 @@ fn admission_checks_ownership_dependencies_and_counts() {
 }
 #[test]
 fn all_disposition_combinations_are_checked() {
+    // Exhaust every effect combination, both with and without consumption.
     for (index, outcome) in outcomes().into_iter().enumerate() {
-        for has_output in [false, true] {
-            for has_checkpoint in [false, true] {
-                for has_wait in [false, true] {
-                    for has_children in [false, true] {
-                        let parts = DispositionParts {
-                            output: has_output.then(|| checkpoint().data),
-                            checkpoint: has_checkpoint.then(checkpoint),
-                            wait: has_wait.then(wait),
-                            child_admissions: if has_children { vec![child()] } else { vec![] },
-                            ..Default::default()
-                        };
-                        let valid = match index {
-                            0 => !has_checkpoint && !has_wait,
-                            1 => has_wait,
-                            2 => !has_wait,
-                            _ => !has_children && !has_wait,
-                        };
-                        assert_eq!(
-                            AttemptDisposition::new(outcome.clone(), parts).is_ok(),
-                            valid,
-                            "outcome {index}"
-                        );
-                    }
-                }
+        for mask in 0u8..64 {
+            let has_output = mask & 1 != 0;
+            let has_checkpoint = mask & 2 != 0;
+            let has_wait = mask & 4 != 0;
+            let has_children = mask & 8 != 0;
+            let has_signals = mask & 16 != 0;
+            let parts = DispositionParts {
+                output: has_output.then(|| checkpoint().data),
+                checkpoint: has_checkpoint.then(checkpoint),
+                wait: has_wait.then(wait),
+                child_admissions: if has_children { vec![child()] } else { vec![] },
+                emitted_signals: if has_signals { vec![signal()] } else { vec![] },
+                consumption: if mask & 32 != 0 {
+                    vec![actionqueue_core::budget::BudgetConsumption::new(
+                        actionqueue_core::budget::BudgetDimension::Token,
+                        1,
+                    )]
+                } else {
+                    vec![]
+                },
+            };
+            let valid = match index {
+                0 => !has_checkpoint && !has_wait && !has_children,
+                1 => has_wait && !has_output,
+                2 => !has_output && !has_wait && !has_children && !has_signals,
+                _ => !has_output && !has_checkpoint && !has_wait && !has_children && !has_signals,
+            };
+            #[cfg(feature = "serde")]
+            {
+                let json = serde_json::json!({
+                    "outcome": outcome, "output": parts.output, "checkpoint": parts.checkpoint,
+                    "wait": parts.wait, "child_admissions": parts.child_admissions,
+                    "emitted_signals": parts.emitted_signals, "consumption": parts.consumption,
+                });
+                assert_eq!(
+                    serde_json::from_value::<AttemptDisposition>(json).is_ok(),
+                    valid,
+                    "JSON outcome {index}, effects {mask}"
+                );
+                let bytes = postcard::to_allocvec(&(
+                    &outcome,
+                    &parts.output,
+                    &parts.checkpoint,
+                    &parts.wait,
+                    &parts.child_admissions,
+                    &parts.emitted_signals,
+                    &parts.consumption,
+                ))
+                .unwrap();
+                assert_eq!(
+                    postcard::from_bytes::<AttemptDisposition>(&bytes).is_ok(),
+                    valid,
+                    "binary outcome {index}, effects {mask}"
+                );
             }
+            assert_eq!(
+                AttemptDisposition::new(outcome.clone(), parts).is_ok(),
+                valid,
+                "outcome {index}, effects {mask}"
+            );
         }
     }
 }
 #[test]
 fn disposition_collection_ceilings_apply() {
     for count in [64, 65] {
-        let p = DispositionParts { child_admissions: vec![child(); count], ..Default::default() };
-        assert_eq!(AttemptDisposition::new(DispositionOutcome::Complete, p).is_ok(), count == 64);
+        let p = DispositionParts {
+            wait: Some(wait()),
+            child_admissions: vec![child(); count],
+            ..Default::default()
+        };
+        assert_eq!(AttemptDisposition::new(DispositionOutcome::Awaiting, p).is_ok(), count == 64);
     }
     for count in [32, 33] {
         let p = DispositionParts { emitted_signals: vec![signal(); count], ..Default::default() };
