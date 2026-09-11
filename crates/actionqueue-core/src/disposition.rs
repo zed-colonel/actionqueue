@@ -87,6 +87,57 @@ impl std::fmt::Display for DispositionError {
 }
 impl std::error::Error for DispositionError {}
 impl AttemptDisposition {
+    /// Completes an attempt with an optional inline or external output reference.
+    pub fn complete(output: Option<DataRef>) -> Self {
+        Self::new(DispositionOutcome::Complete, DispositionParts { output, ..Default::default() })
+            .expect("completion has no incompatible effects")
+    }
+    /// Reports a retryable failure with no subordinate effects.
+    pub fn retryable_failure(error: BoundedError) -> Self {
+        Self::new(DispositionOutcome::RetryableFailure { error }, DispositionParts::default())
+            .expect("failure has no effects")
+    }
+    /// Reports a permanent failure with no subordinate effects.
+    pub fn terminal_failure(error: BoundedError) -> Self {
+        Self::new(DispositionOutcome::TerminalFailure { error }, DispositionParts::default())
+            .expect("failure has no effects")
+    }
+    /// Suspends an attempt, optionally replacing its immutable checkpoint.
+    pub fn suspended(checkpoint: Option<CheckpointRef>, reason: Option<BoundedCode>) -> Self {
+        Self::new(
+            DispositionOutcome::Suspended { reason },
+            DispositionParts { checkpoint, ..Default::default() },
+        )
+        .expect("suspension permits a checkpoint")
+    }
+    /// Yields an attempt to exactly one durable wait.
+    pub fn awaiting(wait: WaitSpec, checkpoint: Option<CheckpointRef>) -> Self {
+        Self::new(
+            DispositionOutcome::Awaiting,
+            DispositionParts { wait: Some(wait), checkpoint, ..Default::default() },
+        )
+        .expect("awaiting requires one wait")
+    }
+    /// Replaces consumption, rejecting collections above the format ceiling.
+    pub fn with_consumption(
+        mut self,
+        consumption: Vec<BudgetConsumption>,
+    ) -> Result<Self, DispositionError> {
+        if consumption.len() > crate::limits::MAX_CONSUMPTION_ENTRIES_PER_DISPOSITION {
+            return Err(DispositionError::TooLarge);
+        }
+        self.consumption = consumption;
+        Ok(self)
+    }
+    /// Timeout is authoritative over every proposed outcome. Retains consumption
+    /// while discarding all proposed output, continuation, child and signal effects.
+    pub fn timed_out(self, error: BoundedError) -> Self {
+        Self::new(
+            DispositionOutcome::Timeout { error },
+            DispositionParts { consumption: self.consumption, ..Default::default() },
+        )
+        .expect("validated consumption remains bounded")
+    }
     /// Checks outcome/effect combinations and hard collection ceilings.
     pub fn new(
         outcome: DispositionOutcome,
@@ -257,5 +308,67 @@ impl TryFrom<ChildWire> for ChildAdmission {
     type Error = AdmissionRejection;
     fn try_from(w: ChildWire) -> Result<Self, Self::Error> {
         Self::new(w.admission_key, w.task_spec, w.dependencies, w.causal_override)
+    }
+}
+
+/// State and retry allowance after one accepted attempt closes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DispositionAccounting {
+    /// Durable target state.
+    pub target_state: crate::run::RunState,
+    /// Number of failures, independent of the physical attempt ordinal.
+    pub failure_attempt_count: u32,
+}
+/// Invalid accounting inputs; never silently wrap or grant additional retries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DispositionAccountingError {
+    /// Retry allowance must be positive.
+    InvalidMaxAttempts,
+    /// Durable failure count cannot be incremented.
+    FailureCountOverflow,
+}
+impl std::fmt::Display for DispositionAccountingError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "invalid disposition accounting: {self:?}")
+    }
+}
+impl std::error::Error for DispositionAccountingError {}
+impl DispositionOutcome {
+    /// Whether this accepted execution consumes one failure allowance.
+    pub fn is_failure(&self) -> bool {
+        matches!(
+            self,
+            Self::RetryableFailure { .. } | Self::TerminalFailure { .. } | Self::Timeout { .. }
+        )
+    }
+    /// Computes the committed state and failure count without inspecting physical
+    /// ordinals or historical yields. Recovery of an interrupted accepted execution
+    /// uses a failure outcome; recovery before acceptance does not call this helper.
+    pub fn accounting(
+        &self,
+        previous_failures: u32,
+        max_attempts: u32,
+    ) -> Result<DispositionAccounting, DispositionAccountingError> {
+        use crate::run::RunState;
+        if max_attempts == 0 {
+            return Err(DispositionAccountingError::InvalidMaxAttempts);
+        }
+        let failure_attempt_count = previous_failures
+            .checked_add(u32::from(self.is_failure()))
+            .ok_or(DispositionAccountingError::FailureCountOverflow)?;
+        let target_state = match self {
+            Self::Complete => RunState::Completed,
+            Self::Awaiting => RunState::Awaiting,
+            Self::Suspended { .. } => RunState::Suspended,
+            Self::TerminalFailure { .. } => RunState::Failed,
+            Self::RetryableFailure { .. } | Self::Timeout { .. } => {
+                if failure_attempt_count < max_attempts {
+                    RunState::RetryWait
+                } else {
+                    RunState::Failed
+                }
+            }
+        };
+        Ok(DispositionAccounting { target_state, failure_attempt_count })
     }
 }

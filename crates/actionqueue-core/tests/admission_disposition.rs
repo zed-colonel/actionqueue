@@ -321,3 +321,84 @@ fn consumption_ceiling_applies_to_construction_and_decode() {
         }
     }
 }
+
+#[test]
+fn timeout_discards_every_proposed_effect_and_preserves_consumption() {
+    use actionqueue_core::budget::{BudgetConsumption, BudgetDimension};
+    let consumption = vec![BudgetConsumption::new(BudgetDimension::Token, 42)];
+    let error = BoundedError {
+        code: BoundedCode::new("timeout").unwrap(),
+        message: BoundedMessage::new("expired").unwrap(),
+    };
+    for outcome in outcomes() {
+        let parts = match outcome {
+            DispositionOutcome::Complete => DispositionParts {
+                output: Some(checkpoint().data),
+                emitted_signals: vec![signal()],
+                ..Default::default()
+            },
+            DispositionOutcome::Awaiting => DispositionParts {
+                wait: Some(wait()),
+                checkpoint: Some(checkpoint()),
+                child_admissions: vec![child()],
+                emitted_signals: vec![signal()],
+                ..Default::default()
+            },
+            DispositionOutcome::Suspended { .. } => {
+                DispositionParts { checkpoint: Some(checkpoint()), ..Default::default() }
+            }
+            _ => DispositionParts::default(),
+        };
+        let result = AttemptDisposition::new(outcome, parts)
+            .unwrap()
+            .with_consumption(consumption.clone())
+            .unwrap()
+            .timed_out(error.clone());
+        assert_eq!(result.outcome(), &DispositionOutcome::Timeout { error: error.clone() });
+        assert_eq!(result.consumption(), consumption);
+        assert!(result.output().is_none());
+        assert!(result.checkpoint().is_none());
+        assert!(result.wait().is_none());
+        assert!(result.child_admissions().is_empty());
+        assert!(result.emitted_signals().is_empty());
+    }
+}
+
+#[test]
+fn yields_do_not_consume_failure_allowance() {
+    use actionqueue_core::run::RunState;
+    let mut failures = 0;
+    for _ in 0..100 {
+        for outcome in
+            [DispositionOutcome::Awaiting, DispositionOutcome::Suspended { reason: None }]
+        {
+            failures = outcome.accounting(failures, 1).unwrap().failure_attempt_count;
+        }
+    }
+    assert_eq!(failures, 0);
+    for outcome in outcomes().into_iter().filter(DispositionOutcome::is_failure) {
+        let first = outcome.accounting(failures, 1).unwrap();
+        assert_eq!(first.failure_attempt_count, 1);
+        assert_eq!(first.target_state, RunState::Failed);
+        let under_cap = outcome.accounting(0, 2).unwrap();
+        assert_eq!(
+            under_cap.target_state,
+            if matches!(outcome, DispositionOutcome::TerminalFailure { .. }) {
+                RunState::Failed
+            } else {
+                RunState::RetryWait
+            }
+        );
+        assert_eq!(
+            outcome.accounting(u32::MAX, 1),
+            Err(DispositionAccountingError::FailureCountOverflow)
+        );
+    }
+    for outcome in outcomes() {
+        assert_eq!(outcome.accounting(0, 0), Err(DispositionAccountingError::InvalidMaxAttempts));
+    }
+    assert_eq!(
+        DispositionOutcome::Complete.accounting(0, 1).unwrap().target_state,
+        RunState::Completed
+    );
+}
