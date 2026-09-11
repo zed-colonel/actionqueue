@@ -793,6 +793,10 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
 
         tracing::debug!(%run_id, %attempt_id, "worker result received");
 
+        if self.authority.recovery_required() {
+            return Err(DispatchError::Authority(MutationAuthorityError::RecoveryRequired));
+        }
+
         // The cancellation already closed this attempt durably. Observing its
         // result only releases process-local ownership; it cannot rewrite history.
         if self.projection().get_run_state(&run_id) == Some(&RunState::Canceled)
@@ -800,6 +804,31 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         {
             self.in_flight.remove(&run_id);
             self.rebuild_key_gate()?;
+            return Ok(());
+        }
+
+        // A result belongs to the exact accepted execution, not merely to a run.
+        // Heartbeats preserve the grant sequence; unrelated commits do not revoke it.
+        let eligible = self.in_flight.get(&run_id).is_some_and(|inf| inf.attempt_id == attempt_id)
+            && self.projection().get_run_instance(&run_id).is_some_and(|run| {
+                run.state() == RunState::Running
+                    && run.current_attempt_id() == Some(attempt_id)
+                    && !self.projection().is_task_canceled(run.task_id())
+            })
+            && self.projection().get_lease_metadata(&run_id).is_some_and(|lease| {
+                lease.owner() == worker_result.lease_fence.owner().as_str()
+                    && lease.granted_at_sequence()
+                        == worker_result.lease_fence.granted_at_sequence()
+                    && current_time < lease.expiry()
+            })
+            && self
+                .projection()
+                .get_attempt_history(&run_id)
+                .and_then(|history| history.last())
+                .and_then(|attempt| attempt.accepted_start())
+                .is_some_and(|start| start.fence == worker_result.lease_fence);
+        if !eligible {
+            tracing::debug!(%run_id, %attempt_id, "discarding stale worker result");
             return Ok(());
         }
 
@@ -1785,6 +1814,15 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
                         .projection()
                         .task_admission(task_id)
                         .map(|a| a.request().causal_context().clone());
+                    let lease_fence = self
+                        .authority
+                        .projection()
+                        .get_attempt_history(&run_id)
+                        .and_then(|history| history.last())
+                        .and_then(|attempt| attempt.accepted_start())
+                        .expect("dispatch accepted this attempt start")
+                        .fence
+                        .clone();
                     tokio::task::spawn_blocking(move || {
                         let request = ExecutorRequest {
                             resume_context,
@@ -1801,6 +1839,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
                         let outcome = runner.run_attempt(request);
 
                         let worker_result = WorkerResult {
+                            lease_fence,
                             run_id,
                             attempt_id,
                             response: outcome.response,
@@ -3073,6 +3112,163 @@ mod tests {
             ),
         )
         .unwrap()
+    }
+
+    type TestDispatch = DispatchLoop<
+        actionqueue_storage::wal::writer::InstrumentedWalWriter<
+            actionqueue_storage::wal::fs_writer::WalFsWriter,
+        >,
+        DependencyHandler,
+        MockClock,
+    >;
+
+    fn accepted_worker(dispatch: &mut TestDispatch) -> WorkerResult {
+        let spec = task(b"success", None);
+        let task_id = spec.id();
+        let constraints = spec.constraints().clone();
+        dispatch.submit_task(spec).unwrap();
+        let run_id = dispatch.projection().run_ids_for_task(task_id)[0];
+        let _ = dispatch
+            .authority
+            .submit_command(
+                MutationCommand::RunStateTransition(RunStateTransitionCommand::new(
+                    dispatch.next_sequence().unwrap(),
+                    run_id,
+                    RunState::Scheduled,
+                    RunState::Ready,
+                    1000,
+                )),
+                DurabilityPolicy::Immediate,
+            )
+            .unwrap();
+        let run = dispatch.projection().get_run_instance(&run_id).unwrap().clone();
+        let (attempt_id, lease_expiry, attempt_number, max_attempts) =
+            dispatch.dispatch_single_run(&run, &constraints, 1000).unwrap();
+        dispatch.in_flight.insert(
+            run_id,
+            InFlightRun {
+                run_id,
+                attempt_id,
+                task_id,
+                lease_expiry,
+                attempt_number,
+                max_attempts,
+                #[cfg(feature = "budget")]
+                cancellation_context: None,
+            },
+        );
+        let lease = dispatch.projection().get_lease_metadata(&run_id).unwrap();
+        WorkerResult {
+            lease_fence: actionqueue_core::mutation::LeaseFence::new(
+                lease.owner().into(),
+                lease.granted_at_sequence(),
+            ),
+            run_id,
+            attempt_id,
+            max_attempts,
+            attempt_number,
+            response: actionqueue_executor_local::ExecutorResponse::Success {
+                output: Some(vec![42]),
+            },
+            consumption: vec![],
+        }
+    }
+
+    #[test]
+    fn stale_worker_results_preserve_projection_and_in_flight_owner() {
+        use actionqueue_core::mutation::{LeaseFence, LeaseOwner};
+        for case in ["wrong-owner", "old-grant", "expired", "old-attempt", "newer-owner"] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut dispatch = new_dispatch(dir.path(), DependencyHandler);
+            let mut worker = accepted_worker(&mut dispatch);
+            let run_id = worker.run_id;
+            let mut now = 1001;
+            match case {
+                "wrong-owner" => {
+                    worker.lease_fence = LeaseFence::new(
+                        LeaseOwner::new("other-worker"),
+                        worker.lease_fence.granted_at_sequence(),
+                    )
+                }
+                "old-grant" => {
+                    worker.lease_fence = LeaseFence::new(
+                        worker.lease_fence.owner().clone(),
+                        worker.lease_fence.granted_at_sequence() - 1,
+                    )
+                }
+                "expired" => now = dispatch.in_flight[&run_id].lease_expiry,
+                "old-attempt" => worker.attempt_id = AttemptId::new(),
+                "newer-owner" => {
+                    dispatch.in_flight.get_mut(&run_id).unwrap().attempt_id = AttemptId::new()
+                }
+                _ => unreachable!(),
+            }
+            let owner = dispatch.in_flight[&run_id].attempt_id;
+            let before = dispatch.projection().projection_digest().unwrap();
+            let sequence = dispatch.projection().latest_sequence();
+            let mut tick = TickResult::default();
+            dispatch.process_worker_result(worker, &mut tick, now).unwrap();
+            assert_eq!(dispatch.projection().projection_digest().unwrap(), before, "{case}");
+            assert_eq!(dispatch.projection().latest_sequence(), sequence, "{case}");
+            assert_eq!(dispatch.in_flight[&run_id].attempt_id, owner, "{case}");
+            assert_eq!(tick.completed, 0, "{case}");
+        }
+    }
+
+    #[test]
+    fn heartbeats_and_unrelated_commits_preserve_worker_eligibility() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut dispatch = new_dispatch(dir.path(), DependencyHandler);
+        let worker = accepted_worker(&mut dispatch);
+        let run_id = worker.run_id;
+        let _ = dispatch
+            .authority
+            .submit_command(
+                MutationCommand::LeaseHeartbeat(LeaseHeartbeatCommand::new(
+                    dispatch.next_sequence().unwrap(),
+                    run_id,
+                    worker.lease_fence.owner().as_str(),
+                    1100,
+                    1001,
+                )),
+                DurabilityPolicy::Immediate,
+            )
+            .unwrap();
+        dispatch.in_flight.get_mut(&run_id).unwrap().lease_expiry = 1100;
+        dispatch.submit_task(task(b"unrelated", None)).unwrap();
+        let mut tick = TickResult::default();
+        dispatch.process_worker_result(worker.clone(), &mut tick, 1040).unwrap();
+        assert_eq!(dispatch.projection().get_run_state(&run_id), Some(&RunState::Completed));
+        assert_eq!(tick.completed, 1);
+        assert!(!dispatch.in_flight.contains_key(&run_id));
+        let before = dispatch.projection().projection_digest().unwrap();
+        dispatch.process_worker_result(worker, &mut tick, 1041).unwrap();
+        assert_eq!(dispatch.projection().projection_digest().unwrap(), before);
+        assert_eq!(tick.completed, 1, "duplicate result cannot complete twice");
+    }
+
+    #[test]
+    fn canceled_worker_result_cannot_change_durable_state() {
+        use actionqueue_core::mutation::{CancelCommand, CancelTarget};
+        let dir = tempfile::tempdir().unwrap();
+        let mut dispatch = new_dispatch(dir.path(), DependencyHandler);
+        let worker = accepted_worker(&mut dispatch);
+        let run_id = worker.run_id;
+        dispatch
+            .cancel(CancelCommand {
+                expected_sequence: dispatch.next_sequence().unwrap(),
+                target: CancelTarget::Run(run_id),
+                tenant_id: None,
+                control_context: None,
+                timestamp: 1000,
+            })
+            .unwrap();
+        let before = dispatch.projection().projection_digest().unwrap();
+        let mut tick = TickResult::default();
+        dispatch.process_worker_result(worker, &mut tick, 1001).unwrap();
+        assert_eq!(dispatch.projection().projection_digest().unwrap(), before);
+        assert!(!dispatch.in_flight.contains_key(&run_id));
+        assert_eq!(tick.completed, 0);
     }
 
     #[cfg(feature = "actor")]

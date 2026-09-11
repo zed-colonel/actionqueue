@@ -10,8 +10,10 @@ use actionqueue_executor_local::handler::CancellationContext;
 use actionqueue_executor_local::types::ExecutorResponse;
 
 /// The result sent back from a worker task after attempt completion.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct WorkerResult {
+    /// Lease owner and original grant captured from the accepted attempt start.
+    pub lease_fence: actionqueue_core::mutation::LeaseFence,
     /// The unique identifier for the run instance.
     pub run_id: RunId,
     /// The unique identifier for the attempt.
