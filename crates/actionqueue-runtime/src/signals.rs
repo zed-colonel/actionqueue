@@ -13,6 +13,11 @@ use actionqueue_storage::{
 /// Definitive rejection or uncertain storage result requiring recovery.
 #[derive(Debug)]
 pub enum SignalAdmissionError {
+    /// Admission committed, but continuation reconciliation requires recovery/retry.
+    Matching {
+        outcome: AdmitSignalOutcome,
+        source: Box<MutationAuthorityError<ReplayReducerError>>,
+    },
     /// No append took place.
     Rejected(SignalRejection),
     /// Storage uncertainty, including a fenced authority.
@@ -23,6 +28,9 @@ impl std::fmt::Display for SignalAdmissionError {
         match self {
             Self::Rejected(e) => write!(f, "{e}"),
             Self::Storage(e) => write!(f, "{e}"),
+            Self::Matching { source, .. } => {
+                write!(f, "signal admitted; matching failed: {source}")
+            }
         }
     }
 }
@@ -65,7 +73,16 @@ pub fn admit_signal<W: WalWriter>(
         DurabilityPolicy::Immediate,
     )?;
     match result.applied() {
-        AppliedMutation::Signal(outcome) => Ok(outcome.clone()),
+        AppliedMutation::Signal(outcome) => {
+            let outcome = outcome.clone();
+            crate::waits::reconcile(authority, clock.now()).map_err(|source| {
+                SignalAdmissionError::Matching {
+                    outcome: outcome.clone(),
+                    source: Box::new(source),
+                }
+            })?;
+            Ok(outcome)
+        }
         _ => unreachable!("signal result"),
     }
 }

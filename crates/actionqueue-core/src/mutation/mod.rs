@@ -29,6 +29,18 @@ pub enum DurabilityPolicy {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[must_use = "mutation commands should be submitted to a MutationAuthority"]
 pub enum MutationCommand {
+    /// Atomic continuation establishment.
+    WaitEstablish(WaitEstablishCommand),
+    /// Resolve using the earliest eligible durable signal.
+    WaitSatisfy(WaitSatisfyCommand),
+    /// Resolve a due deadline using its durable policy.
+    WaitTimeout(WaitTimeoutCommand),
+    /// Host-attested explicit wake.
+    WaitResolve(WaitResolveCommand),
+    /// Cancel one specific wait and its run.
+    WaitCancel(WaitCancelCommand),
+    /// Atomic task or run cancellation.
+    Cancel(CancelCommand),
     /// Atomically admit a task and its initial runs.
     AdmissionCommit(AdmissionCommitCommand),
     /// Admit a durable signal.
@@ -773,6 +785,8 @@ impl MutationOutcome {
 /// Applied semantic mutation metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppliedMutation {
+    /// Continuation commit or idempotent retry.
+    Wait(WaitOutcome),
     /// Durable admission result.
     Admission(crate::admission::EnsureTaskOutcome),
     /// Durable signal admission result.
@@ -1549,3 +1563,6 @@ pub use signal::*;
 
 pub mod control;
 pub use control::*;
+
+pub mod wait;
+pub use wait::*;

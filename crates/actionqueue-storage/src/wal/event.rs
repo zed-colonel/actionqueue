@@ -42,14 +42,40 @@ impl WalEvent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum WalEventType {
+    WaitEstablished {
+        record: crate::mutation::wait::WaitRecord,
+    },
+    WaitSatisfied {
+        record: crate::mutation::wait::WaitResolution,
+    },
+    WaitTimedOut {
+        record: crate::mutation::wait::WaitResolution,
+    },
+    WaitCanceled {
+        record: crate::mutation::wait::WaitResolution,
+    },
+    TaskCancellationCommitted {
+        record: crate::mutation::wait::CancelRecord,
+    },
+    RunCancellationCommitted {
+        record: crate::mutation::wait::CancelRecord,
+    },
     /// Immutable signal admitted with independent store signal order.
-    SignalAdmitted { record: crate::mutation::signal::SignalRecord },
+    SignalAdmitted {
+        record: crate::mutation::signal::SignalRecord,
+    },
     /// Independent retention pin acquired.
-    SignalPinned { record: crate::mutation::signal::SignalPinRecord },
+    SignalPinned {
+        record: crate::mutation::signal::SignalPinRecord,
+    },
     /// Independent retention pin released.
-    SignalUnpinned { record: crate::mutation::signal::SignalPinRecord },
+    SignalUnpinned {
+        record: crate::mutation::signal::SignalPinRecord,
+    },
     /// Bounded retirement from retained matching.
-    SignalsRetired { record: crate::mutation::signal::SignalsRetiredRecord },
+    SignalsRetired {
+        record: crate::mutation::signal::SignalsRetiredRecord,
+    },
     /// One durable task admission, including all initial run identities.
     AdmissionCommitted {
         /// Immutable admission facts.
@@ -58,7 +84,9 @@ pub enum WalEventType {
         runs: Vec<actionqueue_core::run::RunInstance>,
     },
     /// Binds sequence one to the immutable manifest.
-    StoreInitialized { manifest_digest: [u8; 32] },
+    StoreInitialized {
+        manifest_digest: [u8; 32],
+    },
     /// A new task definition has been persisted.
     TaskCreated {
         /// The task specification that was created.
@@ -323,17 +351,32 @@ pub enum WalEventType {
     },
 
     /// A remote actor has deregistered (explicit or heartbeat timeout).
-    ActorDeregistered { actor_id: ActorId, timestamp: u64 },
+    ActorDeregistered {
+        actor_id: ActorId,
+        timestamp: u64,
+    },
 
     /// A remote actor sent a heartbeat.
-    ActorHeartbeat { actor_id: ActorId, timestamp: u64 },
+    ActorHeartbeat {
+        actor_id: ActorId,
+        timestamp: u64,
+    },
 
     // ── WAL v5: Platform events (discriminants 26-31) ──────────────────────
     /// An organizational tenant was created.
-    TenantCreated { tenant_id: TenantId, name: String, timestamp: u64 },
+    TenantCreated {
+        tenant_id: TenantId,
+        name: String,
+        timestamp: u64,
+    },
 
     /// A role was assigned to an actor within a tenant.
-    RoleAssigned { actor_id: ActorId, role: Role, tenant_id: TenantId, timestamp: u64 },
+    RoleAssigned {
+        actor_id: ActorId,
+        role: Role,
+        tenant_id: TenantId,
+        timestamp: u64,
+    },
 
     /// A capability was granted to an actor within a tenant.
     CapabilityGranted {

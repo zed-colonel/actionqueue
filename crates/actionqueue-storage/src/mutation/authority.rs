@@ -102,6 +102,33 @@ pub trait MutationProjection: Clone {
     ) -> Result<(), actionqueue_core::continuation::SignalRejection> {
         Err(actionqueue_core::continuation::SignalRejection::UnsupportedFeature)
     }
+    /// Prepare continuation and compound controls against the serialized projection.
+    fn prepare_wait(
+        &self,
+        command: &MutationCommand,
+        durability: DurabilityPolicy,
+    ) -> Result<Option<super::wait::WaitPreparation>, actionqueue_core::mutation::WaitRejection>
+    {
+        if matches!(
+            command,
+            MutationCommand::WaitEstablish(_)
+                | MutationCommand::WaitSatisfy(_)
+                | MutationCommand::WaitTimeout(_)
+                | MutationCommand::WaitResolve(_)
+                | MutationCommand::WaitCancel(_)
+                | MutationCommand::Cancel(_)
+        ) {
+            return Err(actionqueue_core::mutation::WaitRejection::UnsupportedFeature);
+        }
+        let _ = durability;
+        Ok(None)
+    }
+    /// Includes manual pins and continuation history.
+    fn signal_is_protected(&self, sequence: actionqueue_core::ids::SignalSequence) -> bool {
+        self.signal_index()
+            .and_then(|i| i.by_sequence(sequence))
+            .is_some_and(|r| !r.pins().is_empty())
+    }
     /// Applies a durable event to the in-memory projection.
     fn apply_event(&mut self, event: &WalEvent) -> Result<(), Self::Error>;
 }
@@ -172,6 +199,17 @@ impl MutationProjection for ReplayReducer {
         e: &actionqueue_core::continuation::SignalEnvelope,
     ) -> Result<(), actionqueue_core::continuation::SignalRejection> {
         ReplayReducer::validate_signal_references(self, e)
+    }
+    fn prepare_wait(
+        &self,
+        command: &MutationCommand,
+        durability: DurabilityPolicy,
+    ) -> Result<Option<super::wait::WaitPreparation>, actionqueue_core::mutation::WaitRejection>
+    {
+        self.prepare_wait_command(command, durability)
+    }
+    fn signal_is_protected(&self, sequence: actionqueue_core::ids::SignalSequence) -> bool {
+        ReplayReducer::signal_is_protected(self, sequence)
     }
     fn apply_event(&mut self, event: &WalEvent) -> Result<(), Self::Error> {
         self.apply(event)
@@ -257,6 +295,12 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
         command: &MutationCommand,
     ) -> Result<ValidatedCommand, MutationValidationError> {
         match command {
+            MutationCommand::WaitEstablish(_)
+            | MutationCommand::WaitSatisfy(_)
+            | MutationCommand::WaitTimeout(_)
+            | MutationCommand::WaitResolve(_)
+            | MutationCommand::WaitCancel(_)
+            | MutationCommand::Cancel(_) => unreachable!("continuations prepared separately"),
             MutationCommand::SignalAdmit(_)
             | MutationCommand::SignalPin(_)
             | MutationCommand::SignalUnpin(_)
@@ -1337,19 +1381,37 @@ impl<W: WalWriter, P: MutationProjection> MutationAuthority for StorageMutationA
         {
             return Ok(outcome);
         }
-        let (event, applied) =
-            if let Some(super::signal_authority::SignalPreparation::Event(event, applied)) =
-                signal_preparation
-            {
-                (*event, applied)
-            } else {
-                // Stage 1: validate command.
-                let validated =
-                    self.validate_command(&command).map_err(MutationAuthorityError::Validation)?;
+        let wait_preparation = self
+            .projection
+            .prepare_wait(&command, durability)
+            .map_err(MutationAuthorityError::Wait)?;
+        if let Some(super::wait::WaitPreparation::Noop(outcome)) = wait_preparation {
+            return Ok(outcome);
+        }
+        let (event, applied) = if let Some(super::wait::WaitPreparation::Event(event, applied)) =
+            wait_preparation
+        {
+            let bytes = crate::wal::codec::encode(&event).map_err(|_| {
+                MutationAuthorityError::Wait(actionqueue_core::mutation::WaitRejection::TooLarge)
+            })?;
+            if bytes.len() > actionqueue_core::limits::MAX_WAIT_RECORD_BYTES {
+                return Err(MutationAuthorityError::Wait(
+                    actionqueue_core::mutation::WaitRejection::TooLarge,
+                ));
+            }
+            (*event, applied)
+        } else if let Some(super::signal_authority::SignalPreparation::Event(event, applied)) =
+            signal_preparation
+        {
+            (*event, applied)
+        } else {
+            // Stage 1: validate command.
+            let validated =
+                self.validate_command(&command).map_err(MutationAuthorityError::Validation)?;
 
-                // Stage 2: map validated command to canonical WAL event.
-                Self::build_event_and_applied(validated)
-            };
+            // Stage 2: map validated command to canonical WAL event.
+            Self::build_event_and_applied(validated)
+        };
 
         if matches!(event.event(), WalEventType::AdmissionCommitted { .. }) {
             let bytes = crate::wal::codec::encode(&event)
@@ -1889,6 +1951,8 @@ impl std::error::Error for MutationValidationError {}
 /// Typed stage-aware authority failures.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MutationAuthorityError<ProjectionError> {
+    /// Definitive continuation rejection.
+    Wait(actionqueue_core::mutation::WaitRejection),
     /// Complete admission was rejected before append.
     Admission(AdmissionRejection),
     /// Definitive signal rejection before append.
@@ -1932,6 +1996,7 @@ impl<ProjectionError: std::fmt::Display> std::fmt::Display
         match self {
             Self::Admission(e) => write!(f, "{e}"),
             Self::Signal(e) => write!(f, "{e}"),
+            Self::Wait(e) => write!(f, "{e}"),
             Self::RecoveryRequired => {
                 write!(f, "mutation authority requires recovery after an uncertain write")
             }

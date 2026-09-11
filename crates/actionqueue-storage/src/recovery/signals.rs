@@ -126,8 +126,8 @@ impl SignalIndex {
         result.sort_unstable();
         result
     }
-    /// Protection seam for AQ-06. Durable wait/resume/history protections must be
-    /// added here before waits are enabled; they must not be removable by unpin.
+    /// Manual-pin protection within this index. Projection-level retirement checks
+    /// additionally enforce active-wait and historical continuation protections.
     pub(crate) fn is_protected(&self, record: &SignalRecord) -> bool {
         !record.pins.is_empty()
     }

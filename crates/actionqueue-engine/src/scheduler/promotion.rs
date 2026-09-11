@@ -239,7 +239,13 @@ mod tests {
                 MutationCommand::RunStateTransition(details) => {
                     (details.sequence(), details.run_id())
                 }
-                MutationCommand::SignalAdmit(_)
+                MutationCommand::WaitEstablish(_)
+                | MutationCommand::WaitSatisfy(_)
+                | MutationCommand::WaitTimeout(_)
+                | MutationCommand::WaitResolve(_)
+                | MutationCommand::WaitCancel(_)
+                | MutationCommand::Cancel(_)
+                | MutationCommand::SignalAdmit(_)
                 | MutationCommand::SignalPin(_)
                 | MutationCommand::SignalUnpin(_)
                 | MutationCommand::RetireSignals(_)

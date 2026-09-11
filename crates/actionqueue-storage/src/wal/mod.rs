@@ -22,3 +22,8 @@ mod domain_v1;
 pub(crate) mod admission_v1;
 
 pub(crate) mod signal_v1;
+
+pub(crate) mod admission_v2;
+mod task_v2;
+
+pub(crate) mod wait_v1;

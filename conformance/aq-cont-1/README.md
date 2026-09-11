@@ -19,3 +19,7 @@ The signal admission, retention and crash acceptance binaries are included in
 `cargo aq-conformance`; full feature tests cover tenant/profile isolation.
 These prove retained signal admission/indexing and explicit protection, not wait
 resolution or physical WAL compaction.
+
+AQ-06 activates wait/control records, task/admission schema 2, and projection v4.
+`acceptance_waits` and `acceptance_wait_crash` are continuation gates; the latter
+is separate to avoid inherited store-lock descriptors during process spawning.

@@ -37,7 +37,7 @@ impl std::fmt::Display for DecodeError {
                 write!(f, "wal_format: supported {supported}, found {found}")
             }
             Self::UnsupportedRecordSchema { kind, found } => {
-                write!(f, "wal_record_schema (kind {kind}): supported 1, found {found}")
+                write!(f, "wal_record_schema (kind {kind}): unsupported schema {found}")
             }
             _ => write!(f, "WAL decode: {self:?}"),
         }
@@ -49,6 +49,7 @@ pub(crate) struct Header {
     pub store_id: uuid::Uuid,
     pub sequence: u64,
     pub kind: u16,
+    pub schema: u16,
     pub length: usize,
     pub crc: u32,
 }
@@ -69,7 +70,7 @@ pub(crate) fn header(bytes: &[u8]) -> Result<Header, DecodeError> {
     let kind = u16::from_le_bytes(bytes[12..14].try_into().unwrap());
     wire_v1::check_kind(kind)?;
     let schema = u16::from_le_bytes(bytes[14..16].try_into().unwrap());
-    if schema != 1 {
+    if schema != 1 && schema != wire_v1::schema(kind) {
         return Err(DecodeError::UnsupportedRecordSchema { kind, found: schema });
     }
     let length = u32::from_le_bytes(bytes[40..44].try_into().unwrap()) as usize;
@@ -77,6 +78,11 @@ pub(crate) fn header(bytes: &[u8]) -> Result<Header, DecodeError> {
         && length + HEADER_LEN > actionqueue_core::limits::MAX_SIGNAL_RECORD_BYTES
     {
         return Err(DecodeError::InvalidLength("signal frame exceeds hard ceiling".into()));
+    }
+    if matches!(kind,304..=307 | 320..=321)
+        && length + HEADER_LEN > actionqueue_core::limits::MAX_WAIT_RECORD_BYTES
+    {
+        return Err(DecodeError::InvalidLength("continuation frame exceeds hard ceiling".into()));
     }
     if length > MAX_PAYLOAD_SIZE {
         return Err(DecodeError::InvalidLength(format!(
@@ -87,6 +93,7 @@ pub(crate) fn header(bytes: &[u8]) -> Result<Header, DecodeError> {
         store_id: uuid::Uuid::from_bytes(bytes[16..32].try_into().unwrap()),
         sequence: u64::from_le_bytes(bytes[32..40].try_into().unwrap()),
         kind,
+        schema,
         length,
         crc: u32::from_le_bytes(bytes[44..48].try_into().unwrap()),
     })
@@ -102,6 +109,11 @@ pub fn encode_for_store(event: &WalEvent, store_id: uuid::Uuid) -> Result<Vec<u8
     {
         return Err(EncodeError::PayloadTooLarge(payload.len()));
     }
+    if matches!(wire_v1::kind(event.event()),304..=307 | 320..=321)
+        && payload.len() + HEADER_LEN > actionqueue_core::limits::MAX_WAIT_RECORD_BYTES
+    {
+        return Err(EncodeError::PayloadTooLarge(payload.len()));
+    }
     if payload.len() > MAX_PAYLOAD_SIZE {
         return Err(EncodeError::PayloadTooLarge(payload.len()));
     }
@@ -109,7 +121,7 @@ pub fn encode_for_store(event: &WalEvent, store_id: uuid::Uuid) -> Result<Vec<u8
     bytes.extend_from_slice(MAGIC);
     bytes.extend_from_slice(&VERSION.to_le_bytes());
     bytes.extend_from_slice(&wire_v1::kind(event.event()).to_le_bytes());
-    bytes.extend_from_slice(&1u16.to_le_bytes());
+    bytes.extend_from_slice(&wire_v1::schema(wire_v1::kind(event.event())).to_le_bytes());
     bytes.extend_from_slice(store_id.as_bytes());
     bytes.extend_from_slice(&event.sequence().to_le_bytes());
     bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
@@ -128,5 +140,5 @@ pub fn decode(bytes: &[u8]) -> Result<WalEvent, DecodeError> {
     if h.crc != actual {
         return Err(DecodeError::CrcMismatch { expected: h.crc, actual });
     }
-    Ok(WalEvent::new(h.sequence, wire_v1::decode_payload(h.kind, payload)?))
+    Ok(WalEvent::new(h.sequence, wire_v1::decode_schema(h.kind, h.schema, payload)?))
 }

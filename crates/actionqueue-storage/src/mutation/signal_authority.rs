@@ -168,7 +168,7 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
                             SignalRetentionCandidate {
                                 received_at: r.envelope().received_at,
                                 sequence: s.get(),
-                                protected: index.is_protected(r),
+                                protected: self.projection().signal_is_protected(r.sequence()),
                             },
                             index.last_sequence().get(),
                             c.timestamp,

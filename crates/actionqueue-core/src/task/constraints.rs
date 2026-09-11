@@ -65,6 +65,7 @@ pub struct TaskConstraints {
     /// Policy for concurrency key behavior during retry wait.
     #[cfg_attr(feature = "serde", serde(default))]
     concurrency_key_hold_policy: ConcurrencyKeyHoldPolicy,
+    concurrency_key_wait_policy: ConcurrencyKeyWaitPolicy,
     /// Safety level classification for the task's side-effect characteristics.
     #[cfg_attr(feature = "serde", serde(default))]
     safety_level: SafetyLevel,
@@ -91,6 +92,7 @@ impl TaskConstraints {
             timeout_secs,
             concurrency_key,
             concurrency_key_hold_policy: ConcurrencyKeyHoldPolicy::default(),
+            concurrency_key_wait_policy: ConcurrencyKeyWaitPolicy::default(),
             safety_level: SafetyLevel::default(),
             required_executor_traits: None,
         };
@@ -194,10 +196,13 @@ impl TaskConstraints {
     }
 
     /// Returns the concurrency-key policy for continuation waits.
-    ///
-    /// AQ-03 adds the durable per-task field. Until then, existing tasks use the default.
     pub fn concurrency_key_wait_policy(&self) -> ConcurrencyKeyWaitPolicy {
-        ConcurrencyKeyWaitPolicy::default()
+        self.concurrency_key_wait_policy
+    }
+
+    /// Sets the durable continuation key policy.
+    pub fn set_concurrency_key_wait_policy(&mut self, policy: ConcurrencyKeyWaitPolicy) {
+        self.concurrency_key_wait_policy = policy;
     }
 
     /// Returns the required executor traits, if any.
@@ -248,6 +253,8 @@ impl<'de> serde::Deserialize<'de> for TaskConstraints {
             #[serde(default)]
             concurrency_key_hold_policy: ConcurrencyKeyHoldPolicy,
             #[serde(default)]
+            concurrency_key_wait_policy: ConcurrencyKeyWaitPolicy,
+            #[serde(default)]
             safety_level: SafetyLevel,
             #[serde(default)]
             required_executor_traits: Option<ExecutorTraits>,
@@ -259,6 +266,7 @@ impl<'de> serde::Deserialize<'de> for TaskConstraints {
             timeout_secs: wire.timeout_secs,
             concurrency_key: wire.concurrency_key,
             concurrency_key_hold_policy: wire.concurrency_key_hold_policy,
+            concurrency_key_wait_policy: wire.concurrency_key_wait_policy,
             safety_level: wire.safety_level,
             required_executor_traits: wire.required_executor_traits,
         };
@@ -283,6 +291,7 @@ impl TaskConstraints {
             timeout_secs,
             concurrency_key,
             concurrency_key_hold_policy: ConcurrencyKeyHoldPolicy::default(),
+            concurrency_key_wait_policy: ConcurrencyKeyWaitPolicy::default(),
             safety_level: SafetyLevel::default(),
             required_executor_traits: None,
         }
@@ -296,14 +305,13 @@ impl Default for TaskConstraints {
 }
 
 /// Concurrency-key policy for a continuation wait (ADR-009).
-/// Its TaskConstraints field is deferred to AQ-03 to preserve WAL v5 layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ConcurrencyKeyWaitPolicy {
     /// Release at Awaiting and reacquire through ordinary eligibility on wake.
     #[default]
     ReleaseWhileAwaiting,
-    /// Keep the key until the continuation resolves.
+    /// Keep the key across awaiting and pending wake until execution releases it.
     HoldWhileAwaiting,
 }
 

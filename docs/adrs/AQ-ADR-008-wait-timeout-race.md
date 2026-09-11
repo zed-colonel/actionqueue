@@ -1,7 +1,6 @@
 # AQ-ADR-008 — Wait timeout race
 
-- **Status:** Proposed. The recommended default below is the working implementation choice
-  until code review produces a concrete counterexample (implementation plan, Section 3).
+- **Status:** Accepted.
 - **Decide before:** `AQ-06`
 - **Contract:** `AQ-CONT-1`
 - **Invariants:** AQ-H5
@@ -38,6 +37,19 @@ committed winner exactly.
 
 | Field | Value |
 |---|---|
-| Accepted in PR | _pending_ |
-| Accepted on | _pending_ |
+| Accepted in PR | `AQ-06` |
+| Accepted on | 2026-09-11 |
 | Superseded by | — |
+
+## AQ-06 algorithm and evidence
+
+Live mutations serialize through the storage authority. Identical retries return the
+original sequence; conflicting resolutions fail before append. An elapsed deadline
+does not invalidate a signal candidate. Recovery reconciles retained matches in
+`(signal_sequence, wait_id)` order, then due deadlines in `(deadline_at, wait_id)`
+order. Exact and broad waiters may both observe one signal; neither consumes it.
+
+`tests/acceptance/waits.rs` tests every pairing of signal, timeout, explicit wake and
+wait cancellation in both commit orders, plus restart prefixes and storage failure
+points. `tests/acceptance/wait_crash.rs` supplies process-kill evidence. See
+[the continuation handoff](../aq-06-continuations.md) for the AQ-07 delivery boundary.

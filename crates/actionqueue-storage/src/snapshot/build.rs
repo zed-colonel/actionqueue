@@ -10,7 +10,7 @@ use crate::snapshot::model::{
 };
 
 /// The snapshot format version written by this implementation.
-const SNAPSHOT_FORMAT_VERSION: u32 = 3;
+const SNAPSHOT_FORMAT_VERSION: u32 = 4;
 
 /// Builds a validated [`Snapshot`] from the current state of a [`ReplayReducer`].
 ///
@@ -67,6 +67,7 @@ pub fn build_snapshot_from_projection(
                 })
                 .unwrap_or_default();
             let lease = reducer.get_lease_metadata(&run_id).map(|lm| SnapshotLeaseMetadata {
+                granted_at_sequence: lm.granted_at_sequence(),
                 owner: lm.owner().to_string(),
                 expiry: lm.expiry(),
                 acquired_at: lm.acquired_at(),
@@ -173,6 +174,10 @@ pub fn build_snapshot_from_projection(
         .collect();
 
     let snapshot = Snapshot {
+        waits: reducer.waits.records().cloned().collect(),
+        cancellations: reducer.cancellations.clone(),
+        pending_resumes: reducer.waits.pending.iter().map(|(r, w)| (*r, *w)).collect(),
+        key_reservations: reducer.key_reservations.iter().map(|(r, k)| (*r, k.clone())).collect(),
         signals: reducer.signals().records().cloned().collect(),
         last_signal_sequence: reducer.signals().last_sequence().get(),
         admissions: reducer.admissions().cloned().collect(),

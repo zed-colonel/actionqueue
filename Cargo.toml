@@ -356,3 +356,11 @@ path = "tests/acceptance/signal_retention.rs"
 [[test]]
 name = "acceptance_signal_crash"
 path = "tests/acceptance/signal_crash.rs"
+
+[[test]]
+name = "acceptance_waits"
+path = "tests/acceptance/waits.rs"
+
+[[test]]
+name = "acceptance_wait_crash"
+path = "tests/acceptance/wait_crash.rs"

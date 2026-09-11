@@ -6,7 +6,7 @@
 # increments `package_revision`; normative change requires a contract amendment.
 schema_version: 1
 package: conformance/aq-cont-1
-package_revision: 3
+package_revision: 4
 status: scaffold
 contract: AQ-CONT-1
 contract_revision: STACK-2026-07-20-CLEAN-1
@@ -89,6 +89,14 @@ fixtures:
   sha256: bc045ace9a2ae82ccf095287580172f79c2bdde9f189bdf9241c9c57962b6904
   variants: [replay, crash, race]
   introduced_by: AQ-05
+- id: AQ-CF-WAIT-001
+  title: Projection v4 known-answer vector
+  invariants: [AQ-H2, AQ-H5, AQ-H13]
+  driver: embedded
+  path: projection-v4-vector.json
+  sha256: 15bb1d8266f6e8f53f24340a904ca3637ebbb43886b040b8370645889e0897eb
+  variants: [replay, crash, race]
+  introduced_by: AQ-06
 # Black-box drivers. Intentionally empty at AQ-01; populated by AQ-13.
 drivers: []
 acceptance_matrices:
@@ -159,5 +167,22 @@ signals:
   - immediate_durability_and_uncertainty_fencing
   - replay_snapshot_and_backup_equivalence
   deferred:
-  - active_wait_resume_and_historical_attempt_retention_protection_AQ_06
+  - physical_WAL_truncation
+
+continuations:
+  introduced_by: AQ-06
+  wal_kinds: [304, 305, 306, 307, 320, 321]
+  wal_record_schema: 1
+  task_admission_schema: 2
+  wal_frame_version: 1
+  snapshot_schema: 4
+  projection_version: 4
+  canonical_vector: projection-v4-vector.json
+  tests:
+  - tests/acceptance/waits.rs
+  - tests/acceptance/wait_crash.rs
+  developmental_cases: [AQ-DD-006, AQ-DD-012]
+  deferred:
+  - accepted_start_delivery_consumption_AQ_07
+  - handler_disposition_cutover_AQ_08
   - physical_WAL_truncation

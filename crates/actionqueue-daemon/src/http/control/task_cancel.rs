@@ -7,8 +7,7 @@ use std::str::FromStr;
 
 use actionqueue_core::ids::{RunId, TaskId};
 use actionqueue_core::mutation::{
-    DurabilityPolicy, MutationAuthority, MutationCommand, RunStateTransitionCommand,
-    TaskCancelCommand,
+    CancelCommand, CancelTarget, DurabilityPolicy, MutationAuthority, MutationCommand,
 };
 use actionqueue_core::run::state::RunState;
 use actionqueue_core::run::transitions::is_valid_transition;
@@ -142,10 +141,7 @@ pub async fn handle(
         }
     }
 
-    // AQ-06: before Awaiting becomes reachable, include active-wait cancellation
-    // in the durable task cancellation operation. Do not commit TaskCancel and
-    // then hit AwaitingTransitionRequiresContinuationRecord in the loop below;
-    // map that guard explicitly rather than returning HTTP 500 after a partial cancel.
+    // Cancellation is prepared as one continuation-aware compound control.
     let timestamp = state.clock.now();
     let status = if authority.projection().is_task_canceled(task_id) {
         "already_canceled"
@@ -154,8 +150,19 @@ pub async fn handle(
             Some(s) => s,
             None => return internal_error_response("control sequence overflow"),
         };
-        let command =
-            MutationCommand::TaskCancel(TaskCancelCommand::new(sequence, task_id, timestamp));
+        let command = MutationCommand::Cancel(CancelCommand {
+            expected_sequence: sequence,
+            target: CancelTarget::Task(task_id),
+            tenant_id: authority
+                .projection()
+                .get_task(&task_id)
+                .expect("validated task")
+                .tenant_id(),
+            control_context: Some(actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("daemon-control").expect("bounded"),
+            )),
+            timestamp,
+        });
         match authority.submit_command(command, DurabilityPolicy::Immediate) {
             Ok(_) => "canceled",
             Err(MutationAuthorityError::Validation(
@@ -168,53 +175,8 @@ pub async fn handle(
         }
     };
 
-    let mut runs_canceled = 0u64;
-    for (run_id, previous_state) in eligible_runs {
-        let sequence = match authority.projection().latest_sequence().checked_add(1) {
-            Some(s) => s,
-            None => return internal_error_response("control sequence overflow"),
-        };
-        let command = MutationCommand::RunStateTransition(RunStateTransitionCommand::new(
-            sequence,
-            run_id,
-            previous_state,
-            RunState::Canceled,
-            timestamp,
-        ));
+    let runs_canceled = eligible_runs.len() as u64;
 
-        match authority.submit_command(command, DurabilityPolicy::Immediate) {
-            Ok(_) => {
-                runs_canceled += 1;
-            }
-            Err(MutationAuthorityError::Validation(
-                MutationValidationError::PreviousStateMismatch { run_id: mismatch_run, .. },
-            )) => {
-                if let Some(new_state) =
-                    authority.projection().get_run_state(&mismatch_run).copied()
-                {
-                    if new_state.is_terminal() {
-                        runs_already_terminal += 1;
-                        continue;
-                    }
-                }
-
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse {
-                        error: "internal_error",
-                        message: "run transitioned concurrently to non-terminal state".to_string(),
-                    }),
-                )
-                    .into_response();
-            }
-            Err(err @ MutationAuthorityError::PartialDurability { .. }) => {
-                return internal_authority_error(err)
-            }
-            Err(error) => return internal_authority_error(error),
-        }
-    }
-
-    // Sync shared projection after all mutations are complete.
     match crate::http::write_projection(&state) {
         Ok(mut guard) => *guard = authority.projection().clone(),
         Err(response) => return *response,

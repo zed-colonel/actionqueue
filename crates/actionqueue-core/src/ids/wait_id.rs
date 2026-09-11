@@ -6,7 +6,7 @@ use std::str::FromStr;
 use uuid::Uuid;
 
 /// A unique identifier for a continuation definition.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct WaitId(Uuid);
 
