@@ -159,7 +159,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             )?;
             let p = a.projection();
             let mut sw = SnapshotFsWriter::new(&session)?;
-            sw.write(&build_snapshot_from_projection(&p, 42)?)?;
+            sw.write(&build_snapshot_from_projection(p, 42)?)?;
             sw.close()?;
         }
         "read" => {

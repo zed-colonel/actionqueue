@@ -49,9 +49,9 @@
 //! // (HTTP server startup is not part of bootstrap)
 //! ```
 
-use actionqueue_core::time::clock::Clock;
 use std::path::PathBuf;
 
+use actionqueue_core::time::clock::Clock;
 use actionqueue_storage::mutation::authority::StorageMutationAuthority;
 use actionqueue_storage::recovery::bootstrap::{
     load_projection_from_storage, RecoveryBootstrapError,

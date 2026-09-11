@@ -1,7 +1,8 @@
 //! Frozen schema 2 task payload: schema 1 task followed by explicit wait-key policy.
-use super::{codec::DecodeError, task_v1::TaskSpecV1};
 use actionqueue_core::task::{constraints::ConcurrencyKeyWaitPolicy, task_spec::TaskSpec};
 use serde::{Deserialize, Serialize};
+
+use super::{codec::DecodeError, task_v1::TaskSpecV1};
 #[derive(Serialize, Deserialize)]
 pub(super) struct TaskSpecV2 {
     base: TaskSpecV1,

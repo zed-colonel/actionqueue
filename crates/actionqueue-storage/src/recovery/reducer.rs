@@ -1037,13 +1037,11 @@ impl ReplayReducer {
                 }
                 self.key_reservations.insert(*run_id, key.into());
             }
-        } else if matches!(new_state, RunState::RetryWait | RunState::Suspended)
+        } else if (matches!(new_state, RunState::RetryWait | RunState::Suspended)
             && constraints.concurrency_key_hold_policy()
-                == actionqueue_core::task::constraints::ConcurrencyKeyHoldPolicy::ReleaseOnRetry
-        {
-            self.key_reservations.remove(run_id);
-        } else if *new_state == RunState::Awaiting
-            && constraints.concurrency_key_wait_policy().releases_while_awaiting()
+                == actionqueue_core::task::constraints::ConcurrencyKeyHoldPolicy::ReleaseOnRetry)
+            || (*new_state == RunState::Awaiting
+                && constraints.concurrency_key_wait_policy().releases_while_awaiting())
         {
             self.key_reservations.remove(run_id);
         }

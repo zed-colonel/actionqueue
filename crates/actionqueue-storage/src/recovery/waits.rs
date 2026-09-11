@@ -1,14 +1,16 @@
 //! Derived active-filter/deadline/match indexes and atomic continuation projection.
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+
+use actionqueue_core::{
+    bounded::OpaqueRef, continuation::*, ids::*, mutation::*, run::RunState,
+    task::constraints::ConcurrencyKeyWaitPolicy,
+};
+
 use super::reducer::{ReplayReducer, ReplayReducerError};
 use crate::{
     mutation::wait::*,
     wal::event::{WalEvent, WalEventType},
 };
-use actionqueue_core::{
-    bounded::OpaqueRef, continuation::*, ids::*, mutation::*, run::RunState,
-    task::constraints::ConcurrencyKeyWaitPolicy,
-};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
 type Key =
     (Option<TenantId>, SignalNamespace, SignalKind, Option<CorrelationId>, Option<OpaqueRef>);
 fn key(f: &SignalFilter) -> Key {

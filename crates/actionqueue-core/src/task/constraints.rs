@@ -196,7 +196,6 @@ impl TaskConstraints {
     }
 
     /// Returns the concurrency-key policy for continuation waits.
-    ///
     pub fn concurrency_key_wait_policy(&self) -> ConcurrencyKeyWaitPolicy {
         self.concurrency_key_wait_policy
     }

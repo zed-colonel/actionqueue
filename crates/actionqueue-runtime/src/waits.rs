@@ -32,8 +32,9 @@ pub fn reconcile_batch<W: WalWriter>(
     // A control may have committed just before a crash or between service calls.
     // Descendants and dependents must be canceled before any wait can advance.
     recover_cancellations(a, now)?;
+    let limit = limit.clamp(1, MATCH_BATCH);
     let mut n = 0;
-    for (signal, id) in a.projection().waits().matches(limit.max(1).min(MATCH_BATCH)) {
+    for (signal, id) in a.projection().waits().matches(limit) {
         let run = a.projection().waits().get(id).expect("indexed").run_id;
         let _ = a.submit_command(
             actionqueue_engine::continuation::satisfy(next(a)?, run, id, signal, now),
@@ -42,7 +43,7 @@ pub fn reconcile_batch<W: WalWriter>(
         n += 1;
     }
     if a.projection().waits().matches(1).is_empty() {
-        for id in a.projection().waits().due(now, limit.max(1).min(MATCH_BATCH) - n) {
+        for id in a.projection().waits().due(now, limit - n) {
             let wait = a.projection().waits().get(id).expect("indexed");
             let run = wait.run_id;
             // An earlier terminal timeout in this batch may have canceled this wait.

@@ -1,11 +1,12 @@
 //! Frozen kinds 304–307 and 320–321, schema 1. Explicit numeric resolution/policy tags.
+use actionqueue_core::{bounded::*, continuation::*, ids::*, mutation::CancelTarget};
+use serde::{Deserialize, Serialize};
+
 use super::{
     codec::DecodeError,
     signal_v1::{ControlV1, PayloadV1},
 };
 use crate::mutation::wait::*;
-use actionqueue_core::{bounded::*, continuation::*, ids::*, mutation::CancelTarget};
-use serde::{Deserialize, Serialize};
 fn invalid(e: impl std::fmt::Display) -> DecodeError {
     DecodeError::Decode(e.to_string())
 }

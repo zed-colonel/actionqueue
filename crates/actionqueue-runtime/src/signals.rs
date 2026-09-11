@@ -14,7 +14,10 @@ use actionqueue_storage::{
 #[derive(Debug)]
 pub enum SignalAdmissionError {
     /// Admission committed, but continuation reconciliation requires recovery/retry.
-    Matching { outcome: AdmitSignalOutcome, source: MutationAuthorityError<ReplayReducerError> },
+    Matching {
+        outcome: AdmitSignalOutcome,
+        source: Box<MutationAuthorityError<ReplayReducerError>>,
+    },
     /// No append took place.
     Rejected(SignalRejection),
     /// Storage uncertainty, including a fenced authority.
@@ -73,7 +76,10 @@ pub fn admit_signal<W: WalWriter>(
         AppliedMutation::Signal(outcome) => {
             let outcome = outcome.clone();
             crate::waits::reconcile(authority, clock.now()).map_err(|source| {
-                SignalAdmissionError::Matching { outcome: outcome.clone(), source }
+                SignalAdmissionError::Matching {
+                    outcome: outcome.clone(),
+                    source: Box::new(source),
+                }
             })?;
             Ok(outcome)
         }
