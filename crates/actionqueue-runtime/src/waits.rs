@@ -29,6 +29,9 @@ pub fn reconcile_batch<W: WalWriter>(
     limit: usize,
 ) -> Result<Reconciliation, WaitError> {
     next(a)?;
+    // A control may have committed just before a crash or between service calls.
+    // Descendants and dependents must be canceled before any wait can advance.
+    recover_cancellations(a, now)?;
     let mut n = 0;
     for (signal, id) in a.projection().waits().matches(limit.max(1).min(MATCH_BATCH)) {
         let run = a.projection().waits().get(id).expect("indexed").run_id;
@@ -40,12 +43,22 @@ pub fn reconcile_batch<W: WalWriter>(
     }
     if a.projection().waits().matches(1).is_empty() {
         for id in a.projection().waits().due(now, limit.max(1).min(MATCH_BATCH) - n) {
-            let run = a.projection().waits().get(id).expect("indexed").run_id;
+            let wait = a.projection().waits().get(id).expect("indexed");
+            let run = wait.run_id;
+            // An earlier terminal timeout in this batch may have canceled this wait.
+            if wait.resolution.is_some() {
+                continue;
+            }
             let _ = a.submit_command(
                 actionqueue_engine::continuation::timeout(next(a)?, run, id, now),
                 DurabilityPolicy::Immediate,
             )?;
             n += 1;
+            if a.projection().get_run_state(&run).is_some_and(|state| state.is_terminal()) {
+                // Complete ordinary failure cascades before processing another deadline
+                // or allowing the caller to open dispatch (including bootstrap).
+                recover_cancellations(a, now)?;
+            }
         }
     }
     Ok(Reconciliation {

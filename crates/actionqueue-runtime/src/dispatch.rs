@@ -394,6 +394,9 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
     ) -> Result<Self, DispatchError> {
         crate::waits::recover_execution(&mut authority, clock.now())
             .map_err(DispatchError::Authority)?;
+        // Settle controls, retained matches, overdue deadlines and their cascades
+        // before constructing any in-memory coordination from the projection.
+        crate::waits::reconcile(&mut authority, clock.now()).map_err(DispatchError::Authority)?;
         let backoff: Box<dyn BackoffStrategy + Send + Sync> = match &config.backoff_config {
             BackoffStrategyConfig::Fixed { interval } => {
                 Box::new(actionqueue_executor_local::FixedBackoff::new(*interval))
@@ -604,19 +607,21 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
             ledger,
             pending_gc_tasks: std::collections::HashSet::new(),
         };
-        let now = dispatch.clock.now();
-        crate::waits::recover_cancellations(&mut dispatch.authority, now)
-            .map_err(DispatchError::Authority)?;
-        dispatch.cancel_dependency_failed_runs(now)?;
-        dispatch.cascade_hierarchy_cancellations(now)?;
-        crate::waits::reconcile(&mut dispatch.authority, now).map_err(DispatchError::Authority)?;
         dispatch.rebuild_key_gate()?;
         Ok(dispatch)
     }
 
     fn rebuild_key_gate(&mut self) -> Result<(), DispatchError> {
         let mut gate = KeyGate::new();
-        for (run, key) in self.authority.projection().key_reservations() {
+        // Cancellation removes the durable reservation before the worker stops.
+        // Keep its exclusion until a result proves execution has returned.
+        let executing_keys = self.in_flight.values().filter_map(|inf| {
+            self.projection()
+                .get_task(&inf.task_id)
+                .and_then(|task| task.constraints().concurrency_key())
+                .map(|key| (inf.run_id, key))
+        });
+        for (run, key) in self.authority.projection().key_reservations().chain(executing_keys) {
             if matches!(
                 actionqueue_engine::concurrency::lifecycle::acquire_key(
                     Some(key.into()),
@@ -646,6 +651,11 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
             .authority
             .submit_command(MutationCommand::Cancel(command), DurabilityPolicy::Immediate)
             .map_err(DispatchError::Authority)?;
+        // Complete descendant/dependency work synchronously, before a following
+        // signal admission or tick can resolve an affected wait.
+        crate::waits::recover_cancellations(&mut self.authority, self.clock.now())
+            .map_err(DispatchError::Authority)?;
+        self.refresh_coordination();
         self.rebuild_key_gate()
     }
     /// Handler-independent establishment; returned outcome remains committed on scan failure.
@@ -656,7 +666,29 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         crate::waits::establish(&mut self.authority, command)
     }
     pub fn reconcile_waits(&mut self) -> Result<usize, crate::waits::WaitError> {
-        crate::waits::reconcile(&mut self.authority, self.clock.now())
+        let before = self.projection().latest_sequence();
+        let result = crate::waits::reconcile(&mut self.authority, self.clock.now());
+        if self.projection().latest_sequence() != before {
+            self.refresh_coordination();
+        }
+        result
+    }
+
+    /// Continuations and controls can terminate runs without a worker result.
+    /// Reconstruct coordination from the settled durable state, just as on
+    /// bootstrap, including cascades committed by the handler-independent service.
+    fn refresh_coordination(&mut self) {
+        self.dependency_gate = build_dependency_gate(self.projection());
+        self.hierarchy_tracker = build_hierarchy_tracker(self.projection());
+        for task in self.authority.projection().task_records() {
+            let id = task.task_spec().id();
+            if task.canceled_at().is_some() {
+                self.pending_hierarchy_cascade.insert(id);
+            }
+            if self.authority.projection().runs_for_task(id).all(|r| r.state().is_terminal()) {
+                self.pending_gc_tasks.insert(id);
+            }
+        }
     }
     /// Returns a reference to the projection (current state view).
     pub fn projection(&self) -> &ReplayReducer {
@@ -753,6 +785,16 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         let attempt_id = worker_result.attempt_id;
 
         tracing::debug!(%run_id, %attempt_id, "worker result received");
+
+        // The cancellation already closed this attempt durably. Observing its
+        // result only releases process-local ownership; it cannot rewrite history.
+        if self.projection().get_run_state(&run_id) == Some(&RunState::Canceled)
+            && self.in_flight.get(&run_id).is_some_and(|inf| inf.attempt_id == attempt_id)
+        {
+            self.in_flight.remove(&run_id);
+            self.rebuild_key_gate()?;
+            return Ok(());
+        }
 
         // Record attempt finish via authority
         let seq = self.next_sequence()?;
@@ -1263,6 +1305,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         let run_ids_needing_heartbeat: Vec<actionqueue_core::ids::RunId> = self
             .in_flight
             .values()
+            .filter(|inf| self.projection().get_run_state(&inf.run_id) != Some(&RunState::Canceled))
             .filter(|inf| current_time.saturating_add(heartbeat_threshold) >= inf.lease_expiry)
             .map(|inf| inf.run_id)
             .collect();
@@ -1312,16 +1355,9 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
     /// A run whose worker is still executing (present in `in_flight`) keeps
     /// the key. Releasing it here would let a competitor start under the same
     /// key while the worker runs, violating the mutual exclusion the key
-    /// exists for. Today the worker's eventual result is rejected by the
-    /// authority's previous-state check. `process_worker_result` propagates
-    /// that rejection as a tick error before releasing the key, leaving the
-    /// slot held until restart. The canceled entry also remains in `in_flight`:
-    /// its next lease heartbeat is rejected and can fail every subsequent tick
-    /// before worker results are drained. Restart creates an empty key gate;
-    /// it does not rebuild ownership from the projection, so even keys held
-    /// under HoldDuringRetry are lost. AQ-08 owns reconciling in-flight workers
-    /// and their heartbeats after dependency or hierarchy cancellation;
-    /// see the AQ-08 handoff in docs/planning/aq-cont-1/aq-02-review-remediation.md.
+    /// exists for. The canceled worker receives no further lease heartbeats;
+    /// observing its result releases the slot and key without changing the
+    /// cancellation history. Other stale worker dispositions remain AQ-08.
     fn cancel_run_and_release_key(
         &mut self,
         run_id: RunId,
@@ -1476,8 +1512,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         // Step 1: Heartbeat in-flight leases approaching expiry
         self.heartbeat_in_flight_leases(current_time)?;
 
-        crate::waits::reconcile(&mut self.authority, current_time)
-            .map_err(DispatchError::Authority)?;
+        self.reconcile_waits().map_err(DispatchError::Authority)?;
         self.rebuild_key_gate()?;
         // Step 2: Check engine paused state or draining mode — skip promotion and dispatch.
         if self.authority.projection().is_engine_paused() {
@@ -2072,7 +2107,13 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         actionqueue_core::continuation::AdmitSignalOutcome,
         crate::signals::SignalAdmissionError,
     > {
-        crate::signals::admit_signal(&mut self.authority, request, ingress, &self.clock)
+        let before = self.projection().latest_sequence();
+        let result =
+            crate::signals::admit_signal(&mut self.authority, request, ingress, &self.clock);
+        if self.projection().latest_sequence() != before {
+            self.refresh_coordination();
+        }
+        result
     }
     /// Explicit durable retention control through the mutation authority.
     pub fn pin_signal(
@@ -3012,5 +3053,74 @@ mod tests {
             "an in-flight run keeps its key so no competitor starts under it"
         );
         release_tx.send(()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn live_cancellation_holds_key_until_worker_returns() {
+        use actionqueue_core::mutation::{CancelCommand, CancelTarget};
+
+        for cancel_task in [false, true] {
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            let dir = tempfile::tempdir().unwrap();
+            let mut dispatch = new_dispatch(
+                dir.path(),
+                BlockingHandler { release: std::sync::Mutex::new(release_rx) },
+            );
+            dispatch.max_concurrent = 2;
+            let blocked = task(b"block", Some("shared"));
+            let blocked_id = blocked.id();
+            dispatch.submit_task(blocked).unwrap();
+            assert_eq!(dispatch.tick().await.unwrap().dispatched, 1);
+            let blocked_run = dispatch.projection().run_ids_for_task(blocked_id)[0];
+            let competitor = task(b"compete", Some("shared"));
+            let competitor_id = competitor.id();
+            dispatch.submit_task(competitor).unwrap();
+            let competitor_run = dispatch.projection().run_ids_for_task(competitor_id)[0];
+            dispatch
+                .cancel(CancelCommand {
+                    expected_sequence: dispatch.next_sequence().unwrap(),
+                    target: if cancel_task {
+                        CancelTarget::Task(blocked_id)
+                    } else {
+                        CancelTarget::Run(blocked_run)
+                    },
+                    tenant_id: None,
+                    control_context: None,
+                    timestamp: 1000,
+                })
+                .unwrap();
+            let canceled_history =
+                dispatch.projection().get_attempt_history(&blocked_run).map(<[_]>::to_vec);
+            assert!(!dispatch.projection().key_reservations().any(|(id, _)| id == blocked_run));
+            for _ in 0..3 {
+                assert_eq!(dispatch.tick().await.unwrap().dispatched, 0);
+                assert!(dispatch.in_flight.contains_key(&blocked_run));
+                assert_eq!(
+                    dispatch.projection().get_run_state(&competitor_run),
+                    Some(&RunState::Ready)
+                );
+                assert_eq!(
+                    dispatch.key_gate.key_holder(&ConcurrencyKey::new("shared")),
+                    Some(blocked_run)
+                );
+            }
+            // A canceled worker must not block progress when its former lease expires.
+            dispatch.heartbeat_in_flight_leases(2000).unwrap();
+            release_tx.send(()).unwrap();
+            release_tx.send(()).unwrap();
+            let _ = tokio::time::timeout(Duration::from_secs(5), dispatch.run_until_idle())
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(dispatch.in_flight.is_empty());
+            assert_eq!(
+                dispatch.projection().get_run_state(&competitor_run),
+                Some(&RunState::Completed)
+            );
+            assert_eq!(
+                dispatch.projection().get_attempt_history(&blocked_run),
+                canceled_history.as_deref()
+            );
+        }
     }
 }

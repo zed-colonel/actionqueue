@@ -541,6 +541,210 @@ fn dispatch(
     )
     .unwrap()
 }
+
+fn admit_once(a: &mut s::Authority, n: u64, parent: Option<TaskId>, deps: Vec<TaskId>) -> RunId {
+    let q = admission_support::request(n);
+    let t = q.task_spec();
+    let mut task = TaskSpec::new(
+        t.id(),
+        t.task_payload().clone(),
+        actionqueue_core::task::run_policy::RunPolicy::Once,
+        TaskConstraints::default(),
+        t.metadata().clone(),
+    )
+    .unwrap();
+    if let Some(parent) = parent {
+        task = task.with_parent(parent);
+    }
+    let q = admission_support::with_dependencies(&admission_support::with_spec(&q, task), deps);
+    let _ = admission_support::ensure(a, q, 10).unwrap();
+    a.projection().runs_for_task(t.id()).next().unwrap().id()
+}
+
+fn await_scheduled(a: &mut s::Authority, run: RunId, wait: WaitSpec) {
+    transition(a, run, RunState::Ready, 11);
+    transition(a, run, RunState::Leased, 12);
+    commit!(
+        a,
+        MutationCommand::LeaseAcquire(LeaseAcquireCommand::new(seq(a), run, "worker", 1000, 12))
+    );
+    transition(a, run, RunState::Running, 13);
+    commit!(
+        a,
+        MutationCommand::AttemptStart(AttemptStartCommand::new(seq(a), run, AttemptId::new(), 13))
+    );
+    establish_wait(a, run, wait);
+}
+
+fn cancel_task_command(sequence: u64, task: TaskId) -> CancelCommand {
+    CancelCommand {
+        expected_sequence: sequence,
+        target: CancelTarget::Task(task),
+        tenant_id: None,
+        control_context: None,
+        timestamp: 25,
+    }
+}
+
+#[tokio::test]
+async fn embedded_parent_cancellation_precedes_descendant_matching_and_recovers_every_prefix() {
+    // Live API, restart after parent commit, and restart after one descendant commit.
+    for prefix in 0..=2 {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = s::open(dir.path());
+        let parent = admit_once(&mut a, 1, None, vec![]);
+        let child = admit_once(&mut a, 2, Some(admission_support::id(1)), vec![]);
+        let grandchild = admit_once(&mut a, 3, Some(admission_support::id(2)), vec![]);
+        let sibling = admit_once(&mut a, 4, Some(admission_support::id(1)), vec![]);
+        let child_wait = WaitId::new();
+        let grandchild_wait = WaitId::new();
+        await_scheduled(&mut a, child, spec(child_wait, None));
+        await_scheduled(&mut a, grandchild, spec(grandchild_wait, None));
+        let clock = SharedClock(std::sync::Arc::new(std::sync::atomic::AtomicU64::new(25)));
+        let mut d = if prefix == 0 {
+            let mut d = dispatch(a, child, clock.clone(), false);
+            d.cancel(cancel_task_command(
+                d.projection().latest_sequence() + 1,
+                admission_support::id(1),
+            ))
+            .unwrap();
+            // No tick in between: admission itself may trigger matching.
+            d.admit_signal(s::request(1), Default::default()).unwrap();
+            d
+        } else {
+            for n in 1..=prefix {
+                commit!(
+                    &mut a,
+                    MutationCommand::Cancel(cancel_task_command(seq(&a), admission_support::id(n)))
+                );
+            }
+            let _ = s::submit(&mut a, s::envelope(1, 25)).unwrap();
+            drop(a);
+            dispatch(s::reopen(dir.path()), child, clock.clone(), false)
+        };
+        for run in [parent, child, grandchild, sibling] {
+            assert_eq!(
+                d.projection().get_run_state(&run),
+                Some(&RunState::Canceled),
+                "prefix {prefix}"
+            );
+            assert!(d.projection().waits().active(run).is_none());
+            assert!(d.projection().pending_resume(run).is_none());
+        }
+        for wait in [child_wait, grandchild_wait] {
+            assert!(matches!(
+                d.projection().waits().get(wait).unwrap().resolution.as_ref().unwrap().kind,
+                actionqueue_storage::mutation::wait::WaitResolutionKind::Canceled(_)
+            ));
+        }
+        let before = d.projection().projection_digest().unwrap();
+        assert_eq!(d.tick().await.unwrap().dispatched, 0);
+        assert_eq!(d.reconcile_waits().unwrap(), 0);
+        assert_eq!(d.projection().projection_digest().unwrap(), before);
+        drop(d);
+        let d = dispatch(s::reopen(dir.path()), child, clock, false);
+        assert_eq!(d.projection().projection_digest().unwrap(), before);
+    }
+}
+
+#[tokio::test]
+async fn terminal_deadlines_cancel_dependencies_and_hierarchy_live_and_on_bootstrap() {
+    for policy in [
+        WaitTimeoutPolicy::CancelRun,
+        WaitTimeoutPolicy::FailRun { code: BoundedCode::new("expired").unwrap() },
+    ] {
+        // Tick, explicit service, signal-triggered service, overdue bootstrap,
+        // crash after timeout, and crash partway through its cancellation cascade.
+        for path in 0..6 {
+            let dir = tempfile::tempdir().unwrap();
+            let mut a = s::open(dir.path());
+            let prerequisite = admit_once(&mut a, 1, None, vec![]);
+            let dependent = admit_once(&mut a, 2, None, vec![admission_support::id(1)]);
+            let transitive = admit_once(&mut a, 3, None, vec![admission_support::id(2)]);
+            let child = admit_once(&mut a, 4, Some(admission_support::id(2)), vec![]);
+            let wait = WaitId::new();
+            await_scheduled(
+                &mut a,
+                prerequisite,
+                spec(wait, Some(WaitDeadline { at: 30, policy: policy.clone() })),
+            );
+            let child_wait = WaitId::new();
+            await_scheduled(
+                &mut a,
+                child,
+                spec(
+                    child_wait,
+                    Some(WaitDeadline { at: 31, policy: WaitTimeoutPolicy::ResumeWithTimeout }),
+                ),
+            );
+            let clock = SharedClock(std::sync::Arc::new(std::sync::atomic::AtomicU64::new(25)));
+            let mut d = if path >= 3 {
+                if path >= 4 {
+                    let _ = timeout(&mut a, prerequisite, wait, 40).unwrap();
+                }
+                if path == 5 {
+                    commit!(
+                        &mut a,
+                        MutationCommand::Cancel(cancel_task_command(
+                            seq(&a),
+                            admission_support::id(2)
+                        ))
+                    );
+                }
+                drop(a);
+                clock.0.store(40, std::sync::atomic::Ordering::SeqCst);
+                dispatch(s::reopen(dir.path()), prerequisite, clock.clone(), false)
+            } else {
+                let mut d = dispatch(a, prerequisite, clock.clone(), false);
+                clock.0.store(40, std::sync::atomic::Ordering::SeqCst);
+                match path {
+                    0 => {
+                        assert_eq!(d.tick().await.unwrap().dispatched, 0);
+                    }
+                    1 => {
+                        assert_eq!(d.reconcile_waits().unwrap(), 1);
+                    }
+                    _ => {
+                        // An unrelated signal still runs the deadline service.
+                        let mut e = s::envelope(1, 40);
+                        e.kind = SignalKind::new("unrelated").unwrap();
+                        d.admit_signal(s::request_from(&e).unwrap(), Default::default()).unwrap();
+                    }
+                }
+                d
+            };
+            let expected = if matches!(policy, WaitTimeoutPolicy::CancelRun) {
+                RunState::Canceled
+            } else {
+                RunState::Failed
+            };
+            assert_eq!(d.projection().get_run_state(&prerequisite), Some(&expected));
+            for run in [dependent, transitive, child] {
+                assert_eq!(
+                    d.projection().get_run_state(&run),
+                    Some(&RunState::Canceled),
+                    "path {path}, policy {policy:?}"
+                );
+                assert!(d.projection().pending_resume(run).is_none());
+            }
+            assert!(matches!(
+                d.projection().waits().get(child_wait).unwrap().resolution.as_ref().unwrap().kind,
+                actionqueue_storage::mutation::wait::WaitResolutionKind::Canceled(_)
+            ));
+            // Terminal bookkeeping must also prevent new children of the timed-out task.
+            let late_child = admission_support::spec(5).with_parent(admission_support::id(1));
+            assert!(d.submit_task(late_child).is_err());
+            let before = d.projection().projection_digest().unwrap();
+            assert_eq!(d.tick().await.unwrap().dispatched, 0);
+            assert_eq!(d.reconcile_waits().unwrap(), 0);
+            assert_eq!(d.projection().projection_digest().unwrap(), before);
+            drop(d);
+            let d = dispatch(s::reopen(dir.path()), prerequisite, clock, false);
+            assert_eq!(d.projection().projection_digest().unwrap(), before);
+        }
+    }
+}
+
 #[tokio::test]
 async fn deadlines_continue_while_paused_or_draining_and_pending_wakes_never_dispatch() {
     for paused in [false, true] {
