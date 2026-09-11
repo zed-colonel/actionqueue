@@ -1,7 +1,7 @@
-//! Wait resolution proposals, wired into mutation authority in AQ-06.
+//! Wait resolution commands, validated and committed by the storage authority.
 use crate::causal::ControlMutationContext;
 use crate::ids::{RunId, SignalSequence, TenantId, WaitId};
-/// Pure WaitSatisfyCommand proposal; no mutation authority implementation yet.
+/// Resolve a wait using its earliest eligible durable signal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WaitSatisfyCommand {
     expected_sequence: u64,
@@ -42,7 +42,7 @@ impl WaitSatisfyCommand {
         self.timestamp
     }
 }
-/// Pure WaitTimeoutCommand proposal; no mutation authority implementation yet.
+/// Resolve a due deadline using the policy stored with the wait.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WaitTimeoutCommand {
     expected_sequence: u64,
@@ -72,7 +72,7 @@ impl WaitTimeoutCommand {
         self.timestamp
     }
 }
-/// Pure WaitCancelCommand proposal; no mutation authority implementation yet.
+/// Cancel one identified wait and its owning run with host attribution.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WaitCancelCommand {
     expected_sequence: u64,

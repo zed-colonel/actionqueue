@@ -1023,9 +1023,8 @@ pub fn decode_payload(kind: u16, payload: &[u8]) -> Result<WalEventType, DecodeE
         _ => Err(DecodeError::UnsupportedRecordKind(kind)),
     }
 }
-/// Kind 256 is admission. Reserved IDs: compound attempt start/disposition 272/273;
-/// signal kinds 288–291 are active; wait establish/satisfy/timeout/cancel 304..=307;
-/// attributed task/run control 320/321. All are unsupported until their owners land.
+/// Kind 256 is admission. Signal kinds 288–291, wait kinds 304–307, and attributed
+/// task/run controls 320/321 are active. Compound attempt kinds 272/273 remain reserved.
 pub const RESERVED_KINDS: &[u16] = &[272, 273];
 
 fn bounded<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, EncodeError> {

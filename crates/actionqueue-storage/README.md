@@ -180,7 +180,7 @@ bounded to 1,024 results, use exclusive cursors and never consume signals.
 Retirement removes matching membership only. Immutable content, deduplication
 identity and WAL history remain resident and count against quotas. Explicit pins
 are durable; future wait/resume/history protections must extend the separate
-protection seam before AQ-06 enables waits. Snapshot hydration rebuilds derived
+protection at the projection level when AQ-06 waits are active. Snapshot hydration rebuilds derived
 indexes/counters and validates against complete WAL history. Authority preparation
 clones the full projection, so total mutation cost still grows with store size.
 See ADR-005/006 for canonical bytes, default quotas and retention thresholds.

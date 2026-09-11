@@ -312,7 +312,7 @@ pub enum ConcurrencyKeyWaitPolicy {
     /// Release at Awaiting and reacquire through ordinary eligibility on wake.
     #[default]
     ReleaseWhileAwaiting,
-    /// Keep the key until the continuation resolves.
+    /// Keep the key across awaiting and pending wake until execution releases it.
     HoldWhileAwaiting,
 }
 
