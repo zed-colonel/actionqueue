@@ -1,8 +1,10 @@
 //! Derived signal indexes. Durable records remain resident after logical retirement.
-use crate::mutation::signal::*;
-use actionqueue_core::{bounded::OpaqueRef, continuation::*, ids::*, limits::*};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ops::Bound::{Excluded, Unbounded};
+
+use actionqueue_core::{bounded::OpaqueRef, continuation::*, ids::*, limits::*};
+
+use crate::mutation::signal::*;
 type Identity = (Option<TenantId>, SignalId);
 type MatchKey =
     (Option<TenantId>, SignalNamespace, SignalKind, Option<CorrelationId>, Option<OpaqueRef>);
@@ -109,11 +111,13 @@ impl SignalIndex {
                 let r = &self.records[s];
                 (r.envelope.tenant_id == tenant
                     && policy.permits(
-                        r.envelope.received_at,
-                        s.get(),
+                        SignalRetentionCandidate {
+                            received_at: r.envelope.received_at,
+                            sequence: s.get(),
+                            protected: self.is_protected(r),
+                        },
                         self.last_sequence,
                         now,
-                        self.is_protected(r),
                     ))
                 .then_some(*s)
             })
@@ -278,6 +282,8 @@ impl SignalIndex {
 
 #[cfg(test)]
 mod tests {
+    use actionqueue_core::mutation::*;
+
     use super::*;
     use crate::{
         mutation::StorageMutationAuthority,
@@ -287,7 +293,6 @@ mod tests {
             writer::{WalWriter, WalWriterError},
         },
     };
-    use actionqueue_core::mutation::*;
     #[derive(Debug)]
     struct NoWrites;
     impl WalWriter for NoWrites {

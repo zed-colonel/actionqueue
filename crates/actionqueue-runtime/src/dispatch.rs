@@ -11,7 +11,6 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::admission::AdmissionError;
 use actionqueue_core::admission::{EnsureTaskOutcome, EnsureTaskRequest};
 use actionqueue_core::ids::{AttemptId, RunId, TaskId};
 #[cfg(feature = "workflow")]
@@ -55,6 +54,7 @@ use actionqueue_workflow::hierarchy::HierarchyTracker;
 use actionqueue_workflow::submission::{submission_channel, SubmissionChannel, SubmissionReceiver};
 use tokio::sync::mpsc;
 
+use crate::admission::AdmissionError;
 use crate::config::BackoffStrategyConfig;
 use crate::worker::{InFlightRun, WorkerResult};
 
@@ -196,7 +196,7 @@ pub enum DispatchError {
     /// A mutation command submitted to the storage authority failed.
     Authority(AuthorityError),
     /// Scheduled-to-ready promotion via authority failed.
-    ScheduledPromotion(AuthorityPromotionError<AuthorityError>),
+    ScheduledPromotion(Box<AuthorityPromotionError<AuthorityError>>),
     /// RetryWait-to-ready promotion failed due to an invalid state transition.
     RetryPromotion(RunInstanceError),
     /// Run derivation from a task's run policy failed.
@@ -1464,7 +1464,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
                 ),
                 &mut self.authority,
             )
-            .map_err(DispatchError::ScheduledPromotion)?;
+            .map_err(|e| DispatchError::ScheduledPromotion(Box::new(e)))?;
             result.promoted_scheduled = promo_result.outcomes().len();
         }
 

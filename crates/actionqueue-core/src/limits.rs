@@ -168,20 +168,28 @@ impl Default for SignalRetentionPolicy {
         Self { minimum_age_secs: 7 * 24 * 60 * 60, minimum_sequence_window: 10_000 }
     }
 }
+/// Receipt and protection facts for one signal, independent of routing fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SignalRetentionCandidate {
+    /// Store-assigned receipt time in seconds.
+    pub received_at: u64,
+    /// Store-assigned signal sequence.
+    pub sequence: u64,
+    /// Whether pins or durable references prevent retirement.
+    pub protected: bool,
+}
 impl SignalRetentionPolicy {
     /// Conservative receipt-age/sequence arithmetic; clock rollback is ineligible.
     pub fn permits(
         &self,
-        received_at: u64,
-        sequence: u64,
+        candidate: SignalRetentionCandidate,
         last_sequence: u64,
         now: u64,
-        protected: bool,
     ) -> bool {
-        !protected
-            && now.checked_sub(received_at).is_some_and(|age| age > self.minimum_age_secs)
+        !candidate.protected
+            && now.checked_sub(candidate.received_at).is_some_and(|age| age > self.minimum_age_secs)
             && last_sequence
-                .checked_sub(sequence)
+                .checked_sub(candidate.sequence)
                 .is_some_and(|distance| distance > self.minimum_sequence_window)
     }
 }

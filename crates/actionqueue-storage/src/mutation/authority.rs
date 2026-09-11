@@ -3,7 +3,6 @@
 //! This module implements the D-04 WAL-first authority lane:
 //! validate command -> map event -> append -> durability sync policy -> apply projection.
 
-use super::admission::AdmissionRecord;
 use actionqueue_core::budget::BudgetDimension;
 use actionqueue_core::ids::{AttemptId, RunId, TaskId};
 use actionqueue_core::mutation::{
@@ -28,6 +27,7 @@ use actionqueue_core::{
     run::RunInstance,
 };
 
+use super::admission::AdmissionRecord;
 use crate::recovery::reducer::ReplayReducer;
 use crate::recovery::reducer::ReplayReducerError;
 use crate::wal::event::{WalEvent, WalEventType};
@@ -1341,7 +1341,7 @@ impl<W: WalWriter, P: MutationProjection> MutationAuthority for StorageMutationA
             if let Some(super::signal_authority::SignalPreparation::Event(event, applied)) =
                 signal_preparation
             {
-                (event, applied)
+                (*event, applied)
             } else {
                 // Stage 1: validate command.
                 let validated =
@@ -1953,11 +1953,7 @@ impl<ProjectionError: std::fmt::Display> std::fmt::Display
                 "mutation publication failed at sequence {sequence} (synced={synced}): {error}"
             ),
             MutationAuthorityError::Apply { sequence, source } => {
-                write!(
-                    f,
-                    "mutation preparation failed before append sequence {sequence}: \
-                     {source}"
-                )
+                write!(f, "mutation preparation failed before append sequence {sequence}: {source}")
             }
         }
     }

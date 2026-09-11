@@ -1,15 +1,16 @@
 //! Signal preparation under the exclusive mutation owner, followed by the common WAL lane.
+use actionqueue_core::{
+    continuation::*, data_ref::DataRef, ids::SignalSequence, limits::*, mutation::*,
+};
+
 use super::{authority::*, signal::*};
 use crate::{
     recovery::signals::SignalStatistics,
     wal::{event::*, writer::WalWriter},
 };
-use actionqueue_core::{
-    continuation::*, data_ref::DataRef, ids::SignalSequence, limits::*, mutation::*,
-};
 pub(super) enum SignalPreparation {
     Noop(MutationOutcome),
-    Event(WalEvent, AppliedMutation),
+    Event(Box<WalEvent>, AppliedMutation),
 }
 use SignalRejection as R;
 impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
@@ -164,11 +165,13 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
                     }
                     if !r.is_retained()
                         || !self.signal_retention.permits(
-                            r.envelope().received_at,
-                            s.get(),
+                            SignalRetentionCandidate {
+                                received_at: r.envelope().received_at,
+                                sequence: s.get(),
+                                protected: index.is_protected(r),
+                            },
                             index.last_sequence().get(),
                             c.timestamp,
-                            index.is_protected(r),
                         )
                     {
                         return Err(R::Protected);
@@ -207,6 +210,6 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
         {
             return Err(R::TooLarge);
         }
-        Ok(Some(SignalPreparation::Event(event, applied)))
+        Ok(Some(SignalPreparation::Event(Box::new(event), applied)))
     }
 }

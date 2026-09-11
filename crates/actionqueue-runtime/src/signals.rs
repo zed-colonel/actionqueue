@@ -69,28 +69,23 @@ pub fn admit_signal<W: WalWriter>(
         _ => unreachable!("signal result"),
     }
 }
-fn pin<W: WalWriter>(
-    authority: &mut StorageMutationAuthority<W, ReplayReducer>,
+fn pin_command<W: WalWriter>(
+    authority: &StorageMutationAuthority<W, ReplayReducer>,
     signal_id: SignalId,
     pin_id: SignalPinId,
     ingress: SignalIngressContext,
     clock: &impl Clock,
-    acquire: bool,
-) -> Result<usize, SignalAdmissionError> {
+) -> SignalPinCommand {
     // Saturated expected sequence still permits the authority's idempotent no-op path.
     let expected_sequence = authority.projection().latest_sequence().saturating_add(1);
-    let c = SignalPinCommand {
+    SignalPinCommand {
         expected_sequence,
         tenant_id: ingress.tenant_id,
         signal_id,
         pin_id,
         timestamp: clock.now(),
         control_context: ingress.control_context,
-    };
-    retention_result(authority.submit_command(
-        if acquire { MutationCommand::SignalPin(c) } else { MutationCommand::SignalUnpin(c) },
-        DurabilityPolicy::Immediate,
-    )?)
+    }
 }
 fn retention_result(outcome: MutationOutcome) -> Result<usize, SignalAdmissionError> {
     match outcome.applied() {
@@ -106,7 +101,11 @@ pub fn pin_signal<W: WalWriter>(
     ingress: SignalIngressContext,
     clock: &impl Clock,
 ) -> Result<usize, SignalAdmissionError> {
-    pin(authority, signal_id, pin_id, ingress, clock, true)
+    let command = pin_command(authority, signal_id, pin_id, ingress, clock);
+    retention_result(
+        authority
+            .submit_command(MutationCommand::SignalPin(command), DurabilityPolicy::Immediate)?,
+    )
 }
 /// Releases only the named pin. A missing pin is a no-op.
 pub fn unpin_signal<W: WalWriter>(
@@ -116,7 +115,11 @@ pub fn unpin_signal<W: WalWriter>(
     ingress: SignalIngressContext,
     clock: &impl Clock,
 ) -> Result<usize, SignalAdmissionError> {
-    pin(authority, signal_id, pin_id, ingress, clock, false)
+    let command = pin_command(authority, signal_id, pin_id, ingress, clock);
+    retention_result(
+        authority
+            .submit_command(MutationCommand::SignalUnpin(command), DurabilityPolicy::Immediate)?,
+    )
 }
 /// Explicit bounded retirement; proposals are rechecked against current pins and policy.
 pub fn retire_signals<W: WalWriter>(

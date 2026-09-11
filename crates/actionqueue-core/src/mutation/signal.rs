@@ -8,12 +8,12 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignalAdmitCommand {
     expected_sequence: u64,
-    envelope: SignalEnvelope,
+    envelope: Box<SignalEnvelope>,
 }
 impl SignalAdmitCommand {
     /// Expected WAL sequence and host-attributed envelope.
     pub fn new(expected_sequence: u64, envelope: SignalEnvelope) -> Self {
-        Self { expected_sequence, envelope }
+        Self { expected_sequence, envelope: Box::new(envelope) }
     }
     /// Expected WAL sequence.
     pub fn expected_sequence(&self) -> u64 {

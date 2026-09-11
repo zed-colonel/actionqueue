@@ -1,5 +1,4 @@
 //! Frozen v1 record payloads. Kind IDs never depend on enum discriminants.
-use super::task_v1::TaskSpecV1;
 use actionqueue_core::budget::BudgetDimension;
 use actionqueue_core::ids::{ActorId, AttemptId, LedgerEntryId, RunId, TaskId, TenantId};
 use actionqueue_core::mutation::AttemptResultKind;
@@ -9,6 +8,7 @@ use actionqueue_core::subscription::{EventFilter, SubscriptionId};
 
 use super::codec::{DecodeError, EncodeError};
 use super::event::WalEventType;
+use super::task_v1::TaskSpecV1;
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StoreInitializedV1 {
@@ -303,148 +303,148 @@ pub fn encode_payload(event: &WalEventType) -> Result<Vec<u8>, EncodeError> {
             bounded(&super::admission_v1::AdmissionCommittedV1::new(record, runs))
         }
         WalEventType::StoreInitialized { manifest_digest } => {
-            bounded(&StoreInitializedV1 { manifest_digest: manifest_digest.clone() })
+            bounded(&StoreInitializedV1 { manifest_digest: *manifest_digest })
         }
         WalEventType::TaskCreated { task_spec, timestamp } => bounded(&TaskCreatedV1 {
             task_spec: TaskSpecV1::from(task_spec),
-            timestamp: timestamp.clone(),
+            timestamp: *timestamp,
         }),
         WalEventType::RunCreated { run_instance } => {
             bounded(&RunCreatedV1 { run_instance: super::domain_v1::RunV1::from(run_instance) })
         }
         WalEventType::RunStateChanged { run_id, previous_state, new_state, timestamp } => {
             bounded(&RunStateChangedV1 {
-                run_id: run_id.clone(),
-                previous_state: previous_state.clone(),
-                new_state: new_state.clone(),
-                timestamp: timestamp.clone(),
+                run_id: *run_id,
+                previous_state: *previous_state,
+                new_state: *new_state,
+                timestamp: *timestamp,
             })
         }
         WalEventType::AttemptStarted { run_id, attempt_id, timestamp } => {
             bounded(&AttemptStartedV1 {
-                run_id: run_id.clone(),
-                attempt_id: attempt_id.clone(),
-                timestamp: timestamp.clone(),
+                run_id: *run_id,
+                attempt_id: *attempt_id,
+                timestamp: *timestamp,
             })
         }
         WalEventType::AttemptFinished { run_id, attempt_id, result, error, output, timestamp } => {
             bounded(&AttemptFinishedV1 {
-                run_id: run_id.clone(),
-                attempt_id: attempt_id.clone(),
-                result: result.clone(),
+                run_id: *run_id,
+                attempt_id: *attempt_id,
+                result: *result,
                 error: error.clone(),
                 output: output.clone(),
-                timestamp: timestamp.clone(),
+                timestamp: *timestamp,
             })
         }
         WalEventType::TaskCanceled { task_id, timestamp } => {
-            bounded(&TaskCanceledV1 { task_id: task_id.clone(), timestamp: timestamp.clone() })
+            bounded(&TaskCanceledV1 { task_id: *task_id, timestamp: *timestamp })
         }
         WalEventType::RunCanceled { run_id, timestamp } => {
-            bounded(&RunCanceledV1 { run_id: run_id.clone(), timestamp: timestamp.clone() })
+            bounded(&RunCanceledV1 { run_id: *run_id, timestamp: *timestamp })
         }
         WalEventType::LeaseAcquired { run_id, owner, expiry, timestamp } => {
             bounded(&LeaseAcquiredV1 {
-                run_id: run_id.clone(),
+                run_id: *run_id,
                 owner: owner.clone(),
-                expiry: expiry.clone(),
-                timestamp: timestamp.clone(),
+                expiry: *expiry,
+                timestamp: *timestamp,
             })
         }
         WalEventType::LeaseHeartbeat { run_id, owner, expiry, timestamp } => {
             bounded(&LeaseHeartbeatV1 {
-                run_id: run_id.clone(),
+                run_id: *run_id,
                 owner: owner.clone(),
-                expiry: expiry.clone(),
-                timestamp: timestamp.clone(),
+                expiry: *expiry,
+                timestamp: *timestamp,
             })
         }
         WalEventType::LeaseExpired { run_id, owner, expiry, timestamp } => {
             bounded(&LeaseExpiredV1 {
-                run_id: run_id.clone(),
+                run_id: *run_id,
                 owner: owner.clone(),
-                expiry: expiry.clone(),
-                timestamp: timestamp.clone(),
+                expiry: *expiry,
+                timestamp: *timestamp,
             })
         }
         WalEventType::LeaseReleased { run_id, owner, expiry, timestamp } => {
             bounded(&LeaseReleasedV1 {
-                run_id: run_id.clone(),
+                run_id: *run_id,
                 owner: owner.clone(),
-                expiry: expiry.clone(),
-                timestamp: timestamp.clone(),
+                expiry: *expiry,
+                timestamp: *timestamp,
             })
         }
         WalEventType::EnginePaused { timestamp } => {
-            bounded(&EnginePausedV1 { timestamp: timestamp.clone() })
+            bounded(&EnginePausedV1 { timestamp: *timestamp })
         }
         WalEventType::EngineResumed { timestamp } => {
-            bounded(&EngineResumedV1 { timestamp: timestamp.clone() })
+            bounded(&EngineResumedV1 { timestamp: *timestamp })
         }
         WalEventType::DependencyDeclared { task_id, depends_on, timestamp } => {
             bounded(&DependencyDeclaredV1 {
-                task_id: task_id.clone(),
+                task_id: *task_id,
                 depends_on: depends_on.clone(),
-                timestamp: timestamp.clone(),
+                timestamp: *timestamp,
             })
         }
         WalEventType::RunSuspended { run_id, reason, timestamp } => bounded(&RunSuspendedV1 {
-            run_id: run_id.clone(),
+            run_id: *run_id,
             reason: reason.clone(),
-            timestamp: timestamp.clone(),
+            timestamp: *timestamp,
         }),
         WalEventType::RunResumed { run_id, timestamp } => {
-            bounded(&RunResumedV1 { run_id: run_id.clone(), timestamp: timestamp.clone() })
+            bounded(&RunResumedV1 { run_id: *run_id, timestamp: *timestamp })
         }
         WalEventType::BudgetAllocated { task_id, dimension, limit, timestamp } => {
             bounded(&BudgetAllocatedV1 {
-                task_id: task_id.clone(),
-                dimension: dimension.clone(),
-                limit: limit.clone(),
-                timestamp: timestamp.clone(),
+                task_id: *task_id,
+                dimension: *dimension,
+                limit: *limit,
+                timestamp: *timestamp,
             })
         }
         WalEventType::BudgetConsumed { task_id, dimension, amount, timestamp } => {
             bounded(&BudgetConsumedV1 {
-                task_id: task_id.clone(),
-                dimension: dimension.clone(),
-                amount: amount.clone(),
-                timestamp: timestamp.clone(),
+                task_id: *task_id,
+                dimension: *dimension,
+                amount: *amount,
+                timestamp: *timestamp,
             })
         }
         WalEventType::BudgetExhausted { task_id, dimension, timestamp } => {
             bounded(&BudgetExhaustedV1 {
-                task_id: task_id.clone(),
-                dimension: dimension.clone(),
-                timestamp: timestamp.clone(),
+                task_id: *task_id,
+                dimension: *dimension,
+                timestamp: *timestamp,
             })
         }
         WalEventType::BudgetReplenished { task_id, dimension, new_limit, timestamp } => {
             bounded(&BudgetReplenishedV1 {
-                task_id: task_id.clone(),
-                dimension: dimension.clone(),
-                new_limit: new_limit.clone(),
-                timestamp: timestamp.clone(),
+                task_id: *task_id,
+                dimension: *dimension,
+                new_limit: *new_limit,
+                timestamp: *timestamp,
             })
         }
         WalEventType::SubscriptionCreated { subscription_id, task_id, filter, timestamp } => {
             bounded(&SubscriptionCreatedV1 {
-                subscription_id: subscription_id.clone(),
-                task_id: task_id.clone(),
+                subscription_id: *subscription_id,
+                task_id: *task_id,
                 filter: filter.clone(),
-                timestamp: timestamp.clone(),
+                timestamp: *timestamp,
             })
         }
         WalEventType::SubscriptionTriggered { subscription_id, timestamp } => {
             bounded(&SubscriptionTriggeredV1 {
-                subscription_id: subscription_id.clone(),
-                timestamp: timestamp.clone(),
+                subscription_id: *subscription_id,
+                timestamp: *timestamp,
             })
         }
         WalEventType::SubscriptionCanceled { subscription_id, timestamp } => {
             bounded(&SubscriptionCanceledV1 {
-                subscription_id: subscription_id.clone(),
-                timestamp: timestamp.clone(),
+                subscription_id: *subscription_id,
+                timestamp: *timestamp,
             })
         }
         WalEventType::ActorRegistered {
@@ -456,48 +456,47 @@ pub fn encode_payload(event: &WalEventType) -> Result<Vec<u8>, EncodeError> {
             tenant_id,
             timestamp,
         } => bounded(&ActorRegisteredV1 {
-            actor_id: actor_id.clone(),
+            actor_id: *actor_id,
             identity: identity.clone(),
             executor_traits: executor_traits.clone(),
             department: department.clone(),
-            heartbeat_interval_secs: heartbeat_interval_secs.clone(),
-            tenant_id: tenant_id.clone(),
-            timestamp: timestamp.clone(),
+            heartbeat_interval_secs: *heartbeat_interval_secs,
+            tenant_id: *tenant_id,
+            timestamp: *timestamp,
         }),
-        WalEventType::ActorDeregistered { actor_id, timestamp } => bounded(&ActorDeregisteredV1 {
-            actor_id: actor_id.clone(),
-            timestamp: timestamp.clone(),
-        }),
+        WalEventType::ActorDeregistered { actor_id, timestamp } => {
+            bounded(&ActorDeregisteredV1 { actor_id: *actor_id, timestamp: *timestamp })
+        }
         WalEventType::ActorHeartbeat { actor_id, timestamp } => {
-            bounded(&ActorHeartbeatV1 { actor_id: actor_id.clone(), timestamp: timestamp.clone() })
+            bounded(&ActorHeartbeatV1 { actor_id: *actor_id, timestamp: *timestamp })
         }
         WalEventType::TenantCreated { tenant_id, name, timestamp } => bounded(&TenantCreatedV1 {
-            tenant_id: tenant_id.clone(),
+            tenant_id: *tenant_id,
             name: name.clone(),
-            timestamp: timestamp.clone(),
+            timestamp: *timestamp,
         }),
         WalEventType::RoleAssigned { actor_id, role, tenant_id, timestamp } => {
             bounded(&RoleAssignedV1 {
-                actor_id: actor_id.clone(),
+                actor_id: *actor_id,
                 role: role.clone(),
-                tenant_id: tenant_id.clone(),
-                timestamp: timestamp.clone(),
+                tenant_id: *tenant_id,
+                timestamp: *timestamp,
             })
         }
         WalEventType::CapabilityGranted { actor_id, capability, tenant_id, timestamp } => {
             bounded(&CapabilityGrantedV1 {
-                actor_id: actor_id.clone(),
+                actor_id: *actor_id,
                 capability: capability.clone(),
-                tenant_id: tenant_id.clone(),
-                timestamp: timestamp.clone(),
+                tenant_id: *tenant_id,
+                timestamp: *timestamp,
             })
         }
         WalEventType::CapabilityRevoked { actor_id, capability, tenant_id, timestamp } => {
             bounded(&CapabilityRevokedV1 {
-                actor_id: actor_id.clone(),
+                actor_id: *actor_id,
                 capability: capability.clone(),
-                tenant_id: tenant_id.clone(),
-                timestamp: timestamp.clone(),
+                tenant_id: *tenant_id,
+                timestamp: *timestamp,
             })
         }
         WalEventType::LedgerEntryAppended {
@@ -508,12 +507,12 @@ pub fn encode_payload(event: &WalEventType) -> Result<Vec<u8>, EncodeError> {
             payload,
             timestamp,
         } => bounded(&LedgerEntryAppendedV1 {
-            entry_id: entry_id.clone(),
-            tenant_id: tenant_id.clone(),
+            entry_id: *entry_id,
+            tenant_id: *tenant_id,
             ledger_key: ledger_key.clone(),
-            actor_id: actor_id.clone(),
+            actor_id: *actor_id,
             payload: payload.clone(),
-            timestamp: timestamp.clone(),
+            timestamp: *timestamp,
         }),
     }
 }
