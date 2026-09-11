@@ -40,6 +40,11 @@ across the wait and pending wake. Dispatch rebuilds the key gate from durable cl
 and rejects conflicting ownership. Terminal resolution releases the claim. Manual
 unpin cannot release the independent active-wait or historical signal protections.
 
+Live key reconstruction also includes workers still executing after cancellation.
+Those workers receive no further lease heartbeats. A result for the canceled
+attempt releases the process-local slot and key without changing the committed
+cancellation or attempt history. Other stale worker dispositions remain AQ-08.
+
 Writable embedded bootstrap completes interrupted execution, cancellation cascades,
 matching and deadlines before dispatch. A pre-establishment crash follows ordinary
 attempt recovery, including when a prior recovery already released the lease.
@@ -83,7 +88,7 @@ Legacy dispatch deliberately leaves pending continuations Ready until AQ-07/AQ-0
 supply their input. The optional checkpoint reference is already part of atomic
 yield; it is not a final handler output.
 
-## Validation record (2026-09-11)
+## Original implementation validation record (2026-09-11)
 
 All commands completed successfully from this worktree:
 
@@ -112,3 +117,79 @@ and the daemon reconciles continuations/controls without recovering embedded
 execution attempts, because it is an inspection/control host. Embedded dispatch
 bootstrap performs that execution recovery. No normative contract or archived
 files were changed, and no migration of development stores was introduced.
+
+## Review remediation (F-001–F-005)
+
+The implementation changes are committed in `8bf14c3` (runtime coordination),
+`dee09d5` (Clippy and nightly formatting), and `94f04f4` (preserving uncanceled
+tasks without runs during coordination cleanup). All five findings are addressed:
+
+- **F-001:** Key reconstruction includes both durable claims and in-flight workers.
+  `live_cancellation_holds_key_until_worker_returns` covers run and task controls,
+  two worker slots, repeated ticks, a heartbeat past the old lease expiry, and
+  eventual competitor completion without rewriting the canceled attempt.
+- **F-002:** Embedded task cancellation completes the durable descendant and
+  dependency cascade synchronously. Reconciliation also completes interrupted
+  cascades before matching. The acceptance test
+  `embedded_parent_cancellation_precedes_descendant_matching_and_recovers_every_prefix`
+  covers an awaiting child/grandchild and a scheduled sibling, signal admission
+  without an intervening tick, and restarts after parent and child commits.
+- **F-003:** Each terminal timeout completes ordinary failure cascades before the
+  next deadline; candidates canceled by that cascade are skipped. Bootstrap settles
+  this work before constructing coordination state. Live wait and signal services
+  refresh dependency/hierarchy bookkeeping after durable changes.
+  `terminal_deadlines_cancel_dependencies_and_hierarchy_live_and_on_bootstrap`
+  covers both terminal policies through ticks, explicit reconciliation, signal
+  admission, overdue bootstrap, and two interrupted-cascade prefixes. It checks
+  direct/transitive dependents, an awaiting descendant with another due deadline,
+  orphan prevention, and replay/reconciliation idempotency. The additional runtime
+  test `coordination_refresh_preserves_uncanceled_tasks_without_runs` verifies that
+  cleanup preserves an unfinished hierarchy edge until task cancellation.
+- **F-004:** Combined identical key-release branches, used `clamp` for batch bounds,
+  removed the redundant snapshot borrow, and boxed the matching error source while
+  retaining the committed signal outcome.
+- **F-005:** Applied the repository's nightly formatter to all affected files.
+
+Cancellation and continuation services share projection-based cascade recovery;
+the resulting durable state is authoritative for live coordination and restart.
+No schema, contract, or archived evidence changes were needed for these fixes.
+
+## Remediation verification (2026-09-11)
+
+Checks ran from the repository root on Rust 1.89.0, using
+`CARGO_HOME=$PWD/.aq-cargo`, `CARGO_NET_OFFLINE=true`, and a temporary directory
+under `.aq-checks/`. Nightly formatting used rustfmt 1.10.0-nightly (2026-09-08).
+
+| Final-code check | Result |
+|---|---|
+| `cargo test --workspace` | 963 passed |
+| `cargo test --workspace --features workflow` | 999 passed |
+| `cargo test --workspace --features workflow,budget,actor,platform` | 1,041 passed |
+| `cargo aq-conformance` | 123 passed |
+| `cargo fmt --all -- --check` | Passed |
+| `cargo +nightly fmt --all -- --check` | Passed |
+| `cargo clippy --all --all-targets -- -D warnings` | Passed |
+| `cargo clippy --all --all-targets --features workflow,budget,actor,platform -- -D warnings` | Passed |
+| `cargo test -p actionqueue-core --features serde` | 118 passed |
+| `cargo test -p actionqueue-storage --features serde` | 135 passed |
+| `cargo build --workspace` | Passed |
+| `bash conformance/aq-cont-1/cross-feature-persistence.sh` | Passed |
+| `git diff --check c216ab1382fd2438e57e1d65b7a619ef247160dd` | Passed |
+
+The unchanged Clippy command with `-D warnings` also passed for every intermediate
+CI combination: `workflow`, `budget`, `workflow,budget`, `actor`, `platform`, and
+`actor,platform`. Workspace tests passed for those combinations during remediation;
+after the final cleanup guard, runtime tests were rerun for each combination in
+addition to the final default/workflow/full workspace checks above.
+
+The initial parallel default workspace run failed in the unchanged CLI test
+`restore_rejects_fifo_descriptor_and_inventory_without_blocking` at `smoke.rs:298`
+with `StoreInUse`. The final default and workflow reruns used
+`RUST_TEST_THREADS=1`, matching CI's serialized test setting, and passed. No CLI
+source changes or lint suppressions were used. Workspace and conformance results
+still include three intentionally ignored subprocess helpers, exercised by their
+parent tests. Final detailed logs are retained locally under `.aq-checks/`.
+
+The no-lost-wakeup, timeout, cancellation, and recovery exit gate passes. There
+are no deferred remediation findings. AQ-07/AQ-08 still own continuation input
+delivery and the remaining handler/stale-disposition cutover described above.
