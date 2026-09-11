@@ -125,24 +125,31 @@ impl ReplayReducer {
     pub fn waits(&self) -> &WaitIndex {
         &self.waits
     }
-    pub fn pending_resume(&self, run: RunId) -> Option<ResumeContext> {
-        let w = self.waits.get(self.waits.pending_wait(run)?)?;
-        let r = w.resolution.as_ref()?;
+    pub(crate) fn wait_resume_context(&self, w: &WaitRecord) -> ResumeContext {
+        let r = w.resolution.as_ref().expect("validated wake");
         let wake = match &r.kind {
             WaitResolutionKind::Signal(s) => WakeReason::Signal {
                 wait_id: r.wait_id,
                 signal_sequence: *s,
-                envelope: Box::new(self.signals.by_sequence(*s)?.envelope().clone()),
+                envelope: Box::new(
+                    self.signals.by_sequence(*s).expect("retained wake signal").envelope().clone(),
+                ),
             },
-            WaitResolutionKind::Deadline => {
-                WakeReason::Deadline { wait_id: r.wait_id, deadline_at: w.spec.deadline()?.at }
-            }
+            WaitResolutionKind::Deadline => WakeReason::Deadline {
+                wait_id: r.wait_id,
+                deadline_at: w.spec.deadline().expect("deadline wake").at,
+            },
             WaitResolutionKind::Control(c) => {
                 WakeReason::ControlResolution { wait_id: r.wait_id, control_context: c.clone() }
             }
-            WaitResolutionKind::Canceled(_) => return None,
+            WaitResolutionKind::Canceled(_) => unreachable!("cancellation is not a wake"),
         };
-        Some(ResumeContext { checkpoint: w.checkpoint.clone(), wake, resumed_at: r.timestamp })
+        ResumeContext {
+            context_id: ResumeContextId(r.sequence),
+            checkpoint: w.checkpoint.clone(),
+            wake,
+            resumed_at: r.timestamp,
+        }
     }
     pub fn earliest_signal(&self, spec: &WaitSpec) -> Option<SignalSequence> {
         self.signals
@@ -246,7 +253,11 @@ impl ReplayReducer {
             return Err(E::StaleLease);
         }
         if let Some(c) = &r.checkpoint {
-            if c.checkpoint_id.is_nil() || c.created_by_attempt != r.attempt_id {
+            if c.checkpoint_id.is_nil()
+                || c.created_by_attempt != r.attempt_id
+                || c.data.validate().is_err()
+                || self.checkpoint(c.checkpoint_id).is_some()
+            {
                 return Err(E::InvalidCheckpoint);
             }
         }
@@ -309,6 +320,7 @@ impl ReplayReducer {
         let mut resolution = None;
         let mut cancel = None;
         match c {
+            MutationCommand::AttemptStart(c) => return self.prepare_start(c, d).map(Some),
             MutationCommand::WaitEstablish(c) => {
                 if d != DurabilityPolicy::Immediate {
                     return Err(E::ImmediateDurabilityRequired);
@@ -520,6 +532,7 @@ impl ReplayReducer {
         {
             p.key_reservations.remove(&r.run_id);
         }
+        p.index_checkpoint(r)?;
         p.waits.insert(r.clone());
         p.refresh_wait_candidate(r.spec.wait_id());
         *self = p;
@@ -694,12 +707,23 @@ impl ReplayReducer {
                     .is_some_and(|d| d.policy == WaitTimeoutPolicy::ResumeWithTimeout),
                 _ => false,
             };
-            if !resumes || w.run_id != *run || self.get_run_state(run) != Some(&RunState::Ready) {
+            if !resumes
+                || w.run_id != *run
+                || !self.get_run_state(run).is_some_and(|s| {
+                    matches!(
+                        s,
+                        RunState::Ready
+                            | RunState::Leased
+                            | RunState::Running
+                            | RunState::RetryWait
+                    )
+                })
+            {
                 return Err(E::InvalidState);
             }
         }
-        // No accepted-start/consumption exists in AQ-06: every successful wake remains pending
-        // unless a subsequent cancellation durably removed it.
+        // Every successful wake is either pending, assigned to an immutable attempt,
+        // or closed by cancellation. Superseded inputs remain in attempt history.
         for w in index.records() {
             if let Some(res) = &w.resolution {
                 let resumes = matches!(
@@ -712,6 +736,14 @@ impl ReplayReducer {
                 if resumes
                     && self.get_run_state(&w.run_id) != Some(&RunState::Canceled)
                     && index.pending_wait(w.run_id) != Some(w.spec.wait_id())
+                    && !self.get_attempt_history(&w.run_id).is_some_and(|h| {
+                        h.iter().any(|a| {
+                            a.accepted_start
+                                .as_ref()
+                                .and_then(|s| s.assignment)
+                                .is_some_and(|a| a.context_id.0 == res.sequence)
+                        })
+                    })
                 {
                     return Err(E::InvalidState);
                 }
@@ -745,6 +777,10 @@ impl ReplayReducer {
             if c.sequence == 0 || c.sequence > self.latest_sequence {
                 return Err(E::InvalidIdentity);
             }
+        }
+        self.checkpoints.clear();
+        for w in records {
+            self.index_checkpoint(w).map_err(|_| E::InvalidCheckpoint)?;
         }
         self.waits = index;
         self.key_reservations = claims;

@@ -62,8 +62,8 @@ async fn once_accounting_proves_one_run_and_no_redispatch_after_restart() {
     // Once policy: admission + promote + lease + running + attempt_start +
     // attempt_finish + completed, plus StoreInitialized.
     assert_eq!(
-        completion.final_sequence, 8,
-        "Once policy completion should produce 7 mutations plus StoreInitialized"
+        completion.final_sequence, 9,
+        "Once policy completion should produce 8 mutations including lease grant plus StoreInitialized"
     );
 
     // 4) Pre-restart readback assertions + metrics parity

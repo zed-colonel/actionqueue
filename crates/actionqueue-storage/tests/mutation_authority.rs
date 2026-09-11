@@ -680,7 +680,14 @@ fn f002_t_p1_authority_accepts_attempt_start_and_appends_canonical_event() {
 
     let outcome = authority
         .submit_command(
-            MutationCommand::AttemptStart(AttemptStartCommand::new(4, run.id(), attempt_id, 1_500)),
+            MutationCommand::AttemptStart(AttemptStartCommand::new(
+                4,
+                run.id(),
+                attempt_id,
+                1_500,
+                actionqueue_core::mutation::LeaseFence::new("test".into(), 1),
+                None,
+            )),
             DurabilityPolicy::Immediate,
         )
         .expect("attempt-start command should succeed");
@@ -688,7 +695,7 @@ fn f002_t_p1_authority_accepts_attempt_start_and_appends_canonical_event() {
     assert_eq!(outcome.sequence(), 4);
     assert!(matches!(
         outcome.applied(),
-        AppliedMutation::AttemptStart { run_id, attempt_id: applied_attempt_id }
+        AppliedMutation::AttemptStart { run_id, attempt_id: applied_attempt_id, .. }
             if *run_id == run.id() && *applied_attempt_id == attempt_id
     ));
 
@@ -756,8 +763,20 @@ fn f002_t_p2_authority_attempt_finish_converges_with_replay_attempt_lineage() {
         .expect("ready->leased should succeed");
     let _ = authority
         .submit_command(
-            MutationCommand::RunStateTransition(RunStateTransitionCommand::new(
+            MutationCommand::LeaseAcquire(LeaseAcquireCommand::new(
                 5,
+                run.id(),
+                "fixture",
+                2000,
+                1000,
+            )),
+            DurabilityPolicy::Immediate,
+        )
+        .unwrap();
+    let _ = authority
+        .submit_command(
+            MutationCommand::RunStateTransition(RunStateTransitionCommand::new(
+                6,
                 run.id(),
                 RunState::Leased,
                 RunState::Running,
@@ -768,7 +787,25 @@ fn f002_t_p2_authority_attempt_finish_converges_with_replay_attempt_lineage() {
         .expect("leased->running should succeed");
     let _ = authority
         .submit_command(
-            MutationCommand::AttemptStart(AttemptStartCommand::new(6, run.id(), attempt_id, 1_100)),
+            MutationCommand::AttemptStart(AttemptStartCommand::new(
+                7,
+                run.id(),
+                attempt_id,
+                1_100,
+                authority
+                    .projection()
+                    .get_lease_metadata(&run.id())
+                    .map(|l| {
+                        actionqueue_core::mutation::LeaseFence::new(
+                            l.owner().into(),
+                            l.granted_at_sequence(),
+                        )
+                    })
+                    .unwrap_or_else(|| {
+                        actionqueue_core::mutation::LeaseFence::new("missing".into(), 0)
+                    }),
+                authority.projection().pending_resume(run.id()).map(|c| c.context_id),
+            )),
             DurabilityPolicy::Immediate,
         )
         .expect("attempt start should succeed");
@@ -776,7 +813,7 @@ fn f002_t_p2_authority_attempt_finish_converges_with_replay_attempt_lineage() {
     let attempt_finish = authority
         .submit_command(
             MutationCommand::AttemptFinish(AttemptFinishCommand::new(
-                7,
+                8,
                 run.id(),
                 attempt_id,
                 AttemptOutcome::failure("synthetic failure"),
@@ -785,7 +822,7 @@ fn f002_t_p2_authority_attempt_finish_converges_with_replay_attempt_lineage() {
             DurabilityPolicy::Immediate,
         )
         .expect("attempt finish should succeed");
-    assert_eq!(attempt_finish.sequence(), 7);
+    assert_eq!(attempt_finish.sequence(), 8);
     assert!(matches!(
         attempt_finish.applied(),
         AppliedMutation::AttemptFinish {
@@ -810,7 +847,7 @@ fn f002_t_p2_authority_attempt_finish_converges_with_replay_attempt_lineage() {
 
     let replayed_instance =
         replayed.get_run_instance(&run.id()).expect("replayed run instance should exist");
-    assert_eq!(replayed.latest_sequence(), 7);
+    assert_eq!(replayed.latest_sequence(), 8);
     assert_eq!(replayed_instance.attempt_count(), projected_instance.attempt_count());
     assert_eq!(replayed_instance.current_attempt_id(), projected_instance.current_attempt_id());
 }
@@ -866,8 +903,20 @@ fn p6_017_t_p1_authority_attempt_finish_timeout_persists_in_projection_and_repla
         .expect("ready->leased should succeed");
     let _ = authority
         .submit_command(
-            MutationCommand::RunStateTransition(RunStateTransitionCommand::new(
+            MutationCommand::LeaseAcquire(LeaseAcquireCommand::new(
                 5,
+                run.id(),
+                "fixture",
+                2000,
+                1000,
+            )),
+            DurabilityPolicy::Immediate,
+        )
+        .unwrap();
+    let _ = authority
+        .submit_command(
+            MutationCommand::RunStateTransition(RunStateTransitionCommand::new(
+                6,
                 run.id(),
                 RunState::Leased,
                 RunState::Running,
@@ -878,7 +927,25 @@ fn p6_017_t_p1_authority_attempt_finish_timeout_persists_in_projection_and_repla
         .expect("leased->running should succeed");
     let _ = authority
         .submit_command(
-            MutationCommand::AttemptStart(AttemptStartCommand::new(6, run.id(), attempt_id, 1_100)),
+            MutationCommand::AttemptStart(AttemptStartCommand::new(
+                7,
+                run.id(),
+                attempt_id,
+                1_100,
+                authority
+                    .projection()
+                    .get_lease_metadata(&run.id())
+                    .map(|l| {
+                        actionqueue_core::mutation::LeaseFence::new(
+                            l.owner().into(),
+                            l.granted_at_sequence(),
+                        )
+                    })
+                    .unwrap_or_else(|| {
+                        actionqueue_core::mutation::LeaseFence::new("missing".into(), 0)
+                    }),
+                authority.projection().pending_resume(run.id()).map(|c| c.context_id),
+            )),
             DurabilityPolicy::Immediate,
         )
         .expect("attempt start should succeed");
@@ -886,7 +953,7 @@ fn p6_017_t_p1_authority_attempt_finish_timeout_persists_in_projection_and_repla
     let timeout_finish = {
         let __finish_cmd =
             actionqueue_engine::scheduler::attempt_finish::build_attempt_finish_command(
-                7,
+                8,
                 run.id(),
                 attempt_id,
                 &ExecutorResponse::Timeout { timeout_secs: 9 },
@@ -1050,6 +1117,8 @@ fn f002_t_n1_unknown_run_attempt_command_is_rejected_pre_append() {
             missing_run_id,
             attempt_id,
             1_000,
+            actionqueue_core::mutation::LeaseFence::new("test".into(), 1),
+            None,
         )),
         DurabilityPolicy::Immediate,
     );

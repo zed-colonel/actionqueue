@@ -6,7 +6,7 @@
 # increments `package_revision`; normative change requires a contract amendment.
 schema_version: 1
 package: conformance/aq-cont-1
-package_revision: 4
+package_revision: 5
 status: scaffold
 contract: AQ-CONT-1
 contract_revision: STACK-2026-07-20-CLEAN-1
@@ -97,6 +97,14 @@ fixtures:
   sha256: 15bb1d8266f6e8f53f24340a904ca3637ebbb43886b040b8370645889e0897eb
   variants: [replay, crash, race]
   introduced_by: AQ-06
+- id: AQ-CF-RESUME-001
+  title: Projection v5 known-answer vector
+  invariants: [AQ-H2, AQ-H9, AQ-H13]
+  driver: embedded
+  path: projection-v5-vector.json
+  sha256: 77084e88c8c26c94ede01e331fd0d054d1a73e8f346df4fb0e6cbf8c67ebbc5e
+  variants: [replay, crash, race]
+  introduced_by: AQ-07
 # Black-box drivers. Intentionally empty at AQ-01; populated by AQ-13.
 drivers: []
 acceptance_matrices:
@@ -183,6 +191,19 @@ continuations:
   - tests/acceptance/wait_crash.rs
   developmental_cases: [AQ-DD-006, AQ-DD-012]
   deferred:
-  - accepted_start_delivery_consumption_AQ_07
   - handler_disposition_cutover_AQ_08
   - physical_WAL_truncation
+
+resume_assignment:
+  introduced_by: AQ-07
+  wal_kinds: [19, 20]
+  wal_record_schema: 2
+  historical_schema: 1
+  snapshot_schema: 5
+  projection_version: 5
+  canonical_vector: projection-v5-vector.json
+  tests:
+  - crates/actionqueue-core/tests/data_integrity.rs
+  - tests/acceptance/checkpoint_resume.rs
+  - tests/acceptance/resume_context_crash.rs
+  developmental_cases: [AQ-DD-006, AQ-DD-011, AQ-DD-012]

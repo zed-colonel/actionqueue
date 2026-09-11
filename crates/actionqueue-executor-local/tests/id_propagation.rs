@@ -57,6 +57,8 @@ fn handler_receives_exact_run_and_attempt_ids_for_initial_attempt() {
         AttemptRunner::with_timer(handler, FixedTimer { elapsed: Duration::from_millis(2) });
 
     let request = ExecutorRequest {
+        resume_context: None,
+        causal_context: None,
         run_id,
         attempt_id,
         payload: vec![1, 2, 3],
@@ -93,6 +95,8 @@ fn retried_attempt_keeps_run_id_and_uses_provided_attempt_id_without_regeneratio
         TaskConstraints::new(3, Some(30), None).expect("test constraints should be valid");
 
     let first_request = ExecutorRequest {
+        resume_context: None,
+        causal_context: None,
         run_id: stable_run_id,
         attempt_id: first_attempt,
         payload: vec![],
@@ -103,6 +107,8 @@ fn retried_attempt_keeps_run_id_and_uses_provided_attempt_id_without_regeneratio
         cancellation_context: None,
     };
     let second_request = ExecutorRequest {
+        resume_context: None,
+        causal_context: None,
         run_id: stable_run_id,
         attempt_id: second_attempt,
         payload: vec![],

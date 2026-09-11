@@ -65,7 +65,7 @@ fn running_scoped(a:&mut s::Authority,n:u64,key:Option<&str>,hold:bool,tenant:Op
     transition(a, run, RunState::Running, 13);
     commit!(
         a,
-        MutationCommand::AttemptStart(AttemptStartCommand::new(seq(a), run, AttemptId::new(), 13))
+        MutationCommand::AttemptStart(AttemptStartCommand::new(seq(a), run, AttemptId::new(), 13, a.projection().get_lease_metadata(&run).map(|l| actionqueue_core::mutation::LeaseFence::new(l.owner().into(), l.granted_at_sequence())).unwrap_or_else(|| actionqueue_core::mutation::LeaseFence::new("missing".into(), 0)), a.projection().pending_resume(run).map(|c| c.context_id)))
     );
     run
 }

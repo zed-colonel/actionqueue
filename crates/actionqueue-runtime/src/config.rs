@@ -7,6 +7,8 @@ use std::time::Duration;
 /// Configuration for the ActionQueue runtime.
 #[derive(Debug, Clone)]
 pub struct RuntimeConfig {
+    /// Limits for newly committed continuation data.
+    pub continuation_limits: actionqueue_core::limits::ContinuationLimits,
     /// Finite creation quotas for resident signal identities, bytes and pins.
     pub signal_limits: actionqueue_core::limits::SignalLimits,
     /// Minimum age/window for explicit retirement. Never runs automatically.
@@ -50,6 +52,7 @@ pub enum BackoffStrategyConfig {
 impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
+            continuation_limits: Default::default(),
             signal_limits: Default::default(),
             signal_retention: Default::default(),
             admission_limits: actionqueue_core::limits::AdmissionLimits::default(),

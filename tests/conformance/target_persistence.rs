@@ -121,7 +121,7 @@ fn concurrent_initializers_publish_one_identity() {
 }
 #[test]
 fn malformed_future_and_unsupported_manifests_never_write() {
-    for mutation in ["schema", "feature", "extra", "malformed"] {
+    for mutation in ["schema", "feature", "extra", "malformed", "snapshot-v4", "projection-v4"] {
         let dir = tempfile::tempdir().unwrap();
         drop(init(dir.path()));
         let path = dir.path().join("manifest.json");
@@ -129,6 +129,8 @@ fn malformed_future_and_unsupported_manifests_never_write() {
             serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         match mutation {
             "schema" => value["wal_format"] = 99.into(),
+            "snapshot-v4" => value["snapshot_schema"] = 4.into(),
+            "projection-v4" => value["projection_version"] = 4.into(),
             "feature" => value["features"] = serde_json::json!(["unknown"]),
             "extra" => value["metadata"] = serde_json::json!({}),
             _ => {}
@@ -145,6 +147,7 @@ fn malformed_future_and_unsupported_manifests_never_write() {
         let before = tree(dir.path());
         assert!(open_store(dir.path(), OpenOptions::Initialize { features: vec![] }).is_err());
         assert!(inspect_store(dir.path()).is_err());
+        assert!(open_store(dir.path(), OpenOptions::ReadWrite).is_err());
         assert_eq!(tree(dir.path()), before);
     }
 }
@@ -1091,7 +1094,7 @@ fn malformed_backup_descriptors_refuse_before_destination_creation() {
 #[test]
 fn canonical_projection_matches_independent_sha256_vector() {
     let vector: serde_json::Value =
-        serde_json::from_str(include_str!("../../conformance/aq-cont-1/projection-v4-vector.json"))
+        serde_json::from_str(include_str!("../../conformance/aq-cont-1/projection-v5-vector.json"))
             .unwrap();
     let dir = tempfile::tempdir().unwrap();
     let session = init(dir.path());

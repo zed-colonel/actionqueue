@@ -145,6 +145,8 @@ fn external_cancellation_context_reaches_handler() {
     ctx.cancel();
 
     let request = ExecutorRequest {
+        resume_context: None,
+        causal_context: None,
         run_id: RunId::new(),
         attempt_id: AttemptId::new(),
         payload: vec![],

@@ -1624,11 +1624,6 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         let available_slots = self.max_concurrent.saturating_sub(self.in_flight.len());
         let mut dispatched = 0usize;
         for run in selection.into_selected() {
-            // Accepted-start wake delivery belongs to AQ-07. Never call a legacy handler
-            // with a continuation whose input would otherwise be silently discarded.
-            if self.authority.projection().waits().pending_wait(run.id()).is_some() {
-                continue;
-            }
             if dispatched >= available_slots {
                 break;
             }
@@ -1744,8 +1739,17 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
                     let runner = Arc::clone(&self.runner);
                     let result_tx = self.result_tx.clone();
 
+                    let resume_context =
+                        self.authority.projection().attempt_resume(run_id, attempt_id);
+                    let causal_context = self
+                        .authority
+                        .projection()
+                        .task_admission(task_id)
+                        .map(|a| a.request().causal_context().clone());
                     tokio::task::spawn_blocking(move || {
                         let request = ExecutorRequest {
+                            resume_context,
+                            causal_context,
                             run_id,
                             attempt_id,
                             payload,
@@ -1866,7 +1870,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         // Record attempt start
         let attempt_id = AttemptId::new();
         let seq = self.next_sequence()?;
-        let _ = self
+        let started = self
             .authority
             .submit_command(
                 MutationCommand::AttemptStart(AttemptStartCommand::new(
@@ -1874,11 +1878,32 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
                     run.id(),
                     attempt_id,
                     current_time,
+                    {
+                        let l = self
+                            .authority
+                            .projection()
+                            .get_lease_metadata(&run.id())
+                            .expect("acquired lease");
+                        actionqueue_core::mutation::LeaseFence::new(
+                            l.owner().into(),
+                            l.granted_at_sequence(),
+                        )
+                    },
+                    self.authority.projection().pending_resume(run.id()).map(|c| c.context_id),
                 )),
                 DurabilityPolicy::Immediate,
             )
             .map_err(DispatchError::Authority)?;
 
+        if !matches!(
+            started.applied(),
+            actionqueue_core::mutation::AppliedMutation::AttemptStart { .. }
+        ) {
+            return Err(DispatchError::StateInconsistency {
+                run_id: run.id(),
+                context: "attempt start was already accepted; worker was not spawned".into(),
+            });
+        }
         let max_attempts = constraints.max_attempts();
         let attempt_number =
             run.attempt_count().checked_add(1).ok_or(DispatchError::SequenceOverflow)?;

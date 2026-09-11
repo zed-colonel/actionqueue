@@ -262,20 +262,37 @@ impl RunStateTransitionCommand {
 }
 
 /// Semantic command for attempt-start lifecycle mutation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AttemptStartCommand {
     sequence: u64,
     run_id: RunId,
     attempt_id: AttemptId,
     timestamp: u64,
+    fence: LeaseFence,
+    resume: Option<crate::continuation::ResumeContextId>,
 }
 
 impl AttemptStartCommand {
     /// Creates a new attempt-start command.
-    pub fn new(sequence: u64, run_id: RunId, attempt_id: AttemptId, timestamp: u64) -> Self {
-        Self { sequence, run_id, attempt_id, timestamp }
+    pub fn new(
+        sequence: u64,
+        run_id: RunId,
+        attempt_id: AttemptId,
+        timestamp: u64,
+        fence: LeaseFence,
+        resume: Option<crate::continuation::ResumeContextId>,
+    ) -> Self {
+        Self { sequence, run_id, attempt_id, timestamp, fence, resume }
     }
 
+    /// Expected current lease fence.
+    pub fn fence(&self) -> &LeaseFence {
+        &self.fence
+    }
+    /// Expected pending or retry-eligible wake.
+    pub fn resume(&self) -> Option<crate::continuation::ResumeContextId> {
+        self.resume
+    }
     /// Returns the expected WAL sequence.
     pub fn sequence(&self) -> u64 {
         self.sequence
@@ -491,9 +508,19 @@ pub struct AttemptFinishCommand {
     attempt_id: AttemptId,
     outcome: AttemptOutcome,
     timestamp: u64,
+    origin: crate::continuation::AttemptFinishOrigin,
 }
 
 impl AttemptFinishCommand {
+    /// Marks closure as restart recovery rather than executor output.
+    pub fn with_recovery_origin(mut self) -> Self {
+        self.origin = crate::continuation::AttemptFinishOrigin::Recovery;
+        self
+    }
+    /// Durable closure origin.
+    pub fn origin(&self) -> crate::continuation::AttemptFinishOrigin {
+        self.origin
+    }
     /// Creates a new attempt-finish command.
     pub fn new(
         sequence: u64,
@@ -502,7 +529,7 @@ impl AttemptFinishCommand {
         outcome: AttemptOutcome,
         timestamp: u64,
     ) -> Self {
-        Self { sequence, run_id, attempt_id, outcome, timestamp }
+        Self { sequence, run_id, attempt_id, outcome, timestamp, origin: Default::default() }
     }
 
     /// Returns the expected WAL sequence.
@@ -816,10 +843,21 @@ pub enum AppliedMutation {
     },
     /// Attempt start was durably applied.
     AttemptStart {
+        /// Immutable continuation assignment.
+        assignment: Option<crate::continuation::ResumeAssignment>,
         /// Run that owns the attempt.
         run_id: RunId,
         /// Attempt that started.
         attempt_id: AttemptId,
+    },
+    /// An exact duplicate start; never spawn another worker.
+    AlreadyStarted {
+        /// Run owning the attempt.
+        run_id: RunId,
+        /// Original accepted attempt.
+        attempt_id: AttemptId,
+        /// Original assignment.
+        assignment: Option<crate::continuation::ResumeAssignment>,
     },
     /// Attempt finish was durably applied.
     AttemptFinish {

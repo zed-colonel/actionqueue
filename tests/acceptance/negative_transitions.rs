@@ -225,6 +225,19 @@ fn duplicate_attempt_finished_is_rejected() {
         )
         .expect("Ready -> Leased should succeed");
 
+    let grant = next_seq(&authority);
+    let _ = authority
+        .submit_command(
+            MutationCommand::LeaseAcquire(actionqueue_core::mutation::LeaseAcquireCommand::new(
+                grant,
+                run_id,
+                "fixture",
+                u64::MAX,
+                0,
+            )),
+            DurabilityPolicy::Immediate,
+        )
+        .unwrap();
     // Leased -> Running.
     let running_seq = next_seq(&authority);
     let _ = authority
@@ -247,7 +260,23 @@ fn duplicate_attempt_finished_is_rejected() {
     let _ = authority
         .submit_command(
             MutationCommand::AttemptStart(AttemptStartCommand::new(
-                start_seq, run_id, attempt_id, start_seq,
+                start_seq,
+                run_id,
+                attempt_id,
+                start_seq,
+                authority
+                    .projection()
+                    .get_lease_metadata(&run_id)
+                    .map(|l| {
+                        actionqueue_core::mutation::LeaseFence::new(
+                            l.owner().into(),
+                            l.granted_at_sequence(),
+                        )
+                    })
+                    .unwrap_or_else(|| {
+                        actionqueue_core::mutation::LeaseFence::new("missing".into(), 0)
+                    }),
+                authority.projection().pending_resume(run_id).map(|c| c.context_id),
             )),
             DurabilityPolicy::Immediate,
         )

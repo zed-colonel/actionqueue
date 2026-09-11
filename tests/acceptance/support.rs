@@ -209,6 +209,30 @@ pub fn promote_task_run_to_ready_via_authority(data_dir: &Path, task_id: TaskId)
     promote_single_run_to_ready_via_authority(data_dir, task_id)
 }
 
+fn ensure_fixture_lease<W: actionqueue_storage::wal::writer::WalWriter>(
+    authority: &mut actionqueue_storage::mutation::StorageMutationAuthority<
+        W,
+        actionqueue_storage::recovery::reducer::ReplayReducer,
+    >,
+    run_id: RunId,
+) {
+    if authority.projection().get_lease(&run_id).is_none() {
+        let sequence = next_sequence(authority.projection().latest_sequence());
+        let _ = authority
+            .submit_command(
+                MutationCommand::LeaseAcquire(LeaseAcquireCommand::new(
+                    sequence,
+                    run_id,
+                    "fixture",
+                    u64::MAX,
+                    0,
+                )),
+                DurabilityPolicy::Immediate,
+            )
+            .unwrap();
+    }
+}
+
 /// Submits a deterministic run-state transition through storage mutation authority.
 pub fn transition_run_state_via_authority(
     data_dir: &Path,
@@ -223,6 +247,26 @@ pub fn transition_run_state_via_authority(
         recovery.projection,
     );
 
+    if to == RunState::Leased {
+        if let Some((owner, expiry)) = authority.projection().get_lease(&run_id).cloned() {
+            if owner == "fixture" {
+                let sequence = next_sequence(authority.projection().latest_sequence());
+                let _ = authority
+                    .submit_command(
+                        MutationCommand::LeaseRelease(
+                            actionqueue_core::mutation::LeaseReleaseCommand::new(
+                                sequence, run_id, owner, expiry, sequence,
+                            ),
+                        ),
+                        DurabilityPolicy::Immediate,
+                    )
+                    .unwrap();
+            }
+        }
+    }
+    if to == RunState::Running {
+        ensure_fixture_lease(&mut authority, run_id);
+    }
     let sequence = next_sequence(authority.projection().latest_sequence());
     let _ = authority
         .submit_command(
@@ -413,6 +457,21 @@ pub fn lease_acquire_for_run_via_authority(
         recovery.projection,
     );
 
+    if let Some((existing, expiry)) = authority.projection().get_lease(&run_id).cloned() {
+        if existing == "fixture" {
+            let sequence = next_sequence(authority.projection().latest_sequence());
+            let _ = authority
+                .submit_command(
+                    MutationCommand::LeaseRelease(
+                        actionqueue_core::mutation::LeaseReleaseCommand::new(
+                            sequence, run_id, existing, expiry, sequence,
+                        ),
+                    ),
+                    DurabilityPolicy::Immediate,
+                )
+                .unwrap();
+        }
+    }
     let sequence = next_sequence(authority.projection().latest_sequence());
     let _ = authority
         .submit_command(
@@ -566,6 +625,7 @@ pub fn execute_attempt_outcome_sequence_via_authority(
             )
             .expect("ready -> leased should succeed");
 
+        ensure_fixture_lease(&mut authority, run_id);
         let running_sequence = next_sequence(authority.projection().latest_sequence());
         let _ = authority
             .submit_command(
@@ -580,10 +640,7 @@ pub fn execute_attempt_outcome_sequence_via_authority(
             )
             .expect("leased -> running should succeed");
 
-        let attempt_suffix = u128::from(attempt_number);
-        let attempt_id =
-            AttemptId::from_str(&format!("00000000-0000-0000-0000-{attempt_suffix:012x}"))
-                .expect("deterministic attempt id should parse");
+        let attempt_id = AttemptId::new();
         let attempt_start_sequence = next_sequence(authority.projection().latest_sequence());
         let _ = authority
             .submit_command(
@@ -592,6 +649,19 @@ pub fn execute_attempt_outcome_sequence_via_authority(
                     run_id,
                     attempt_id,
                     attempt_start_sequence,
+                    authority
+                        .projection()
+                        .get_lease_metadata(&run_id)
+                        .map(|l| {
+                            actionqueue_core::mutation::LeaseFence::new(
+                                l.owner().into(),
+                                l.granted_at_sequence(),
+                            )
+                        })
+                        .unwrap_or_else(|| {
+                            actionqueue_core::mutation::LeaseFence::new("missing".into(), 0)
+                        }),
+                    authority.projection().pending_resume(run_id).map(|c| c.context_id),
                 )),
                 DurabilityPolicy::Immediate,
             )
@@ -959,6 +1029,7 @@ pub fn complete_once_run_via_authority(data_dir: &Path, task_id: TaskId) -> Comp
         )
         .expect("ready -> leased should succeed");
 
+    ensure_fixture_lease(&mut authority, run_id);
     let running_sequence = next_sequence(authority.projection().latest_sequence());
     let _ = authority
         .submit_command(
@@ -983,6 +1054,19 @@ pub fn complete_once_run_via_authority(data_dir: &Path, task_id: TaskId) -> Comp
                 run_id,
                 attempt_id,
                 attempt_start_sequence,
+                authority
+                    .projection()
+                    .get_lease_metadata(&run_id)
+                    .map(|l| {
+                        actionqueue_core::mutation::LeaseFence::new(
+                            l.owner().into(),
+                            l.granted_at_sequence(),
+                        )
+                    })
+                    .unwrap_or_else(|| {
+                        actionqueue_core::mutation::LeaseFence::new("missing".into(), 0)
+                    }),
+                authority.projection().pending_resume(run_id).map(|c| c.context_id),
             )),
             DurabilityPolicy::Immediate,
         )
@@ -1105,6 +1189,7 @@ pub fn complete_all_task_runs_via_authority(
             )
             .expect("ready -> leased should succeed");
 
+        ensure_fixture_lease(&mut authority, run_id);
         let running_sequence = next_sequence(authority.projection().latest_sequence());
         let _ = authority
             .submit_command(
@@ -1131,6 +1216,19 @@ pub fn complete_all_task_runs_via_authority(
                     run_id,
                     attempt_id,
                     attempt_start_sequence,
+                    authority
+                        .projection()
+                        .get_lease_metadata(&run_id)
+                        .map(|l| {
+                            actionqueue_core::mutation::LeaseFence::new(
+                                l.owner().into(),
+                                l.granted_at_sequence(),
+                            )
+                        })
+                        .unwrap_or_else(|| {
+                            actionqueue_core::mutation::LeaseFence::new("missing".into(), 0)
+                        }),
+                    authority.projection().pending_resume(run_id).map(|c| c.context_id),
                 )),
                 DurabilityPolicy::Immediate,
             )
@@ -1463,7 +1561,23 @@ pub fn submit_attempt_start_via_authority(
     let _ = authority
         .submit_command(
             MutationCommand::AttemptStart(AttemptStartCommand::new(
-                sequence, run_id, attempt_id, sequence,
+                sequence,
+                run_id,
+                attempt_id,
+                sequence,
+                authority
+                    .projection()
+                    .get_lease_metadata(&run_id)
+                    .map(|l| {
+                        actionqueue_core::mutation::LeaseFence::new(
+                            l.owner().into(),
+                            l.granted_at_sequence(),
+                        )
+                    })
+                    .unwrap_or_else(|| {
+                        actionqueue_core::mutation::LeaseFence::new("missing".into(), 0)
+                    }),
+                authority.projection().pending_resume(run_id).map(|c| c.context_id),
             )),
             DurabilityPolicy::Immediate,
         )

@@ -42,6 +42,14 @@ impl WalEvent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum WalEventType {
+    /// Lease-fenced schema-2 start with atomic continuation assignment.
+    AcceptedAttemptStarted {
+        record: crate::recovery::resume::AcceptedStart,
+    },
+    /// Schema-2 finish with structural recovery attribution.
+    AttemptClosed {
+        record: crate::recovery::resume::AttemptClosure,
+    },
     WaitEstablished {
         record: crate::mutation::wait::WaitRecord,
     },

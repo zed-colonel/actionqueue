@@ -199,6 +199,7 @@ fn target_types_round_trip_and_validate_on_decode() {
     };
     round(checkpoint.clone());
     round(ResumeContext {
+        context_id: ResumeContextId(1),
         checkpoint: Some(checkpoint),
         wake: WakeReason::Deadline { wait_id: wait.wait_id(), deadline_at: 42 },
         resumed_at: 43,

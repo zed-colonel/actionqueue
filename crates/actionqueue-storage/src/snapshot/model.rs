@@ -22,6 +22,9 @@ use crate::recovery::reducer::{AttemptHistoryEntry, LeaseMetadata, RunStateHisto
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct Snapshot {
+    pub dispatch_sequences: Vec<(RunId, u64)>,
+    pub administrative_wakes: Vec<crate::recovery::resume::AdministrativeWake>,
+    pub administrative_pending: Vec<(RunId, actionqueue_core::continuation::ResumeContextId)>,
     pub waits: Vec<crate::mutation::wait::WaitRecord>,
     pub cancellations: Vec<crate::mutation::wait::CancelRecord>,
     pub pending_resumes: Vec<(RunId, actionqueue_core::ids::WaitId)>,
@@ -196,6 +199,8 @@ impl From<RunStateHistoryEntry> for SnapshotRunStateHistoryEntry {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct SnapshotAttemptHistoryEntry {
+    pub accepted_start: Option<crate::recovery::resume::AcceptedStart>,
+    pub finish_origin: actionqueue_core::continuation::AttemptFinishOrigin,
     /// The attempt identifier.
     pub attempt_id: actionqueue_core::ids::AttemptId,
     /// The timestamp when the attempt started.
@@ -214,6 +219,8 @@ pub struct SnapshotAttemptHistoryEntry {
 impl From<AttemptHistoryEntry> for SnapshotAttemptHistoryEntry {
     fn from(entry: AttemptHistoryEntry) -> Self {
         Self {
+            accepted_start: entry.accepted_start.clone(),
+            finish_origin: entry.finish_origin,
             attempt_id: entry.attempt_id,
             started_at: entry.started_at,
             finished_at: entry.finished_at,

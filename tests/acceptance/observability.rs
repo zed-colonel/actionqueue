@@ -461,10 +461,7 @@ async fn observability_api_identity_and_lifecycle_parity_are_operator_reconstruc
             task_id: task_id_b.to_string(),
             expected_state: "Failed",
             expected_block_reason: Some("terminal"),
-            expected_attempt_ids: vec![
-                "00000000-0000-0000-0000-000000000001".to_string(),
-                "00000000-0000-0000-0000-000000000002".to_string(),
-            ],
+            expected_attempt_ids: failed.attempt_ids.iter().map(ToString::to_string).collect(),
             expected_attempt_results: vec!["Failure".to_string(), "Failure".to_string()],
             expected_state_history: history_truth(&[
                 (None, "Scheduled"),
@@ -945,10 +942,7 @@ async fn observability_restart_preserves_runs_run_get_stats_and_metrics_parity()
             task_id: task_failed.to_string(),
             expected_state: "Failed",
             expected_block_reason: Some("terminal"),
-            expected_attempt_ids: vec![
-                "00000000-0000-0000-0000-000000000001".to_string(),
-                "00000000-0000-0000-0000-000000000002".to_string(),
-            ],
+            expected_attempt_ids: failed.attempt_ids.iter().map(ToString::to_string).collect(),
             expected_attempt_results: vec!["Failure".to_string(), "Failure".to_string()],
             expected_state_history: history_truth(&[
                 (None, "Scheduled"),

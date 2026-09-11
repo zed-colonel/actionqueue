@@ -260,6 +260,23 @@ fn crash_during_state_transitions_running() {
             .expect("Ready->Leased should succeed");
 
         // Leased -> Running
+        if authority.projection().get_lease(&run_id).is_none() {
+            let seq = next_seq(&authority);
+            let _ = authority
+                .submit_command(
+                    MutationCommand::LeaseAcquire(
+                        actionqueue_core::mutation::LeaseAcquireCommand::new(
+                            seq,
+                            run_id,
+                            "fixture",
+                            u64::MAX,
+                            0,
+                        ),
+                    ),
+                    DurabilityPolicy::Immediate,
+                )
+                .unwrap();
+        }
         let seq = next_seq(&authority);
         let _ = authority
             .submit_command(
@@ -301,7 +318,23 @@ fn crash_during_state_transitions_running() {
         let _ = authority
             .submit_command(
                 MutationCommand::AttemptStart(AttemptStartCommand::new(
-                    seq, run_id, attempt_id, seq,
+                    seq,
+                    run_id,
+                    attempt_id,
+                    seq,
+                    authority
+                        .projection()
+                        .get_lease_metadata(&run_id)
+                        .map(|l| {
+                            actionqueue_core::mutation::LeaseFence::new(
+                                l.owner().into(),
+                                l.granted_at_sequence(),
+                            )
+                        })
+                        .unwrap_or_else(|| {
+                            actionqueue_core::mutation::LeaseFence::new("missing".into(), 0)
+                        }),
+                    authority.projection().pending_resume(run_id).map(|c| c.context_id),
                 )),
                 DurabilityPolicy::Immediate,
             )
@@ -422,6 +455,23 @@ fn crash_with_mixed_terminal_and_active_runs() {
                 (RunState::Ready, RunState::Leased),
                 (RunState::Leased, RunState::Running),
             ] {
+                if to == RunState::Running {
+                    let seq = next_seq(auth);
+                    let _ = auth
+                        .submit_command(
+                            MutationCommand::LeaseAcquire(
+                                actionqueue_core::mutation::LeaseAcquireCommand::new(
+                                    seq,
+                                    rid,
+                                    "fixture",
+                                    u64::MAX,
+                                    0,
+                                ),
+                            ),
+                            DurabilityPolicy::Immediate,
+                        )
+                        .unwrap();
+                }
                 let s = next_seq(auth);
                 let _ = auth
                     .submit_command(
@@ -441,7 +491,25 @@ fn crash_with_mixed_terminal_and_active_runs() {
             let seq = next_seq(&authority);
             let _ = authority
                 .submit_command(
-                    MutationCommand::AttemptStart(AttemptStartCommand::new(seq, run_a, aid, seq)),
+                    MutationCommand::AttemptStart(AttemptStartCommand::new(
+                        seq,
+                        run_a,
+                        aid,
+                        seq,
+                        authority
+                            .projection()
+                            .get_lease_metadata(&run_a)
+                            .map(|l| {
+                                actionqueue_core::mutation::LeaseFence::new(
+                                    l.owner().into(),
+                                    l.granted_at_sequence(),
+                                )
+                            })
+                            .unwrap_or_else(|| {
+                                actionqueue_core::mutation::LeaseFence::new("missing".into(), 0)
+                            }),
+                        authority.projection().pending_resume(run_a).map(|c| c.context_id),
+                    )),
                     DurabilityPolicy::Immediate,
                 )
                 .expect("attempt start A");
@@ -480,7 +548,25 @@ fn crash_with_mixed_terminal_and_active_runs() {
             let seq = next_seq(&authority);
             let _ = authority
                 .submit_command(
-                    MutationCommand::AttemptStart(AttemptStartCommand::new(seq, run_b, aid, seq)),
+                    MutationCommand::AttemptStart(AttemptStartCommand::new(
+                        seq,
+                        run_b,
+                        aid,
+                        seq,
+                        authority
+                            .projection()
+                            .get_lease_metadata(&run_b)
+                            .map(|l| {
+                                actionqueue_core::mutation::LeaseFence::new(
+                                    l.owner().into(),
+                                    l.granted_at_sequence(),
+                                )
+                            })
+                            .unwrap_or_else(|| {
+                                actionqueue_core::mutation::LeaseFence::new("missing".into(), 0)
+                            }),
+                        authority.projection().pending_resume(run_b).map(|c| c.context_id),
+                    )),
                     DurabilityPolicy::Immediate,
                 )
                 .expect("attempt start B");
@@ -553,7 +639,23 @@ fn crash_with_mixed_terminal_and_active_runs() {
         let _ = authority
             .submit_command(
                 MutationCommand::AttemptStart(AttemptStartCommand::new(
-                    seq, run_c, attempt_id, seq,
+                    seq,
+                    run_c,
+                    attempt_id,
+                    seq,
+                    authority
+                        .projection()
+                        .get_lease_metadata(&run_c)
+                        .map(|l| {
+                            actionqueue_core::mutation::LeaseFence::new(
+                                l.owner().into(),
+                                l.granted_at_sequence(),
+                            )
+                        })
+                        .unwrap_or_else(|| {
+                            actionqueue_core::mutation::LeaseFence::new("missing".into(), 0)
+                        }),
+                    authority.projection().pending_resume(run_c).map(|c| c.context_id),
                 )),
                 DurabilityPolicy::Immediate,
             )
@@ -706,6 +808,23 @@ fn sequential_crashes_with_incremental_progress() {
             )
             .expect("Ready->Leased");
 
+        if authority.projection().get_lease(&run_id).is_none() {
+            let seq = next_seq(&authority);
+            let _ = authority
+                .submit_command(
+                    MutationCommand::LeaseAcquire(
+                        actionqueue_core::mutation::LeaseAcquireCommand::new(
+                            seq,
+                            run_id,
+                            "fixture",
+                            u64::MAX,
+                            0,
+                        ),
+                    ),
+                    DurabilityPolicy::Immediate,
+                )
+                .unwrap();
+        }
         let seq = next_seq(&authority);
         let _ = authority
             .submit_command(
@@ -742,7 +861,23 @@ fn sequential_crashes_with_incremental_progress() {
         let _ = authority
             .submit_command(
                 MutationCommand::AttemptStart(AttemptStartCommand::new(
-                    seq, run_id, attempt_id, seq,
+                    seq,
+                    run_id,
+                    attempt_id,
+                    seq,
+                    authority
+                        .projection()
+                        .get_lease_metadata(&run_id)
+                        .map(|l| {
+                            actionqueue_core::mutation::LeaseFence::new(
+                                l.owner().into(),
+                                l.granted_at_sequence(),
+                            )
+                        })
+                        .unwrap_or_else(|| {
+                            actionqueue_core::mutation::LeaseFence::new("missing".into(), 0)
+                        }),
+                    authority.projection().pending_resume(run_id).map(|c| c.context_id),
                 )),
                 DurabilityPolicy::Immediate,
             )
@@ -921,6 +1056,23 @@ fn crash_during_retry_wait_preserves_state() {
             (RunState::Ready, RunState::Leased),
             (RunState::Leased, RunState::Running),
         ] {
+            if to == RunState::Running && authority.projection().get_lease(&run_id).is_none() {
+                let seq = next_seq(&authority);
+                let _ = authority
+                    .submit_command(
+                        MutationCommand::LeaseAcquire(
+                            actionqueue_core::mutation::LeaseAcquireCommand::new(
+                                seq,
+                                run_id,
+                                "fixture",
+                                u64::MAX,
+                                0,
+                            ),
+                        ),
+                        DurabilityPolicy::Immediate,
+                    )
+                    .unwrap();
+            }
             let seq = next_seq(&authority);
             let _ = authority
                 .submit_command(
@@ -937,7 +1089,23 @@ fn crash_during_retry_wait_preserves_state() {
         let _ = authority
             .submit_command(
                 MutationCommand::AttemptStart(AttemptStartCommand::new(
-                    seq, run_id, attempt_1, seq,
+                    seq,
+                    run_id,
+                    attempt_1,
+                    seq,
+                    authority
+                        .projection()
+                        .get_lease_metadata(&run_id)
+                        .map(|l| {
+                            actionqueue_core::mutation::LeaseFence::new(
+                                l.owner().into(),
+                                l.granted_at_sequence(),
+                            )
+                        })
+                        .unwrap_or_else(|| {
+                            actionqueue_core::mutation::LeaseFence::new("missing".into(), 0)
+                        }),
+                    authority.projection().pending_resume(run_id).map(|c| c.context_id),
                 )),
                 DurabilityPolicy::Immediate,
             )
@@ -994,6 +1162,23 @@ fn crash_during_retry_wait_preserves_state() {
             (RunState::Ready, RunState::Leased),
             (RunState::Leased, RunState::Running),
         ] {
+            if to == RunState::Running && authority.projection().get_lease(&run_id).is_none() {
+                let seq = next_seq(&authority);
+                let _ = authority
+                    .submit_command(
+                        MutationCommand::LeaseAcquire(
+                            actionqueue_core::mutation::LeaseAcquireCommand::new(
+                                seq,
+                                run_id,
+                                "fixture",
+                                u64::MAX,
+                                0,
+                            ),
+                        ),
+                        DurabilityPolicy::Immediate,
+                    )
+                    .unwrap();
+            }
             let seq = next_seq(&authority);
             let _ = authority
                 .submit_command(
@@ -1010,7 +1195,23 @@ fn crash_during_retry_wait_preserves_state() {
         let _ = authority
             .submit_command(
                 MutationCommand::AttemptStart(AttemptStartCommand::new(
-                    seq, run_id, attempt_2, seq,
+                    seq,
+                    run_id,
+                    attempt_2,
+                    seq,
+                    authority
+                        .projection()
+                        .get_lease_metadata(&run_id)
+                        .map(|l| {
+                            actionqueue_core::mutation::LeaseFence::new(
+                                l.owner().into(),
+                                l.granted_at_sequence(),
+                            )
+                        })
+                        .unwrap_or_else(|| {
+                            actionqueue_core::mutation::LeaseFence::new("missing".into(), 0)
+                        }),
+                    authority.projection().pending_resume(run_id).map(|c| c.context_id),
                 )),
                 DurabilityPolicy::Immediate,
             )

@@ -223,12 +223,20 @@ pub struct StorageMutationAuthority<W: WalWriter, P: MutationProjection> {
     projection: P,
     recovery_required: bool,
     admission_limits: AdmissionLimits,
+    continuation_limits: actionqueue_core::limits::ContinuationLimits,
     pub(super) signal_limits: actionqueue_core::limits::SignalLimits,
     pub(super) signal_retention: actionqueue_core::limits::SignalRetentionPolicy,
     pub(super) signal_capacity_rejections: u64,
 }
 
 impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
+    /// Configures creation limits; exact retries and replay retain hard format rules.
+    pub fn set_continuation_limits(
+        &mut self,
+        limits: actionqueue_core::limits::ContinuationLimits,
+    ) {
+        self.continuation_limits = limits;
+    }
     /// Creates a new storage authority with an owned WAL writer and projection.
     pub fn new(wal_writer: W, projection: P) -> Self {
         let recovery_required = wal_writer.recovery_required();
@@ -237,6 +245,7 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
             projection,
             recovery_required,
             admission_limits: AdmissionLimits::default(),
+            continuation_limits: Default::default(),
             signal_limits: Default::default(),
             signal_retention: Default::default(),
             signal_capacity_rejections: 0,
@@ -324,8 +333,8 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
                 Ok(ValidatedCommand::RunStateTransition(*details))
             }
             MutationCommand::AttemptStart(details) => {
-                self.validate_attempt_start(*details)?;
-                Ok(ValidatedCommand::AttemptStart(*details))
+                self.validate_attempt_start(details.clone())?;
+                Ok(ValidatedCommand::AttemptStart(details.clone()))
             }
             MutationCommand::AttemptFinish(details) => {
                 self.validate_attempt_finish(details)?;
@@ -977,6 +986,7 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
                     },
                 );
                 let applied = AppliedMutation::AttemptStart {
+                    assignment: None,
                     run_id: command.run_id(),
                     attempt_id: command.attempt_id(),
                 };
@@ -985,13 +995,16 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
             ValidatedCommand::AttemptFinish(command) => {
                 let event = WalEvent::new(
                     command.sequence(),
-                    WalEventType::AttemptFinished {
-                        run_id: command.run_id(),
-                        attempt_id: command.attempt_id(),
-                        result: command.result(),
-                        error: command.error().map(|s| s.to_string()),
-                        output: command.output().map(|b| b.to_vec()),
-                        timestamp: command.timestamp(),
+                    WalEventType::AttemptClosed {
+                        record: crate::recovery::resume::AttemptClosure {
+                            run_id: command.run_id(),
+                            attempt_id: command.attempt_id(),
+                            result: command.result(),
+                            error: command.error().map(str::to_owned),
+                            output: command.output().map(<[u8]>::to_vec),
+                            timestamp: command.timestamp(),
+                            origin: command.origin(),
+                        },
                     },
                 );
                 let applied = AppliedMutation::AttemptFinish {
@@ -1399,6 +1412,12 @@ impl<W: WalWriter, P: MutationProjection> MutationAuthority for StorageMutationA
                     actionqueue_core::mutation::WaitRejection::TooLarge,
                 ));
             }
+            if let WalEventType::WaitEstablished { record } = event.event() {
+                if record.checkpoint.as_ref().is_some_and(|c| matches!(&c.data, actionqueue_core::data_ref::DataRef::Inline(v) if v.bytes().len() > self.continuation_limits.checkpoint_bytes.min(actionqueue_core::limits::MAX_INLINE_DATA_BYTES)))
+                    || self.continuation_limits.validate_record(bytes.len()).is_err() {
+                    return Err(MutationAuthorityError::Wait(actionqueue_core::mutation::WaitRejection::TooLarge));
+                }
+            }
             (*event, applied)
         } else if let Some(super::signal_authority::SignalPreparation::Event(event, applied)) =
             signal_preparation
@@ -1431,6 +1450,31 @@ impl<W: WalWriter, P: MutationProjection> MutationAuthority for StorageMutationA
             crate::store::check_event_profile(event.event(), &profile).map_err(|_| {
                 MutationAuthorityError::Admission(AdmissionRejection::UnsupportedFeature)
             })?;
+        }
+        if let WalEventType::AttemptClosed { record } = event.event() {
+            if record.output.as_ref().is_some_and(|v| {
+                v.len()
+                    > self
+                        .continuation_limits
+                        .output_bytes
+                        .min(actionqueue_core::limits::MAX_INLINE_DATA_BYTES)
+            }) || self
+                .continuation_limits
+                .validate_record(
+                    crate::wal::codec::encode(&event)
+                        .map_err(|_| {
+                            MutationAuthorityError::Wait(
+                                actionqueue_core::mutation::WaitRejection::TooLarge,
+                            )
+                        })?
+                        .len(),
+                )
+                .is_err()
+            {
+                return Err(MutationAuthorityError::Wait(
+                    actionqueue_core::mutation::WaitRejection::TooLarge,
+                ));
+            }
         }
         // Prepare the complete affected projection before any durable write.
         let mut prepared = self.projection.clone();

@@ -73,6 +73,8 @@ impl ExecutorHandler for RetryableFailureHandler {
 
 fn make_request(max_attempts: u32, attempt_number: u32, timeout_secs: u64) -> ExecutorRequest {
     ExecutorRequest {
+        resume_context: None,
+        causal_context: None,
         run_id: RunId::new(),
         attempt_id: AttemptId::new(),
         payload: vec![1],
@@ -186,6 +188,8 @@ fn d01_t_p1_deadline_signal_occurs_during_active_handler() {
     );
 
     let request = ExecutorRequest {
+        resume_context: None,
+        causal_context: None,
         run_id: RunId::new(),
         attempt_id: AttemptId::new(),
         payload: vec![],
@@ -260,6 +264,8 @@ fn d01_t_p3_timeout_precedence_overrides_handler_success_payload() {
     );
 
     let request = ExecutorRequest {
+        resume_context: None,
+        causal_context: None,
         run_id: RunId::new(),
         attempt_id: AttemptId::new(),
         payload: vec![],
@@ -292,6 +298,8 @@ fn d01_t_n1_no_timeout_path_has_no_watchdog_side_effects() {
 
     let runner = AttemptRunner::with_timer(NoTimeoutHandler, TestTimer::real());
     let request = ExecutorRequest {
+        resume_context: None,
+        causal_context: None,
         run_id: RunId::new(),
         attempt_id: AttemptId::new(),
         payload: vec![],
@@ -324,6 +332,8 @@ fn d01_t_n2_non_cooperative_handler_is_flagged_and_timeout_classified() {
 
     let runner = AttemptRunner::with_timer(NonCooperativeHandler, TestTimer::real());
     let request = ExecutorRequest {
+        resume_context: None,
+        causal_context: None,
         run_id: RunId::new(),
         attempt_id: AttemptId::new(),
         payload: vec![],
@@ -363,6 +373,8 @@ fn d01_t_n2b_non_cooperative_timeout_emits_metric_exactly_once() {
     );
 
     let record = runner.run_attempt(ExecutorRequest {
+        resume_context: None,
+        causal_context: None,
         run_id: RunId::new(),
         attempt_id: AttemptId::new(),
         payload: vec![],
@@ -402,6 +414,8 @@ fn f003_t_p2_timeout_disabled_path_is_not_applicable_without_threshold_side_effe
     );
 
     let record = runner.run_attempt(ExecutorRequest {
+        resume_context: None,
+        causal_context: None,
         run_id: RunId::new(),
         attempt_id: AttemptId::new(),
         payload: vec![],
@@ -450,6 +464,8 @@ fn f003_t_n2_delayed_poll_handler_breaches_cadence_threshold() {
     );
 
     let record = runner.run_attempt(ExecutorRequest {
+        resume_context: None,
+        causal_context: None,
         run_id: RunId::new(),
         attempt_id: AttemptId::new(),
         payload: vec![],
@@ -502,6 +518,8 @@ fn f003_t_n3_threshold_breach_metric_is_emitted_exactly_once() {
     );
 
     let record = runner.run_attempt(ExecutorRequest {
+        resume_context: None,
+        causal_context: None,
         run_id: RunId::new(),
         attempt_id: AttemptId::new(),
         payload: vec![],
@@ -555,6 +573,8 @@ fn d01_t_n3_cancellation_state_is_isolated_between_consecutive_attempts() {
 
     let run_id = RunId::new();
     let first = ExecutorRequest {
+        resume_context: None,
+        causal_context: None,
         run_id,
         attempt_id: AttemptId::new(),
         payload: vec![],
@@ -565,6 +585,8 @@ fn d01_t_n3_cancellation_state_is_isolated_between_consecutive_attempts() {
         cancellation_context: None,
     };
     let second = ExecutorRequest {
+        resume_context: None,
+        causal_context: None,
         run_id,
         attempt_id: AttemptId::new(),
         payload: vec![],
@@ -611,6 +633,8 @@ fn d01_t_n4a_operation_panic_path_keeps_runner_usable_and_does_not_skip_cleanup(
 
     let panic_result = catch_unwind(AssertUnwindSafe(|| {
         let _ = runner.run_attempt(ExecutorRequest {
+            resume_context: None,
+            causal_context: None,
             run_id: RunId::new(),
             attempt_id: AttemptId::new(),
             payload: vec![],
@@ -625,6 +649,8 @@ fn d01_t_n4a_operation_panic_path_keeps_runner_usable_and_does_not_skip_cleanup(
     assert!(panic_result.is_err());
 
     let recovery = runner.run_attempt(ExecutorRequest {
+        resume_context: None,
+        causal_context: None,
         run_id: RunId::new(),
         attempt_id: AttemptId::new(),
         payload: vec![],
@@ -672,6 +698,8 @@ fn d01_t_n4b_near_deadline_race_preserves_consistent_cleanup_and_flags() {
         );
 
         let record = runner.run_attempt(ExecutorRequest {
+            resume_context: None,
+            causal_context: None,
             run_id: RunId::new(),
             attempt_id: AttemptId::new(),
             payload: vec![],
