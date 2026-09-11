@@ -105,6 +105,7 @@ impl<H: ExecutorHandler + 'static> ActionQueueEngine<H> {
         );
 
         authority.set_admission_limits(self.config.admission_limits);
+        authority.set_continuation_limits(self.config.continuation_limits);
         authority.set_signal_limits(self.config.signal_limits);
         authority.set_signal_retention_policy(self.config.signal_retention);
 

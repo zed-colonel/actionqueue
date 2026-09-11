@@ -7,6 +7,9 @@ use std::time::Duration;
 /// Configuration for the ActionQueue runtime.
 #[derive(Debug, Clone)]
 pub struct RuntimeConfig {
+    /// Limits for newly committed continuation data. The disposition quota must
+    /// accommodate [`RuntimeConfig::minimum_disposition_bytes`].
+    pub continuation_limits: actionqueue_core::limits::ContinuationLimits,
     /// Finite creation quotas for resident signal identities, bytes and pins.
     pub signal_limits: actionqueue_core::limits::SignalLimits,
     /// Minimum age/window for explicit retirement. Never runs automatically.
@@ -50,6 +53,7 @@ pub enum BackoffStrategyConfig {
 impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
+            continuation_limits: Default::default(),
             signal_limits: Default::default(),
             signal_retention: Default::default(),
             admission_limits: actionqueue_core::limits::AdmissionLimits::default(),
@@ -66,6 +70,11 @@ impl Default for RuntimeConfig {
 /// Errors that can occur during configuration validation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfigError {
+    /// The disposition quota cannot accommodate runtime failure and recovery records.
+    DispositionLimitTooLow {
+        /// Minimum safe framed record size for this runtime.
+        minimum: usize,
+    },
     /// The data directory path is empty.
     EmptyDataDir,
     /// The tick interval is zero.
@@ -85,6 +94,13 @@ pub enum ConfigError {
 impl std::fmt::Display for ConfigError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            ConfigError::DispositionLimitTooLow { minimum } => {
+                write!(
+                    f,
+                    "continuation disposition_bytes must be >= {minimum} for durable failure and \
+                     recovery"
+                )
+            }
             ConfigError::EmptyDataDir => write!(f, "data_dir must not be empty"),
             ConfigError::ZeroTickInterval => write!(f, "tick_interval must be greater than zero"),
             ConfigError::BackoffBaseExceedsMax => {
@@ -108,9 +124,56 @@ impl std::fmt::Display for ConfigError {
 
 impl std::error::Error for ConfigError {}
 
+pub(crate) const RESULT_TOO_LARGE: &str = "handler result exceeds configured size limit";
+pub(crate) const EXECUTOR_INTERRUPTED: &str = "executor interrupted before durable disposition";
+
 impl RuntimeConfig {
+    /// Smallest disposition quota that always fits the runtime's output-free
+    /// failure and recovery closures. Uses the actual framed WAL encoding with
+    /// the largest timestamp; UUIDs have fixed width and resume data is referenced
+    /// by the accepted start, not copied into the closure.
+    pub fn minimum_disposition_bytes() -> usize {
+        use actionqueue_core::{continuation::AttemptFinishOrigin, mutation::AttemptResultKind};
+        use actionqueue_storage::{
+            recovery::resume::AttemptClosure,
+            wal::{
+                codec::encode,
+                event::{WalEvent, WalEventType},
+            },
+        };
+        [
+            (RESULT_TOO_LARGE, AttemptFinishOrigin::Executor),
+            (EXECUTOR_INTERRUPTED, AttemptFinishOrigin::Recovery),
+        ]
+        .into_iter()
+        .map(|(error, origin)| {
+            let record = AttemptClosure {
+                run_id: "ffffffff-ffff-ffff-ffff-ffffffffffff".parse().expect("fixed UUID"),
+                attempt_id: "ffffffff-ffff-ffff-ffff-ffffffffffff".parse().expect("fixed UUID"),
+                timestamp: u64::MAX,
+                result: AttemptResultKind::Failure,
+                error: Some(error.into()),
+                output: None,
+                origin,
+            };
+            encode(&WalEvent::new(u64::MAX, WalEventType::AttemptClosed { record }))
+                .expect("bounded runtime closure must encode")
+                .len()
+        })
+        .max()
+        .expect("runtime closures exist")
+    }
+
+    pub(crate) fn validate_continuation_limits(
+        limits: actionqueue_core::limits::ContinuationLimits,
+    ) -> Result<(), ConfigError> {
+        let minimum = Self::minimum_disposition_bytes();
+        limits.validate_record(minimum).map_err(|_| ConfigError::DispositionLimitTooLow { minimum })
+    }
+
     /// Validates this configuration.
     pub fn validate(&self) -> Result<(), ConfigError> {
+        Self::validate_continuation_limits(self.continuation_limits)?;
         if self.data_dir.as_os_str().is_empty() {
             return Err(ConfigError::EmptyDataDir);
         }

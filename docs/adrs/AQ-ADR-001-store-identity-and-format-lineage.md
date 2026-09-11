@@ -104,3 +104,17 @@ then rebuilds all indexes and resident counters. Recovery verifies against compl
 WAL history and does not sample a clock or rerun current retention policy.
 Signal operations use the existing prepare/append/immediate-sync/publish lane and
 fence both writer and authority after uncertainty.
+
+## AQ-07 implementation addendum
+
+Snapshot schema, exact projection image, and projection digest advance to version 5.
+Version-4 manifests are refused before writable access; there is no automatic
+migration of development stores. WAL and snapshot framing versions remain unchanged.
+Attempt kinds 19 and 20 now support schema 2, with durable lease/resume assignment
+and closure origin respectively. Schema-1 evidence still decodes as historical
+attempt events and cannot consume pending continuation input. Earlier projection
+vectors remain pinned alongside the new independently generated v5 vector.
+
+The projection also retains the WAL sequence of each dispatch's Running transition.
+Recovery uses that sequence to distinguish an interrupted accepted attempt from a
+dispatch interrupted before start; the latter does not consume retry allowance.

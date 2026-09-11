@@ -384,6 +384,7 @@ fn max_inline_payload_replays_and_duplicates_ignore_lower_inline_limits() {
     use sha2::{Digest, Sha256};
     let dir = tempfile::tempdir().unwrap();
     let mut a = open(dir.path());
+    a.set_signal_limits(SignalLimits { inline_bytes: MAX_INLINE_DATA_BYTES, ..Default::default() });
     let bytes = vec![255; MAX_INLINE_DATA_BYTES];
     let hash = ContentHash::new(HashAlgorithm::Sha256, Sha256::digest(&bytes).to_vec()).unwrap();
     let mut e = envelope(1, 42);

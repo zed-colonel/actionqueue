@@ -20,13 +20,13 @@ use crate::snapshot::model::{
 /// Current snapshot schema version accepted by the explicit mapping boundary.
 ///
 /// Version history:
-/// - v4: Sprint 1 release (WAL v2, JSON snapshots)
+/// - v5: Sprint 1 release (WAL v2, JSON snapshots)
 /// - v5: Sprint 2 additions — parent_task_id on TaskSpec, output on AttemptOutcome,
 ///   legacy capability requirements on TaskConstraints (renamed to
 ///   required_executor_traits in AQ-02)
 /// - v6: Sprint 2 review — dependency declarations persisted in snapshots
 /// - v7: Sprint 3 — budgets, subscriptions, Suspended run state
-pub const SNAPSHOT_SCHEMA_VERSION: u32 = 4;
+pub const SNAPSHOT_SCHEMA_VERSION: u32 = 5;
 
 /// Typed mapping and validation errors for snapshot/core parity enforcement.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -670,6 +670,8 @@ pub fn map_snapshot_attempt_history(
     entries
         .into_iter()
         .map(|entry| crate::recovery::reducer::AttemptHistoryEntry {
+            accepted_start: entry.accepted_start.clone(),
+            finish_origin: entry.finish_origin,
             attempt_id: entry.attempt_id,
             started_at: entry.started_at,
             finished_at: entry.finished_at,

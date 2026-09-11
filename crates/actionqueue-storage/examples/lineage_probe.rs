@@ -81,11 +81,43 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             E::WaitCanceled {
                 record: actionqueue_storage::mutation::wait::WaitResolution {
                     kind: actionqueue_storage::mutation::wait::WaitResolutionKind::Canceled(None),
-                    ..resolution
+                    ..resolution.clone()
                 },
             },
         ] {
             for b in codec::encode(&WalEvent::new(9, e))? {
+                print!("{b:02x}");
+            }
+            println!();
+        }
+        for e in [
+            E::AcceptedAttemptStarted {
+                record: actionqueue_storage::recovery::resume::AcceptedStart {
+                    sequence: 12,
+                    run_id: resolution.run_id,
+                    attempt_id: "55555555-5555-4555-8555-555555555555".parse()?,
+                    timestamp: 101,
+                    fence: LeaseFence::new("probe".into(), 10),
+                    assignment: Some(ResumeAssignment {
+                        context_id: ResumeContextId(9),
+                        previous_attempt_id: None,
+                        delivery: ResumeDelivery::Initial,
+                    }),
+                },
+            },
+            E::AttemptClosed {
+                record: actionqueue_storage::recovery::resume::AttemptClosure {
+                    run_id: resolution.run_id,
+                    attempt_id: "55555555-5555-4555-8555-555555555555".parse()?,
+                    timestamp: 102,
+                    result: AttemptResultKind::Failure,
+                    error: Some("interrupted".into()),
+                    output: None,
+                    origin: AttemptFinishOrigin::Recovery,
+                },
+            },
+        ] {
+            for b in codec::encode(&WalEvent::new(12, e))? {
                 print!("{b:02x}");
             }
             println!();
@@ -139,6 +171,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     w.run_id,
                     w.attempt_id,
                     42,
+                    a.projection()
+                        .get_lease_metadata(&w.run_id)
+                        .map(|l| {
+                            actionqueue_core::mutation::LeaseFence::new(
+                                l.owner().into(),
+                                l.granted_at_sequence(),
+                            )
+                        })
+                        .unwrap_or_else(|| {
+                            actionqueue_core::mutation::LeaseFence::new("missing".into(), 0)
+                        }),
+                    a.projection().pending_resume(w.run_id).map(|c| c.context_id),
                 )),
                 DurabilityPolicy::Immediate,
             )?;
@@ -151,10 +195,58 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         RunState::Running,
                         LeaseFence::new(LeaseOwner::new("probe"), grant),
                     ),
-                    wait: w.spec,
+                    wait: w.spec.clone(),
                     checkpoint: None,
                     timestamp: 43,
                 }),
+                DurabilityPolicy::Immediate,
+            )?;
+            let _ = a.submit_command(
+                MutationCommand::WaitTimeout(WaitTimeoutCommand::new(
+                    a.projection().latest_sequence() + 1,
+                    w.run_id,
+                    w.spec.wait_id(),
+                    100,
+                )),
+                DurabilityPolicy::Immediate,
+            )?;
+            let _ = a.submit_command(
+                MutationCommand::RunStateTransition(RunStateTransitionCommand::new(
+                    a.projection().latest_sequence() + 1,
+                    w.run_id,
+                    RunState::Ready,
+                    RunState::Leased,
+                    101,
+                )),
+                DurabilityPolicy::Immediate,
+            )?;
+            let grant = a.projection().latest_sequence() + 1;
+            let _ = a.submit_command(
+                MutationCommand::LeaseAcquire(LeaseAcquireCommand::new(
+                    grant, w.run_id, "probe", 200, 101,
+                )),
+                DurabilityPolicy::Immediate,
+            )?;
+            let _ = a.submit_command(
+                MutationCommand::RunStateTransition(RunStateTransitionCommand::new(
+                    a.projection().latest_sequence() + 1,
+                    w.run_id,
+                    RunState::Leased,
+                    RunState::Running,
+                    101,
+                )),
+                DurabilityPolicy::Immediate,
+            )?;
+            let context = a.projection().pending_resume(w.run_id).unwrap().context_id;
+            let _ = a.submit_command(
+                MutationCommand::AttemptStart(AttemptStartCommand::new(
+                    a.projection().latest_sequence() + 1,
+                    w.run_id,
+                    "55555555-5555-4555-8555-555555555555".parse()?,
+                    101,
+                    LeaseFence::new("probe".into(), grant),
+                    Some(context),
+                )),
                 DurabilityPolicy::Immediate,
             )?;
             let p = a.projection();

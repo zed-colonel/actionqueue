@@ -19,6 +19,10 @@ use crate::handler::TaskSubmissionPort;
 /// an attempt. The dispatch loop populates `submission` and `children` from
 /// the workflow infrastructure when available; they are `None` in the base case.
 pub struct ExecutorRequest {
+    /// Durable continuation assigned to this physical attempt.
+    pub resume_context: Option<actionqueue_core::continuation::ResumeContext>,
+    /// Original immutable admission attribution, absent for legacy task creation.
+    pub causal_context: Option<actionqueue_core::causal::CausalContext>,
     /// The unique identifier for the run instance.
     pub run_id: RunId,
     /// The unique identifier for this specific attempt within the run.

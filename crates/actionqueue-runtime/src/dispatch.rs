@@ -214,6 +214,8 @@ pub enum DispatchError {
         /// Human-readable context for diagnostics.
         context: String,
     },
+    /// Continuation limits cannot guarantee durable attempt closure.
+    InvalidContinuationLimits(crate::config::ConfigError),
     /// Backoff strategy configuration is invalid (e.g., base exceeds max).
     InvalidBackoffConfig,
     /// Dependency declaration would introduce a cycle in the task DAG.
@@ -232,6 +234,7 @@ pub enum DispatchError {
 impl std::fmt::Display for DispatchError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::InvalidContinuationLimits(e) => write!(f, "{e}"),
             Self::Admission(e) => write!(f, "{e}"),
             DispatchError::RecoveryInvariant(message) => write!(f, "recovery invariant: {message}"),
             DispatchError::SequenceOverflow => write!(f, "WAL sequence counter overflow"),
@@ -385,13 +388,17 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
     /// # Errors
     ///
     /// Returns [`DispatchError::InvalidBackoffConfig`] if the backoff strategy
-    /// configuration is invalid (e.g., exponential base exceeds max).
+    /// configuration is invalid (e.g., exponential base exceeds max), or
+    /// [`DispatchError::InvalidContinuationLimits`] before recovery if the
+    /// disposition quota cannot accommodate durable failure and recovery.
     pub fn new(
         mut authority: StorageMutationAuthority<W, ReplayReducer>,
         handler: H,
         clock: C,
         config: DispatchConfig,
     ) -> Result<Self, DispatchError> {
+        crate::config::RuntimeConfig::validate_continuation_limits(authority.continuation_limits())
+            .map_err(DispatchError::InvalidContinuationLimits)?;
         crate::waits::recover_execution(&mut authority, clock.now())
             .map_err(DispatchError::Authority)?;
         // Settle controls, retained matches, overdue deadlines and their cascades
@@ -777,7 +784,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
 
     fn process_worker_result(
         &mut self,
-        worker_result: WorkerResult,
+        mut worker_result: WorkerResult,
         result: &mut TickResult,
         current_time: u64,
     ) -> Result<(), DispatchError> {
@@ -806,12 +813,44 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
                 &worker_result.response,
                 current_time,
             );
-        let _ = actionqueue_engine::scheduler::attempt_finish::submit_attempt_finish_via_authority(
-            finish_cmd,
-            DurabilityPolicy::Immediate,
-            &mut self.authority,
-        )
-        .map_err(|e| DispatchError::Authority(e.into_source()))?;
+        let finish =
+            actionqueue_engine::scheduler::attempt_finish::submit_attempt_finish_via_authority(
+                finish_cmd,
+                DurabilityPolicy::Immediate,
+                &mut self.authority,
+            )
+            .map_err(|e| e.into_source());
+        match finish {
+            Ok(_) => {}
+            Err(MutationAuthorityError::Wait(
+                actionqueue_core::mutation::WaitRejection::TooLarge,
+            )) => {
+                // Size validation rejects before append. The worker has already
+                // returned, so durably close its attempt with a bounded failure
+                // and use that same outcome for retry and ownership cleanup.
+                // Never substitute a result after an ambiguous persistence error.
+                worker_result.response =
+                    actionqueue_executor_local::ExecutorResponse::RetryableFailure {
+                        error: crate::config::RESULT_TOO_LARGE.into(),
+                    };
+                let failure =
+                    actionqueue_engine::scheduler::attempt_finish::build_attempt_finish_command(
+                        seq,
+                        run_id,
+                        attempt_id,
+                        &worker_result.response,
+                        current_time,
+                    );
+                let _ = self
+                    .authority
+                    .submit_command(
+                        MutationCommand::AttemptFinish(failure),
+                        DurabilityPolicy::Immediate,
+                    )
+                    .map_err(DispatchError::Authority)?;
+            }
+            Err(error) => return Err(DispatchError::Authority(error)),
+        }
 
         // Compute the effective attempt number for retry cap purposes.
         // Suspended and Awaiting attempts do not count against max_attempts: they are
@@ -1624,11 +1663,6 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         let available_slots = self.max_concurrent.saturating_sub(self.in_flight.len());
         let mut dispatched = 0usize;
         for run in selection.into_selected() {
-            // Accepted-start wake delivery belongs to AQ-07. Never call a legacy handler
-            // with a continuation whose input would otherwise be silently discarded.
-            if self.authority.projection().waits().pending_wait(run.id()).is_some() {
-                continue;
-            }
             if dispatched >= available_slots {
                 break;
             }
@@ -1744,8 +1778,17 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
                     let runner = Arc::clone(&self.runner);
                     let result_tx = self.result_tx.clone();
 
+                    let resume_context =
+                        self.authority.projection().attempt_resume(run_id, attempt_id);
+                    let causal_context = self
+                        .authority
+                        .projection()
+                        .task_admission(task_id)
+                        .map(|a| a.request().causal_context().clone());
                     tokio::task::spawn_blocking(move || {
                         let request = ExecutorRequest {
+                            resume_context,
+                            causal_context,
                             run_id,
                             attempt_id,
                             payload,
@@ -1866,7 +1909,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         // Record attempt start
         let attempt_id = AttemptId::new();
         let seq = self.next_sequence()?;
-        let _ = self
+        let started = self
             .authority
             .submit_command(
                 MutationCommand::AttemptStart(AttemptStartCommand::new(
@@ -1874,11 +1917,32 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
                     run.id(),
                     attempt_id,
                     current_time,
+                    {
+                        let l = self
+                            .authority
+                            .projection()
+                            .get_lease_metadata(&run.id())
+                            .expect("acquired lease");
+                        actionqueue_core::mutation::LeaseFence::new(
+                            l.owner().into(),
+                            l.granted_at_sequence(),
+                        )
+                    },
+                    self.authority.projection().pending_resume(run.id()).map(|c| c.context_id),
                 )),
                 DurabilityPolicy::Immediate,
             )
             .map_err(DispatchError::Authority)?;
 
+        if !matches!(
+            started.applied(),
+            actionqueue_core::mutation::AppliedMutation::AttemptStart { .. }
+        ) {
+            return Err(DispatchError::StateInconsistency {
+                run_id: run.id(),
+                context: "attempt start was already accepted; worker was not spawned".into(),
+            });
+        }
         let max_attempts = constraints.max_attempts();
         let attempt_number =
             run.attempt_count().checked_add(1).ok_or(DispatchError::SequenceOverflow)?;
@@ -2914,6 +2978,74 @@ mod tests {
             .finish();
         let guard = tracing::subscriber::set_default(subscriber);
         (buffer, guard)
+    }
+
+    #[test]
+    fn unsafe_disposition_limit_does_not_create_a_store() {
+        use crate::{
+            config::{ConfigError, RuntimeConfig},
+            engine::{ActionQueueEngine, BootstrapError},
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().join("unopened");
+        let minimum = RuntimeConfig::minimum_disposition_bytes();
+        for limit in [0, 91, 99, minimum - 1, minimum, minimum + 1, usize::MAX] {
+            let config = RuntimeConfig {
+                data_dir: data_dir.clone(),
+                continuation_limits: actionqueue_core::limits::ContinuationLimits {
+                    output_bytes: 0,
+                    checkpoint_bytes: 0,
+                    disposition_bytes: limit,
+                },
+                ..Default::default()
+            };
+            if limit >= minimum {
+                assert!(config.validate().is_ok());
+                continue;
+            }
+            let error = ActionQueueEngine::new(config, DependencyHandler)
+                .bootstrap()
+                .err()
+                .expect("unsafe quota must reject");
+            assert!(
+                matches!(error, BootstrapError::Config(ConfigError::DispositionLimitTooLow { minimum: m }) if m == minimum)
+            );
+            assert!(!data_dir.exists());
+        }
+    }
+
+    #[test]
+    fn direct_dispatch_rejects_unsafe_continuation_limits() {
+        let dir = tempfile::tempdir().unwrap();
+        let recovery = load_projection_from_storage(dir.path()).unwrap();
+        let mut authority = StorageMutationAuthority::new(recovery.wal_writer, recovery.projection);
+        let digest = authority.projection().projection_digest().unwrap();
+        authority.set_continuation_limits(actionqueue_core::limits::ContinuationLimits {
+            disposition_bytes: 99,
+            ..Default::default()
+        });
+        let error = DispatchLoop::new(
+            authority,
+            DependencyHandler,
+            MockClock::new(1000),
+            DispatchConfig::new(
+                BackoffStrategyConfig::Fixed { interval: Duration::ZERO },
+                1,
+                30,
+                None,
+                None,
+            ),
+        )
+        .err()
+        .expect("unsafe quota must reject");
+        assert!(matches!(
+            error,
+            DispatchError::InvalidContinuationLimits(
+                crate::config::ConfigError::DispositionLimitTooLow { .. }
+            )
+        ));
+        let recovery = load_projection_from_storage(dir.path()).unwrap();
+        assert_eq!(recovery.projection.projection_digest().unwrap(), digest);
     }
 
     fn new_dispatch<H: ExecutorHandler + 'static>(

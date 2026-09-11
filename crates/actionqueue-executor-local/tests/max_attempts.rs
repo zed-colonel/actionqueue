@@ -68,6 +68,8 @@ fn make_request(
     max_attempts: u32,
 ) -> ExecutorRequest {
     ExecutorRequest {
+        resume_context: None,
+        causal_context: None,
         run_id,
         attempt_id,
         payload: vec![],

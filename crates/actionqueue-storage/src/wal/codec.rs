@@ -121,7 +121,16 @@ pub fn encode_for_store(event: &WalEvent, store_id: uuid::Uuid) -> Result<Vec<u8
     bytes.extend_from_slice(MAGIC);
     bytes.extend_from_slice(&VERSION.to_le_bytes());
     bytes.extend_from_slice(&wire_v1::kind(event.event()).to_le_bytes());
-    bytes.extend_from_slice(&wire_v1::schema(wire_v1::kind(event.event())).to_le_bytes());
+    let schema = if matches!(
+        event.event(),
+        super::event::WalEventType::AttemptStarted { .. }
+            | super::event::WalEventType::AttemptFinished { .. }
+    ) {
+        1
+    } else {
+        wire_v1::schema(wire_v1::kind(event.event()))
+    };
+    bytes.extend_from_slice(&schema.to_le_bytes());
     bytes.extend_from_slice(store_id.as_bytes());
     bytes.extend_from_slice(&event.sequence().to_le_bytes());
     bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());

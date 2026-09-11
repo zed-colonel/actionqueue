@@ -148,7 +148,7 @@ impl Default for SignalLimits {
             identities: 100_000,
             bytes: 16 * 1024 * 1024,
             record_bytes: MAX_SIGNAL_RECORD_BYTES,
-            inline_bytes: MAX_INLINE_DATA_BYTES,
+            inline_bytes: 16 * 1024,
             pins_per_signal: MAX_SIGNAL_PINS,
             pins: 100_000,
             retirement_batch: MAX_SIGNAL_BATCH,
@@ -196,3 +196,35 @@ impl SignalRetentionPolicy {
 
 /// Hard ceiling for compound continuation/control frames, including checkpoint references.
 pub const MAX_WAIT_RECORD_BYTES: usize = 128 * 1024;
+
+/// Creation limits for continuation data; replay uses hard format ceilings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContinuationLimits {
+    /// Final inline output bytes.
+    pub output_bytes: usize,
+    /// Inline checkpoint bytes.
+    pub checkpoint_bytes: usize,
+    /// Complete framed disposition bytes.
+    pub disposition_bytes: usize,
+}
+impl Default for ContinuationLimits {
+    fn default() -> Self {
+        Self {
+            output_bytes: MAX_INLINE_DATA_BYTES,
+            checkpoint_bytes: 32 * 1024,
+            disposition_bytes: 128 * 1024,
+        }
+    }
+}
+impl ContinuationLimits {
+    /// Checks an encoded compound record including framing.
+    pub fn validate_record(
+        &self,
+        bytes: usize,
+    ) -> Result<(), crate::data_ref::DataValidationError> {
+        if bytes > self.disposition_bytes.min(MAX_ADMISSION_RECORD_BYTES) {
+            return Err(crate::data_ref::DataValidationError::TooLarge);
+        }
+        Ok(())
+    }
+}

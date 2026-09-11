@@ -261,8 +261,8 @@ pub fn kind(event: &WalEventType) -> u16 {
         WalEventType::TaskCreated { .. } => 16,
         WalEventType::RunCreated { .. } => 17,
         WalEventType::RunStateChanged { .. } => 18,
-        WalEventType::AttemptStarted { .. } => 19,
-        WalEventType::AttemptFinished { .. } => 20,
+        WalEventType::AttemptStarted { .. } | WalEventType::AcceptedAttemptStarted { .. } => 19,
+        WalEventType::AttemptFinished { .. } | WalEventType::AttemptClosed { .. } => 20,
         WalEventType::TaskCanceled { .. } => 21,
         WalEventType::RunCanceled { .. } => 22,
         WalEventType::LeaseAcquired { .. } => 23,
@@ -380,6 +380,8 @@ pub fn encode_payload(event: &WalEventType) -> Result<Vec<u8>, EncodeError> {
                 timestamp: *timestamp,
             })
         }
+        WalEventType::AcceptedAttemptStarted { record } => bounded(record),
+        WalEventType::AttemptClosed { record } => bounded(record),
         WalEventType::AttemptStarted { run_id, attempt_id, timestamp } => {
             bounded(&AttemptStartedV1 {
                 run_id: *run_id,
@@ -1039,9 +1041,9 @@ fn bounded<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, EncodeError> {
     postcard::to_allocvec(value).map_err(|e| EncodeError::Serialization(e.to_string()))
 }
 
-/// Schemas 1 remain readable for frozen evidence; new task/admission writes use 2.
+/// Schema 1 remains readable for frozen evidence; tasks, admissions and attempts now use 2.
 pub(crate) fn schema(kind: u16) -> u16 {
-    if matches!(kind, 16 | 256) {
+    if matches!(kind, 16 | 19 | 20 | 256) {
         2
     } else {
         1
@@ -1056,6 +1058,8 @@ pub(crate) fn decode_schema(
         return decode_payload(kind, payload);
     }
     match kind {
+        19 => Ok(WalEventType::AcceptedAttemptStarted { record: take(payload)? }),
+        20 => Ok(WalEventType::AttemptClosed { record: take(payload)? }),
         16 => {
             let (v, rest) = postcard::take_from_bytes::<TaskCreatedV2>(payload)
                 .map_err(|e| DecodeError::Decode(e.to_string()))?;

@@ -116,13 +116,16 @@ pub fn recover_execution<W: WalWriter>(
                 a.projection().get_run_instance(&id).unwrap().current_attempt_id()
             {
                 let _ = a.submit_command(
-                    MutationCommand::AttemptFinish(AttemptFinishCommand::new(
-                        next(a)?,
-                        id,
-                        attempt,
-                        AttemptOutcome::failure("executor interrupted before durable disposition"),
-                        now,
-                    )),
+                    MutationCommand::AttemptFinish(
+                        AttemptFinishCommand::new(
+                            next(a)?,
+                            id,
+                            attempt,
+                            AttemptOutcome::failure(crate::config::EXECUTOR_INTERRUPTED),
+                            now,
+                        )
+                        .with_recovery_origin(),
+                    ),
                     DurabilityPolicy::Immediate,
                 )?;
             }
@@ -141,6 +144,8 @@ pub fn recover_execution<W: WalWriter>(
         }
         let target = if state == RunState::Leased {
             RunState::Ready
+        } else if !a.projection().dispatch_has_started(id) {
+            RunState::RetryWait
         } else {
             let r = a.projection().get_run_instance(&id).unwrap();
             let last = a
@@ -177,6 +182,10 @@ pub fn recover_execution<W: WalWriter>(
                 }
             }
         };
+        let state = *a.projection().get_run_state(&id).unwrap();
+        if state == target {
+            continue;
+        }
         let _ = a.submit_command(
             MutationCommand::RunStateTransition(RunStateTransitionCommand::new(
                 next(a)?,

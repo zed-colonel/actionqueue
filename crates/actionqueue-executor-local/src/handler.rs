@@ -30,6 +30,10 @@ use crate::children::ChildrenSnapshot;
 ///   timeout truth; timeout classification remains authoritative.
 #[derive(Debug, Clone)]
 pub struct HandlerInput {
+    /// Durable continuation assigned to this physical attempt.
+    pub resume_context: Option<actionqueue_core::continuation::ResumeContext>,
+    /// Original immutable admission attribution, absent for legacy task creation.
+    pub causal_context: Option<actionqueue_core::causal::CausalContext>,
     /// The unique identifier for the run instance.
     pub run_id: RunId,
     /// The unique identifier for this specific attempt within the run.

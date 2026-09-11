@@ -6,7 +6,7 @@ use std::str::FromStr;
 use uuid::Uuid;
 
 /// A unique identifier for a checkpoint.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CheckpointId(Uuid);
 

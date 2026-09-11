@@ -67,6 +67,8 @@ impl RunStateHistoryEntry {
 /// A deterministic attempt lineage record for a run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AttemptHistoryEntry {
+    pub(crate) accepted_start: Option<super::resume::AcceptedStart>,
+    pub(crate) finish_origin: actionqueue_core::continuation::AttemptFinishOrigin,
     /// The attempt identifier.
     pub(crate) attempt_id: actionqueue_core::ids::AttemptId,
     /// The timestamp when the attempt started.
@@ -82,6 +84,14 @@ pub struct AttemptHistoryEntry {
 }
 
 impl AttemptHistoryEntry {
+    /// Durable start and assignment, absent only for schema-1 historical attempts.
+    pub fn accepted_start(&self) -> Option<&super::resume::AcceptedStart> {
+        self.accepted_start.as_ref()
+    }
+    /// Structural origin of the attempt closure.
+    pub fn finish_origin(&self) -> actionqueue_core::continuation::AttemptFinishOrigin {
+        self.finish_origin
+    }
     /// Returns the attempt identifier.
     pub fn attempt_id(&self) -> actionqueue_core::ids::AttemptId {
         self.attempt_id
@@ -269,6 +279,17 @@ impl TaskRecord {
 /// A reducer that applies WAL events to reconstruct state.
 #[derive(Debug, Clone)]
 pub struct ReplayReducer {
+    pub(crate) dispatch_sequences: std::collections::BTreeMap<RunId, u64>,
+    pub(crate) checkpoints: std::collections::BTreeMap<
+        actionqueue_core::ids::CheckpointId,
+        super::checkpoints::CheckpointRecord,
+    >,
+    pub(crate) administrative_wakes: std::collections::BTreeMap<
+        actionqueue_core::continuation::ResumeContextId,
+        super::resume::AdministrativeWake,
+    >,
+    pub(crate) administrative_pending:
+        std::collections::BTreeMap<RunId, actionqueue_core::continuation::ResumeContextId>,
     pub(crate) waits: super::waits::WaitIndex,
     pub(crate) cancellations: Vec<crate::mutation::wait::CancelRecord>,
     pub(crate) key_reservations: std::collections::BTreeMap<RunId, String>,
@@ -332,6 +353,10 @@ impl ReplayReducer {
     /// Creates a new replay reducer.
     pub fn new() -> Self {
         ReplayReducer {
+            checkpoints: Default::default(),
+            administrative_wakes: Default::default(),
+            administrative_pending: Default::default(),
+            dispatch_sequences: Default::default(),
             waits: Default::default(),
             cancellations: Vec::new(),
             key_reservations: Default::default(),
@@ -561,7 +586,16 @@ impl ReplayReducer {
             WalEventType::RunStateChanged { run_id, previous_state, new_state, .. }
                 if *previous_state == RunState::Awaiting
                     || *new_state == RunState::Awaiting
-                    || self.waits.pending_wait(*run_id).is_some() =>
+                    || ((self.waits.pending_wait(*run_id).is_some()
+                        || self.administrative_pending.contains_key(run_id))
+                        && !matches!(
+                            (previous_state, new_state),
+                            (RunState::Ready, RunState::Leased)
+                                | (RunState::Leased, RunState::Running)
+                                | (RunState::Leased, RunState::Ready)
+                                | (RunState::Running, RunState::RetryWait)
+                                | (RunState::RetryWait, RunState::Ready)
+                        )) =>
             {
                 return Err(ReplayReducerError::InvalidTransition)
             }
@@ -697,8 +731,65 @@ impl ReplayReducer {
             }
             WalEventType::RunStateChanged { run_id, previous_state, new_state, timestamp } => {
                 self.apply_run_state_changed(run_id, previous_state, new_state, *timestamp)?;
+                if *new_state == RunState::Running {
+                    self.dispatch_sequences.insert(*run_id, event.sequence());
+                }
+                if *previous_state == RunState::Suspended && *new_state == RunState::Ready {
+                    self.record_administrative_wake(*run_id, event.sequence(), *timestamp);
+                }
+            }
+            WalEventType::AcceptedAttemptStarted { record } => {
+                if record.sequence != event.sequence() {
+                    return Err(ReplayReducerError::CorruptedData);
+                }
+                self.validate_accepted_start(record)?;
+                self.apply_attempt_started(&record.run_id, &record.attempt_id, record.timestamp)?;
+                self.attempt_history
+                    .get_mut(&record.run_id)
+                    .unwrap()
+                    .last_mut()
+                    .unwrap()
+                    .accepted_start = Some(record.clone());
+                self.waits.pending.remove(&record.run_id);
+                self.administrative_pending.remove(&record.run_id);
+            }
+            WalEventType::AttemptClosed { record } => {
+                if record.result == AttemptResultKind::Awaiting
+                    || record
+                        .output
+                        .as_ref()
+                        .is_some_and(|v| v.len() > actionqueue_core::limits::MAX_INLINE_DATA_BYTES)
+                {
+                    return Err(ReplayReducerError::CorruptedData);
+                }
+                if record.origin == actionqueue_core::continuation::AttemptFinishOrigin::Recovery
+                    && record.result != AttemptResultKind::Failure
+                {
+                    return Err(ReplayReducerError::CorruptedData);
+                }
+                let outcome = AttemptOutcome::from_raw_parts(
+                    record.result,
+                    record.error.clone(),
+                    record.output.clone(),
+                )
+                .map_err(|_| ReplayReducerError::CorruptedData)?;
+                self.apply_attempt_finished(
+                    &record.run_id,
+                    &record.attempt_id,
+                    outcome,
+                    record.timestamp,
+                )?;
+                self.attempt_history
+                    .get_mut(&record.run_id)
+                    .unwrap()
+                    .last_mut()
+                    .unwrap()
+                    .finish_origin = record.origin;
             }
             WalEventType::AttemptStarted { run_id, attempt_id, timestamp } => {
+                if self.next_resume_assignment(*run_id).is_some() {
+                    return Err(ReplayReducerError::CorruptedData);
+                }
                 self.apply_attempt_started(run_id, attempt_id, *timestamp)?;
             }
             WalEventType::AttemptFinished {
@@ -745,6 +836,11 @@ impl ReplayReducer {
                 self.apply_dependency_declared(*task_id, depends_on);
             }
             WalEventType::RunSuspended { run_id, reason: _, timestamp } => {
+                if self.waits.pending_wait(*run_id).is_some()
+                    || self.administrative_pending.contains_key(run_id)
+                {
+                    return Err(ReplayReducerError::InvalidTransition);
+                }
                 self.apply_run_state_changed(
                     run_id,
                     &RunState::Running,
@@ -759,6 +855,7 @@ impl ReplayReducer {
                     &RunState::Ready,
                     *timestamp,
                 )?;
+                self.record_administrative_wake(*run_id, event.sequence(), *timestamp);
             }
             WalEventType::BudgetAllocated { task_id, dimension, limit, timestamp } => {
                 self.apply_budget_allocated(*task_id, *dimension, *limit, *timestamp);
@@ -1039,7 +1136,9 @@ impl ReplayReducer {
             }
         } else if (matches!(new_state, RunState::RetryWait | RunState::Suspended)
             && constraints.concurrency_key_hold_policy()
-                == actionqueue_core::task::constraints::ConcurrencyKeyHoldPolicy::ReleaseOnRetry)
+                == actionqueue_core::task::constraints::ConcurrencyKeyHoldPolicy::ReleaseOnRetry
+            && (self.waits.pending_wait(*run_id).is_none()
+                || constraints.concurrency_key_wait_policy().releases_while_awaiting()))
             || (*new_state == RunState::Awaiting
                 && constraints.concurrency_key_wait_policy().releases_while_awaiting())
         {
@@ -1103,6 +1202,8 @@ impl ReplayReducer {
 
         let attempts = self.attempt_history.entry(*run_id).or_default();
         attempts.push(AttemptHistoryEntry {
+            accepted_start: None,
+            finish_origin: Default::default(),
             attempt_id: *attempt_id,
             started_at: timestamp,
             finished_at: None,
@@ -1464,6 +1565,7 @@ impl ReplayReducer {
         self.lease_metadata.remove(run_id);
         self.key_reservations.remove(run_id);
         self.waits.pending.remove(run_id);
+        self.administrative_pending.remove(run_id);
 
         Ok(())
     }
@@ -1478,7 +1580,11 @@ impl ReplayReducer {
             self.runs.iter().filter(|(_, state)| state.is_terminal()).map(|(id, _)| *id).collect();
 
         for run_id in &terminal_run_ids {
-            if self.waits.records().any(|w| w.run_id == *run_id) {
+            if self.waits.records().any(|w| w.run_id == *run_id)
+                || self
+                    .get_attempt_history(run_id)
+                    .is_some_and(|h| h.iter().any(|a| a.accepted_start.is_some()))
+            {
                 continue;
             }
             self.run_history.remove(run_id);

@@ -508,7 +508,9 @@ impl actionqueue_executor_local::ExecutorHandler for Handler {
         &self,
         ctx: actionqueue_executor_local::ExecutorContext,
     ) -> actionqueue_executor_local::HandlerOutput {
-        assert_ne!(ctx.input.run_id, self.forbidden, "legacy dispatch dropped wake input");
+        if ctx.input.run_id == self.forbidden {
+            assert!(ctx.input.resume_context.is_some(), "resumed handler requires durable input");
+        }
         if self.sleep {
             std::thread::sleep(std::time::Duration::from_millis(600));
         }
@@ -571,7 +573,23 @@ fn await_scheduled(a: &mut s::Authority, run: RunId, wait: WaitSpec) {
     transition(a, run, RunState::Running, 13);
     commit!(
         a,
-        MutationCommand::AttemptStart(AttemptStartCommand::new(seq(a), run, AttemptId::new(), 13))
+        MutationCommand::AttemptStart(AttemptStartCommand::new(
+            seq(a),
+            run,
+            AttemptId::new(),
+            13,
+            a.projection()
+                .get_lease_metadata(&run)
+                .map(|l| actionqueue_core::mutation::LeaseFence::new(
+                    l.owner().into(),
+                    l.granted_at_sequence()
+                ))
+                .unwrap_or_else(|| actionqueue_core::mutation::LeaseFence::new(
+                    "missing".into(),
+                    0
+                )),
+            a.projection().pending_resume(run).map(|c| c.context_id)
+        ))
     );
     establish_wait(a, run, wait);
 }
@@ -746,7 +764,7 @@ async fn terminal_deadlines_cancel_dependencies_and_hierarchy_live_and_on_bootst
 }
 
 #[tokio::test]
-async fn deadlines_continue_while_paused_or_draining_and_pending_wakes_never_dispatch() {
+async fn deadlines_continue_while_paused_or_draining_and_dispatch_after_reopen() {
     for paused in [false, true] {
         let dir = tempfile::tempdir().unwrap();
         let mut a = s::open(dir.path());
@@ -772,7 +790,16 @@ async fn deadlines_continue_while_paused_or_draining_and_pending_wakes_never_dis
         let a = d.into_authority();
         let mut d = dispatch(a, r, clock.clone(), false);
         let _ = d.tick().await.unwrap();
-        assert!(d.projection().pending_resume(r).is_some());
+        if paused {
+            assert!(d.projection().pending_resume(r).is_some());
+        } else {
+            assert!(d
+                .projection()
+                .get_attempt_history(&r)
+                .unwrap()
+                .iter()
+                .any(|a| a.accepted_start().is_some_and(|s| s.assignment.is_some())));
+        }
     }
 }
 #[tokio::test]
@@ -800,7 +827,14 @@ async fn worker_result_wait_does_not_starve_deadline() {
     };
     let (_, result) = tokio::join!(advance, run);
     assert!(result.is_err());
-    assert!(d.projection().pending_resume(r).is_some());
+    assert!(
+        d.projection().pending_resume(r).is_some()
+            || d.projection()
+                .get_attempt_history(&r)
+                .unwrap()
+                .iter()
+                .any(|a| a.accepted_start().is_some_and(|s| s.assignment.is_some()))
+    );
     d.start_drain();
     let _ = d.drain_until_idle(std::time::Duration::from_secs(2)).await.unwrap();
 }
@@ -852,19 +886,20 @@ fn rejects_invalid_identity_attempt_scope_and_non_earliest_signal_without_writes
     let _ = satisfy(&mut a, r, id, 1).unwrap();
     let before = seq(&a);
     let state = *a.projection().get_run_state(&r).unwrap();
-    assert!(a
+    let context = a.projection().pending_resume(r);
+    let _ = a
         .submit_command(
             MutationCommand::RunStateTransition(RunStateTransitionCommand::new(
                 before,
                 r,
                 state,
                 RunState::Leased,
-                31
+                31,
             )),
-            DurabilityPolicy::Immediate
+            DurabilityPolicy::Immediate,
         )
-        .is_err());
-    assert_eq!(before, seq(&a));
+        .unwrap();
+    assert_eq!(context, a.projection().pending_resume(r));
 }
 #[tokio::test]
 async fn daemon_run_and_task_cancellation_resolve_waits_through_compound_controls() {
@@ -948,7 +983,23 @@ fn reacquisition_by_same_owner_changes_fence_and_heartbeat_preserves_it() {
     let attempt = AttemptId::new();
     commit!(
         &mut a,
-        MutationCommand::AttemptStart(AttemptStartCommand::new(seq(&a), r, attempt, 18))
+        MutationCommand::AttemptStart(AttemptStartCommand::new(
+            seq(&a),
+            r,
+            attempt,
+            18,
+            a.projection()
+                .get_lease_metadata(&r)
+                .map(|l| actionqueue_core::mutation::LeaseFence::new(
+                    l.owner().into(),
+                    l.granted_at_sequence()
+                ))
+                .unwrap_or_else(|| actionqueue_core::mutation::LeaseFence::new(
+                    "missing".into(),
+                    0
+                )),
+            a.projection().pending_resume(r).map(|c| c.context_id)
+        ))
     );
     let mut c = command(&a, r, spec(WaitId::new(), None));
     c.expected = AttemptCommitExpectation::new(

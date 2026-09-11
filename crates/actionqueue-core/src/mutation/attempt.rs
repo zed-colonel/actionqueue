@@ -4,6 +4,7 @@ use crate::ids::{AttemptId, RunId};
 use crate::run::RunState;
 /// Typed identifier for the worker/executor that owns a lease.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Ord, PartialOrd)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LeaseOwner(String);
 
 impl LeaseOwner {
@@ -42,6 +43,7 @@ impl From<&str> for LeaseOwner {
 
 /// Pure LeaseFence proposal; no mutation authority implementation yet.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LeaseFence {
     owner: LeaseOwner,
     granted_at_sequence: u64,

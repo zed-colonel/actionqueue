@@ -339,6 +339,8 @@ where
         let make_handler_call = |cancellation_context: &crate::handler::CancellationContext| {
             self.handler.execute(crate::handler::ExecutorContext {
                 input: HandlerInput {
+                    resume_context: request.resume_context,
+                    causal_context: request.causal_context,
                     run_id,
                     attempt_id,
                     payload,
@@ -516,6 +518,8 @@ mod tests {
             AttemptRunner::with_timer(handler, FixedTimer { elapsed: Duration::from_millis(5) });
 
         let request = ExecutorRequest {
+            resume_context: None,
+            causal_context: None,
             run_id,
             attempt_id,
             payload: vec![9, 8, 7],
@@ -572,6 +576,8 @@ mod tests {
             AttemptRunner::with_timer(handler, FixedTimer { elapsed: Duration::from_secs(2) });
 
         let request = ExecutorRequest {
+            resume_context: None,
+            causal_context: None,
             run_id: RunId::new(),
             attempt_id: AttemptId::new(),
             payload: vec![],
@@ -614,6 +620,8 @@ mod tests {
             AttemptRunner::with_timer(handler, FixedTimer { elapsed: Duration::from_millis(1) });
 
         let request = ExecutorRequest {
+            resume_context: None,
+            causal_context: None,
             run_id: RunId::new(),
             attempt_id: AttemptId::new(),
             payload: vec![],
@@ -654,6 +662,8 @@ mod tests {
         );
 
         let request = ExecutorRequest {
+            resume_context: None,
+            causal_context: None,
             run_id: RunId::new(),
             attempt_id: AttemptId::new(),
             payload: vec![],
