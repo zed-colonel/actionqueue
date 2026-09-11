@@ -777,7 +777,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
 
     fn process_worker_result(
         &mut self,
-        worker_result: WorkerResult,
+        mut worker_result: WorkerResult,
         result: &mut TickResult,
         current_time: u64,
     ) -> Result<(), DispatchError> {
@@ -806,12 +806,44 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
                 &worker_result.response,
                 current_time,
             );
-        let _ = actionqueue_engine::scheduler::attempt_finish::submit_attempt_finish_via_authority(
-            finish_cmd,
-            DurabilityPolicy::Immediate,
-            &mut self.authority,
-        )
-        .map_err(|e| DispatchError::Authority(e.into_source()))?;
+        let finish =
+            actionqueue_engine::scheduler::attempt_finish::submit_attempt_finish_via_authority(
+                finish_cmd,
+                DurabilityPolicy::Immediate,
+                &mut self.authority,
+            )
+            .map_err(|e| e.into_source());
+        match finish {
+            Ok(_) => {}
+            Err(MutationAuthorityError::Wait(
+                actionqueue_core::mutation::WaitRejection::TooLarge,
+            )) => {
+                // Size validation rejects before append. The worker has already
+                // returned, so durably close its attempt with a bounded failure
+                // and use that same outcome for retry and ownership cleanup.
+                // Never substitute a result after an ambiguous persistence error.
+                worker_result.response =
+                    actionqueue_executor_local::ExecutorResponse::RetryableFailure {
+                        error: "handler result exceeds configured size limit".into(),
+                    };
+                let failure =
+                    actionqueue_engine::scheduler::attempt_finish::build_attempt_finish_command(
+                        seq,
+                        run_id,
+                        attempt_id,
+                        &worker_result.response,
+                        current_time,
+                    );
+                let _ = self
+                    .authority
+                    .submit_command(
+                        MutationCommand::AttemptFinish(failure),
+                        DurabilityPolicy::Immediate,
+                    )
+                    .map_err(DispatchError::Authority)?;
+            }
+            Err(error) => return Err(DispatchError::Authority(error)),
+        }
 
         // Compute the effective attempt number for retry cap purposes.
         // Suspended and Awaiting attempts do not count against max_attempts: they are

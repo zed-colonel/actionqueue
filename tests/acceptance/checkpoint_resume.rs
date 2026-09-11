@@ -533,3 +533,143 @@ fn corrupted_checkpoint_or_assignment_cannot_publish_a_snapshot() {
         assert_eq!(before, std::fs::read(session.snapshot_path()).unwrap());
     }
 }
+
+#[derive(Clone)]
+struct OversizedResult {
+    run: RunId,
+    bytes: usize,
+    failures: usize,
+    suspended: bool,
+    seen: Recording,
+}
+impl actionqueue_executor_local::handler::ExecutorHandler for OversizedResult {
+    fn execute(
+        &self,
+        c: actionqueue_executor_local::handler::ExecutorContext,
+    ) -> actionqueue_executor_local::handler::HandlerOutput {
+        use actionqueue_executor_local::handler::HandlerOutput;
+        if c.input.run_id == self.run {
+            let mut seen = self.seen.0.lock().unwrap();
+            seen.push(c.input);
+            if seen.len() <= self.failures {
+                let output = Some(vec![b'x'; self.bytes + 1]);
+                return if self.suspended {
+                    HandlerOutput::Suspended { output, consumption: vec![] }
+                } else {
+                    HandlerOutput::Success { output, consumption: vec![] }
+                };
+            }
+        }
+        // The exact boundary remains accepted, including a zero-byte limit.
+        HandlerOutput::Success { output: Some(vec![0; self.bytes]), consumption: vec![] }
+    }
+}
+
+async fn output_limit_case(limit: usize, resumed: bool, failures: usize, suspended: bool) {
+    use actionqueue_core::limits::ContinuationLimits;
+    use actionqueue_runtime::{config::RuntimeConfig, engine::ActionQueueEngine};
+    let dir = resume_dir();
+    let mut a = s::open(dir.path());
+    let mut context = None;
+    let run = if resumed {
+        let run = running(&mut a, 1, Some("output-limit"), false);
+        let mut c = command(&a, run, spec(WaitId::new(), None));
+        c.checkpoint = Some(checkpoint(&a, run, b"preserved"));
+        establish(&mut a, c).unwrap();
+        let _ = s::submit(&mut a, s::envelope(1, 25)).unwrap();
+        reconcile(&mut a, 30).unwrap();
+        context = a.projection().pending_resume(run);
+        run
+    } else {
+        let request = admission_support::request(1);
+        let mut task = request.task_spec().clone();
+        task.set_constraints(TaskConstraints::new(3, None, Some("output-limit".into())).unwrap())
+            .unwrap();
+        let _ = admission_support::ensure(&mut a, admission_support::with_spec(&request, task), 10)
+            .unwrap();
+        a.projection().runs_for_task(request.task_spec().id()).next().unwrap().id()
+    };
+    drop(a);
+    let seen = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let config = RuntimeConfig {
+        data_dir: dir.path().into(),
+        dispatch_concurrency: std::num::NonZeroUsize::new(1).unwrap(),
+        continuation_limits: ContinuationLimits { output_bytes: limit, ..Default::default() },
+        backoff_strategy: actionqueue_runtime::config::BackoffStrategyConfig::Fixed {
+            interval: std::time::Duration::ZERO,
+        },
+        ..Default::default()
+    };
+    let handler =
+        OversizedResult { run, bytes: limit, failures, suspended, seen: Recording(seen.clone()) };
+    let mut boot =
+        ActionQueueEngine::new(config, handler).bootstrap_with_clock(MockClock::new(40)).unwrap();
+    let _ = boot.run_until_idle().await.expect("oversized result must close normally");
+    let expected = if failures == 1 { RunState::Completed } else { RunState::Failed };
+    assert_eq!(boot.projection().get_run_state(&run), Some(&expected));
+    assert!(boot.projection().get_lease_metadata(&run).is_none());
+    assert!(boot.projection().pending_resume(run).is_none());
+    {
+        let inputs = seen.lock().unwrap();
+        assert_eq!(inputs.len(), if failures == 1 { 2 } else { 3 });
+        for (n, input) in inputs.iter().enumerate() {
+            assert_eq!(input.resume_context, context);
+            let history = boot.projection().get_attempt_history(&run).unwrap();
+            let attempt = history.iter().find(|h| h.attempt_id() == input.attempt_id).unwrap();
+            assert!(attempt.finished_at().is_some());
+            if n < failures {
+                assert_eq!(attempt.result(), Some(AttemptResultKind::Failure));
+                assert_eq!(attempt.error(), Some("handler result exceeds configured size limit"));
+                assert!(attempt.output().is_none());
+            }
+            if let Some(context) = &context {
+                let assignment = attempt.accepted_start().unwrap().assignment.unwrap();
+                assert_eq!(assignment.context_id, context.context_id);
+                assert_eq!(
+                    assignment.delivery,
+                    if n == 0 { ResumeDelivery::Initial } else { ResumeDelivery::Retry }
+                );
+                assert_eq!(
+                    assignment.previous_attempt_id,
+                    n.checked_sub(1).map(|i| inputs[i].attempt_id)
+                );
+            }
+        }
+    }
+    // Reuse the same concurrency key and the sole worker slot after rejection.
+    let mut next = admission_support::request(2).task_spec().clone();
+    next.set_constraints(TaskConstraints::new(1, None, Some("output-limit".into())).unwrap())
+        .unwrap();
+    let next_id = next.id();
+    boot.submit_task(next).unwrap();
+    let _ = boot.run_until_idle().await.expect("queue must continue after rejection");
+    let next_run = boot.projection().runs_for_task(next_id).next().unwrap();
+    assert_eq!(next_run.state(), RunState::Completed);
+    assert_eq!(
+        boot.projection().get_attempt_history(&next_run.id()).unwrap()[0]
+            .output()
+            .map_or(0, <[u8]>::len),
+        limit
+    );
+    let digest = boot.projection().projection_digest().unwrap();
+    boot.shutdown().unwrap();
+    let a = s::open(dir.path());
+    assert_eq!(a.projection().projection_digest().unwrap(), digest);
+    parity(&a);
+}
+
+#[tokio::test]
+async fn oversized_success_closes_attempt_and_preserves_resume_retry_lineage() {
+    for limit in [actionqueue_core::limits::MAX_INLINE_DATA_BYTES, 8, 0] {
+        for resumed in [false, true] {
+            for failures in [1, usize::MAX] {
+                output_limit_case(limit, resumed, failures, false).await;
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn oversized_suspension_closes_as_failure_instead_of_stranding_run() {
+    output_limit_case(8, true, usize::MAX, true).await;
+}
