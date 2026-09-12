@@ -601,3 +601,424 @@ fn every_tenant_control_permission_is_current_and_independent_of_opaque_referenc
     }
     parity(&a);
 }
+
+#[cfg(feature = "platform")]
+fn persisted_image(
+    a: &s::Authority,
+) -> (actionqueue_storage::recovery::projection::ProjectionDigest, Vec<u8>) {
+    (
+        a.projection().projection_digest().unwrap(),
+        std::fs::read(a.store_session().unwrap().wal_path()).unwrap(),
+    )
+}
+#[cfg(feature = "platform")]
+fn tenant_pair(a: &mut s::Authority) -> (HostControlContext, HostControlContext) {
+    let mut hosts = Vec::new();
+    for name in ["owner", "other"] {
+        let tenant = TenantId::new();
+        let c = MutationCommand::TenantCreate(TenantCreateCommand::new(
+            seq(a),
+            TenantRegistration::new(tenant, name),
+            1,
+        ));
+        let _ = execute_mutation(a, &host(ControlScope::Store, None), c).unwrap();
+        let mut h = s::host_support::tenant(a, tenant).unwrap();
+        h.attribution = host(ControlScope::Store, None)
+            .attribution
+            .with_request_id(OpaqueRef::new("campaign/arm/no-authority").unwrap());
+        hosts.push(h);
+    }
+    (hosts.remove(0), hosts.remove(0))
+}
+#[cfg(feature = "platform")]
+fn permission(a: &mut s::Authority, h: &HostControlContext, action: QueueAction, grant: bool) {
+    let ControlScope::Tenant(tenant) = h.scope else { panic!() };
+    let c = if grant {
+        MutationCommand::CapabilityGrant(CapabilityGrantCommand::new(
+            seq(a),
+            h.actor_id.unwrap(),
+            action.permission(),
+            tenant,
+            30,
+        ))
+    } else {
+        MutationCommand::CapabilityRevoke(CapabilityRevokeCommand::new(
+            seq(a),
+            h.actor_id.unwrap(),
+            action.permission(),
+            tenant,
+            30,
+        ))
+    };
+    let _ = execute_mutation(a, &host(ControlScope::Store, None), c).unwrap();
+}
+
+#[cfg(feature = "platform")]
+#[test]
+fn generic_control_transitions_enforce_host_scope_permissions_and_replayed_lineage() {
+    for (from, to, action) in [
+        (RunState::Scheduled, RunState::Canceled, QueueAction::CancelRun),
+        (RunState::Running, RunState::Canceled, QueueAction::CancelRun),
+        (RunState::Running, RunState::Suspended, QueueAction::SuspendRun),
+        (RunState::Suspended, RunState::Ready, QueueAction::ResumeRun),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = s::open_platform(dir.path());
+        let (h, other) = tenant_pair(&mut a);
+        let ControlScope::Tenant(tenant) = h.scope else { panic!() };
+        let mut r = running_scoped(&mut a, 301, None, false, Some(tenant));
+        if from == RunState::Scheduled {
+            r = a
+                .projection()
+                .runs_for_task(admission_support::id(301))
+                .find(|r| r.state() == RunState::Scheduled)
+                .unwrap()
+                .id();
+        }
+        for owner in [&h, &other] {
+            permission(&mut a, owner, QueueAction::SuspendRun, true);
+            permission(&mut a, owner, QueueAction::ResumeRun, true);
+        }
+        if from == RunState::Suspended {
+            let c = MutationCommand::RunSuspend(RunSuspendCommand::new(seq(&a), r, None, 20));
+            let _ = execute_mutation(&mut a, &h, c).unwrap();
+        }
+        a.set_control_context(None);
+        let make = |a: &s::Authority| {
+            MutationCommand::RunStateTransition(RunStateTransitionCommand::new(
+                seq(a),
+                r,
+                from,
+                to,
+                31,
+            ))
+        };
+        let before = persisted_image(&a);
+        assert!(a.submit_command(make(&a), DurabilityPolicy::Immediate).is_err());
+        // Rebuild the command at the authoritative sequence for every check.
+        let c = make(&a);
+        assert!(execute_mutation(&mut a, &other, c).is_err());
+        let c = MutationCommand::RecoveryControl(Box::new(make(&a)));
+        assert!(a.submit_command(c, DurabilityPolicy::Immediate).is_err());
+        assert_eq!(before, persisted_image(&a));
+        permission(&mut a, &h, action, false);
+        let before = persisted_image(&a);
+        let c = make(&a);
+        assert!(execute_mutation(&mut a, &h, c).is_err());
+        assert_eq!(before, persisted_image(&a));
+        permission(&mut a, &h, action, true);
+        let at = seq(&a);
+        let c = make(&a);
+        let _ = execute_mutation(&mut a, &h, c).unwrap();
+        assert_eq!(a.projection().get_run_state(&r), Some(&to));
+        assert_eq!(a.projection().control_history().get(&at), Some(&ControlAttribution::from(&h)));
+        parity(&a);
+        drop(a);
+        let a = s::reopen(dir.path());
+        assert_eq!(a.projection().control_history().get(&at), Some(&ControlAttribution::from(&h)));
+        if to == RunState::Ready {
+            assert_eq!(
+                a.projection().pending_resume(r).unwrap().wake,
+                WakeReason::AdministrativeResume { control_context: Some(h.attribution.clone()) }
+            );
+        }
+    }
+}
+
+#[cfg(feature = "platform")]
+#[test]
+fn platform_wait_and_retention_operations_reject_missing_cross_tenant_and_revoked_hosts() {
+    for operation in
+        ["inspect_wait", "resolve", "cancel_wait", "inspect_signal", "pin", "unpin", "retire"]
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = s::open_platform(dir.path());
+        let (h, other) = tenant_pair(&mut a);
+        let ControlScope::Tenant(tenant) = h.scope else { panic!() };
+        let r = running_scoped(&mut a, 302, None, false, Some(tenant));
+        let wait = WaitId::new();
+        let mut filter = s::filter();
+        filter.tenant_id = Some(tenant);
+        filter.kind = SignalKind::new("wait-only").unwrap();
+        let w = WaitSpec::new(
+            wait,
+            filter,
+            WaitMatchPolicy::FirstMatch,
+            SignalEligibility::After(SignalSequence::new(0)),
+            None,
+        )
+        .unwrap();
+        let c = command(&a, r, w);
+        establish(&mut a, c).unwrap();
+        a.set_signal_retention_policy(actionqueue_core::limits::SignalRetentionPolicy {
+            minimum_age_secs: 0,
+            minimum_sequence_window: 0,
+        });
+        execute_control(
+            &mut a,
+            &h,
+            ControlOperation::AdmitSignal(s::request(501)),
+            &MockClock::new(25),
+        )
+        .unwrap();
+        execute_control(
+            &mut a,
+            &h,
+            ControlOperation::AdmitSignal(s::request(502)),
+            &MockClock::new(25),
+        )
+        .unwrap();
+        let pin = |a: &s::Authority| SignalPinCommand {
+            expected_sequence: seq(a),
+            tenant_id: Some(tenant),
+            signal_id: s::id(501),
+            pin_id: SignalPinId::new("pin").unwrap(),
+            timestamp: 31,
+            control_context: None,
+        };
+        if operation == "unpin" {
+            let c = MutationCommand::SignalPin(pin(&a));
+            let _ = execute_mutation(&mut a, &h, c).unwrap();
+        }
+        let action = match operation {
+            "inspect_wait" => QueueAction::InspectWait,
+            "resolve" => QueueAction::ResolveWait,
+            "cancel_wait" => QueueAction::CancelWait,
+            "inspect_signal" => QueueAction::InspectSignal,
+            _ => QueueAction::RetainSignal,
+        };
+        let invoke = |a: &mut s::Authority, h: &HostControlContext| -> Result<(), ControlError> {
+            match operation {
+                "inspect_wait" => inspect_wait(a, h, wait).map(|_| ()),
+                "inspect_signal" => inspect_signal(a, h, &s::id(501)).map(|_| ()),
+                "resolve" => execute_control(
+                    a,
+                    h,
+                    ControlOperation::ResolveWait { run_id: r, wait_id: wait },
+                    &MockClock::new(31),
+                )
+                .map(|_| ()),
+                "cancel_wait" => execute_control(
+                    a,
+                    h,
+                    ControlOperation::CancelWait { run_id: r, wait_id: wait },
+                    &MockClock::new(31),
+                )
+                .map(|_| ()),
+                _ => {
+                    let c = match operation {
+                        "pin" => MutationCommand::SignalPin(pin(a)),
+                        "unpin" => MutationCommand::SignalUnpin(pin(a)),
+                        _ => MutationCommand::RetireSignals(RetireSignalsCommand {
+                            expected_sequence: seq(a),
+                            tenant_id: Some(tenant),
+                            sequences: vec![SignalSequence::new(1)],
+                            timestamp: 31,
+                            control_context: None,
+                        }),
+                    };
+                    execute_mutation(a, h, c).map(|_| ())
+                }
+            }
+        };
+        a.set_control_context(None);
+        let missing = HostControlContext { actor_id: None, ..h.clone() };
+        let before = persisted_image(&a);
+        for rejected in [&missing, &other] {
+            assert!(invoke(&mut a, rejected).is_err(), "{operation}");
+            assert_eq!(before, persisted_image(&a), "{operation}");
+        }
+        permission(&mut a, &h, action, false);
+        let before = persisted_image(&a);
+        assert!(invoke(&mut a, &h).is_err(), "{operation}");
+        assert_eq!(before, persisted_image(&a), "{operation}");
+        permission(&mut a, &h, action, true);
+        let at = seq(&a);
+        invoke(&mut a, &h).unwrap();
+        if !operation.starts_with("inspect") {
+            assert_eq!(
+                a.projection().control_history().get(&at),
+                Some(&ControlAttribution::from(&h)),
+                "{operation}"
+            );
+        }
+        parity(&a);
+    }
+}
+
+#[cfg(feature = "platform")]
+#[test]
+fn platform_mutation_operations_enforce_context_target_and_revocation_before_append() {
+    use actionqueue_core::{actor::*, budget::BudgetDimension, subscription::*};
+    for operation in [
+        "cancel_task",
+        "cancel_run",
+        "allocate",
+        "consume",
+        "replenish",
+        "subscribe",
+        "unsubscribe",
+        "register",
+        "deregister",
+        "heartbeat",
+        "ledger",
+    ] {
+        if !cfg!(feature = "budget")
+            && matches!(
+                operation,
+                "allocate" | "consume" | "replenish" | "subscribe" | "unsubscribe"
+            )
+        {
+            continue;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = s::open_platform(dir.path());
+        let (h, other) = tenant_pair(&mut a);
+        let ControlScope::Tenant(tenant) = h.scope else { panic!() };
+        let run = running_scoped(&mut a, 303, None, false, Some(tenant));
+        let task = a.projection().get_run_instance(&run).unwrap().task_id();
+        let subscription = SubscriptionId::new();
+        let actor = ActorId::new();
+        let action = match operation {
+            "cancel_task" => QueueAction::CancelTask,
+            "cancel_run" => QueueAction::CancelRun,
+            "allocate" | "consume" | "replenish" => QueueAction::ManageBudget,
+            "subscribe" | "unsubscribe" => QueueAction::ManageSubscription,
+            "register" => QueueAction::RegisterActor,
+            "deregister" => QueueAction::DeregisterActor,
+            "heartbeat" => QueueAction::HeartbeatActor,
+            _ => QueueAction::AppendLedger,
+        };
+        for owner in [&h, &other] {
+            if matches!(
+                action,
+                QueueAction::RegisterActor
+                    | QueueAction::DeregisterActor
+                    | QueueAction::HeartbeatActor
+            ) {
+                permission(&mut a, owner, action, true);
+            }
+        }
+        if matches!(operation, "consume" | "replenish") {
+            let c = MutationCommand::BudgetAllocate(BudgetAllocateCommand::new(
+                seq(&a),
+                task,
+                BudgetDimension::Token,
+                100,
+                20,
+            ));
+            let _ = execute_mutation(&mut a, &h, c).unwrap();
+        }
+        if operation == "unsubscribe" {
+            let c = MutationCommand::SubscriptionCreate(SubscriptionCreateCommand::new(
+                seq(&a),
+                subscription,
+                task,
+                EventFilter::TaskCompleted { task_id: task },
+                20,
+            ));
+            let _ = execute_mutation(&mut a, &h, c).unwrap();
+        }
+        let make =
+            |a: &s::Authority| match operation {
+                "cancel_task" | "cancel_run" => MutationCommand::Cancel(CancelCommand {
+                    expected_sequence: seq(a),
+                    target: if operation == "cancel_task" {
+                        CancelTarget::Task(task)
+                    } else {
+                        CancelTarget::Run(run)
+                    },
+                    tenant_id: Some(tenant),
+                    timestamp: 31,
+                    control_context: None,
+                }),
+                "allocate" => MutationCommand::BudgetAllocate(BudgetAllocateCommand::new(
+                    seq(a),
+                    task,
+                    BudgetDimension::Token,
+                    100,
+                    31,
+                )),
+                "consume" => MutationCommand::BudgetConsume(BudgetConsumeCommand::new(
+                    seq(a),
+                    task,
+                    BudgetDimension::Token,
+                    10,
+                    31,
+                )),
+                "replenish" => MutationCommand::BudgetReplenish(BudgetReplenishCommand::new(
+                    seq(a),
+                    task,
+                    BudgetDimension::Token,
+                    10,
+                    31,
+                )),
+                "subscribe" => MutationCommand::SubscriptionCreate(SubscriptionCreateCommand::new(
+                    seq(a),
+                    subscription,
+                    task,
+                    EventFilter::TaskCompleted { task_id: task },
+                    31,
+                )),
+                "unsubscribe" => MutationCommand::SubscriptionCancel(
+                    SubscriptionCancelCommand::new(seq(a), subscription, 31),
+                ),
+                "register" => MutationCommand::ActorRegister(ActorRegisterCommand::new(
+                    seq(a),
+                    ActorRegistration::new(
+                        actor,
+                        "actor",
+                        ExecutorTraits::new(vec!["compute".into()]).unwrap(),
+                        30,
+                    )
+                    .with_tenant(tenant),
+                    31,
+                )),
+                "deregister" => MutationCommand::ActorDeregister(ActorDeregisterCommand::new(
+                    seq(a),
+                    h.actor_id.unwrap(),
+                    31,
+                )),
+                "heartbeat" => MutationCommand::ActorHeartbeat(ActorHeartbeatCommand::new(
+                    seq(a),
+                    h.actor_id.unwrap(),
+                    31,
+                )),
+                _ => MutationCommand::LedgerAppend(LedgerAppendCommand::new(
+                    seq(a),
+                    LedgerEntry::new(LedgerEntryId::new(), tenant, "opaque", vec![], 31)
+                        .with_actor(h.actor_id.unwrap()),
+                    31,
+                )),
+            };
+        a.set_control_context(None);
+        let before = persisted_image(&a);
+        let bytes = std::fs::read(a.store_session().unwrap().wal_path()).unwrap();
+        assert!(a.submit_command(make(&a), DurabilityPolicy::Immediate).is_err(), "{operation}");
+        for rejected in [&HostControlContext { actor_id: None, ..h.clone() }, &other] {
+            let c = make(&a);
+            assert!(execute_mutation(&mut a, rejected, c).is_err(), "{operation}");
+            assert_eq!(before, persisted_image(&a), "{operation}");
+            assert_eq!(
+                bytes,
+                std::fs::read(a.store_session().unwrap().wal_path()).unwrap(),
+                "{operation}"
+            );
+        }
+        permission(&mut a, &h, action, false);
+        let before = persisted_image(&a);
+        let c = make(&a);
+        assert!(execute_mutation(&mut a, &h, c).is_err(), "{operation}");
+        assert_eq!(before, persisted_image(&a), "{operation}");
+        permission(&mut a, &h, action, true);
+        let at = seq(&a);
+        let c = make(&a);
+        let _ = execute_mutation(&mut a, &h, c).unwrap();
+        assert_eq!(
+            a.projection().control_history().get(&at),
+            Some(&ControlAttribution::from(&h)),
+            "{operation}"
+        );
+        parity(&a);
+    }
+}

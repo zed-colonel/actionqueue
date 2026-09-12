@@ -253,7 +253,24 @@ fn timeout_and_administrative_resume_keep_checkpoint_lineage() {
         &mut a,
         MutationCommand::LeaseRelease(LeaseReleaseCommand::new(seq(&a), r, "worker", 1036, 38))
     );
-    transition(&mut a, r, RunState::Suspended, 39);
+    // Only recovery may finish this legacy prefix: there is no active attempt
+    // left for an administrative suspension to close.
+    let before = seq(&a);
+    assert!(a
+        .submit_command(
+            MutationCommand::RunStateTransition(RunStateTransitionCommand::new(
+                before,
+                r,
+                RunState::Running,
+                RunState::Suspended,
+                39
+            )),
+            DurabilityPolicy::Immediate
+        )
+        .is_err());
+    assert_eq!(seq(&a), before);
+    recover_execution(&mut a, 39).unwrap();
+    assert_eq!(a.projection().get_run_state(&r), Some(&RunState::Suspended));
     assert!(a.projection().pending_resume(r).is_none());
     parity(&a);
     commit!(&mut a, MutationCommand::RunResume(RunResumeCommand::new(seq(&a), r, 40)));

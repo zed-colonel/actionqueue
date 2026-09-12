@@ -345,10 +345,10 @@ pub fn maintain<W: WalWriter>(
             )
             .map_err(err)?;
     }
-    reconcile_subscriptions(a, now)?;
+    crate::reactivity::reconcile(a, now).map_err(err)?;
     crate::waits::recover_expired_execution(a, now).map_err(err)?;
     crate::waits::reconcile(a, now).map_err(err)?;
-    reconcile_subscriptions(a, now)?;
+    crate::reactivity::reconcile(a, now).map_err(err)?;
     let retry: Vec<_> = a
         .projection()
         .run_instances()
@@ -376,6 +376,8 @@ pub fn maintain<W: WalWriter>(
             )
             .map_err(err)?;
     }
+    #[cfg(feature = "workflow")]
+    crate::cron::replenish(a, &mut Default::default(), now).map_err(err)?;
     Ok(())
 }
 /// Capacity and lease policy applied under the same exclusive owner as acceptance.
@@ -402,50 +404,4 @@ pub fn claim_with_policy<W: WalWriter>(
         return Err(err("dispatch capacity unavailable"));
     }
     claim(a, host, request, now, policy.lease_timeout_secs)
-}
-
-/// Repair the result-to-reactivity gap from durable facts, including after a crash.
-/// Only subscriptions created before the observed transition are eligible. A
-/// trigger changes Scheduled eligibility; it never resolves a durable wait.
-fn reconcile_subscriptions<W: WalWriter>(
-    a: &mut StorageMutationAuthority<W, ReplayReducer>,
-    now: u64,
-) -> Result<(), ControlError> {
-    use actionqueue_core::subscription::EventFilter;
-    let p = a.projection();
-    let mut ready: Vec<_> = p
-        .subscriptions()
-        .filter(|(_, s)| s.canceled_at.is_none() && s.triggered_at.is_none())
-        .filter(|(_, s)| match s.filter {
-            EventFilter::TaskCompleted { task_id } => {
-                p.task_terminal_status(task_id).is_some()
-                    && p.runs_for_task(task_id).any(|r| r.state() == RunState::Completed)
-                    && p.runs_for_task(task_id).any(|r| r.last_state_change_at() >= s.created_at)
-            }
-            EventFilter::RunStateChanged { task_id, state } => p
-                .runs_for_task(task_id)
-                .any(|r| r.state() == state && r.last_state_change_at() >= s.created_at),
-            EventFilter::BudgetThreshold { task_id, dimension, threshold_pct } => {
-                p.get_budget(&task_id, dimension).is_some_and(|b| {
-                    b.limit > 0
-                        && (b.consumed as u128) * 100 >= (b.limit as u128) * (threshold_pct as u128)
-                })
-            }
-        })
-        .map(|(id, _)| *id)
-        .collect();
-    ready.sort_by_key(|id| *id.as_uuid());
-    for id in ready {
-        let _ = a
-            .submit_command(
-                MutationCommand::SubscriptionTrigger(SubscriptionTriggerCommand::new(
-                    a.projection().latest_sequence().saturating_add(1),
-                    id,
-                    now,
-                )),
-                DurabilityPolicy::Immediate,
-            )
-            .map_err(err)?;
-    }
-    Ok(())
 }

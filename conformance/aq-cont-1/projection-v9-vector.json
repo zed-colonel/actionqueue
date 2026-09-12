@@ -20,7 +20,7 @@
     "ledger_entries": [],
     "metadata": {
       "run_count": 0,
-      "schema_version": 8,
+      "schema_version": 9,
       "task_count": 1,
       "wal_sequence": 2
     },
@@ -72,8 +72,8 @@
     ],
     "tenants": [],
     "timestamp": 0,
-    "version": 8,
+    "version": 9,
     "waits": []
   },
-  "sha256": "d9141d3d92fad5bedfaa7daa533d9421095668def2e124aea8508639e0152f5b"
+  "sha256": "e8b2e07d9ec48ddd8fd8f02e054cb6756c5787385ffd27e90b8cd4499e8e97a4"
 }

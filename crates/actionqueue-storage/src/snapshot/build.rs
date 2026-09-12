@@ -10,7 +10,7 @@ use crate::snapshot::model::{
 };
 
 /// The snapshot format version written by this implementation.
-const SNAPSHOT_FORMAT_VERSION: u32 = 8;
+const SNAPSHOT_FORMAT_VERSION: u32 = 9;
 
 /// Builds a validated [`Snapshot`] from the current state of a [`ReplayReducer`].
 ///
@@ -110,6 +110,7 @@ pub fn build_snapshot_from_projection(
     let subscriptions: Vec<SnapshotSubscription> = reducer
         .subscriptions()
         .map(|(_id, record)| SnapshotSubscription {
+            matched_sequence: record.matched_sequence,
             subscription_id: record.subscription_id,
             task_id: record.task_id,
             filter: record.filter.clone(),

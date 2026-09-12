@@ -35,8 +35,8 @@ pub(crate) struct Envelope {
 pub(crate) fn encode(snapshot: &Snapshot, store_id: uuid::Uuid) -> Result<Vec<u8>, String> {
     let envelope = Envelope {
         store_id,
-        snapshot_schema: 8,
-        projection_version: 8,
+        snapshot_schema: 9,
+        projection_version: 9,
         wal_sequence: snapshot.metadata.wal_sequence,
         digest: snapshot_digest(snapshot).map_err(|e| e.to_string())?,
         reserved: ReservedSections::default(),
@@ -65,17 +65,17 @@ pub(crate) fn decode(
     if identity.is_some_and(|id| id != envelope.store_id) {
         return Err(invalid("store identity mismatch".into()));
     }
-    if envelope.snapshot_schema != 8 {
+    if envelope.snapshot_schema != 9 {
         return Err(SnapshotLoaderError::IncompatibleVersion {
             component: "snapshot_schema",
-            expected: 8,
+            expected: 9,
             found: envelope.snapshot_schema,
         });
     }
-    if envelope.projection_version != 8 {
+    if envelope.projection_version != 9 {
         return Err(SnapshotLoaderError::IncompatibleVersion {
             component: "projection_version",
-            expected: 8,
+            expected: 9,
             found: envelope.projection_version,
         });
     }
@@ -84,10 +84,10 @@ pub(crate) fn decode(
     }
     let snapshot: Snapshot =
         serde_json::from_value(envelope.projection).map_err(|e| invalid(e.to_string()))?;
-    if snapshot.version != 8 {
+    if snapshot.version != 9 {
         return Err(SnapshotLoaderError::IncompatibleVersion {
             component: "projection_image",
-            expected: 8,
+            expected: 9,
             found: snapshot.version,
         });
     }

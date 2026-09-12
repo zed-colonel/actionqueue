@@ -53,14 +53,15 @@ execution. Embedded runtime exposes claimable, claim, renewal, and result method
 The daemon serializes remote ingress and its 100 ms maintenance timer under one
 mutation owner. `DaemonConfig::remote_policy` controls capacity, lease duration,
 and retry delay. Maintenance handles actor liveness, partial/expired executions,
-retry promotion, cancellations, durable waits, and secondary subscription
+retry promotion, rolling cron windows, cancellations, durable waits, and secondary subscription
 reconciliation after remote results or crashes. Internal subscription triggers
 can make Scheduled runs eligible early; they cannot resolve Awaiting/Suspended
 continuations.
 
 Execution commands retain their typed attempt/lease/scheduler preconditions.
 `RecoveryControl` permits only controls justified by durable antecedents:
-heartbeat timeout and cancellation propagation. It cannot supply an anonymous
+heartbeat timeout, cancellation propagation, and completion of a legacy suspended
+attempt after its durable finish and lease release. It cannot supply an anonymous
 administrative wildcard. Administrative suspension becomes a fenced suspension
 disposition at storage, closing the attempt and lease together.
 
@@ -70,8 +71,12 @@ Every host control has attribution in the same WAL frame as its mutation.
 Kind 352/schema 2 encodes the bounded attribution plus the original binary inner
 frame, avoiding JSON inflation of binary payloads. The reader still supports
 schema 1 and rejects nested envelopes or mismatched store/sequence identities.
-Snapshot/projection version 8 retains attribution history. Version 7 migration
-remains outside the accepted design.
+Snapshot/projection version 9 retains attribution history and the first matching
+WAL sequence for each reactive subscription. Version 8 images lack this ordering
+proof and are deliberately rejected; no in-place migration is provided.
+Subscription matches are recorded during ordered replay, then reconciled by both
+embedded ticks and daemon maintenance. Equal timestamps cannot create retrospective
+matches or suppress valid matches. The independent projection vector is version 9.
 
 The authority validates complete encoded frames against configured and hard
 limits before append. Oversize proposals are definitive rejections and do not
@@ -82,7 +87,10 @@ envelope both live and after snapshot hydration.
 
 - F-001: central mandatory controls, current authorization before duplicates,
   consistency rejection, host-bound convenience paths, recovery antecedents,
-  and fenced suspension; `acceptance_control_mutation_attribution`.
+  and fenced suspension; generic cancel/suspend/resume transitions normalize into
+  those same operations. Tests reject unbound, missing-principal, cross-tenant,
+  revoked and falsely recovery-labeled requests before append;
+  `acceptance_control_mutation_attribution`.
 - F-002: configured serialized remote scheduler and timer; HTTP capacity, retry,
   expiry, renewal, idle deadline/liveness tests and subscription crash repair.
 - F-003: HTTP anonymous/missing-scope/cross-tenant inspection and revocation
@@ -104,3 +112,19 @@ envelope both live and after snapshot hydration.
 
 The original trait matching, actor replacement, remote FIFO, and versioned
 snapshot/conformance regression tests remain in the feature matrix (F-009–F-014).
+
+## Follow-up review remediation
+
+- F-008: platform tests invoke actual wait inspection/resolution/cancellation,
+  signal inspection/pin/unpin/retirement, task/run cancellation, budget controls,
+  subscription controls, actor controls, and ledger append. Missing principals,
+  valid cross-tenant principals, and revoked permissions leave state unchanged;
+  mutations retain exact host attribution through WAL and snapshot replay.
+  Remote claim/renew/result and recovered result retries also reject cross-tenant
+  principals. HTTP inspection and effect-permission suites remain in the matrix.
+- F-015: daemon and embedded cron replenishment use one implementation. Remote
+  tests complete eight occurrences of bounded and unbounded policies, restart at
+  the original window boundary, and verify cancellation after restart. HTTP tests
+  independently execute both policies past five occurrences.
+- F-016: equal-timestamp tests exercise both registration/event orderings, WAL
+  replay, snapshot recovery, actual embedded ticks, and daemon maintenance.

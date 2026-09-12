@@ -248,6 +248,9 @@ pub struct BudgetRecord {
 /// Subscription state record.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SubscriptionRecord {
+    /// First matching WAL event observed after registration. Retained through snapshots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matched_sequence: Option<u64>,
     /// The subscription identifier.
     pub subscription_id: SubscriptionId,
     /// The subscribing task identifier.
@@ -593,6 +596,7 @@ impl ReplayReducer {
             return Err(ReplayReducerError::InvalidTransition);
         }
 
+        let observations = self.subscription_observations();
         match event.event() {
             WalEventType::RunStateChanged { run_id, previous_state, new_state, .. }
                 if *previous_state == RunState::Awaiting
@@ -1008,6 +1012,8 @@ impl ReplayReducer {
                 });
             }
         }
+
+        self.record_subscription_matches(observations, event.sequence());
 
         // Commit bookkeeping only after semantic application succeeds.
         if let Some(control) = event.control() {
@@ -1874,6 +1880,7 @@ impl ReplayReducer {
         self.subscriptions.insert(
             subscription_id,
             SubscriptionRecord {
+                matched_sequence: None,
                 subscription_id,
                 task_id,
                 filter,

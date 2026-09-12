@@ -19,11 +19,20 @@ fn host(scope: ControlScope, actor_id: Option<ActorId>) -> HostControlContext {
     }
 }
 fn fixture() -> (std::path::PathBuf, RouterState, HostControlContext, HostControlContext) {
+    fixture_with_workflow(false)
+}
+fn fixture_with_workflow(
+    workflow: bool,
+) -> (std::path::PathBuf, RouterState, HostControlContext, HostControlContext) {
     let root = std::env::temp_dir().join(format!("aq-http-{}", TaskId::new()));
     let _ = actionqueue_storage::store::open_store(
         &root,
         actionqueue_storage::store::OpenOptions::Initialize {
-            features: vec!["actor".into(), "platform".into()],
+            features: if workflow {
+                vec!["actor".into(), "platform".into(), "workflow".into()]
+            } else {
+                vec!["actor".into(), "platform".into()]
+            },
         },
     )
     .unwrap();
@@ -406,4 +415,68 @@ fn http_compound_result_checks_effect_permissions_before_commit_and_retry() {
     drop(state);
     drop(runtime);
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(feature = "workflow")]
+#[test]
+fn http_remote_cron_claims_continue_past_five_occurrences() {
+    use actionqueue_core::{
+        disposition::AttemptDisposition,
+        task::{run_policy::*, task_spec::*},
+    };
+    for bounded in [false, true] {
+        let (root, mut state, one, _) = fixture_with_workflow(true);
+        let clock = MovingClock(Arc::new(std::sync::atomic::AtomicU64::new(10)));
+        Arc::get_mut(&mut state).unwrap().clock = Arc::new(clock.clone());
+        let ControlScope::Tenant(tenant) = one.scope else { unreachable!() };
+        let task = TaskId::new();
+        {
+            let mut a = state.control_authority.as_ref().unwrap().lock().unwrap();
+            let policy = CronPolicy::new("* * * * * * *").unwrap();
+            let policy = if bounded { policy.with_max_occurrences(8).unwrap() } else { policy };
+            let spec = TaskSpec::new(
+                task,
+                TaskPayload::new(vec![]),
+                RunPolicy::Cron(policy),
+                Default::default(),
+                Default::default(),
+            )
+            .unwrap()
+            .with_tenant(tenant);
+            execute_control(
+                &mut a,
+                &one,
+                ControlOperation::AdmitTask(
+                    actionqueue_core::admission::EnsureTaskRequest::for_task(spec, vec![]).unwrap(),
+                ),
+                &MockClock::new(10),
+            )
+            .unwrap();
+        }
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let router = build_router(state.clone());
+            let path = format!("/api/v2/actors/{}", one.actor_id.unwrap());
+            // First finish the fixture's once task, then eight cron occurrences.
+            for n in 0..9 {
+                clock.0.store(10+n, std::sync::atomic::Ordering::Release);
+                let (status, eligible) = get(router.clone(), &format!("{path}/claimable"), Some("one")).await;
+                assert_eq!(status, StatusCode::OK);
+                let run = eligible["runs"][0].as_str().unwrap();
+                let (status, work) = post(router.clone(), &format!("{path}/claim"), "one", serde_json::json!({"protocol_version":1,"contract_revision":"AQ-CONT-1-r2","run_id":run,"attempt_id":AttemptId::new()})).await;
+                assert_eq!(status, StatusCode::OK, "{work}");
+                let d = AttemptDisposition::complete(None);
+                let result = serde_json::json!({"protocol_version":1,"contract_revision":"AQ-CONT-1-r2","run_id":run,"attempt_id":work["attempt_id"],"lease_fence":work["lease_fence"],"disposition_digest":actionqueue_core::disposition_digest::disposition_digest(&d),"disposition":d});
+                assert_eq!(post(router.clone(), &format!("{path}/result"), "one", result).await.0, StatusCode::OK);
+            }
+            // Ingress runs the same maintenance even after the last result.
+            assert_eq!(get(router, &format!("{path}/claimable"), Some("one")).await.0, StatusCode::OK);
+            let a = state.control_authority.as_ref().unwrap().lock().unwrap();
+            assert_eq!(a.projection().runs_for_task(task).filter(|r| r.state() == actionqueue_core::run::RunState::Completed).count(), 8);
+            assert_eq!(a.projection().runs_for_task(task).filter(|r| !r.state().is_terminal()).count(), if bounded { 0 } else { 5 });
+        });
+        drop(state);
+        drop(runtime);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

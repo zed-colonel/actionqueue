@@ -517,3 +517,318 @@ fn remote_maintenance_repairs_result_subscription_gap_without_waking_waits() {
         spec(WaitId::new(), None)
     }
 }
+
+#[cfg(feature = "workflow")]
+#[test]
+fn remote_cron_replenishes_beyond_initial_window_across_restart_and_stops_on_cancel() {
+    use actionqueue_core::task::run_policy::{CronPolicy, RunPolicy};
+    for bounded in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut a, h, _) = setup(dir.path());
+        execute_control(
+            &mut a,
+            &h,
+            ControlOperation::Cancel(CancelTarget::Task(admission_support::id(1))),
+            &MockClock::new(10),
+        )
+        .unwrap();
+        let policy = CronPolicy::new("* * * * * * *").unwrap();
+        let policy = if bounded { policy.with_max_occurrences(8).unwrap() } else { policy };
+        let task = TaskId::new();
+        let spec = TaskSpec::new(
+            task,
+            TaskPayload::new(vec![]),
+            RunPolicy::Cron(policy),
+            Default::default(),
+            Default::default(),
+        )
+        .unwrap();
+        execute_control(
+            &mut a,
+            &h,
+            ControlOperation::AdmitTask(
+                actionqueue_core::admission::EnsureTaskRequest::for_task(spec, vec![]).unwrap(),
+            ),
+            &MockClock::new(10),
+        )
+        .unwrap();
+        assert_eq!(a.projection().runs_for_task(task).count(), 5);
+        for n in 0..8 {
+            let now = 11 + n;
+            remote::maintain(&mut a, now, Default::default()).unwrap();
+            let run = remote::claimable(&a, &h, now).unwrap()[0];
+            let w = remote::claim(&mut a, &h, request(run), now, 30).unwrap();
+            remote::submit_result(&mut a, &h, result(&w, AttemptDisposition::complete(None)), now)
+                .unwrap();
+            if n == 4 {
+                // Restart before maintenance, with a durable result to replenish.
+                parity(&a);
+                drop(a);
+                a = s::reopen(dir.path());
+            }
+            remote::maintain(&mut a, now, Default::default()).unwrap();
+        }
+        assert_eq!(
+            a.projection().runs_for_task(task).filter(|r| r.state() == RunState::Completed).count(),
+            8
+        );
+        assert_eq!(
+            a.projection().runs_for_task(task).filter(|r| !r.state().is_terminal()).count(),
+            if bounded { 0 } else { 5 }
+        );
+        if !bounded {
+            execute_control(
+                &mut a,
+                &h,
+                ControlOperation::Cancel(CancelTarget::Task(task)),
+                &MockClock::new(20),
+            )
+            .unwrap();
+            parity(&a);
+            drop(a);
+            a = s::reopen(dir.path());
+            let before = seq(&a);
+            remote::maintain(&mut a, 21, Default::default()).unwrap();
+            assert_eq!(seq(&a), before);
+            assert!(a.projection().runs_for_task(task).all(|r| r.state().is_terminal()));
+        }
+        parity(&a);
+    }
+}
+
+#[cfg(feature = "budget")]
+#[tokio::test]
+async fn equal_timestamp_subscriptions_obey_wal_order_after_replay_and_snapshot() {
+    use actionqueue_core::{subscription::*, task::run_policy::RunPolicy};
+    for before in [false, true] {
+        for snapshot in [false, true] {
+            for daemon in [false, true] {
+                let dir = tempfile::tempdir().unwrap();
+                let (mut a, h, r) = setup(dir.path());
+                let work = remote::claim(&mut a, &h, request(r), 11, 30).unwrap();
+                let target = TaskId::new();
+                let spec = TaskSpec::new(
+                    target,
+                    TaskPayload::new(vec![]),
+                    RunPolicy::repeat(2, 10000).unwrap(),
+                    Default::default(),
+                    Default::default(),
+                )
+                .unwrap();
+                execute_control(
+                    &mut a,
+                    &h,
+                    ControlOperation::AdmitTask(
+                        actionqueue_core::admission::EnsureTaskRequest::for_task(spec, vec![])
+                            .unwrap(),
+                    ),
+                    &MockClock::new(11),
+                )
+                .unwrap();
+                let future = a
+                    .projection()
+                    .runs_for_task(target)
+                    .find(|r| r.scheduled_at() > 1000)
+                    .unwrap()
+                    .id();
+                // Retire siblings first so this completion also makes the source terminal.
+                let siblings: Vec<_> = a
+                    .projection()
+                    .runs_for_task(work.task_id)
+                    .filter(|x| x.id() != r)
+                    .map(|x| x.id())
+                    .collect();
+                for id in siblings {
+                    execute_control(
+                        &mut a,
+                        &h,
+                        ControlOperation::Cancel(CancelTarget::Run(id)),
+                        &MockClock::new(20),
+                    )
+                    .unwrap();
+                }
+                let ids = [SubscriptionId::new(), SubscriptionId::new()];
+                let subscribe = |a: &mut s::Authority| {
+                    for (id, filter) in ids.into_iter().zip([
+                        EventFilter::TaskCompleted { task_id: work.task_id },
+                        EventFilter::RunStateChanged {
+                            task_id: work.task_id,
+                            state: RunState::Completed,
+                        },
+                    ]) {
+                        let c = MutationCommand::SubscriptionCreate(
+                            SubscriptionCreateCommand::new(seq(a), id, target, filter, 21),
+                        );
+                        let _ = execute_mutation(a, &h, c).unwrap();
+                    }
+                };
+                if before {
+                    subscribe(&mut a);
+                }
+                remote::submit_result(
+                    &mut a,
+                    &h,
+                    result(&work, AttemptDisposition::complete(None)),
+                    21,
+                )
+                .unwrap();
+                if !before {
+                    subscribe(&mut a);
+                }
+                if snapshot {
+                    parity(&a);
+                }
+                drop(a);
+                a = s::reopen(dir.path());
+                if daemon {
+                    remote::maintain(&mut a, 22, Default::default()).unwrap();
+                } else {
+                    let c = MutationCommand::EnginePause(EnginePauseCommand::new(seq(&a), 22));
+                    let _ =
+                        execute_mutation(&mut a, &s::host_support::host(ControlScope::Store), c)
+                            .unwrap();
+                    let mut dispatch = actionqueue_runtime::dispatch::DispatchLoop::new(
+                        a,
+                        Recording(Default::default()),
+                        MockClock::new(22),
+                        actionqueue_runtime::dispatch::DispatchConfig::new(
+                            actionqueue_runtime::config::BackoffStrategyConfig::Fixed {
+                                interval: std::time::Duration::from_secs(1),
+                            },
+                            1,
+                            30,
+                            None,
+                            None,
+                        ),
+                    )
+                    .unwrap();
+                    let _ = dispatch.tick().await.unwrap();
+                    a = dispatch.into_authority();
+                    // Re-enable selection without changing subscription evidence.
+                    let c = MutationCommand::EngineResume(EngineResumeCommand::new(seq(&a), 22));
+                    let _ =
+                        execute_mutation(&mut a, &s::host_support::host(ControlScope::Store), c)
+                            .unwrap();
+                }
+                for id in ids {
+                    assert_eq!(
+                        a.projection().get_subscription(&id).unwrap().triggered_at.is_some(),
+                        before
+                    );
+                }
+                assert_eq!(remote::claimable(&a, &h, 22).unwrap().contains(&future), before);
+                parity(&a);
+            }
+        }
+    }
+}
+
+#[cfg(feature = "platform")]
+#[test]
+fn platform_remote_operations_reject_missing_cross_tenant_and_revoked_principals() {
+    use actionqueue_core::platform::*;
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = s::open_platform(dir.path());
+    let admin = s::host_support::host(ControlScope::Store);
+    let mut hosts = Vec::new();
+    for name in ["owner", "other"] {
+        let tenant = TenantId::new();
+        let c = MutationCommand::TenantCreate(TenantCreateCommand::new(
+            seq(&a),
+            TenantRegistration::new(tenant, name),
+            1,
+        ));
+        let _ = execute_mutation(&mut a, &admin, c).unwrap();
+        let h = s::host_support::tenant(&mut a, tenant).unwrap();
+        hosts.push(h);
+    }
+    let h = hosts.remove(0);
+    let other = hosts.remove(0);
+    let permission =
+        |a: &mut s::Authority, h: &HostControlContext, action: QueueAction, grant: bool| {
+            let ControlScope::Tenant(tenant) = h.scope else { panic!() };
+            let c = if grant {
+                MutationCommand::CapabilityGrant(CapabilityGrantCommand::new(
+                    seq(a),
+                    h.actor_id.unwrap(),
+                    action.permission(),
+                    tenant,
+                    10,
+                ))
+            } else {
+                MutationCommand::CapabilityRevoke(CapabilityRevokeCommand::new(
+                    seq(a),
+                    h.actor_id.unwrap(),
+                    action.permission(),
+                    tenant,
+                    10,
+                ))
+            };
+            let _ = execute_mutation(a, &admin, c).unwrap();
+        };
+    for owner in [&h, &other] {
+        for action in [
+            QueueAction::InspectClaimable,
+            QueueAction::ClaimRun,
+            QueueAction::RenewLease,
+            QueueAction::SubmitResult,
+        ] {
+            permission(&mut a, owner, action, true);
+        }
+    }
+    let ControlScope::Tenant(tenant) = h.scope else { panic!() };
+    let q = admission_support::request(401);
+    let q = admission_support::with_spec(&q, q.task_spec().clone().with_tenant(tenant));
+    execute_control(&mut a, &h, ControlOperation::AdmitTask(q.clone()), &MockClock::new(10))
+        .unwrap();
+    let run = a.projection().runs_for_task(q.task_spec().id()).next().unwrap().id();
+    let missing = HostControlContext { actor_id: None, ..h.clone() };
+    let before = a.projection().projection_digest().unwrap();
+    assert!(remote::claimable(&a, &missing, 11).is_err());
+    assert!(remote::claimable(&a, &other, 11).unwrap().is_empty());
+    for rejected in [&missing, &other] {
+        assert!(remote::claim(&mut a, rejected, request(run), 11, 30).is_err());
+        assert_eq!(before, a.projection().projection_digest().unwrap());
+    }
+    permission(&mut a, &h, QueueAction::ClaimRun, false);
+    let before = a.projection().projection_digest().unwrap();
+    assert!(remote::claim(&mut a, &h, request(run), 11, 30).is_err());
+    assert_eq!(before, a.projection().projection_digest().unwrap());
+    permission(&mut a, &h, QueueAction::ClaimRun, true);
+    let w = remote::claim(&mut a, &h, request(run), 11, 30).unwrap();
+    for action in [QueueAction::RenewLease, QueueAction::SubmitResult] {
+        let invoke = |a: &mut s::Authority, h: &HostControlContext| {
+            if action == QueueAction::RenewLease {
+                remote::renew(a, h, run, w.attempt_id, w.lease_fence.clone(), 12, 45)
+            } else {
+                remote::submit_result(a, h, result(&w, AttemptDisposition::complete(None)), 12)
+            }
+        };
+        let before = a.projection().projection_digest().unwrap();
+        let bytes = std::fs::read(a.store_session().unwrap().wal_path()).unwrap();
+        for rejected in [&missing, &other] {
+            assert!(invoke(&mut a, rejected).is_err());
+            assert_eq!(before, a.projection().projection_digest().unwrap());
+            assert_eq!(bytes, std::fs::read(a.store_session().unwrap().wal_path()).unwrap());
+        }
+        permission(&mut a, &h, action, false);
+        let before = a.projection().projection_digest().unwrap();
+        assert!(invoke(&mut a, &h).is_err());
+        assert_eq!(before, a.projection().projection_digest().unwrap());
+        permission(&mut a, &h, action, true);
+        invoke(&mut a, &h).unwrap();
+    }
+    parity(&a);
+    drop(a);
+    a = s::reopen(dir.path());
+    let before = a.projection().projection_digest().unwrap();
+    assert!(remote::submit_result(
+        &mut a,
+        &other,
+        result(&w, AttemptDisposition::complete(None)),
+        13
+    )
+    .is_err());
+    remote::submit_result(&mut a, &h, result(&w, AttemptDisposition::complete(None)), 13).unwrap();
+    assert_eq!(before, a.projection().projection_digest().unwrap());
+}

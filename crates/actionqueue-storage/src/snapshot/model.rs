@@ -286,6 +286,9 @@ pub struct SnapshotBudget {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct SnapshotSubscription {
+    /// First matching WAL event observed after registration. Retained through snapshots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matched_sequence: Option<u64>,
     /// The subscription identifier.
     pub subscription_id: SubscriptionId,
     /// The subscribing task identifier.

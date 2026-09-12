@@ -859,7 +859,7 @@ fn test_snapshot_plus_wal_tail_equivalence() {
         signals: vec![],
         last_signal_sequence: 0,
         admissions: vec![],
-        version: 8,
+        version: 9,
         timestamp: 2000,
         metadata: SnapshotMetadata {
             schema_version: SNAPSHOT_SCHEMA_VERSION,

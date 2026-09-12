@@ -147,11 +147,11 @@ fixtures:
   variants: [replay]
   introduced_by: AQ-11
 - id: AQ-CF-CONTROL-001
-  title: Projection v8 with durable host control attribution
+  title: Projection v9 with host attribution and subscription provenance
   invariants: [AQ-H2, AQ-H15]
   driver: embedded
-  path: projection-v8-vector.json
-  sha256: 154d47eec2d830d87da7d7f40dfc9f5567002f855c97b05b3f1dc0bfd1f2c5a6
+  path: projection-v9-vector.json
+  sha256: bc45b3cdccd1a069fdd293a47c6717bdf0f3b0a92b0f0a0cd63d5b044e25a56a
   variants: [replay]
   introduced_by: AQ-11
 

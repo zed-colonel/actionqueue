@@ -222,16 +222,19 @@ fn recover_run<W: WalWriter>(
     if state == target {
         return Ok(());
     }
-    let _ = a.submit_command(
-        MutationCommand::RunStateTransition(RunStateTransitionCommand::new(
-            next(a)?,
-            id,
-            state,
-            target,
-            now,
-        )),
-        DurabilityPolicy::Immediate,
-    )?;
+    let command = MutationCommand::RunStateTransition(RunStateTransitionCommand::new(
+        next(a)?,
+        id,
+        state,
+        target,
+        now,
+    ));
+    let command = if target == RunState::Suspended {
+        MutationCommand::RecoveryControl(Box::new(command))
+    } else {
+        command
+    };
+    let _ = a.submit_command(command, DurabilityPolicy::Immediate)?;
     Ok(())
 }
 /// Complete legacy partial task controls and descendant/dependency cascades before matching.

@@ -1,4 +1,4 @@
-//! Exact v8 projection image, validated hydration, and canonical SHA-256.
+//! Exact v9 projection image, validated hydration, and canonical SHA-256.
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -35,7 +35,7 @@ fn canonical(value: &serde_json::Value, out: &mut Vec<u8>) -> Result<(), StoreEr
                 out.push(3);
                 out.extend_from_slice(&v.to_le_bytes());
             } else {
-                return Err(invalid("floating point is not permitted in projection v8"));
+                return Err(invalid("floating point is not permitted in projection v9"));
             }
         }
         V::String(v) => {
@@ -97,11 +97,11 @@ pub(crate) fn normalize(snapshot: &mut Snapshot) {
 pub(crate) fn snapshot_digest(snapshot: &Snapshot) -> Result<ProjectionDigest, StoreError> {
     let mut image = snapshot.clone();
     normalize(&mut image);
-    let mut bytes = b"AQ-CONT-1\0projection\0v8\0".to_vec();
+    let mut bytes = b"AQ-CONT-1\0projection\0v9\0".to_vec();
     canonical(&serde_json::to_value(image).map_err(invalid)?, &mut bytes)?;
     Ok(ProjectionDigest {
         algorithm: "sha256".into(),
-        version: 8,
+        version: 9,
         hex: format!("{:x}", Sha256::digest(bytes)),
     })
 }
@@ -167,6 +167,9 @@ impl ReplayReducer {
             r.budgets.insert((b.task_id, b.dimension), convert(b)?);
         }
         for sub in s.subscriptions {
+            if sub.matched_sequence.is_some_and(|seq| seq == 0 || seq > r.latest_sequence) {
+                return Err(invalid("invalid subscription match sequence"));
+            }
             r.subscriptions.insert(sub.subscription_id, convert(sub)?);
         }
         for a in s.actors {

@@ -143,6 +143,17 @@ pub fn action(command: &actionqueue_core::mutation::MutationCommand) -> Option<Q
             CancelTarget::Task(_) => Q::CancelTask,
             CancelTarget::Run(_) => Q::CancelRun,
         },
+        M::RunStateTransition(c) if c.new_state() == actionqueue_core::run::RunState::Canceled => {
+            Q::CancelRun
+        }
+        M::RunStateTransition(c) if c.new_state() == actionqueue_core::run::RunState::Suspended => {
+            Q::SuspendRun
+        }
+        M::RunStateTransition(c)
+            if c.previous_state() == actionqueue_core::run::RunState::Suspended =>
+        {
+            Q::ResumeRun
+        }
         M::TaskCancel(_) => Q::CancelTask,
         M::WaitResolve(_) => Q::ResolveWait,
         M::WaitCancel(_) => Q::CancelWait,
@@ -175,6 +186,38 @@ pub(crate) fn prepare_control(
     use MutationCommand as M;
     let action = action(&command).ok_or(ControlError::Unauthorized)?;
     let tenant = authorize_projection(p, platform, host, action)?;
+    // Normalize generic control-shaped transitions after authorization. Preserve
+    // the caller's state expectation, then use the atomic named operation.
+    if let M::RunStateTransition(c) = &command {
+        use actionqueue_core::run::RunState;
+        if p.get_run_state(&c.run_id()) != Some(&c.previous_state())
+            || !actionqueue_core::run::transitions::is_valid_transition(
+                c.previous_state(),
+                c.new_state(),
+            )
+        {
+            return Err(ControlError::Mutation("invalid control transition".into()));
+        }
+        command = match c.new_state() {
+            RunState::Canceled => M::Cancel(CancelCommand {
+                expected_sequence: c.sequence(),
+                target: CancelTarget::Run(c.run_id()),
+                tenant_id: p
+                    .get_run_instance(&c.run_id())
+                    .and_then(|r| p.get_task(&r.task_id()))
+                    .and_then(|t| t.tenant_id()),
+                timestamp: c.timestamp(),
+                control_context: None,
+            }),
+            RunState::Suspended => {
+                M::RunSuspend(RunSuspendCommand::new(c.sequence(), c.run_id(), None, c.timestamp()))
+            }
+            RunState::Ready if c.previous_state() == RunState::Suspended => {
+                M::RunResume(RunResumeCommand::new(c.sequence(), c.run_id(), c.timestamp()))
+            }
+            _ => return Err(ControlError::Unauthorized),
+        };
+    }
     let task_scope = |id| p.get_task(&id).map(|t| t.tenant_id()).ok_or(ControlError::NotFound);
     let run_scope = |id| {
         p.get_run_instance(&id).ok_or(ControlError::NotFound).and_then(|r| task_scope(r.task_id()))
@@ -322,6 +365,14 @@ pub(crate) fn validate_recovery(
             )),
             _ => false,
         },
+        M::RunStateTransition(c) => {
+            use actionqueue_core::{run::RunState, mutation::AttemptResultKind};
+            c.previous_state() == RunState::Running && c.new_state() == RunState::Suspended
+                && p.get_run_instance(&c.run_id()).is_some_and(|r| r.state() == RunState::Running && r.current_attempt_id().is_none())
+                && p.dispatch_has_started(c.run_id())
+                && p.get_lease(&c.run_id()).is_none()
+                && p.get_attempt_history(&c.run_id()).and_then(|h| h.last()).is_some_and(|a| a.result() == Some(AttemptResultKind::Suspended))
+        }
         _ => false,
     };
     if valid {
