@@ -62,7 +62,12 @@ impl QueueTelemetry {
     pub fn projection_mismatch(&self) {
         self.0.lock().unwrap_or_else(|e| e.into_inner()).projection_mismatches += 1;
     }
-    pub fn committed(&self, e: &WalEvent, bytes: usize) {
+    pub(crate) fn committed(
+        &self,
+        e: &WalEvent,
+        bytes: usize,
+        p: &impl super::authority::MutationProjection,
+    ) {
         let mut o = self.0.lock().unwrap_or_else(|e| e.into_inner());
         match e.event() {
             E::AdmissionCommitted { .. } => o.admissions_created += 1,
@@ -84,18 +89,17 @@ impl QueueTelemetry {
             E::WaitSatisfied { record }
             | E::WaitTimedOut { record }
             | E::WaitCanceled { record } => {
-                use crate::mutation::wait::WaitResolutionKind as K;
-                let reason = match record.kind {
-                    K::Signal(_) => "signal",
-                    K::Children(_) => "children",
-                    K::Deadline => "deadline",
-                    K::Control(_) => "control",
-                    K::Canceled(_) => "canceled",
-                };
-                *o.waits_satisfied.entry(reason).or_default() += 1;
-                if let Some(start) = o.waits.remove(&record.wait_id) {
-                    o.wait_latency_count += 1;
-                    o.wait_latency_sum += record.timestamp.saturating_sub(start);
+                resolved(&mut o, record);
+            }
+            E::TaskCancellationCommitted { record } | E::RunCancellationCommitted { record } => {
+                // Compound cancellation derives its affected waits in the reducer. Observe
+                // exactly the resolutions published by this frame, including every affected run.
+                if let Some(waits) = p.wait_index() {
+                    for resolution in waits.records().filter_map(|w| w.resolution.as_ref()) {
+                        if resolution.sequence == record.sequence {
+                            resolved(&mut o, resolution);
+                        }
+                    }
                 }
             }
             E::AttemptClosed { record } if record.origin == AttemptFinishOrigin::Recovery => {
@@ -103,6 +107,21 @@ impl QueueTelemetry {
             }
             _ => {}
         }
+    }
+}
+fn resolved(o: &mut Observations, record: &crate::mutation::wait::WaitResolution) {
+    use crate::mutation::wait::WaitResolutionKind as K;
+    let reason = match record.kind {
+        K::Signal(_) => "signal",
+        K::Children(_) => "children",
+        K::Deadline => "deadline",
+        K::Control(_) => "control",
+        K::Canceled(_) => "canceled",
+    };
+    *o.waits_satisfied.entry(reason).or_default() += 1;
+    if let Some(start) = o.waits.remove(&record.wait_id) {
+        o.wait_latency_count += 1;
+        o.wait_latency_sum += record.timestamp.saturating_sub(start);
     }
 }
 fn signal(o: &mut Observations, r: &crate::mutation::signal::SignalRecord) {
@@ -116,6 +135,32 @@ fn signal(o: &mut Observations, r: &crate::mutation::signal::SignalRecord) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn resolution_releases_pending_timing_state() {
+        let t = QueueTelemetry::default();
+        let id = WaitId::new();
+        {
+            let mut o = t.0.lock().unwrap();
+            o.waits.insert(id, 20);
+            resolved(
+                &mut o,
+                &crate::mutation::wait::WaitResolution {
+                    run_id: actionqueue_core::ids::RunId::new(),
+                    wait_id: id,
+                    sequence: 2,
+                    timestamp: 30,
+                    kind: crate::mutation::wait::WaitResolutionKind::Canceled(None),
+                },
+            );
+        }
+        for _ in 0..3 {
+            let o = t.snapshot();
+            assert!(o.waits.is_empty());
+            assert_eq!(o.waits_satisfied["canceled"], 1);
+            assert_eq!(o.wait_latency_count, 1);
+            assert_eq!(o.wait_latency_sum, 10);
+        }
+    }
     #[test]
     fn finite_allowlist_and_overflow_bound_cardinality() {
         let t = QueueTelemetry::default();

@@ -13,6 +13,8 @@ actionqueue wait inspect WAIT_ID --offline --data-dir STORE
 actionqueue wait cancel WAIT_ID --run RUN_ID --offline --data-dir STORE
 actionqueue wait resolve WAIT_ID --run RUN_ID --offline --data-dir STORE
 actionqueue run inspect RUN_ID --offline --data-dir STORE
+actionqueue run history RUN_ID --cursor CURSOR --offline --data-dir STORE
+actionqueue run attempts RUN_ID --cursor CURSOR --offline --data-dir STORE
 actionqueue trace TRACE_ID --offline --data-dir STORE
 actionqueue trace --correlation ID --offline --data-dir STORE
 actionqueue inspect --origin-ref REF --offline --data-dir STORE
@@ -28,3 +30,8 @@ HTTP connections. JSON uses the v2 response schemas; text renders the same
 redacted structural content. Creates and duplicates exit successfully; conflicts,
 invalid input, and unavailability have distinct codes. See
 [AQ-12 APIs](../../docs/aq-12-apis.md).
+
+Run inspection includes the first history and attempt pages. Use `run history` or
+`run attempts` to retrieve subsequent pages with `--cursor`; omit it for the first
+page. Both accept `--limit`. Trace queries also accept `--edge-cursor`. Pagination
+flags are rejected on commands without corresponding pagination support.

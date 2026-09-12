@@ -85,6 +85,9 @@ async fn execute(args: Vec<String>) -> Result<CommandOutput, CliError> {
         ["attempt", "inspect", id] => {
             format!("/api/v2/runs/{}/attempts/{}", encode(opt("--run")?), encode(id))
         }
+        ["run", section @ ("history" | "attempts"), id] => {
+            format!("/api/v2/runs/{}/{section}", encode(id))
+        }
         ["run", "continuation", id] => format!("/api/v2/runs/{}/continuation", encode(id)),
         ["trace", id] => format!("/api/v2/traces/{}", encode(id)),
         ["trace"] => format!("/api/v2/inspect?correlation_id={}", encode(opt("--correlation")?)),
@@ -106,6 +109,13 @@ async fn execute(args: Vec<String>) -> Result<CommandOutput, CliError> {
             let _: actionqueue_core::continuation::AdmitSignalRequest =
                 serde_json::from_slice(&body).map_err(|_| invalid())?;
         }
+    }
+    let trace = matches!(words.as_slice(), ["trace", _] | ["trace"] | ["inspect"]);
+    let paginated = trace || matches!(words.as_slice(), ["run", "history" | "attempts", _]);
+    if (!paginated && (options.contains_key("--limit") || options.contains_key("--cursor")))
+        || (!trace && options.contains_key("--edge-cursor"))
+    {
+        return Err(invalid());
     }
     for (flag, name) in
         [("--limit", "limit"), ("--cursor", "cursor"), ("--edge-cursor", "edge_cursor")]
@@ -187,12 +197,11 @@ async fn execute(args: Vec<String>) -> Result<CommandOutput, CliError> {
         if token.len() < 32 || !token.bytes().all(|b| b.is_ascii_graphic()) {
             return Err(invalid());
         }
-        let stream = tokio::net::TcpStream::connect((
-            base.host().ok_or_else(invalid)?,
-            base.port_u16().unwrap_or(80),
-        ))
-        .await
-        .map_err(|_| unavailable())?;
+        let host = base.host().ok_or_else(invalid)?;
+        let socket_host = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')).unwrap_or(host);
+        let stream = tokio::net::TcpStream::connect((socket_host, base.port_u16().unwrap_or(80)))
+            .await
+            .map_err(|_| unavailable())?;
         let (mut sender, conn) =
             hyper::client::conn::http1::handshake(hyper_util::rt::TokioIo::new(stream))
                 .await

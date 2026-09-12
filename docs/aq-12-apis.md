@@ -11,6 +11,7 @@ independent of the HTTP URL version.
 |---|---|---|---|
 | Ensure task, admit signal | `control`, typed convenience methods | `/api/v2/admissions:ensure`, `/api/v2/signals` | `ensure-task`, `signal admit` |
 | Admission/task/run/attempt/wait/signal/checkpoint inspection | `Inspector`, engine getters | GET resource routes under `/api/v2` | `admission inspect`, `task inspect`, `run inspect`, `attempt inspect --run RUN`, `wait inspect`, `signal inspect`, `checkpoint inspect` |
+| Run history and attempts | `Inspector::{run_history,list_attempts}` | GET `/api/v2/runs/{id}/history`, `/api/v2/runs/{id}/attempts` | `run history`, `run attempts` |
 | Structural trace | `Inspector::trace` | `/api/v2/traces/{id}`, `/api/v2/inspect` | `trace ID`, `trace --correlation ID`, `inspect --origin-ref REF` |
 | Task/run/wait cancellation and wait resolution | `control`, engine convenience methods | POST resource `{id}:cancel` or `{id}:resolve` | `task cancel`, `run cancel`, `wait cancel`, `wait resolve` |
 | Store inspection | `runtime::store::inspect_store` | Offline only | `store inspect --data-dir PATH` |
@@ -87,6 +88,11 @@ are derived during both replay and snapshot hydration. Each linked resource is
 checked under the same projection revision. Full traces require task, wait and
 signal inspection grants.
 
+Unfiltered wait listing requires `InspectWait` and is scoped to the caller's tenant.
+Filtering waits through task admission references additionally requires `InspectTask`,
+as does inspecting child-task targets. Individual signal-wait lookup requires the
+same `InspectWait` permission as unfiltered listing.
+
 ## Bounds and cursors
 
 Pages default to 100 entries and accept limits from 1 through 1,000. Each page is
@@ -95,6 +101,11 @@ queries exceeding that budget return a bounded-capacity error. Narrow the exact
 filter for larger stores. Task/run histories use separate pages rather than
 unbounded inline arrays. Run history and attempt pages can be continued via
 `/api/v2/runs/{id}/history` and `/api/v2/runs/{id}/attempts`.
+
+Run history and attempt pages are available through `actionqueue run history RUN_ID`
+and `actionqueue run attempts RUN_ID`, with `--limit` and `--cursor` in daemon and
+offline modes. `run inspect` includes first pages and rejects pagination flags.
+Only trace commands accept `--edge-cursor`.
 
 Cursors bind the lane, filter, scope, disclosure settings and projection revision.
 Mutation invalidates an old cursor with `stale_cursor` (409). Trace nodes use
@@ -117,6 +128,11 @@ lookups, conflicts, wait resolutions, disposition rejections and recovery
 closures. Current-state gauges are derived from one coherent projection snapshot.
 Scrapes never create latency or record-size observations. Wait latency only
 observes establishments and resolutions seen by that telemetry instance.
+
+Task and run cancellation count each wait resolved by the committed compound record.
+Latency is observed only for waits established during the current process lifetime;
+resolution drops that wait's pending timing entry. Retried cancellations and repeated
+metrics scrapes do not add observations.
 
 Signal namespace/kind labels default to `overflow/overflow`.
 `DaemonConfig::signal_metric_allowlist` and `QueueTelemetry::set_signal_allowlist` accept at most 64 validated pairs before

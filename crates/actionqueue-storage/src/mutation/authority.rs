@@ -103,6 +103,10 @@ pub trait MutationProjection: Clone {
     fn signal_index(&self) -> Option<&crate::recovery::signals::SignalIndex> {
         None
     }
+    /// Continuation indexes, if this projection supports durable waits.
+    fn wait_index(&self) -> Option<&crate::recovery::waits::WaitIndex> {
+        None
+    }
     /// Validates local causation and tenant ownership before signal admission.
     fn validate_signal_references(
         &self,
@@ -187,6 +191,9 @@ pub trait MutationProjection: Clone {
 }
 
 impl MutationProjection for ReplayReducer {
+    fn wait_index(&self) -> Option<&crate::recovery::waits::WaitIndex> {
+        Some(self.waits())
+    }
     fn authorize_scope(
         &self,
         platform: bool,
@@ -1850,7 +1857,7 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
 
         // Publish the already validated state only after durability succeeds.
         self.projection = prepared;
-        self.telemetry.committed(&event, frame_bytes);
+        self.telemetry.committed(&event, frame_bytes, &self.projection);
 
         crate::store::fault::checkpoint("authority_after_publish").map_err(|error| {
             self.recovery_required = true;

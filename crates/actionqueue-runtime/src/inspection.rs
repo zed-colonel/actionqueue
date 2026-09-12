@@ -656,8 +656,15 @@ impl<'a> Inspector<'a> {
     }
     #[cfg(feature = "serde")]
     pub fn list_waits(&self, q: &Query) -> Result<Page<WaitView>, InspectionError> {
-        self.scope(QueueAction::InspectWait)?;
-        let tasks = self.selected_tasks(q)?;
+        let tenant = self.scope(QueueAction::InspectWait)?;
+        // Reference filters inspect task admission content and need its permission.
+        // An unfiltered wait listing only needs the wait's tenant scope.
+        let tasks = if q.trace_id.is_some() || q.correlation_id.is_some() || q.origin_ref.is_some()
+        {
+            self.selected_tasks(q)?
+        } else {
+            self.p.tasks().filter(|t| t.tenant_id() == tenant).map(|t| t.id()).collect()
+        };
         let mut waits: Vec<_> = self
             .p
             .waits()
