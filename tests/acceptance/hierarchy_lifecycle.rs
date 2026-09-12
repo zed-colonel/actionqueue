@@ -7,7 +7,7 @@
 //! 2. `HierarchyTracker::register_child` rejects children of terminal parents
 //!    (orphan prevention contract).
 //! 3. A parent task's runs stay non-terminal while children are still running
-//!    (completion gating via scheduling order — validates AC-6).
+//!    (storage rejects premature Complete — validates AC-6).
 
 mod support;
 
@@ -225,153 +225,38 @@ mod wf {
         );
     }
 
-    // ── Completion gating (AC-6) ────────────────────────────────────────────
-
-    /// Parent task's runs stay non-terminal while children are still running.
-    ///
-    /// Validates AC-6: Parent task cannot complete while children are non-terminal.
-    ///
-    /// Strategy: schedule children at t=1000 and parent at t=1200. Engine at
-    /// clock=1100 dispatches children (eligible) but not parent (not yet due).
-    /// After children complete, re-bootstrap engine at clock=1200 to dispatch
-    /// the parent. This proves the parent stays non-terminal while children
-    /// execute, and can complete normally after children are terminal.
-    #[tokio::test]
-    async fn parent_stays_non_terminal_while_children_running() {
-        let data_dir = super::support::unique_data_dir("wf-hierarchy-completion-gate");
-
-        let parent_id: TaskId = "03040101-0001-0001-0001-000000000001".parse().expect("valid uuid");
-        let child1_id: TaskId = "03040101-0001-0001-0001-000000000002".parse().expect("valid uuid");
-        let child2_id: TaskId = "03040101-0001-0001-0001-000000000003".parse().expect("valid uuid");
-
-        let ts = 1000u64;
-
-        // Phase 1: Submit parent (scheduled at 1200) + 2 children (scheduled at 1000)
-        // via mutation authority.
-        {
-            let recovery = load_projection_from_storage(&data_dir).expect("recovery must succeed");
-            let mut auth = StorageMutationAuthority::new(recovery.wal_writer, recovery.projection);
-
-            // Create parent task + run (scheduled at 1200 — not eligible until then).
-            let parent_spec = TaskSpec::new(
-                parent_id,
-                TaskPayload::new(b"parent".to_vec()),
-                RunPolicy::Once,
-                TaskConstraints::default(),
-                TaskMetadata::default(),
+    // Premature Complete is exercised at the actual mutation boundary.
+    mod completion_gate {
+        #![allow(dead_code, unused_imports)]
+        include!("child_support.rs");
+        #[test]
+        fn premature_complete_is_rejected_without_output() {
+            let dir = tempfile::tempdir().unwrap();
+            let mut a = s::open(dir.path());
+            let r = running(&mut a, 1, None, false);
+            let p = parent(&a, r);
+            let spec = child(2, vec![], ChildLifecyclePolicy::Required, p).task_spec().clone();
+            admission_support::ensure(
+                &mut a,
+                actionqueue_core::admission::EnsureTaskRequest::for_task(spec, vec![]).unwrap(),
+                20,
             )
-            .expect("valid parent spec");
-            let seq = auth.projection().latest_sequence() + 1;
-            let _ = auth
-                .submit_command(
-                    MutationCommand::TaskCreate(TaskCreateCommand::new(seq, parent_spec, ts)),
-                    DurabilityPolicy::Immediate,
-                )
-                .expect("create parent task");
-            let parent_run =
-                RunInstance::new_scheduled(parent_id, ts + 200, ts).expect("valid parent run");
-            let seq = auth.projection().latest_sequence() + 1;
-            let _ = auth
-                .submit_command(
-                    MutationCommand::RunCreate(RunCreateCommand::new(seq, parent_run)),
-                    DurabilityPolicy::Immediate,
-                )
-                .expect("create parent run");
-
-            // Create child1 (scheduled at 1000 — immediately eligible at clock=1100).
-            let child1_spec = make_once_spec_with_parent(child1_id, parent_id, b"child1");
-            let seq = auth.projection().latest_sequence() + 1;
-            let _ = auth
-                .submit_command(
-                    MutationCommand::TaskCreate(TaskCreateCommand::new(seq, child1_spec, ts)),
-                    DurabilityPolicy::Immediate,
-                )
-                .expect("create child1 task");
-            let child1_run =
-                RunInstance::new_scheduled(child1_id, ts, ts).expect("valid child1 run");
-            let seq = auth.projection().latest_sequence() + 1;
-            let _ = auth
-                .submit_command(
-                    MutationCommand::RunCreate(RunCreateCommand::new(seq, child1_run)),
-                    DurabilityPolicy::Immediate,
-                )
-                .expect("create child1 run");
-
-            // Create child2 (scheduled at 1000 — immediately eligible at clock=1100).
-            let child2_spec = make_once_spec_with_parent(child2_id, parent_id, b"child2");
-            let seq = auth.projection().latest_sequence() + 1;
-            let _ = auth
-                .submit_command(
-                    MutationCommand::TaskCreate(TaskCreateCommand::new(seq, child2_spec, ts)),
-                    DurabilityPolicy::Immediate,
-                )
-                .expect("create child2 task");
-            let child2_run =
-                RunInstance::new_scheduled(child2_id, ts, ts).expect("valid child2 run");
-            let seq = auth.projection().latest_sequence() + 1;
-            let _ = auth
-                .submit_command(
-                    MutationCommand::RunCreate(RunCreateCommand::new(seq, child2_run)),
-                    DurabilityPolicy::Immediate,
-                )
-                .expect("create child2 run");
+            .unwrap();
+            let expected = command(&a, r, spec_for_wait()).expected;
+            actionqueue_runtime::disposition::commit(
+                &mut a,
+                expected,
+                AttemptDisposition::complete(Some(DataRef::from_bytes(vec![1]).unwrap())),
+                21,
+            )
+            .unwrap();
+            assert_eq!(a.projection().get_run_state(&r), Some(&RunState::Failed));
+            let last = a.projection().get_attempt_history(&r).unwrap().last().unwrap();
+            assert!(last.output_ref().is_none());
+            assert_eq!(last.error(), Some(actionqueue_runtime::config::CHILDREN_NONTERMINAL));
         }
-
-        // Phase 2: Bootstrap engine at clock=1100. Children are eligible (scheduled_at=1000),
-        // parent is NOT (scheduled_at=1200). Children complete; parent stays Scheduled.
-        {
-            let engine = ActionQueueEngine::new(engine_config(&data_dir), NopHandler);
-            let mut eng =
-                engine.bootstrap_with_clock(MockClock::new(1100)).expect("bootstrap must succeed");
-            let _ = eng.run_until_idle().await.expect("run must succeed");
-
-            // Children must be Completed.
-            let child1_runs = eng.projection().run_ids_for_task(child1_id);
-            assert_eq!(child1_runs.len(), 1);
-            assert_eq!(
-                eng.projection().get_run_state(&child1_runs[0]),
-                Some(&RunState::Completed),
-                "child1 must be Completed"
-            );
-            let child2_runs = eng.projection().run_ids_for_task(child2_id);
-            assert_eq!(child2_runs.len(), 1);
-            assert_eq!(
-                eng.projection().get_run_state(&child2_runs[0]),
-                Some(&RunState::Completed),
-                "child2 must be Completed"
-            );
-
-            // Parent must still be non-terminal (Scheduled — not yet eligible).
-            let parent_runs = eng.projection().run_ids_for_task(parent_id);
-            assert_eq!(parent_runs.len(), 1, "parent must have exactly one run");
-            let parent_state = eng.projection().get_run_state(&parent_runs[0]);
-            assert!(
-                parent_state.is_some_and(|s| !s.is_terminal()),
-                "parent must still be non-terminal while scheduled_at has not elapsed, got: \
-                 {parent_state:?}"
-            );
-
-            eng.shutdown().expect("shutdown");
+        fn spec_for_wait() -> WaitSpec {
+            spec(WaitId::new(), None)
         }
-
-        // Phase 3: Bootstrap engine at clock=1200. Parent is now eligible and completes.
-        {
-            let engine = ActionQueueEngine::new(engine_config(&data_dir), NopHandler);
-            let mut eng =
-                engine.bootstrap_with_clock(MockClock::new(1200)).expect("bootstrap must succeed");
-            let _ = eng.run_until_idle().await.expect("run must succeed");
-
-            let parent_runs = eng.projection().run_ids_for_task(parent_id);
-            assert_eq!(parent_runs.len(), 1);
-            assert_eq!(
-                eng.projection().get_run_state(&parent_runs[0]),
-                Some(&RunState::Completed),
-                "parent must be Completed after children are all terminal and scheduled_at elapsed"
-            );
-
-            eng.shutdown().expect("shutdown");
-        }
-
-        let _ = std::fs::remove_dir_all(&data_dir);
     }
 }

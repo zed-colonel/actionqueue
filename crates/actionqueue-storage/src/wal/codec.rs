@@ -70,7 +70,8 @@ pub(crate) fn header(bytes: &[u8]) -> Result<Header, DecodeError> {
     let kind = u16::from_le_bytes(bytes[12..14].try_into().unwrap());
     wire_v1::check_kind(kind)?;
     let schema = u16::from_le_bytes(bytes[14..16].try_into().unwrap());
-    if schema != 1 && schema != wire_v1::schema(kind) {
+    if schema != 1 && schema != wire_v1::schema(kind) && !(schema == 2 && matches!(kind, 16 | 256))
+    {
         return Err(DecodeError::UnsupportedRecordSchema { kind, found: schema });
     }
     let length = u32::from_le_bytes(bytes[40..44].try_into().unwrap()) as usize;

@@ -1668,24 +1668,17 @@ fn expected_attempt_count_for_outcomes(
     executed
 }
 
-/// Establishes child admissions and a due deadline in one disposition.
+/// Establishes child admissions and a durable child-terminal wait in one disposition.
 #[allow(dead_code)]
 pub fn admit_children(
     children: Vec<actionqueue_core::task::task_spec::TaskSpec>,
 ) -> actionqueue_core::disposition::AttemptDisposition {
     use actionqueue_core::{continuation::*, disposition::*, ids::*};
-    let wait = WaitSpec::new(
+    let wait = WaitSpec::children(
         WaitId::new(),
-        SignalFilter {
-            tenant_id: None,
-            namespace: SignalNamespace::new("children").unwrap(),
-            kind: SignalKind::new("poll").unwrap(),
-            correlation_id: None,
-            source_ref: None,
-        },
-        WaitMatchPolicy::FirstMatch,
-        SignalEligibility::After(SignalSequence::new(0)),
-        Some(WaitDeadline { at: 1, policy: WaitTimeoutPolicy::ResumeWithTimeout }),
+        children.iter().map(|c| c.id()).collect(),
+        ChildWaitPolicy::AllTerminal,
+        None,
     )
     .unwrap();
     let children = children

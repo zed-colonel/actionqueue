@@ -6,7 +6,7 @@
 # increments `package_revision`; normative change requires a contract amendment.
 schema_version: 1
 package: conformance/aq-cont-1
-package_revision: 5
+package_revision: 6
 status: scaffold
 contract: AQ-CONT-1
 contract_revision: STACK-2026-07-20-CLEAN-1
@@ -113,6 +113,31 @@ fixtures:
   sha256: 3f1d07c8ed2d08065ba01c413afc43f6e5e81dc6b16cf82a78f3262408d61574
   variants: [replay, crash, race]
   introduced_by: AQ-08
+- id: AQ-CF-CHILD-001
+  title: Canonical admission v2 lifecycle policy
+  invariants: [AQ-H2, AQ-H8, AQ-H10]
+  driver: embedded
+  path: admission-v2-vector.json
+  sha256: 4d8560caa03753a6d991db09944eff806ae505a5c6f254e980c25fbb592f6f86
+  variants: [replay, crash, race]
+  introduced_by: AQ-09
+- id: AQ-CF-CHILD-002
+  title: Parent-run scoped keys and typed child wait evidence
+  invariants: [AQ-H2, AQ-H8, AQ-H10]
+  driver: embedded
+  path: child-coordination-v1-vector.json
+  sha256: 54cf09a0a50a515d448b6cf42d114fe0f38b810bc2e3ab162a507c487f796719
+  variants: [replay, crash, race]
+  introduced_by: AQ-09
+- id: AQ-CF-CHILD-003
+  title: Projection v7 known-answer vector
+  invariants: [AQ-H2, AQ-H8, AQ-H10]
+  driver: embedded
+  path: projection-v7-vector.json
+  sha256: e4e8da534ece9f7fdfdc2519d35f919d84bb61f82e8e74e2c3287dcb0f095c44
+  variants: [replay, crash, race]
+  introduced_by: AQ-09
+
 # Black-box drivers. Intentionally empty at AQ-01; populated by AQ-13.
 drivers: []
 acceptance_matrices:
@@ -148,6 +173,7 @@ target_persistence:
   - exact_snapshot_hydration_and_projection_equivalence
   - verified_offline_backup_restore
   - immutable_store_feature_profiles_and_stable_wire_ids
+
 
 admission:
   introduced_by: AQ-04
@@ -224,3 +250,15 @@ attempt_disposition:
   canonical_vector: projection-v6-vector.json
   tests:
   - tests/acceptance/attempt_disposition.rs
+
+transactional_children:
+  introduced_by: AQ-09
+  task_admission_schema: 3
+  wait_disposition_schema: 2
+  canonical_admission_version: 2
+  snapshot_schema: 7
+  projection_version: 7
+  tests:
+  - tests/acceptance/transactional_child_admission.rs
+  - tests/acceptance/parent_wait_child_atomicity.rs
+  developmental_cases: [AQ-DD-005]

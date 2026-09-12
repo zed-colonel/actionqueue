@@ -181,6 +181,7 @@ impl ControlMutationContext {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Default)]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct CausalOverride {
     /// Optional explicit correlation fork.
     pub correlation_id: Option<CorrelationId>,

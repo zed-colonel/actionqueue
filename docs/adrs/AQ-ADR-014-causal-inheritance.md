@@ -40,4 +40,9 @@ preserves inherited context.
 | Accepted in PR | `AQ-02` |
 | Accepted on | 2026-09-09 |
 | Superseded by | — |
-| Deferred verification | Verified in `AQ-02`: `CausalContext` construction, override, and JSON/postcard round trip; causation-link ancestry consistency (`continuation_vocabulary.rs`, `target_serde.rs`). Deferred to `AQ-09`: inheritance table tests, override rejection for non-overridable fields, and replay preservation of inherited context. |
+| Deferred verification | Verified in `AQ-02`: `CausalContext` construction, override, and JSON/postcard round trip; causation-link ancestry consistency (`continuation_vocabulary.rs`, `target_serde.rs`). Verified in `AQ-09`: exact inherited context with bounded correlation/requester/origin overrides, unknown-field rejection, original producing-attempt preservation on duplicate admission, and WAL/snapshot replay. |
+
+Child keys use SHA-256 over a versioned domain-separated encoding of tenant,
+parent TaskId, parent RunId, and the local key. AttemptId and observational
+attribution are excluded. Canonical admission v2 includes lifecycle policy;
+changed policy, dependencies, identity, or attribution conflicts atomically.

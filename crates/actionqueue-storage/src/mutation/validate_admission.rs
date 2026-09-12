@@ -43,12 +43,7 @@ impl ReplayReducer {
             if spec.tenant_id() != s.tenant_id() {
                 return Err(R::TenantMismatch);
             }
-            if depth == 0
-                && (self.is_task_canceled(parent) || {
-                    let mut runs = self.runs_for_task(parent).peekable();
-                    runs.peek().is_some() && runs.all(|r| r.state().is_terminal())
-                })
-            {
+            if depth == 0 && self.task_terminal_status(parent).is_some() {
                 return Err(R::TerminalParent);
             }
             depth += 1;
@@ -75,6 +70,15 @@ impl ReplayReducer {
             if visited.insert(dep) {
                 if let Some(deps) = self.dependency_declarations.get(&dep) {
                     pending.extend(deps);
+                }
+            }
+        }
+        if s.child_lifecycle_policy()
+            == actionqueue_core::task::task_spec::ChildLifecyclePolicy::Required
+        {
+            if let Some(parent) = s.parent_task_id() {
+                if q.dependencies().iter().any(|dep| self.completion_requires(*dep, parent)) {
+                    return Err(R::DependencyCycle);
                 }
             }
         }

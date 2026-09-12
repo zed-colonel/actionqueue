@@ -280,7 +280,7 @@ fn canonical_bytes_and_digest_match_independent_python_vector() {
         actionqueue_core::admission::canonical::CanonicalAdmissionV1::new(&request).unwrap();
     let hex = |b: &[u8]| b.iter().map(|b| format!("{b:02x}")).collect::<String>();
     assert_eq!(hex(canonical.bytes()), vector["canonical_hex"].as_str().unwrap());
-    assert_eq!(hex(request.digest().unwrap().hash().bytes()), vector["sha256"].as_str().unwrap());
+    assert_eq!(hex(canonical.digest().unwrap().hash().bytes()), vector["sha256"].as_str().unwrap());
     assert!(AdmissionDigest::versioned(99, request.digest().unwrap().hash().clone()).is_err());
     let mut digest = serde_json::to_value(request.digest().unwrap()).unwrap();
     digest["hash"]["algorithm"] = "unknown".into();

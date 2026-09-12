@@ -20,10 +20,10 @@ impl AdmissionDigest {
     }
     /// Validates a declared canonical version. Unsupported algorithms are rejected by ContentHash.
     pub fn versioned(version: u32, hash: ContentHash) -> Result<Self, AdmissionRejection> {
-        if version != 1 {
+        if version != 1 && version != 2 {
             return Err(AdmissionRejection::UnsupportedCanonicalVersion(version));
         }
-        Ok(Self::new(hash))
+        Ok(Self { canonical_version: version, hash })
     }
     /// Returns the canonical version.
     pub fn canonical_version(&self) -> u32 {
@@ -168,7 +168,7 @@ impl EnsureTaskRequest {
     }
     /// Computes canonical v1 meaning, ignoring lookup key and control attribution.
     pub fn digest(&self) -> Result<AdmissionDigest, AdmissionRejection> {
-        canonical::CanonicalAdmissionV1::new(self)?.digest()
+        canonical::CanonicalAdmissionV2::new(self)?.digest()
     }
     /// Stable convenience identity for callers retaining a preallocated task UUID.
     pub fn for_task(

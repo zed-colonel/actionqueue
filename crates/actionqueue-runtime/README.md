@@ -29,10 +29,13 @@ canonical digest, admission key, and WAL sequence. `submit_task(spec)` derives s
 the UUID on retries. Outbox callers should persist their own stable key, task UUID,
 and causal context. Changed digest-bearing meaning returns a typed rejection conflict.
 
-All ordinary submissions, including CLI and consumed workflow channel messages, use
-the handler-independent admission service. The workflow channel itself still gives no
-durable enqueue acknowledgement; atomic disposition/child admission belongs to later
-work items. Attribution is opaque and confers no scheduling priority or authority.
+Ordinary submissions, including CLI requests, use the handler-independent admission
+service. Handlers propose child admissions in an `AttemptDisposition` with an `Awaiting`
+outcome. The runtime validates the full proposal and commits the child admissions,
+dependencies, checkpoint, and parent wait together in one durable `AttemptDispositionCommitted`
+record. An invalid child admission rejects all proposed effects, so the parent cannot
+enter `Awaiting` with a partially admitted batch. Attribution is opaque and confers no
+scheduling priority or authority.
 
 RuntimeConfig.admission_limits can lower creation bounds. A retry uses the original
 admission even after limits are lowered or tasks/parents finish. Storage failures may
@@ -72,7 +75,7 @@ the pending-input guard until accepted-start delivery lands.
 
 Suspension resume is a base API. Budget replenishment changes only budget state;
 call `resume_run` explicitly for Suspended runs. Awaiting runs instead require a
-matching durable signal, deadline, or authorized wait resolution. Satisfied waits
-become Ready with pending input even if budget prevents leasing. Input is assigned
+matching durable signal, terminal child evidence, deadline, or authorized wait resolution.
+Satisfied waits become Ready with pending input even if budget prevents leasing. Input is assigned
 only at accepted attempt start. Awaiting time is not execution budget consumption.
 Internal subscriptions, gated by the budget profile, only promote Scheduled runs.

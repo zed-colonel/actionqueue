@@ -14,8 +14,6 @@ categories = ["concurrency"]
 actionqueue-core = "0.1.2"
 actionqueue-storage = "0.1.2"
 actionqueue-executor-local = "0.1.2"
-tokio = { version = "1", features = ["sync"] }
-tracing = "0.1"
 
 [dev-dependencies]
 actionqueue-runtime = "0.1.2"

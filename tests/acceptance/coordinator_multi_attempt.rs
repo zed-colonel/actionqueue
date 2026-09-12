@@ -55,7 +55,6 @@ mod wf {
         coordinator_id: TaskId,
         child_a_id: TaskId,
         child_b_id: TaskId,
-        spawned: Arc<AtomicBool>,
     }
 
     impl ExecutorHandler for SpawnAndSucceedHandler {
@@ -64,7 +63,7 @@ mod wf {
                 return actionqueue_core::disposition::AttemptDisposition::complete(None);
             }
             // Coordinator: submit children via compound child admission, then succeed.
-            if !self.spawned.swap(true, Ordering::SeqCst) {
+            if ctx.input.resume_context.is_none() {
                 return super::support::admit_children(vec![
                     make_spec(self.child_a_id, b"child").with_parent(self.coordinator_id),
                     make_spec(self.child_b_id, b"child").with_parent(self.coordinator_id),
@@ -84,12 +83,7 @@ mod wf {
 
         let engine = ActionQueueEngine::new(
             engine_config(&data_dir),
-            SpawnAndSucceedHandler {
-                coordinator_id,
-                child_a_id,
-                child_b_id,
-                spawned: Arc::new(AtomicBool::new(false)),
-            },
+            SpawnAndSucceedHandler { coordinator_id, child_a_id, child_b_id },
         );
         let mut eng =
             engine.bootstrap_with_clock(MockClock::new(1000)).expect("bootstrap must succeed");
@@ -160,6 +154,18 @@ mod wf {
                     captured.child_count = snap.children().len();
                     captured.child_task_ids = snap.children().iter().map(|c| c.task_id()).collect();
                     captured.all_terminal = snap.all_children_terminal();
+                    if ctx.input.resume_context.is_none() {
+                        return AttemptDisposition::awaiting(
+                            actionqueue_core::continuation::WaitSpec::children(
+                                actionqueue_core::ids::WaitId::new(),
+                                captured.child_task_ids.clone(),
+                                actionqueue_core::continuation::ChildWaitPolicy::AllTerminal,
+                                None,
+                            )
+                            .unwrap(),
+                            None,
+                        );
+                    }
                 }
             }
             actionqueue_core::disposition::AttemptDisposition::complete(None)

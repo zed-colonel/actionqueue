@@ -371,6 +371,14 @@ name = "acceptance_attempt_disposition"
 path = "tests/acceptance/attempt_disposition.rs"
 
 [[test]]
+name = "acceptance_transactional_child_admission"
+path = "tests/acceptance/transactional_child_admission.rs"
+
+[[test]]
+name = "acceptance_parent_wait_child_atomicity"
+path = "tests/acceptance/parent_wait_child_atomicity.rs"
+
+[[test]]
 name = "acceptance_budget_awaiting"
 path = "tests/acceptance/budget_awaiting.rs"
 required-features = ["budget"]

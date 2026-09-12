@@ -19,7 +19,7 @@ pub fn build_children_snapshot(
     projection: &ReplayReducer,
     parent_id: TaskId,
 ) -> Option<ChildrenSnapshot> {
-    let children: Vec<ChildState> = projection
+    let mut children: Vec<ChildState> = projection
         .task_records()
         .filter(|tr| tr.task_spec().parent_task_id() == Some(parent_id))
         .map(|tr| {
@@ -29,10 +29,15 @@ pub fn build_children_snapshot(
                 .filter(|r| r.task_id() == child_id)
                 .map(|r| (r.id(), r.state()))
                 .collect();
-            ChildState::new(child_id, run_states)
+            ChildState::with_terminal_status(
+                child_id,
+                run_states,
+                projection.task_terminal_status(child_id),
+            )
         })
         .collect();
 
+    children.sort_by_key(|c| c.task_id());
     if children.is_empty() {
         None
     } else {

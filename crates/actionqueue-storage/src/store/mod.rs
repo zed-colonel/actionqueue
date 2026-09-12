@@ -30,7 +30,9 @@ pub(crate) fn check_event_profile(
             }
             None
         }
-        E::WaitEstablished { record } => record.spec.filter().tenant_id.map(|_| "platform"),
+        E::WaitEstablished { record } => {
+            record.spec.filter().and_then(|f| f.tenant_id).map(|_| "platform")
+        }
         E::TaskCancellationCommitted { record } | E::RunCancellationCommitted { record } => {
             record.tenant_id.map(|_| "platform")
         }

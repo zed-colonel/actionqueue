@@ -34,6 +34,20 @@ mod wf {
 
     impl ExecutorHandler for EchoHandler {
         fn execute(&self, ctx: ExecutorContext) -> AttemptDisposition {
+            if ctx.input.resume_context.is_none() {
+                if let Some(children) = &ctx.children {
+                    return AttemptDisposition::awaiting(
+                        actionqueue_core::continuation::WaitSpec::children(
+                            actionqueue_core::ids::WaitId::new(),
+                            children.children().iter().map(|child| child.task_id()).collect(),
+                            actionqueue_core::continuation::ChildWaitPolicy::AllTerminal,
+                            None,
+                        )
+                        .unwrap(),
+                        None,
+                    );
+                }
+            }
             actionqueue_core::disposition::AttemptDisposition::complete(
                 (Some(ctx.input.payload.clone()))
                     .map(|v| actionqueue_core::data_ref::DataRef::from_bytes(v).unwrap()),

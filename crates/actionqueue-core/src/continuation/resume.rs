@@ -25,6 +25,13 @@ impl ResumeContext {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum WakeReason {
+    /// Immutable terminal child evidence selected at resolution.
+    Children {
+        /// Wait identity.
+        wait_id: WaitId,
+        /// Sorted, bounded terminal outcomes.
+        outcomes: Vec<ChildOutcome>,
+    },
     /// A durable matching signal.
     Signal {
         /// Wait identity.
@@ -58,7 +65,8 @@ impl WakeReason {
     /// Wait resolved by this wake, if any.
     pub fn wait_id(&self) -> Option<WaitId> {
         match self {
-            Self::Signal { wait_id, .. }
+            Self::Children { wait_id, .. }
+            | Self::Signal { wait_id, .. }
             | Self::Deadline { wait_id, .. }
             | Self::ControlResolution { wait_id, .. } => Some(*wait_id),
             Self::AdministrativeResume { .. } => None,
@@ -101,4 +109,26 @@ pub enum AttemptFinishOrigin {
     Executor,
     /// Restart closed an interrupted accepted attempt.
     Recovery,
+}
+
+/// Task-level terminal result, shared by hierarchy and DAG coordination.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum TaskTerminalStatus {
+    /// All runs terminated with at least one success.
+    Succeeded,
+    /// All runs terminated without a success.
+    Failed,
+    /// Explicit task cancellation (including a task with no runs).
+    Canceled,
+}
+/// One terminal child fact.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
+pub struct ChildOutcome {
+    /// Direct child identity.
+    pub task_id: crate::ids::TaskId,
+    /// Observed task result.
+    pub status: TaskTerminalStatus,
 }

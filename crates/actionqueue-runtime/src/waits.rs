@@ -34,7 +34,15 @@ pub fn reconcile_batch<W: WalWriter>(
     recover_cancellations(a, now)?;
     let limit = limit.clamp(1, MATCH_BATCH);
     let mut n = 0;
-    for (signal, id) in a.projection().waits().matches(limit) {
+    for id in a.projection().waits().child_matches(limit) {
+        let wait = a.projection().waits().get(id).expect("indexed");
+        let outcomes = a.projection().child_wait_outcomes(&wait.spec).expect("eligible child wait");
+        let command = WaitSatisfyCommand::children(next(a)?, wait.run_id, id, outcomes, now);
+        let _ =
+            a.submit_command(MutationCommand::WaitSatisfy(command), DurabilityPolicy::Immediate)?;
+        n += 1;
+    }
+    for (signal, id) in a.projection().waits().matches(limit - n) {
         let run = a.projection().waits().get(id).expect("indexed").run_id;
         let _ = a.submit_command(
             actionqueue_engine::continuation::satisfy(next(a)?, run, id, signal, now),
@@ -42,7 +50,9 @@ pub fn reconcile_batch<W: WalWriter>(
         )?;
         n += 1;
     }
-    if a.projection().waits().matches(1).is_empty() {
+    if a.projection().waits().matches(1).is_empty()
+        && a.projection().waits().child_matches(1).is_empty()
+    {
         for id in a.projection().waits().due(now, limit - n) {
             let wait = a.projection().waits().get(id).expect("indexed");
             let run = wait.run_id;
@@ -64,7 +74,8 @@ pub fn reconcile_batch<W: WalWriter>(
     }
     Ok(Reconciliation {
         resolved: n,
-        remaining: !a.projection().waits().matches(1).is_empty()
+        remaining: !a.projection().waits().child_matches(1).is_empty()
+            || !a.projection().waits().matches(1).is_empty()
             || !a.projection().waits().due(now, 1).is_empty(),
     })
 }
@@ -232,6 +243,8 @@ pub fn recover_cancellations<W: WalWriter>(
                 targets.insert(id);
             }
             if !a.projection().is_task_canceled(id)
+                && task.task_spec().child_lifecycle_policy()
+                    == actionqueue_core::task::task_spec::ChildLifecyclePolicy::Required
                 && task
                     .task_spec()
                     .parent_task_id()
@@ -245,10 +258,9 @@ pub fn recover_cancellations<W: WalWriter>(
                 continue;
             }
             let failed = deps.iter().any(|dep| {
-                let runs: Vec<_> = a.projection().runs_for_task(*dep).collect();
-                !runs.is_empty()
-                    && runs.iter().all(|r| r.state().is_terminal())
-                    && runs.iter().all(|r| r.state() != RunState::Completed)
+                a.projection().task_terminal_status(*dep).is_some_and(|s| {
+                    s != actionqueue_core::continuation::TaskTerminalStatus::Succeeded
+                })
             });
             if failed {
                 targets.insert(task);

@@ -116,7 +116,16 @@ fn crash_child() {
     let point = std::env::var("AQ_ADMISSION_CRASH_POINT").unwrap();
     let mut a = open(&path.join("store"));
     ensure(&mut a, request(1), 42).unwrap();
-    let q = with_dependencies(&with_spec(&request(2), spec(2).with_parent(id(1))), vec![id(1)]);
+    let q = with_dependencies(
+        &with_spec(
+            &request(2),
+            spec(2).with_parent_policy(
+                id(1),
+                actionqueue_core::task::task_spec::ChildLifecyclePolicy::Detached,
+            ),
+        ),
+        vec![id(1)],
+    );
     let c = command(q.clone(), 3, 42);
     let mut prepared = a.projection().clone();
     let record = actionqueue_storage::mutation::admission::AdmissionRecord::new(
@@ -205,7 +214,16 @@ fn subprocess_kill_at_each_boundary_recovers_complete_admission_or_none() {
         if matches!(*point, "wal_before_append" | "wal_partial_frame") {
             assert_eq!(current.metadata.wal_sequence, 2);
         }
-        let q = with_dependencies(&with_spec(&request(2), spec(2).with_parent(id(1))), vec![id(1)]);
+        let q = with_dependencies(
+            &with_spec(
+                &request(2),
+                spec(2).with_parent_policy(
+                    id(1),
+                    actionqueue_core::task::task_spec::ChildLifecyclePolicy::Detached,
+                ),
+            ),
+            vec![id(1)],
+        );
         let outcome = ensure(&mut a, q, 999).unwrap();
         assert_eq!(outcome.is_created(), current.metadata.wal_sequence == 2);
         assert_eq!(a.projection().latest_sequence(), 3);

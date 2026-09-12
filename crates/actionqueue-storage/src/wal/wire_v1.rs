@@ -27,6 +27,11 @@ struct TaskCreatedV2 {
     timestamp: u64,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+struct TaskCreatedV3 {
+    task_spec: super::task_v3::TaskSpecV3,
+    timestamp: u64,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RunCreatedV1 {
     run_instance: super::domain_v1::RunV1,
@@ -341,14 +346,10 @@ pub fn check_kind(kind: u16) -> Result<(), DecodeError> {
 }
 pub fn encode_payload(event: &WalEventType) -> Result<Vec<u8>, EncodeError> {
     match event {
-        WalEventType::WaitEstablished { record } => {
-            bounded(&super::wait_v1::WaitV1::from(record.clone()))
-        }
+        WalEventType::WaitEstablished { record } => json_encode(record),
         WalEventType::WaitSatisfied { record }
         | WalEventType::WaitTimedOut { record }
-        | WalEventType::WaitCanceled { record } => {
-            bounded(&super::wait_v1::ResolutionV1::from(record.clone()))
-        }
+        | WalEventType::WaitCanceled { record } => json_encode(record),
         WalEventType::TaskCancellationCommitted { record }
         | WalEventType::RunCancellationCommitted { record } => {
             bounded(&super::wait_v1::CancelV1::from(record.clone()))
@@ -363,13 +364,13 @@ pub fn encode_payload(event: &WalEventType) -> Result<Vec<u8>, EncodeError> {
             bounded(&super::signal_v1::RetiredV1::from(record.clone()))
         }
         WalEventType::AdmissionCommitted { record, runs } => {
-            bounded(&super::admission_v2::AdmissionCommittedV2::new(record, runs))
+            bounded(&super::admission_v3::AdmissionCommittedV3::new(record, runs))
         }
         WalEventType::StoreInitialized { manifest_digest } => {
             bounded(&StoreInitializedV1 { manifest_digest: *manifest_digest })
         }
-        WalEventType::TaskCreated { task_spec, timestamp } => bounded(&TaskCreatedV2 {
-            task_spec: super::task_v2::TaskSpecV2::from(task_spec),
+        WalEventType::TaskCreated { task_spec, timestamp } => bounded(&TaskCreatedV3 {
+            task_spec: super::task_v3::TaskSpecV3::from(task_spec),
             timestamp: *timestamp,
         }),
         WalEventType::RunCreated { run_instance } => {
@@ -385,7 +386,7 @@ pub fn encode_payload(event: &WalEventType) -> Result<Vec<u8>, EncodeError> {
         }
         WalEventType::AcceptedAttemptStarted { record } => bounded(record),
         WalEventType::AttemptDispositionCommitted { record } => {
-            super::disposition_v1::encode(record)
+            super::disposition_v2::encode(record)
         }
         WalEventType::AttemptClosed { record } => bounded(record),
         WalEventType::AttemptStarted { run_id, attempt_id, timestamp } => {
@@ -1052,7 +1053,9 @@ fn bounded<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, EncodeError> {
 
 /// Schema 1 remains readable for frozen evidence; tasks, admissions and attempts now use 2.
 pub(crate) fn schema(kind: u16) -> u16 {
-    if matches!(kind, 16 | 19 | 20 | 256) {
+    if matches!(kind, 16 | 256) {
+        3
+    } else if matches!(kind, 19 | 20 | 304..=307 | 336) {
         2
     } else {
         1
@@ -1063,6 +1066,34 @@ pub(crate) fn decode_schema(
     schema: u16,
     payload: &[u8],
 ) -> Result<WalEventType, DecodeError> {
+    if schema == 3 {
+        return match kind {
+            16 => {
+                let v: TaskCreatedV3 = take(payload)?;
+                Ok(WalEventType::TaskCreated {
+                    task_spec: v.task_spec.try_into()?,
+                    timestamp: v.timestamp,
+                })
+            }
+            256 => {
+                let v: super::admission_v3::AdmissionCommittedV3 = take(payload)?;
+                v.into_event()
+            }
+            _ => Err(DecodeError::UnsupportedRecordSchema { kind, found: schema }),
+        };
+    }
+    if schema == 2 && matches!(kind, 304..=307 | 336) {
+        return Ok(match kind {
+            304 => WalEventType::WaitEstablished { record: json_decode(payload)? },
+            305 => WalEventType::WaitSatisfied { record: json_decode(payload)? },
+            306 => WalEventType::WaitTimedOut { record: json_decode(payload)? },
+            307 => WalEventType::WaitCanceled { record: json_decode(payload)? },
+            336 => WalEventType::AttemptDispositionCommitted {
+                record: super::disposition_v2::decode(payload)?,
+            },
+            _ => unreachable!(),
+        });
+    }
     if schema == 1 {
         return decode_payload(kind, payload);
     }
@@ -1103,4 +1134,11 @@ fn take<T: serde::de::DeserializeOwned>(payload: &[u8]) -> Result<T, DecodeError
         return Err(DecodeError::Decode("trailing payload".into()));
     }
     Ok(v)
+}
+
+fn json_encode<T: serde::Serialize>(record: &T) -> Result<Vec<u8>, EncodeError> {
+    serde_json::to_vec(record).map_err(|e| EncodeError::Serialization(e.to_string()))
+}
+fn json_decode<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, DecodeError> {
+    serde_json::from_slice(bytes).map_err(|e| DecodeError::Decode(e.to_string()))
 }

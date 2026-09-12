@@ -8,8 +8,6 @@ mod support;
 
 #[cfg(feature = "workflow")]
 mod wf {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Arc;
 
     use actionqueue_core::ids::TaskId;
     use actionqueue_core::run::state::RunState;
@@ -34,12 +32,11 @@ mod wf {
         coordinator_id: TaskId,
         child_a_id: TaskId,
         child_b_id: TaskId,
-        submitted: Arc<AtomicBool>,
     }
 
     impl ExecutorHandler for CoordinatorHandler {
-        fn execute(&self, _ctx: ExecutorContext) -> AttemptDisposition {
-            if self.submitted.swap(true, Ordering::SeqCst) {
+        fn execute(&self, ctx: ExecutorContext) -> AttemptDisposition {
+            if ctx.input.resume_context.is_some() {
                 // Already submitted — this attempt should not happen (Once policy).
                 return AttemptDisposition::complete(None);
             }
@@ -112,17 +109,10 @@ mod wf {
         let child_a_id: TaskId = CHILD_A_UUID.parse().expect("valid uuid");
         let child_b_id: TaskId = CHILD_B_UUID.parse().expect("valid uuid");
 
-        let submitted = Arc::new(AtomicBool::new(false));
-
         let engine = ActionQueueEngine::new(
             engine_config(&data_dir),
             RoutingHandler {
-                coordinator: CoordinatorHandler {
-                    coordinator_id,
-                    child_a_id,
-                    child_b_id,
-                    submitted: Arc::clone(&submitted),
-                },
+                coordinator: CoordinatorHandler { coordinator_id, child_a_id, child_b_id },
                 child: ChildHandler,
             },
         );

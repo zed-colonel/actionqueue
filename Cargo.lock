@@ -171,7 +171,6 @@ dependencies = [
  "actionqueue-runtime",
  "actionqueue-storage",
  "tokio",
- "tracing",
  "uuid",
 ]
 

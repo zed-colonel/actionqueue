@@ -24,8 +24,8 @@ fn key(f: &SignalFilter) -> Key {
 }
 fn after(w: &WaitSpec) -> SignalSequence {
     match w.eligible_from() {
-        SignalEligibility::AnyRetained => SignalSequence::new(0),
-        SignalEligibility::After(s) => *s,
+        None | Some(SignalEligibility::AnyRetained) => SignalSequence::new(0),
+        Some(SignalEligibility::After(s)) => *s,
     }
 }
 #[derive(Debug, Clone, Default)]
@@ -37,6 +37,8 @@ pub struct WaitIndex {
     candidates: BTreeSet<(SignalSequence, WaitId)>,
     pub(crate) pending: BTreeMap<RunId, WaitId>,
     historical: BTreeSet<SignalSequence>,
+    children: BTreeMap<TaskId, BTreeSet<WaitId>>,
+    child_candidates: BTreeSet<WaitId>,
 }
 impl WaitIndex {
     pub fn get(&self, id: WaitId) -> Option<&WaitRecord> {
@@ -60,6 +62,9 @@ impl WaitIndex {
     /// Indexed, deterministic candidates with explicit remaining-work reporting at the service.
     pub fn matches(&self, limit: usize) -> Vec<(SignalSequence, WaitId)> {
         self.candidates.iter().take(limit).copied().collect()
+    }
+    pub fn child_matches(&self, limit: usize) -> Vec<WaitId> {
+        self.child_candidates.iter().take(limit).copied().collect()
     }
     pub fn due(&self, now: u64, limit: usize) -> Vec<WaitId> {
         self.deadlines
@@ -90,7 +95,14 @@ impl WaitIndex {
         let id = r.spec.wait_id();
         if r.resolution.is_none() {
             self.active.insert(r.run_id, id);
-            self.matching.entry(key(r.spec.filter())).or_default().insert(id);
+            if let Some(f) = r.spec.filter() {
+                self.matching.entry(key(f)).or_default().insert(id);
+            }
+            if let WaitTarget::Children { task_ids, .. } = r.spec.target() {
+                for child in task_ids {
+                    self.children.entry(*child).or_default().insert(id);
+                }
+            }
             if let Some(d) = r.spec.deadline() {
                 self.deadlines.insert((d.at, id));
             }
@@ -104,13 +116,22 @@ impl WaitIndex {
     fn close(&mut self, r: WaitResolution) {
         let w = self.records.get_mut(&r.wait_id).expect("validated wait");
         self.active.remove(&w.run_id);
-        let k = key(w.spec.filter());
-        if let Some(bucket) = self.matching.get_mut(&k) {
-            bucket.remove(&r.wait_id);
-            if bucket.is_empty() {
-                self.matching.remove(&k);
+        if let Some(k) = w.spec.filter().map(key) {
+            if let Some(bucket) = self.matching.get_mut(&k) {
+                bucket.remove(&r.wait_id);
+                if bucket.is_empty() {
+                    self.matching.remove(&k);
+                }
             }
         }
+        if let WaitTarget::Children { task_ids, .. } = w.spec.target() {
+            for child in task_ids {
+                if let Some(bucket) = self.children.get_mut(child) {
+                    bucket.remove(&r.wait_id);
+                }
+            }
+        }
+        self.child_candidates.remove(&r.wait_id);
         if let Some(d) = w.spec.deadline() {
             self.deadlines.remove(&(d.at, r.wait_id));
         }
@@ -128,6 +149,9 @@ impl ReplayReducer {
     pub(crate) fn wait_resume_context(&self, w: &WaitRecord) -> ResumeContext {
         let r = w.resolution.as_ref().expect("validated wake");
         let wake = match &r.kind {
+            WaitResolutionKind::Children(outcomes) => {
+                WakeReason::Children { wait_id: r.wait_id, outcomes: outcomes.clone() }
+            }
             WaitResolutionKind::Signal(s) => WakeReason::Signal {
                 wait_id: r.wait_id,
                 signal_sequence: *s,
@@ -153,18 +177,29 @@ impl ReplayReducer {
     }
     pub fn earliest_signal(&self, spec: &WaitSpec) -> Option<SignalSequence> {
         self.signals
-            .retained_candidates(spec.filter(), after(spec), 1)
+            .retained_candidates(spec.filter()?, after(spec), 1)
             .first()
             .map(|r| r.sequence())
     }
     pub(crate) fn refresh_wait_candidate(&mut self, id: WaitId) {
         self.waits.candidates.retain(|(_, w)| *w != id);
-        if let Some(w) = self.waits.get(id) {
+        self.waits.child_candidates.remove(&id);
+        if let Some(w) = self.waits.get(id).cloned() {
             if w.resolution.is_none() {
+                if self.child_wait_outcomes(&w.spec).is_some() {
+                    self.waits.child_candidates.insert(id);
+                }
                 if let Some(s) = self.earliest_signal(&w.spec) {
                     self.waits.candidates.insert((s, id));
                 }
             }
+        }
+    }
+    /// Recompute only child waits affected by a durable task transition.
+    pub(crate) fn child_state_changed(&mut self, task: TaskId) {
+        let ids = self.waits.children.get(&task).cloned().unwrap_or_default();
+        for id in ids {
+            self.refresh_wait_candidate(id);
         }
     }
     pub(crate) fn signal_arrived(&mut self, e: &SignalEnvelope) {
@@ -238,9 +273,7 @@ impl ReplayReducer {
         if run.state() != RunState::Running || self.waits.pending_wait(r.run_id).is_some() {
             return Err(E::InvalidState);
         }
-        if self.tenant_for_run(r.run_id)? != r.spec.filter().tenant_id {
-            return Err(E::TenantMismatch);
-        }
+        self.validate_child_wait_ownership(r)?;
         if run.current_attempt_id() != Some(r.attempt_id) {
             return Err(E::StaleAttempt);
         }
@@ -272,13 +305,43 @@ impl ReplayReducer {
         }
         Ok(())
     }
+    fn validate_child_wait_ownership(&self, r: &WaitRecord) -> Result<(), WaitRejection> {
+        let run = self.get_run_instance(&r.run_id).ok_or(WaitRejection::NotFound)?;
+        let tenant = self.tenant_for_run(r.run_id)?;
+        match r.spec.target() {
+            WaitTarget::Signal { filter, .. } if filter.tenant_id != tenant => {
+                return Err(WaitRejection::TenantMismatch)
+            }
+            WaitTarget::Children { task_ids, .. } => {
+                for id in task_ids {
+                    let child = self.get_task(id).ok_or(WaitRejection::NotFound)?;
+                    if self.task_admission(*id).is_some_and(|a| a.sequence() > r.sequence) {
+                        return Err(WaitRejection::InvalidIdentity);
+                    }
+                    if child.parent_task_id() != Some(run.task_id())
+                        || child.tenant_id() != tenant
+                        || *id == run.task_id()
+                        || (r.resolution.is_none() && self.completion_requires(*id, run.task_id()))
+                    {
+                        return Err(WaitRejection::InvalidIdentity);
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
     pub(crate) fn resolution_state(
         &self,
         w: &WaitRecord,
         r: &WaitResolution,
     ) -> Result<RunState, WaitRejection> {
         use WaitRejection as E;
-        if r.run_id != w.run_id || r.wait_id != w.spec.wait_id() || r.sequence <= w.sequence {
+        if r.run_id != w.run_id
+            || r.wait_id != w.spec.wait_id()
+            || r.sequence <= w.sequence
+            || r.timestamp < w.timestamp
+        {
             return Err(E::InvalidIdentity);
         }
         if w.resolution.is_some() {
@@ -290,6 +353,15 @@ impl ReplayReducer {
             return Err(E::InvalidState);
         }
         match &r.kind {
+            WaitResolutionKind::Children(outcomes) => {
+                if self.child_wait_outcomes(&w.spec).as_ref() != Some(outcomes) {
+                    return Err(E::InvalidSignal);
+                }
+                let mut historical = w.clone();
+                historical.resolution = Some(r.clone());
+                self.validate_historical_child_evidence(&historical, outcomes)?;
+                Ok(RunState::Ready)
+            }
             WaitResolutionKind::Signal(s) => {
                 if self.earliest_signal(&w.spec) != Some(*s) {
                     return Err(E::InvalidSignal);
@@ -373,7 +445,10 @@ impl ReplayReducer {
                     wait_id: c.wait_id(),
                     sequence: c.expected_sequence(),
                     timestamp: c.timestamp(),
-                    kind: WaitResolutionKind::Signal(c.signal_sequence()),
+                    kind: c
+                        .child_outcomes()
+                        .map(|v| WaitResolutionKind::Children(v.to_vec()))
+                        .unwrap_or_else(|| WaitResolutionKind::Signal(c.signal_sequence())),
                 })
             }
             MutationCommand::WaitTimeout(c) => {
@@ -441,6 +516,20 @@ impl ReplayReducer {
                     timestamp: c.timestamp(),
                 });
             }
+            MutationCommand::AttemptFinish(c) if c.result() == AttemptResultKind::Success => {
+                let task = self.get_run_instance(&c.run_id()).ok_or(E::NotFound)?.task_id();
+                if !self.required_children_terminal(task) {
+                    return Err(E::InvalidState);
+                }
+                return Ok(None);
+            }
+            MutationCommand::RunStateTransition(c) if c.new_state() == RunState::Completed => {
+                let task = self.get_run_instance(&c.run_id()).ok_or(E::NotFound)?.task_id();
+                if !self.required_children_terminal(task) {
+                    return Err(E::InvalidState);
+                }
+                return Ok(None);
+            }
             _ => return Ok(None),
         }
         if d != DurabilityPolicy::Immediate {
@@ -468,9 +557,9 @@ impl ReplayReducer {
             });
             let seq = r.sequence;
             let event = match r.kind {
-                WaitResolutionKind::Signal(_) | WaitResolutionKind::Control(_) => {
-                    WalEventType::WaitSatisfied { record: r }
-                }
+                WaitResolutionKind::Children(_)
+                | WaitResolutionKind::Signal(_)
+                | WaitResolutionKind::Control(_) => WalEventType::WaitSatisfied { record: r },
                 WaitResolutionKind::Deadline => WalEventType::WaitTimedOut { record: r },
                 WaitResolutionKind::Canceled(_) => WalEventType::WaitCanceled { record: r },
             };
@@ -608,6 +697,9 @@ impl ReplayReducer {
     ) -> Result<(), WaitRejection> {
         use WaitRejection as E;
         let mut index = WaitIndex::default();
+        // Historical evidence can refer to another wait's terminal resolution.
+        // Load the read-only history before independently validating every record.
+        self.waits.records = records.iter().map(|r| (r.spec.wait_id(), r.clone())).collect();
         for r in records {
             if r.sequence == 0
                 || r.sequence > self.latest_sequence
@@ -618,9 +710,7 @@ impl ReplayReducer {
             {
                 return Err(E::InvalidIdentity);
             }
-            if self.tenant_for_run(r.run_id)? != r.spec.filter().tenant_id {
-                return Err(E::TenantMismatch);
-            }
+            self.validate_child_wait_ownership(r)?;
             let attempt = self
                 .get_attempt_history(&r.run_id)
                 .and_then(|h| h.iter().find(|a| a.attempt_id() == r.attempt_id))
@@ -645,6 +735,9 @@ impl ReplayReducer {
                     return Err(E::InvalidIdentity);
                 }
                 match &res.kind {
+                    WaitResolutionKind::Children(outcomes) => {
+                        self.validate_historical_child_evidence(r, outcomes)?;
+                    }
                     WaitResolutionKind::Signal(s) => {
                         let selected = self.signals.records().find(|s| {
                             s.wal_sequence() < res.sequence
@@ -700,7 +793,9 @@ impl ReplayReducer {
             let w = index.get(*id).ok_or(E::NotFound)?;
             let res = w.resolution.as_ref().ok_or(E::InvalidState)?;
             let resumes = match res.kind {
-                WaitResolutionKind::Signal(_) | WaitResolutionKind::Control(_) => true,
+                WaitResolutionKind::Children(_)
+                | WaitResolutionKind::Signal(_)
+                | WaitResolutionKind::Control(_) => true,
                 WaitResolutionKind::Deadline => w
                     .spec
                     .deadline()
@@ -728,7 +823,9 @@ impl ReplayReducer {
             if let Some(res) = &w.resolution {
                 let resumes = matches!(
                     res.kind,
-                    WaitResolutionKind::Signal(_) | WaitResolutionKind::Control(_)
+                    WaitResolutionKind::Children(_)
+                        | WaitResolutionKind::Signal(_)
+                        | WaitResolutionKind::Control(_)
                 ) || matches!(res.kind, WaitResolutionKind::Deadline)
                     && w.spec
                         .deadline()
@@ -793,7 +890,7 @@ impl ReplayReducer {
     }
 }
 fn matches_signal(w: &WaitSpec, e: &SignalEnvelope, s: SignalSequence) -> bool {
-    let f = w.filter();
+    let Some(f) = w.filter() else { return false };
     s > after(w)
         && f.tenant_id == e.tenant_id
         && f.namespace == e.namespace

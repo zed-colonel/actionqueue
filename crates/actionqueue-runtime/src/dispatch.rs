@@ -18,7 +18,6 @@ use actionqueue_core::mutation::RunCreateCommand;
 use actionqueue_core::mutation::{
     AttemptStartCommand, DependencyDeclareCommand, DurabilityPolicy, LeaseAcquireCommand,
     LeaseHeartbeatCommand, MutationAuthority, MutationCommand, RunStateTransitionCommand,
-    TaskCancelCommand,
 };
 use actionqueue_core::run::run_instance::{RunInstance, RunInstanceError};
 use actionqueue_core::run::state::RunState;
@@ -65,8 +64,6 @@ use crate::worker::{InFlightRun, WorkerResult};
 /// projection's run states (which tasks have at least one Completed run with all
 /// runs terminal). Failure is derived similarly (all runs terminal, none Completed).
 fn build_dependency_gate(projection: &ReplayReducer) -> DependencyGate {
-    use actionqueue_core::run::state::RunState;
-
     let mut gate = DependencyGate::new();
 
     // Collect dependency map once for O(1) lookups.
@@ -86,19 +83,12 @@ fn build_dependency_gate(projection: &ReplayReducer) -> DependencyGate {
         dep_map.values().flat_map(|prereqs| prereqs.iter().copied()).collect();
 
     for task_id in all_prereqs {
-        let runs: Vec<_> = projection.runs_for_task(task_id).collect();
-        if runs.is_empty() {
-            continue;
-        }
-        let all_terminal = runs.iter().all(|r| r.state().is_terminal());
-        if !all_terminal {
-            continue;
-        }
-        let has_completed = runs.iter().any(|r| r.state() == RunState::Completed);
-        if has_completed {
-            gate.force_satisfy(task_id);
-        } else {
-            gate.force_fail(task_id);
+        match projection.task_terminal_status(task_id) {
+            Some(actionqueue_core::continuation::TaskTerminalStatus::Succeeded) => {
+                gate.force_satisfy(task_id)
+            }
+            Some(_) => gate.force_fail(task_id),
+            None => {}
         }
     }
 
@@ -133,18 +123,17 @@ fn build_hierarchy_tracker(projection: &ReplayReducer) -> HierarchyTracker {
     for (child_id, parent_id) in projection.parent_child_mappings() {
         // Depth limit should not be exceeded for valid WAL data;
         // ignore errors (they indicate a WAL invariant violation, not a tracker bug).
-        let _ = tracker.register_child(parent_id, child_id);
+        let _ = tracker.register_child_with_policy(
+            parent_id,
+            child_id,
+            projection.get_task(&child_id).expect("child").child_lifecycle_policy(),
+        );
     }
 
     // Pass 2: mark tasks terminal based on projection run states using the O(R_task) index.
     for task_record in projection.task_records() {
         let task_id = task_record.task_spec().id();
-        let runs: Vec<_> = projection.runs_for_task(task_id).collect();
-        let is_terminal = if runs.is_empty() {
-            projection.is_task_canceled(task_id)
-        } else {
-            runs.iter().all(|r| r.state().is_terminal())
-        };
+        let is_terminal = projection.task_terminal_status(task_id).is_some();
         if is_terminal {
             tracker.mark_terminal(task_id);
         }
@@ -874,8 +863,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         current_time: u64,
     ) -> Result<(), DispatchError> {
         // Check if all runs for this task are now terminal (O(R_task) via index).
-        let all_runs_terminal =
-            self.authority.projection().runs_for_task(task_id).all(|r| r.state().is_terminal());
+        let all_runs_terminal = self.authority.projection().task_terminal_status(task_id).is_some();
 
         if !all_runs_terminal {
             return Ok(()); // Task still has in-flight or scheduled runs.
@@ -888,11 +876,8 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         self.pending_gc_tasks.insert(task_id);
 
         // Check if the task has at least one Completed run (O(R_task) via index).
-        let has_completed = self
-            .authority
-            .projection()
-            .runs_for_task(task_id)
-            .any(|r| r.state() == RunState::Completed);
+        let has_completed = self.authority.projection().task_terminal_status(task_id)
+            == Some(actionqueue_core::continuation::TaskTerminalStatus::Succeeded);
 
         if has_completed {
             // Task succeeded — notify gate so dependents become eligible.
@@ -946,81 +931,16 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
     /// The self-quenching property: once all descendants are terminal, repeated
     /// calls return immediately with no WAL writes.
     fn cascade_hierarchy_cancellations(&mut self, current_time: u64) -> Result<(), DispatchError> {
-        let canceled_task_ids: Vec<TaskId> =
-            self.pending_hierarchy_cascade.iter().copied().collect();
-
-        let mut completed_cascades: Vec<TaskId> = Vec::new();
-
-        for canceled_id in canceled_task_ids {
-            // Mark the canceled ancestor as terminal if all its runs are terminal.
-            let all_runs_terminal = self
-                .authority
-                .projection()
-                .runs_for_task(canceled_id)
-                .all(|r| r.state().is_terminal());
-            if all_runs_terminal {
-                self.hierarchy_tracker.mark_terminal(canceled_id);
-            }
-
-            let cascade = self.hierarchy_tracker.collect_cancellation_cascade(canceled_id);
-            if cascade.is_empty() {
-                completed_cascades.push(canceled_id);
-                continue;
-            }
-
-            for descendant_id in cascade {
-                tracing::debug!(
-                    canceled_ancestor = %canceled_id,
-                    descendant = %descendant_id,
-                    "hierarchy: cascading cancellation to descendant"
-                );
-
-                // Cancel the descendant task if not yet canceled (idempotent guard).
-                if !self.authority.projection().is_task_canceled(descendant_id) {
-                    let seq = self.next_sequence()?;
-                    let _ = self
-                        .authority
-                        .submit_command(
-                            MutationCommand::TaskCancel(TaskCancelCommand::new(
-                                seq,
-                                descendant_id,
-                                current_time,
-                            )),
-                            DurabilityPolicy::Immediate,
-                        )
-                        .map_err(DispatchError::Authority)?;
-                    // Descendant may itself have children — enqueue for cascade.
-                    self.pending_hierarchy_cascade.insert(descendant_id);
-                }
-
-                // Cancel all non-terminal runs of the descendant (O(R_task) via index).
-                let runs_to_cancel: Vec<_> = self
-                    .authority
-                    .projection()
-                    .runs_for_task(descendant_id)
-                    .filter(|r| !r.state().is_terminal())
-                    .map(|r| (r.id(), r.state()))
-                    .collect();
-
-                for (run_id, prev_state) in runs_to_cancel {
-                    self.cancel_run_and_release_key(
-                        run_id,
-                        descendant_id,
-                        prev_state,
-                        current_time,
-                    )?;
-                }
-
-                // All descendant runs are now canceled — mark terminal in tracker.
-                self.hierarchy_tracker.mark_terminal(descendant_id);
-            }
+        let before = self.authority.projection().latest_sequence();
+        crate::waits::recover_cancellations(&mut self.authority, current_time)
+            .map_err(DispatchError::Authority)?;
+        if self.authority.projection().latest_sequence() != before
+            || !self.pending_hierarchy_cascade.is_empty()
+        {
+            self.hierarchy_tracker = build_hierarchy_tracker(self.authority.projection());
+            self.dependency_gate = build_dependency_gate(self.authority.projection());
         }
-
-        // Remove completed cascades (tasks whose cascade returned empty).
-        for task_id in completed_cascades {
-            self.pending_hierarchy_cascade.remove(&task_id);
-        }
-
+        self.pending_hierarchy_cascade.clear();
         Ok(())
     }
 
@@ -2157,15 +2077,12 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         // a dependency AFTER the prerequisite ran). GC may have removed the
         // completed task from `satisfied`; re-check the projection to restore it.
         for prereq_id in &prereqs {
-            let runs: Vec<_> = self.authority.projection().runs_for_task(*prereq_id).collect();
-            if !runs.is_empty() {
-                let all_terminal = runs.iter().all(|r| r.state().is_terminal());
-                let has_completed = runs.iter().any(|r| r.state() == RunState::Completed);
-                if all_terminal && has_completed {
-                    self.dependency_gate.force_satisfy(*prereq_id);
-                } else if all_terminal && !has_completed {
-                    self.dependency_gate.force_fail(*prereq_id);
+            match self.authority.projection().task_terminal_status(*prereq_id) {
+                Some(actionqueue_core::continuation::TaskTerminalStatus::Succeeded) => {
+                    self.dependency_gate.force_satisfy(*prereq_id)
                 }
+                Some(_) => self.dependency_gate.force_fail(*prereq_id),
+                None => {}
             }
         }
         // Re-evaluate satisfaction for task_id after prereq state is restored.
@@ -2423,8 +2340,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
     fn fire_task_terminal_success_event(&mut self, task_id: TaskId) -> Result<(), DispatchError> {
         use actionqueue_core::event::{check_event, ActionQueueEvent};
 
-        let all_terminal =
-            self.authority.projection().runs_for_task(task_id).all(|r| r.state().is_terminal());
+        let all_terminal = self.authority.projection().task_terminal_status(task_id).is_some();
         if !all_terminal {
             return Ok(());
         }

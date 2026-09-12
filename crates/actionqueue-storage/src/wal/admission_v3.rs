@@ -1,24 +1,28 @@
-//! Frozen kind 256/schema 2 payloads. No public admission plan is serialized.
+//! Frozen kind 256/schema 3 payloads. No public admission plan is serialized.
 use actionqueue_core::{
     admission::{AdmissionDigest, EnsureTaskRequest},
     bounded::{BoundedCode, ContentHash, HashAlgorithm, OpaqueRef},
     causal::{CausalContext, CausationLink, ControlMutationContext},
     ids::{AdmissionKey, AttemptId, CorrelationId, RunId, TaskId, TraceId},
+    run::RunInstance,
 };
 use serde::{Deserialize, Serialize};
 
-use super::{codec::DecodeError, domain_v1::RunV1, task_v2::TaskSpecV2};
+use super::{codec::DecodeError, domain_v1::RunV1, task_v3::TaskSpecV3};
 use crate::mutation::admission::AdmissionRecord;
 fn invalid(e: impl std::fmt::Display) -> DecodeError {
     DecodeError::Decode(e.to_string())
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct AdmissionCommittedV2 {
-    record: AdmissionRecordV2,
+pub(crate) struct AdmissionCommittedV3 {
+    record: AdmissionRecordV3,
     runs: Vec<RunV1>,
 }
-impl AdmissionCommittedV2 {
+impl AdmissionCommittedV3 {
+    pub(super) fn new(record: &AdmissionRecord, runs: &[RunInstance]) -> Self {
+        Self { record: record.clone().into(), runs: runs.iter().map(RunV1::from).collect() }
+    }
     pub(super) fn into_event(self) -> Result<super::event::WalEventType, DecodeError> {
         Ok(super::event::WalEventType::AdmissionCommitted {
             record: self.record.try_into()?,
@@ -28,9 +32,9 @@ impl AdmissionCommittedV2 {
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct AdmissionRecordV2 {
+pub(crate) struct AdmissionRecordV3 {
     key: String,
-    task_spec: TaskSpecV2,
+    task_spec: TaskSpecV3,
     dependencies: Vec<TaskId>,
     causal: CausalV1,
     control: Option<ControlV1>,
@@ -71,7 +75,7 @@ struct ControlV1 {
     request: Option<String>,
     reason: Option<String>,
 }
-impl From<AdmissionRecord> for AdmissionRecordV2 {
+impl From<AdmissionRecord> for AdmissionRecordV3 {
     fn from(r: AdmissionRecord) -> Self {
         let q = r.request();
         let c = q.causal_context();
@@ -111,9 +115,9 @@ impl From<AdmissionRecord> for AdmissionRecordV2 {
         }
     }
 }
-impl TryFrom<AdmissionRecordV2> for AdmissionRecord {
+impl TryFrom<AdmissionRecordV3> for AdmissionRecord {
     type Error = DecodeError;
-    fn try_from(w: AdmissionRecordV2) -> Result<Self, Self::Error> {
+    fn try_from(w: AdmissionRecordV3) -> Result<Self, Self::Error> {
         if w.hash_algorithm != 1 {
             return Err(invalid("unsupported admission hash algorithm"));
         }

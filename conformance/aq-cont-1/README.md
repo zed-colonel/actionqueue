@@ -23,3 +23,14 @@ resolution or physical WAL compaction.
 AQ-06 activates wait/control records, task/admission schema 2, and projection v4.
 `acceptance_waits` and `acceptance_wait_crash` are continuation gates; the latter
 is separate to avoid inherited store-lock descriptors during process spawning.
+
+AQ-09 adds canonical admission v2 (lifecycle policy), parent-run scoped child keys,
+typed child waits/wakes, and projection v7. Task/admission WAL schema 3 and
+wait/disposition schema 2 leave prior payload layouts intact. The manifest refuses
+older stores. `generate-child-vectors.py` preserves earlier vectors and independently
+computes the new vectors. `acceptance_transactional_child_admission` and
+`acceptance_parent_wait_child_atomicity` are included in `cargo aq-conformance`.
+They cover `AQ-DD-005` with ordinary bounded child batches, checkpoints, DAG gates,
+and opaque attribution. `cross-feature-persistence.sh` builds isolated base and
+expanded binaries, checks identical child wire bytes, and refuses unsupported
+store profiles without mutation. Scratch data honors `TMPDIR`.

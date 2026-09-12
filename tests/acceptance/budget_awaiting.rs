@@ -350,6 +350,107 @@ async fn failed_resumed_attempt_is_charged_once_and_keeps_its_input() {
 }
 
 mod support;
+
+struct AdmitChildAndExhaust {
+    parent: TaskId,
+    child: TaskId,
+    recording: Recording,
+}
+impl actionqueue_executor_local::handler::ExecutorHandler for AdmitChildAndExhaust {
+    fn execute(
+        &self,
+        ctx: actionqueue_executor_local::handler::ExecutorContext,
+    ) -> AttemptDisposition {
+        if ctx.input.payload == b"child" || ctx.input.resume_context.is_some() {
+            return self.recording.execute(ctx);
+        }
+        let child = actionqueue_core::disposition::ChildAdmission::new(
+            AdmissionKey::new("child").unwrap(),
+            TaskSpec::new(
+                self.child,
+                TaskPayload::new(b"child".to_vec()),
+                actionqueue_core::task::run_policy::RunPolicy::Once,
+                TaskConstraints::default(),
+                Default::default(),
+            )
+            .unwrap()
+            .with_parent(self.parent),
+            vec![],
+            Default::default(),
+        )
+        .unwrap();
+        AttemptDisposition::new(
+            DispositionOutcome::Awaiting,
+            DispositionParts {
+                wait: Some(
+                    WaitSpec::children(
+                        WaitId::new(),
+                        vec![self.child],
+                        ChildWaitPolicy::AllTerminal,
+                        None,
+                    )
+                    .unwrap(),
+                ),
+                child_admissions: vec![child],
+                consumption: vec![BudgetConsumption::new(DIMS[0], 1)],
+                ..Default::default()
+            },
+        )
+        .unwrap()
+    }
+}
+
+#[tokio::test]
+async fn atomic_child_wake_survives_budget_block_and_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let seen = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let task = once_task(false, None);
+    let parent = task.id();
+    let child = TaskId::new();
+    let mut boot = ActionQueueEngine::new(
+        config(dir.path()),
+        AdmitChildAndExhaust { parent, child, recording: Recording(seen.clone()) },
+    )
+    .bootstrap_with_clock(MockClock::new(20))
+    .unwrap();
+    boot.submit_task(task).unwrap();
+    boot.allocate_budget(parent, DIMS[0], 1).unwrap();
+    let _ = boot.run_until_idle().await.unwrap();
+    let r = boot.projection().runs_for_task(parent).next().unwrap().id();
+    let context = boot.projection().pending_resume(r).unwrap();
+    assert_eq!(boot.projection().get_run_state(&r), Some(&RunState::Ready));
+    assert_eq!(
+        context.wake,
+        WakeReason::Children {
+            wait_id: context.wait_id().unwrap(),
+            outcomes: vec![ChildOutcome { task_id: child, status: TaskTerminalStatus::Succeeded }],
+        }
+    );
+    assert!(boot.is_budget_exhausted(parent, DIMS[0]));
+    assert_eq!(seen.lock().unwrap().len(), 1); // Only the child completed.
+    drop(boot);
+    let a = s::open(dir.path());
+    parity(&a); // Child admission, consumption and wake agree in WAL and snapshot recovery.
+    drop(a);
+    let mut boot = ActionQueueEngine::new(config(dir.path()), Recording(seen.clone()))
+        .bootstrap_with_clock(MockClock::new(30))
+        .unwrap();
+    for _ in 0..3 {
+        assert_eq!(boot.tick().await.unwrap().dispatched, 0);
+        assert_eq!(boot.projection().pending_resume(r), Some(context.clone()));
+        assert!(boot.projection().get_lease(&r).is_none());
+        assert_eq!(boot.projection().get_run_instance(&r).unwrap().attempt_count(), 1);
+        assert_eq!(boot.projection().get_budget(&parent, DIMS[0]).unwrap().consumed, 1);
+    }
+    boot.replenish_budget(parent, DIMS[0], 2).unwrap();
+    let _ = boot.run_until_idle().await.unwrap();
+    assert_eq!(boot.projection().get_run_state(&r), Some(&RunState::Completed));
+    let inputs = seen.lock().unwrap();
+    assert_eq!(inputs.len(), 2);
+    assert_eq!(inputs[1].run_id, r);
+    assert_eq!(inputs[1].resume_context, Some(context));
+}
+
 #[tokio::test]
 async fn inspection_distinguishes_budget_block_from_satisfied_wait() {
     let dir = tempfile::tempdir().unwrap();
