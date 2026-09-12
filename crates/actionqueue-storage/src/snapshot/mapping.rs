@@ -25,7 +25,8 @@ use crate::snapshot::model::{
 /// - v4: Wait establishment and resolution.
 /// - v5: Immutable checkpoints and accepted resume assignments.
 /// - v6: Compound dispositions and separate durable failure accounting.
-pub const SNAPSHOT_SCHEMA_VERSION: u32 = 6;
+/// - v7: Required/detached children, scoped child admission, and terminal child waits.
+pub const SNAPSHOT_SCHEMA_VERSION: u32 = 7;
 
 /// Typed mapping and validation errors for snapshot/core parity enforcement.
 #[derive(Debug, Clone, PartialEq, Eq)]

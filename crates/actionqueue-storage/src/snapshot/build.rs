@@ -10,7 +10,7 @@ use crate::snapshot::model::{
 };
 
 /// The snapshot format version written by this implementation.
-const SNAPSHOT_FORMAT_VERSION: u32 = 6;
+const SNAPSHOT_FORMAT_VERSION: u32 = 7;
 
 /// Builds a validated [`Snapshot`] from the current state of a [`ReplayReducer`].
 ///

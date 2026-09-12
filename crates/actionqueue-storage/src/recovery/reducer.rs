@@ -639,8 +639,10 @@ impl ReplayReducer {
                 use crate::mutation::wait::WaitResolutionKind as K;
                 let valid = matches!(
                     (event.event(), &record.kind),
-                    (WalEventType::WaitSatisfied { .. }, K::Signal(_) | K::Control(_))
-                        | (WalEventType::WaitTimedOut { .. }, K::Deadline)
+                    (
+                        WalEventType::WaitSatisfied { .. },
+                        K::Children(_) | K::Signal(_) | K::Control(_)
+                    ) | (WalEventType::WaitTimedOut { .. }, K::Deadline)
                         | (WalEventType::WaitCanceled { .. }, K::Canceled(_))
                 );
                 if record.sequence != event.sequence() || !valid {
@@ -1003,6 +1005,33 @@ impl ReplayReducer {
 
         // Commit bookkeeping only after semantic application succeeds.
         self.latest_sequence = event.sequence();
+        // Refresh reverse-indexed child candidates after authoritative transitions.
+        let changed: Vec<_> = match event.event() {
+            WalEventType::RunStateChanged { run_id, .. }
+            | WalEventType::RunCanceled { run_id, .. } => {
+                self.get_run_instance(run_id).map(|r| vec![r.task_id()]).unwrap_or_default()
+            }
+            WalEventType::AttemptDispositionCommitted { record } => {
+                self.get_run_instance(&record.run_id).map(|r| vec![r.task_id()]).unwrap_or_default()
+            }
+            WalEventType::WaitSatisfied { record }
+            | WalEventType::WaitTimedOut { record }
+            | WalEventType::WaitCanceled { record } => {
+                self.get_run_instance(&record.run_id).map(|r| vec![r.task_id()]).unwrap_or_default()
+            }
+            WalEventType::TaskCanceled { task_id, .. } => vec![*task_id],
+            WalEventType::TaskCancellationCommitted { record }
+            | WalEventType::RunCancellationCommitted { record } => match record.target {
+                actionqueue_core::mutation::CancelTarget::Task(id) => vec![id],
+                actionqueue_core::mutation::CancelTarget::Run(id) => {
+                    self.get_run_instance(&id).map(|r| vec![r.task_id()]).unwrap_or_default()
+                }
+            },
+            _ => Vec::new(),
+        };
+        for task in changed {
+            self.child_state_changed(task);
+        }
 
         Ok(())
     }
@@ -1097,6 +1126,15 @@ impl ReplayReducer {
         new_state: &RunState,
         timestamp: u64,
     ) -> Result<(), ReplayReducerError> {
+        if *new_state == RunState::Completed {
+            let task = self
+                .get_run_instance(run_id)
+                .ok_or(ReplayReducerError::InvalidTransition)?
+                .task_id();
+            if !self.required_children_terminal(task) {
+                return Err(ReplayReducerError::InvalidTransition);
+            }
+        }
         // Check that the run exists
         let current_state = self.runs.get(run_id).ok_or(ReplayReducerError::InvalidTransition)?;
 
@@ -1237,6 +1275,15 @@ impl ReplayReducer {
         outcome: AttemptOutcome,
         timestamp: u64,
     ) -> Result<(), ReplayReducerError> {
+        if outcome.result() == AttemptResultKind::Success {
+            let task = self
+                .get_run_instance(run_id)
+                .ok_or(ReplayReducerError::InvalidTransition)?
+                .task_id();
+            if !self.required_children_terminal(task) {
+                return Err(ReplayReducerError::InvalidTransition);
+            }
+        }
         // Verify the run exists and is actively running.
         let current_state = self.runs.get(run_id).ok_or(ReplayReducerError::InvalidTransition)?;
         if *current_state != RunState::Running {

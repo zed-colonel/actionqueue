@@ -137,3 +137,48 @@ impl CanonicalAdmissionV1 {
         ))
     }
 }
+
+/// Canonical v2: the v1 encoding with version 2, followed by the child lifecycle tag.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CanonicalAdmissionV2(Vec<u8>);
+impl CanonicalAdmissionV2 {
+    /// Encodes the full admission meaning including lifecycle policy.
+    pub fn new(r: &EnsureTaskRequest) -> Result<Self, AdmissionRejection> {
+        let mut bytes = CanonicalAdmissionV1::new(r)?.0;
+        let offset = b"AQ-CONT-1\0admission\0".len();
+        bytes[offset..offset + 4].copy_from_slice(&2u32.to_le_bytes());
+        bytes.push(match r.task_spec().child_lifecycle_policy() {
+            crate::task::task_spec::ChildLifecyclePolicy::Required => 0,
+            crate::task::task_spec::ChildLifecyclePolicy::Detached => 1,
+        });
+        Ok(Self(bytes))
+    }
+    /// Independent canonical bytes.
+    pub fn bytes(&self) -> &[u8] {
+        &self.0
+    }
+    /// Versioned SHA-256 digest.
+    pub fn digest(&self) -> Result<AdmissionDigest, AdmissionRejection> {
+        AdmissionDigest::versioned(
+            2,
+            ContentHash::new(HashAlgorithm::Sha256, Sha256::digest(&self.0).to_vec())
+                .expect("SHA-256"),
+        )
+    }
+}
+/// Parent-run local key namespace. Attempts and observational attribution are excluded.
+pub fn scoped_child_key(
+    tenant: Option<crate::ids::TenantId>,
+    parent: crate::ids::TaskId,
+    run: crate::ids::RunId,
+    local: &crate::ids::AdmissionKey,
+) -> crate::ids::AdmissionKey {
+    let mut e = Encoder(b"AQ-CONT-1\0child-key\0".to_vec());
+    e.u32(1);
+    e.option(tenant, |e, id| e.uuid(id.as_uuid()));
+    e.uuid(parent.as_uuid());
+    e.uuid(run.as_uuid());
+    e.text(local.as_str());
+    crate::ids::AdmissionKey::new(format!("child/v1/{:x}", Sha256::digest(&e.0)))
+        .expect("bounded hash key")
+}

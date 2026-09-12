@@ -146,7 +146,13 @@ fn dependency_sets_parent_terminal_retry_and_current_dependencies_are_distinct()
     ensure(&mut a, request(1), 42).unwrap();
     ensure(&mut a, request(2), 42).unwrap();
     let q = with_dependencies(
-        &with_spec(&request(3), spec(3).with_parent(id(1))),
+        &with_spec(
+            &request(3),
+            spec(3).with_parent_policy(
+                id(1),
+                actionqueue_core::task::task_spec::ChildLifecyclePolicy::Detached,
+            ),
+        ),
         vec![id(2), id(1), id(2)],
     );
     ensure(&mut a, q.clone(), 42).unwrap();

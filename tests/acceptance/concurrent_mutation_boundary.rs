@@ -45,7 +45,7 @@ where
 
 /// Creates a deterministic test WAL directory isolated per scenario label.
 fn wal_test_dir(label: &str) -> PathBuf {
-    let dir = PathBuf::from("target").join("tmp").join(format!(
+    let dir = std::env::temp_dir().join(format!(
         "{label}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()

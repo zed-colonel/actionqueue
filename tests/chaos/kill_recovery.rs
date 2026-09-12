@@ -29,18 +29,14 @@ use actionqueue_storage::wal::InstrumentedWalWriter;
 
 static TEST_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
-/// Creates a unique temporary data directory for each test under `target/tmp/`.
+/// Creates a unique temporary data directory for each test under the process temporary directory (`TMPDIR`).
 ///
 /// Matches the pattern used by acceptance tests for consistent build-directory
 /// locality and easier cleanup.
 fn unique_data_dir(label: &str) -> PathBuf {
     let count = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
-    let dir = PathBuf::from("target").join("tmp").join(format!(
-        "chaos-{}-{}-{}",
-        label,
-        std::process::id(),
-        count
-    ));
+    let dir =
+        std::env::temp_dir().join(format!("chaos-{}-{}-{}", label, std::process::id(), count));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("chaos data dir should be creatable");
     dir

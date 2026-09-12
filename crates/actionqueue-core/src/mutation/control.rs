@@ -8,6 +8,7 @@ pub struct WaitSatisfyCommand {
     run_id: RunId,
     wait_id: WaitId,
     signal_sequence: SignalSequence,
+    children: Option<Vec<crate::continuation::ChildOutcome>>,
     timestamp: u64,
 }
 impl WaitSatisfyCommand {
@@ -19,7 +20,28 @@ impl WaitSatisfyCommand {
         signal_sequence: SignalSequence,
         timestamp: u64,
     ) -> Self {
-        Self { expected_sequence, run_id, wait_id, signal_sequence, timestamp }
+        Self { expected_sequence, run_id, wait_id, signal_sequence, children: None, timestamp }
+    }
+    /// Propose terminal child evidence; storage independently verifies it.
+    pub fn children(
+        expected_sequence: u64,
+        run_id: RunId,
+        wait_id: WaitId,
+        outcomes: Vec<crate::continuation::ChildOutcome>,
+        timestamp: u64,
+    ) -> Self {
+        Self {
+            expected_sequence,
+            run_id,
+            wait_id,
+            signal_sequence: SignalSequence::new(0),
+            children: Some(outcomes),
+            timestamp,
+        }
+    }
+    /// Typed child evidence when supplied.
+    pub fn child_outcomes(&self) -> Option<&[crate::continuation::ChildOutcome]> {
+        self.children.as_deref()
     }
     /// Returns expected sequence.
     pub fn expected_sequence(&self) -> u64 {

@@ -24,6 +24,7 @@ pub(crate) struct ResolutionV1 {
 impl From<WaitResolution> for ResolutionV1 {
     fn from(r: WaitResolution) -> Self {
         let (kind, signal, control) = match r.kind {
+            WaitResolutionKind::Children(_) => panic!("child evidence requires schema 2"),
             WaitResolutionKind::Signal(s) => (0, Some(s.get()), None),
             WaitResolutionKind::Deadline => (1, None, None),
             WaitResolutionKind::Control(c) => (2, None, Some((&c).into())),
@@ -98,7 +99,7 @@ pub(crate) struct WaitV1 {
 }
 impl From<WaitRecord> for WaitV1 {
     fn from(r: WaitRecord) -> Self {
-        let f = r.spec.filter();
+        let f = r.spec.filter().expect("schema 1 signal wait");
         Self {
             run: r.run_id,
             attempt: r.attempt_id,
@@ -112,7 +113,7 @@ impl From<WaitRecord> for WaitV1 {
             kind: f.kind.as_str().into(),
             correlation: f.correlation_id.as_ref().map(|s| s.as_str().into()),
             source: f.source_ref.as_ref().map(|s| s.expose().into()),
-            after: match r.spec.eligible_from() {
+            after: match r.spec.eligible_from().expect("schema 1 signal wait") {
                 SignalEligibility::AnyRetained => None,
                 SignalEligibility::After(s) => Some(s.get()),
             },

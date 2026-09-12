@@ -29,3 +29,7 @@ mod task_v2;
 pub(crate) mod wait_v1;
 
 mod disposition_v1;
+
+pub(crate) mod admission_v3;
+mod disposition_v2;
+mod task_v3;

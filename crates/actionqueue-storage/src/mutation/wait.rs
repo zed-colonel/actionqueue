@@ -6,15 +6,16 @@ use actionqueue_core::{
     mutation::CancelTarget,
 };
 /// The immutable winner; signals are non-consuming observations.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum WaitResolutionKind {
     Signal(SignalSequence),
+    Children(Vec<actionqueue_core::continuation::ChildOutcome>),
     Deadline,
     Control(ControlMutationContext),
     Canceled(Option<ControlMutationContext>),
 }
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(try_from = "crate::wal::wait_v1::ResolutionV1", into = "crate::wal::wait_v1::ResolutionV1")]
+#[serde(deny_unknown_fields)]
 pub struct WaitResolution {
     pub run_id: RunId,
     pub wait_id: WaitId,
@@ -23,7 +24,7 @@ pub struct WaitResolution {
     pub kind: WaitResolutionKind,
 }
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(try_from = "crate::wal::wait_v1::WaitV1", into = "crate::wal::wait_v1::WaitV1")]
+#[serde(deny_unknown_fields)]
 pub struct WaitRecord {
     pub run_id: RunId,
     pub attempt_id: AttemptId,

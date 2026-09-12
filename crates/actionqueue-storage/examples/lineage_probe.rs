@@ -90,6 +90,35 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             println!();
         }
+        let (mut child_wait, mut child_resolution) = wait_records();
+        let child: TaskId = "66666666-6666-4666-8666-666666666666".parse()?;
+        child_wait.spec = WaitSpec::children(
+            child_wait.spec.wait_id(),
+            vec![child],
+            ChildWaitPolicy::AllTerminal,
+            None,
+        )?;
+        child_resolution.kind =
+            actionqueue_storage::mutation::wait::WaitResolutionKind::Children(vec![ChildOutcome {
+                task_id: child,
+                status: TaskTerminalStatus::Succeeded,
+            }]);
+        for e in [
+            E::WaitEstablished { record: child_wait },
+            E::WaitSatisfied { record: child_resolution },
+            E::TaskCreated {
+                task_spec: spec().with_parent_policy(
+                    child,
+                    actionqueue_core::task::task_spec::ChildLifecyclePolicy::Detached,
+                ),
+                timestamp: 42,
+            },
+        ] {
+            for b in codec::encode(&WalEvent::new(9, e))? {
+                print!("{b:02x}");
+            }
+            println!();
+        }
         for e in [
             E::AcceptedAttemptStarted {
                 record: actionqueue_storage::recovery::resume::AcceptedStart {
@@ -246,6 +275,86 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     101,
                     LeaseFence::new("probe".into(), grant),
                     Some(context),
+                )),
+                DurabilityPolicy::Immediate,
+            )?;
+            // Persist a real atomic child/wait transaction in both isolated binaries.
+            use actionqueue_core::{admission::AdmissionPlan, disposition::*};
+            let child_id: TaskId = "66666666-6666-4666-8666-666666666666".parse()?;
+            let child_spec = TaskSpec::new(
+                child_id,
+                TaskPayload::new(vec![]),
+                RunPolicy::Once,
+                TaskConstraints::default(),
+                TaskMetadata::default(),
+            )?;
+            let child = ChildAdmission::new(
+                actionqueue_core::ids::AdmissionKey::new("probe/child")?,
+                child_spec,
+                vec![],
+                Default::default(),
+            )?;
+            let attempt =
+                a.projection().get_run_instance(&w.run_id).unwrap().current_attempt_id().unwrap();
+            let request = a.projection().disposition_child_request(w.run_id, attempt, &child)?;
+            let digest = request.digest()?;
+            let plan = AdmissionPlan::new(
+                request,
+                vec![actionqueue_core::run::RunInstance::new_scheduled(child_id, 102, 102)?],
+                digest,
+            )?;
+            let child_wait_id = WaitId::new();
+            let disposition = AttemptDisposition::new(
+                DispositionOutcome::Awaiting,
+                DispositionParts {
+                    wait: Some(WaitSpec::children(
+                        child_wait_id,
+                        vec![child_id],
+                        ChildWaitPolicy::AllTerminal,
+                        None,
+                    )?),
+                    child_admissions: vec![child],
+                    ..Default::default()
+                },
+            )?;
+            let _ = a.submit_command(
+                MutationCommand::AttemptDispositionCommit(
+                    AttemptDispositionCommitCommand::new(
+                        AttemptCommitExpectation::new(
+                            a.projection().latest_sequence() + 1,
+                            w.run_id,
+                            attempt,
+                            RunState::Running,
+                            LeaseFence::new("probe".into(), grant),
+                        ),
+                        disposition,
+                        102,
+                    )
+                    .with_children(vec![plan]),
+                ),
+                DurabilityPolicy::Immediate,
+            )?;
+            let _ = a.submit_command(
+                MutationCommand::Cancel(CancelCommand {
+                    expected_sequence: a.projection().latest_sequence() + 1,
+                    target: CancelTarget::Task(child_id),
+                    tenant_id: None,
+                    control_context: None,
+                    timestamp: 103,
+                }),
+                DurabilityPolicy::Immediate,
+            )?;
+            let evidence = a
+                .projection()
+                .child_wait_outcomes(&a.projection().waits().get(child_wait_id).unwrap().spec)
+                .unwrap();
+            let _ = a.submit_command(
+                MutationCommand::WaitSatisfy(WaitSatisfyCommand::children(
+                    a.projection().latest_sequence() + 1,
+                    w.run_id,
+                    child_wait_id,
+                    evidence,
+                    104,
                 )),
                 DurabilityPolicy::Immediate,
             )?;

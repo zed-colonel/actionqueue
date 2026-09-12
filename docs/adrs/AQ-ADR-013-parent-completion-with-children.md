@@ -1,7 +1,6 @@
 # AQ-ADR-013 — Parent completion with children
 
-- **Status:** Proposed. The recommended default below is the working implementation choice
-  until code review produces a concrete counterexample (implementation plan, Section 3).
+- **Status:** Accepted.
 - **Decide before:** `AQ-09`
 - **Contract:** `AQ-CONT-1`
 - **Invariants:** AQ-H8
@@ -37,6 +36,15 @@ Gating, detached, cascade-cancel, and crash-between-child-admission tests.
 
 | Field | Value |
 |---|---|
-| Accepted in PR | _pending_ |
-| Accepted on | _pending_ |
+| Accepted in PR | `AQ-09` |
+| Accepted on | 2026-09-11 |
 | Superseded by | — |
+
+Completion is checked at storage preparation and replay, including legacy attempt
+closure and run completion paths. Child failure/cancellation satisfies the gate;
+DAG success still requires at least one successful run after task termination.
+Detached edges stop cancellation traversal. Direct child waits carry immutable
+terminal evidence and reconcile from durable task state before dispatch/deadlines.
+
+Verified by `acceptance_transactional_child_admission` and
+`acceptance_parent_wait_child_atomicity`, including WAL-only and snapshot recovery.

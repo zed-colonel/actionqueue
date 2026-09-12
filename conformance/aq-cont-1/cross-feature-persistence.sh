@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # Run from repository root. Each executable is built independently, without
-# workspace test-feature unification. All scratch output stays inside the repo.
+# workspace test-feature unification. Scratch output honors TMPDIR.
 set -euo pipefail
-mkdir -p .aq-checks
-probe_dir=$(mktemp -d "$PWD/.aq-checks/cross-feature.XXXXXX")
+probe_dir=$(mktemp -d "${TMPDIR:-/tmp}/cross-feature.XXXXXX")
 trap 'rm -rf "$probe_dir"' EXIT
 cargo build --offline -p actionqueue-storage --example lineage_probe --no-default-features --features serde
 cp target/debug/examples/lineage_probe "$probe_dir/base"

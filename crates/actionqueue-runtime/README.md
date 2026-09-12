@@ -29,7 +29,7 @@ canonical digest, admission key, and WAL sequence. `submit_task(spec)` derives s
 the UUID on retries. Outbox callers should persist their own stable key, task UUID,
 and causal context. Changed digest-bearing meaning returns a typed rejection conflict.
 
-All ordinary submissions, including CLI and consumed workflow channel messages, use
+All ordinary submissions, including CLI requests and transactional child proposals, use
 the handler-independent admission service. The workflow channel itself still gives no
 durable enqueue acknowledgement; atomic disposition/child admission belongs to later
 work items. Attribution is opaque and confers no scheduling priority or authority.

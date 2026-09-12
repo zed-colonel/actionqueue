@@ -1,7 +1,5 @@
 //! Runtime planning followed by one authoritative compound commit.
-use actionqueue_core::{
-    admission::AdmissionPlan, bounded::BoundedError, disposition::AttemptDisposition, mutation::*,
-};
+use actionqueue_core::{admission::AdmissionPlan, disposition::AttemptDisposition, mutation::*};
 use actionqueue_storage::{
     mutation::{
         disposition::DispositionRejection, MutationAuthorityError, StorageMutationAuthority,
@@ -59,12 +57,14 @@ pub fn commit<W: WalWriter>(
     };
     match result {
         Err(Error::Disposition(
-            DispositionRejection::Invalid
+            reason @ (DispositionRejection::Invalid
             | DispositionRejection::TooLarge
-            | DispositionRejection::UnsupportedFeature,
+            | DispositionRejection::UnsupportedFeature
+            | DispositionRejection::ChildrenNonterminal
+            | DispositionRejection::InvalidChildWait),
         )) => {
             let failure = AttemptDisposition::terminal_failure(
-                BoundedError::new(crate::config::RESULT_TOO_LARGE).expect("bounded rejection"),
+                crate::config::disposition_rejection_error(reason),
             );
             let _ = a.submit_command(
                 MutationCommand::AttemptDispositionCommit(AttemptDispositionCommitCommand::new(

@@ -86,6 +86,19 @@ fn all_effects_share_one_sequence_and_survive_wal_snapshot_tail() {
     lease(&mut a, r, 31);
     let id = start(&mut a, r, 31);
     assert_eq!(a.projection().attempt_resume(r, id).unwrap().checkpoint, Some(cp));
+    let child_id =
+        a.projection().get_attempt_history(&r).unwrap()[0].disposition.as_ref().unwrap().children
+            [0]
+        .admission
+        .task_id();
+    let c = MutationCommand::Cancel(CancelCommand {
+        expected_sequence: seq(&a),
+        target: CancelTarget::Task(child_id),
+        tenant_id: None,
+        control_context: None,
+        timestamp: 31,
+    });
+    let _ = apply(&mut a, c);
     let e = expected(&a, r);
     actionqueue_runtime::disposition::commit(
         &mut a,

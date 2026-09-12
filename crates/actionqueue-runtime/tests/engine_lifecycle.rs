@@ -144,8 +144,14 @@ async fn child_retry_survives_parent_completion_cache_cleanup_and_restart() {
     let parent = TaskId::new();
     let child = TaskId::new();
     engine.submit_task(make_spec(parent)).unwrap();
-    let request =
-        EnsureTaskRequest::for_task(make_spec(child).with_parent(parent), vec![]).unwrap();
+    let request = EnsureTaskRequest::for_task(
+        make_spec(child).with_parent_policy(
+            parent,
+            actionqueue_core::task::task_spec::ChildLifecyclePolicy::Detached,
+        ),
+        vec![],
+    )
+    .unwrap();
     engine.ensure_task(request.clone()).unwrap();
     let _ = engine.run_until_idle().await.unwrap();
     assert!(engine.projection().runs_for_task(parent).all(|r| r.state() == RunState::Completed));

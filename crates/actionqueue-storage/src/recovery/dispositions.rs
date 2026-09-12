@@ -151,6 +151,15 @@ impl ReplayReducer {
                         DispositionOutcome::Timeout { .. } => AttemptResultKind::Timeout,
                         _ => AttemptResultKind::Failure,
                     };
+                    if matches!(r.disposition.outcome(), DispositionOutcome::Complete)
+                        && !self.validate_historical_completion(
+                            run.task_id(),
+                            r.sequence,
+                            r.timestamp,
+                        )
+                    {
+                        return Err(ReplayReducerError::CorruptedData);
+                    }
                     if accounting.target_state != r.target_state
                         || accounting.failure_attempt_count != r.failure_attempt_count
                         || a.result() != Some(expected_result)

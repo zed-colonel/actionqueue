@@ -1,7 +1,7 @@
 //! Exactly one wait per awaiting run (ADR-007).
 use super::SignalFilter;
 use crate::bounded::BoundedCode;
-use crate::ids::{SignalSequence, WaitId};
+use crate::ids::{SignalSequence, TaskId, WaitId};
 /// Deterministic signal selection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -46,19 +46,36 @@ pub struct WaitDeadline {
 pub struct WaitSpecError;
 impl std::fmt::Display for WaitSpecError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("AnyRetained requires a correlation filter")
+        f.write_str("invalid wait: retained signals require correlation; child targets require 1..=64 non-nil IDs")
     }
 }
 impl std::error::Error for WaitSpecError {}
+/// Bounded child target policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum ChildWaitPolicy {
+    /// Return all terminal outcomes.
+    AllTerminal,
+    /// Return all successes or the lowest-ID terminal failure/cancellation witness.
+    AllSucceededOrAnyFailed,
+}
+/// The durable fact a continuation observes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
+pub enum WaitTarget {
+    /// A retained external signal.
+    Signal { filter: SignalFilter, match_policy: WaitMatchPolicy, eligible_from: SignalEligibility },
+    /// Direct children, sorted and bounded by the validated WaitSpec constructor.
+    Children { task_ids: Vec<TaskId>, policy: ChildWaitPolicy },
+}
 /// Validated single continuation wait.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(try_from = "WaitWire"))]
 pub struct WaitSpec {
     wait_id: WaitId,
-    filter: SignalFilter,
-    match_policy: WaitMatchPolicy,
-    eligible_from: SignalEligibility,
+    target: WaitTarget,
     deadline: Option<WaitDeadline>,
 }
 impl WaitSpec {
@@ -73,23 +90,57 @@ impl WaitSpec {
         if eligible_from == SignalEligibility::AnyRetained && filter.correlation_id.is_none() {
             return Err(WaitSpecError);
         }
-        Ok(Self { wait_id, filter, match_policy, eligible_from, deadline })
+        Ok(Self {
+            wait_id,
+            target: WaitTarget::Signal { filter, match_policy, eligible_from },
+            deadline,
+        })
+    }
+    /// Constructs a nonempty target set, rejecting oversized input before normalization.
+    pub fn children(
+        wait_id: WaitId,
+        mut task_ids: Vec<TaskId>,
+        policy: ChildWaitPolicy,
+        deadline: Option<WaitDeadline>,
+    ) -> Result<Self, WaitSpecError> {
+        if task_ids.is_empty()
+            || task_ids.len() > crate::limits::MAX_CHILD_WAIT_TARGETS
+            || task_ids.iter().any(|id| id.is_nil())
+        {
+            return Err(WaitSpecError);
+        }
+        task_ids.sort();
+        task_ids.dedup();
+        Ok(Self { wait_id, target: WaitTarget::Children { task_ids, policy }, deadline })
     }
     /// Wait identity.
     pub fn wait_id(&self) -> WaitId {
         self.wait_id
     }
-    /// Exact structural filter.
-    pub fn filter(&self) -> &SignalFilter {
-        &self.filter
+    /// Typed target.
+    pub fn target(&self) -> &WaitTarget {
+        &self.target
     }
-    /// Match policy.
-    pub fn match_policy(&self) -> &WaitMatchPolicy {
-        &self.match_policy
+    /// Signal filter, when this is a signal wait.
+    pub fn filter(&self) -> Option<&SignalFilter> {
+        match &self.target {
+            WaitTarget::Signal { filter, .. } => Some(filter),
+            _ => None,
+        }
     }
-    /// Eligible store history.
-    pub fn eligible_from(&self) -> &SignalEligibility {
-        &self.eligible_from
+    /// Signal policy, when this is a signal wait.
+    pub fn match_policy(&self) -> Option<&WaitMatchPolicy> {
+        match &self.target {
+            WaitTarget::Signal { match_policy, .. } => Some(match_policy),
+            _ => None,
+        }
+    }
+    /// Signal eligibility, when this is a signal wait.
+    pub fn eligible_from(&self) -> Option<&SignalEligibility> {
+        match &self.target {
+            WaitTarget::Signal { eligible_from, .. } => Some(eligible_from),
+            _ => None,
+        }
     }
     /// Optional deadline.
     pub fn deadline(&self) -> Option<&WaitDeadline> {
@@ -98,17 +149,23 @@ impl WaitSpec {
 }
 #[cfg(feature = "serde")]
 #[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct WaitWire {
     wait_id: WaitId,
-    filter: SignalFilter,
-    match_policy: WaitMatchPolicy,
-    eligible_from: SignalEligibility,
+    target: WaitTarget,
     deadline: Option<WaitDeadline>,
 }
 #[cfg(feature = "serde")]
 impl TryFrom<WaitWire> for WaitSpec {
     type Error = WaitSpecError;
     fn try_from(w: WaitWire) -> Result<Self, Self::Error> {
-        Self::new(w.wait_id, w.filter, w.match_policy, w.eligible_from, w.deadline)
+        match w.target {
+            WaitTarget::Signal { filter, match_policy, eligible_from } => {
+                Self::new(w.wait_id, filter, match_policy, eligible_from, w.deadline)
+            }
+            WaitTarget::Children { task_ids, policy } => {
+                Self::children(w.wait_id, task_ids, policy, w.deadline)
+            }
+        }
     }
 }

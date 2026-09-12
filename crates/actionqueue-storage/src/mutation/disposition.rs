@@ -19,6 +19,8 @@ use actionqueue_core::{
 pub enum DispositionRejection {
     Stale,
     Invalid,
+    ChildrenNonterminal,
+    InvalidChildWait,
     TooLarge,
     UnsupportedFeature,
     ImmediateDurabilityRequired,
@@ -112,10 +114,32 @@ impl ReplayReducer {
         if let Some(v) = &overrides.origin_ref {
             causal = causal.with_origin_ref(v.clone());
         }
-        let old = self.admission(spec.tenant_id(), child.admission_key());
+        let key = actionqueue_core::admission::canonical::scoped_child_key(
+            spec.tenant_id(),
+            parent,
+            run,
+            child.admission_key(),
+        );
+        let old = self.admission(spec.tenant_id(), &key);
         let link = if let Some(old) = old {
             let link = old.request().causal_context().causation().ok_or(R::Invalid)?;
             if link.parent_task_id() != Some(parent) || link.parent_run_id() != Some(run) {
+                return Err(R::Invalid);
+            }
+            let producer = self
+                .get_attempt_history(&run)
+                .into_iter()
+                .flatten()
+                .find(|a| Some(a.attempt_id()) == link.parent_attempt_id())
+                .and_then(|a| a.disposition.as_ref())
+                .ok_or(R::Invalid)?;
+            let original = producer
+                .disposition
+                .child_admissions()
+                .iter()
+                .find(|c| c.admission_key() == child.admission_key())
+                .ok_or(R::Invalid)?;
+            if original.causal_override() != child.causal_override() {
                 return Err(R::Invalid);
             }
             link.clone()
@@ -130,7 +154,7 @@ impl ReplayReducer {
             return Err(R::Invalid);
         }
         EnsureTaskRequest::new(
-            child.admission_key().clone(),
+            key,
             child.task_spec().clone().with_parent(parent),
             child.dependencies().to_vec(),
             causal,
@@ -149,6 +173,11 @@ impl ReplayReducer {
         let run = self.get_run_instance(&c.run_id()).unwrap();
         let task = self.get_task(&run.task_id()).unwrap();
         let d = c.disposition();
+        if matches!(d.outcome(), actionqueue_core::disposition::DispositionOutcome::Complete)
+            && !self.required_children_terminal(run.task_id())
+        {
+            return Err(R::ChildrenNonterminal);
+        }
         let accounting = d
             .outcome()
             .accounting(run.failure_attempt_count(), task.constraints().max_attempts())
@@ -284,7 +313,7 @@ impl ReplayReducer {
             failure_attempt_count: accounting.failure_attempt_count,
         };
         if let Some(w) = record.wait_record() {
-            scratch.validate_wait_establishment(&w).map_err(|_| R::Invalid)?;
+            scratch.validate_wait_establishment(&w).map_err(|_| R::InvalidChildWait)?;
         }
         Ok(record)
     }

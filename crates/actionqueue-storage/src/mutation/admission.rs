@@ -9,8 +9,8 @@ use actionqueue_core::{
 /// The original specification is retained so future controls cannot change its digest.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(
-    try_from = "crate::wal::admission_v2::AdmissionRecordV2",
-    into = "crate::wal::admission_v2::AdmissionRecordV2"
+    try_from = "crate::wal::admission_v3::AdmissionRecordV3",
+    into = "crate::wal::admission_v3::AdmissionRecordV3"
 )]
 pub struct AdmissionRecord {
     request: EnsureTaskRequest,
@@ -26,7 +26,17 @@ impl AdmissionRecord {
         timestamp: u64,
         sequence: u64,
     ) -> Result<Self, AdmissionRejection> {
-        if request.digest()? != digest {
+        let actual = match digest.canonical_version() {
+            1 if request.task_spec().child_lifecycle_policy()
+                == actionqueue_core::task::task_spec::ChildLifecyclePolicy::Required =>
+            {
+                actionqueue_core::admission::canonical::CanonicalAdmissionV1::new(&request)?
+                    .digest()?
+            }
+            2 => request.digest()?,
+            _ => return Err(AdmissionRejection::InvalidDigest),
+        };
+        if actual != digest {
             return Err(AdmissionRejection::InvalidDigest);
         }
         Ok(Self { request, digest, timestamp, sequence })

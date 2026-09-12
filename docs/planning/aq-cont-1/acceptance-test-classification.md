@@ -47,9 +47,9 @@ in [`archive/pre-aq-cont-1/characterization-results/`](../../../archive/pre-aq-c
 | `dag_ordering` | Retain | DAG dependencies remain first-class gates | `AQ-09` |
 | `dag_failure_propagation` | Retain | Failed prerequisite cascades | `AQ-09` |
 | `dag_cycle_rejection` | Retain | Cycle rejection at declaration | `AQ-09` |
-| `hierarchy_lifecycle` | Retain (policy explicit) | Completion gating and cascade retained per `AQ-ADR-013` | `AQ-09` |
-| `dynamic_submission` | Rewrite | Child admissions commit with Awaiting; parent resumes through a durable deadline | `AQ-08` |
-| `coordinator_multi_attempt` | Replace | `ChildrenSnapshot` delivery moves to resume context / handler input | `AQ-08`, `AQ-09` |
+| `hierarchy_lifecycle` | Retain (policy explicit) | Premature Complete rejection, required/detached cancellation, and recovery per `AQ-ADR-013` | `AQ-09` |
+| `dynamic_submission` | Rewrite | Child admissions commit with Awaiting; parent resumes through durable child evidence | `AQ-08` |
+| `coordinator_multi_attempt` | Replace | Checkpoint-based batches and immutable child wakes; snapshots remain inspection views | `AQ-08`, `AQ-09` |
 | `cron_scheduling` | Retain | Cron derivation | `AQ-04` |
 | `workflow_crash_recovery` | Retain | Workflow state survives recovery | `AQ-09` |
 | `dag_snapshot_recovery` | Retain | Dependency declarations survive snapshot recovery | `AQ-03`, `AQ-09` |

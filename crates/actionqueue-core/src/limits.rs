@@ -228,3 +228,6 @@ impl ContinuationLimits {
         Ok(())
     }
 }
+
+/// Hard ceiling on raw child wait targets, before normalization.
+pub const MAX_CHILD_WAIT_TARGETS: usize = 64;

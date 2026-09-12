@@ -45,6 +45,9 @@ impl ReplayReducer {
                         return Err(invalid());
                     }
                 }
+                if depends_on.iter().any(|dep| self.completion_requires(*dep, *task_id)) {
+                    return Err(invalid());
+                }
                 // Reject cycles in the union of durable declarations before publication.
                 let mut pending = depends_on.clone();
                 let mut visited = std::collections::HashSet::new();
