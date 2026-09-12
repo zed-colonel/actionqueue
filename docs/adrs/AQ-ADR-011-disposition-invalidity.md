@@ -1,7 +1,6 @@
 # AQ-ADR-011 — Disposition invalidity
 
-- **Status:** Proposed. The recommended default below is the working implementation choice
-  until code review produces a concrete counterexample (implementation plan, Section 3).
+- **Status:** Accepted for implementation in AQ-08; integration review pending.
 - **Decide before:** `AQ-08`
 - **Contract:** `AQ-CONT-1`
 - **Invariants:** AQ-H9
@@ -40,6 +39,8 @@ rejected disposition reproduces the same terminal failure.
 
 | Field | Value |
 |---|---|
-| Accepted in PR | _pending_ |
-| Accepted on | _pending_ |
+| Accepted in PR | AQ-08 work item |
+| Accepted on | 2026-09-12 |
 | Superseded by | — |
+
+Storage validates the fence before subordinate effects and publishes one immediately synced record. Invalid store-dependent proposals produce a minimal terminal failure with no proposed effects. Stale results append nothing. Uncertain append/sync/publication and impossible preparation mismatches fence the authority. `acceptance_attempt_disposition` exercises these boundaries.

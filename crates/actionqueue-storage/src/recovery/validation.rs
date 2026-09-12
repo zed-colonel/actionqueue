@@ -29,7 +29,9 @@ impl ReplayReducer {
             }
             E::RunCreated { run_instance } => {
                 task(run_instance.task_id())?;
-                if run_instance.attempt_count() != 0 || run_instance.current_attempt_id().is_some()
+                if run_instance.attempt_count() != 0
+                    || run_instance.failure_attempt_count() != 0
+                    || run_instance.current_attempt_id().is_some()
                 {
                     return Err(invalid());
                 }

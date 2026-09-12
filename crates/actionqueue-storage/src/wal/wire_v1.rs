@@ -256,6 +256,7 @@ pub fn kind(event: &WalEventType) -> u16 {
         WalEventType::SignalPinned { .. } => 289,
         WalEventType::SignalUnpinned { .. } => 290,
         WalEventType::SignalsRetired { .. } => 291,
+        WalEventType::AttemptDispositionCommitted { .. } => 336,
         WalEventType::AdmissionCommitted { .. } => 256,
         WalEventType::StoreInitialized { .. } => 1,
         WalEventType::TaskCreated { .. } => 16,
@@ -293,7 +294,8 @@ pub fn kind(event: &WalEventType) -> u16 {
 }
 pub fn check_kind(kind: u16) -> Result<(), DecodeError> {
     match kind {
-        1
+        336
+        | 1
         | 16
         | 17
         | 18
@@ -381,6 +383,9 @@ pub fn encode_payload(event: &WalEventType) -> Result<Vec<u8>, EncodeError> {
             })
         }
         WalEventType::AcceptedAttemptStarted { record } => bounded(record),
+        WalEventType::AttemptDispositionCommitted { record } => {
+            super::disposition_v1::encode(record)
+        }
         WalEventType::AttemptClosed { record } => bounded(record),
         WalEventType::AttemptStarted { run_id, attempt_id, timestamp } => {
             bounded(&AttemptStartedV1 {
@@ -580,6 +585,9 @@ pub fn encode_payload(event: &WalEventType) -> Result<Vec<u8>, EncodeError> {
 }
 pub fn decode_payload(kind: u16, payload: &[u8]) -> Result<WalEventType, DecodeError> {
     match kind {
+        336 => Ok(WalEventType::AttemptDispositionCommitted {
+            record: super::disposition_v1::decode(payload)?,
+        }),
         304 => {
             let r: super::wait_v1::WaitV1 = take(payload)?;
             Ok(WalEventType::WaitEstablished { record: r.try_into()? })
@@ -1059,6 +1067,9 @@ pub(crate) fn decode_schema(
     }
     match kind {
         19 => Ok(WalEventType::AcceptedAttemptStarted { record: take(payload)? }),
+        336 => Ok(WalEventType::AttemptDispositionCommitted {
+            record: super::disposition_v1::decode(payload)?,
+        }),
         20 => Ok(WalEventType::AttemptClosed { record: take(payload)? }),
         16 => {
             let (v, rest) = postcard::take_from_bytes::<TaskCreatedV2>(payload)

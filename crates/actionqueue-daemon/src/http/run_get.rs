@@ -37,6 +37,8 @@ pub struct RunGetResponse {
     pub scheduled_at: u64,
     /// Number of attempts made for this run.
     pub attempt_count: u32,
+    /// Committed failures, used by retry caps and backoff.
+    pub failure_attempt_count: u32,
     /// Current attempt identifier if any.
     pub current_attempt_id: Option<String>,
     /// Run state history entries derived from WAL.
@@ -140,6 +142,7 @@ impl RunGetResponse {
             created_at: run_instance.created_at(),
             scheduled_at: run_instance.scheduled_at(),
             attempt_count: run_instance.attempt_count(),
+            failure_attempt_count: run_instance.failure_attempt_count(),
             current_attempt_id: run_instance.current_attempt_id().map(|id| id.to_string()),
             state_history,
             attempts,

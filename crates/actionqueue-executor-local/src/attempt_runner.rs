@@ -13,13 +13,13 @@ use std::{
     sync::Arc,
 };
 
-use actionqueue_core::budget::BudgetConsumption;
 use actionqueue_core::ids::{AttemptId, RunId};
 
-use crate::handler::{AttemptMetadata, ExecutorHandler, HandlerInput, HandlerOutput};
+use crate::handler::{AttemptDisposition, AttemptMetadata, ExecutorHandler, HandlerInput};
 use crate::retry::{decide_retry_transition, RetryDecision, RetryDecisionError};
 use crate::timeout::{TimeoutClassification, TimeoutClock, TimeoutFailure, TimeoutGuard};
-use crate::types::{ExecutorRequest, ExecutorResponse};
+use crate::types::ExecutorRequest;
+use actionqueue_core::disposition::DispositionOutcome;
 
 const DEFAULT_MAX_CANCELLATION_POLL_LATENCY: Duration = Duration::from_millis(250);
 
@@ -80,16 +80,19 @@ pub enum AttemptOutcomeKind {
     Timeout,
     /// The attempt was voluntarily suspended (budget exhaustion / preemption).
     Suspended,
+    /// Yielded to a durable continuation.
+    Awaiting,
 }
 
 impl AttemptOutcomeKind {
-    pub fn from_response(response: &ExecutorResponse) -> Self {
-        match response {
-            ExecutorResponse::Success { .. } => Self::Success,
-            ExecutorResponse::RetryableFailure { .. } => Self::RetryableFailure,
-            ExecutorResponse::TerminalFailure { .. } => Self::TerminalFailure,
-            ExecutorResponse::Timeout { .. } => Self::Timeout,
-            ExecutorResponse::Suspended { .. } => Self::Suspended,
+    pub fn from_disposition(response: &AttemptDisposition) -> Self {
+        match response.outcome() {
+            DispositionOutcome::Complete => Self::Success,
+            DispositionOutcome::RetryableFailure { .. } => Self::RetryableFailure,
+            DispositionOutcome::TerminalFailure { .. } => Self::TerminalFailure,
+            DispositionOutcome::Timeout { .. } => Self::Timeout,
+            DispositionOutcome::Suspended { .. } => Self::Suspended,
+            DispositionOutcome::Awaiting => Self::Awaiting,
         }
     }
 }
@@ -101,7 +104,7 @@ pub struct RetryDecisionInput {
     pub run_id: RunId,
     /// Attempt identifier for the attempt.
     pub attempt_id: AttemptId,
-    /// Attempt number for this execution (1-indexed).
+    /// Candidate failure ordinal (prior durable failures plus one), not physical starts.
     pub attempt_number: u32,
     /// Hard cap for attempts from task constraints snapshot.
     pub max_attempts: u32,
@@ -196,12 +199,14 @@ pub struct TimeoutEnforcementReport {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[must_use = "attempt outcome should be inspected for state transition decisions"]
 pub struct AttemptOutcomeRecord {
+    /// Accepted lease owner and original grant identity.
+    pub lease_fence: actionqueue_core::mutation::LeaseFence,
     /// Run identifier propagated through execution boundary.
     pub run_id: RunId,
     /// Attempt identifier propagated through execution boundary.
     pub attempt_id: AttemptId,
     /// Deterministic attempt response classification.
-    pub response: ExecutorResponse,
+    pub disposition: AttemptDisposition,
     /// Measured attempt execution duration.
     pub elapsed: Duration,
     /// Explicit timeout classification with stable reason-code semantics.
@@ -215,8 +220,6 @@ pub struct AttemptOutcomeRecord {
     /// An error indicates invalid attempt-counter inputs (for example `N + 1`
     /// attempts beyond the configured hard cap).
     pub retry_decision: Result<RetryDecision, RetryDecisionError>,
-    /// Resource consumption reported by the handler for this attempt.
-    pub consumption: Vec<BudgetConsumption>,
 }
 
 /// Monotonic timer abstraction used for timeout enforcement.
@@ -331,8 +334,14 @@ where
         let clock = AttemptTimeoutClock { timer: &self.timer };
         let payload = request.payload;
         let safety_level = request.constraints.safety_level();
-        let metadata = AttemptMetadata { max_attempts, attempt_number, timeout_secs, safety_level };
-        let submission = request.submission.take();
+        let metadata = AttemptMetadata {
+            failure_attempt_count: request.failure_attempt_count,
+            max_attempts,
+            attempt_number,
+            timeout_secs,
+            safety_level,
+        };
+
         let children = request.children.take();
         let external_ctx = request.cancellation_context.take();
         let guard = TimeoutGuard::with_clock(clock);
@@ -347,7 +356,7 @@ where
                     metadata,
                     cancellation_context: cancellation_context.clone(),
                 },
-                submission,
+
                 children,
             })
         };
@@ -383,53 +392,44 @@ where
         };
         self.timeout_metrics.record(timeout_enforcement.cooperation);
 
-        let (response, consumption) = classify_response(handler_output, &timeout_classification);
+        let disposition = classify_disposition(handler_output, &timeout_classification);
         let retry_decision_input = RetryDecisionInput {
             run_id,
             attempt_id,
-            attempt_number,
+            attempt_number: request.failure_attempt_count.saturating_add(1),
             max_attempts,
-            outcome_kind: AttemptOutcomeKind::from_response(&response),
+            outcome_kind: AttemptOutcomeKind::from_disposition(&disposition),
         };
         let retry_decision = decide_retry_transition(&retry_decision_input);
 
         AttemptOutcomeRecord {
+            lease_fence: request.lease_fence,
             run_id,
             attempt_id,
-            response,
+            disposition,
             elapsed,
             timeout_classification,
             timeout_enforcement,
             retry_decision_input,
             retry_decision,
-            consumption,
         }
     }
 }
 
-fn classify_response(
-    output: HandlerOutput,
+fn classify_disposition(
+    output: AttemptDisposition,
     timeout: &TimeoutClassification,
-) -> (ExecutorResponse, Vec<BudgetConsumption>) {
-    let consumption = output.consumption().to_vec();
-
-    // Timeout overrides all non-Suspended handler responses. A handler that
-    // explicitly suspends takes priority — budget-based suspension is voluntary.
+) -> AttemptDisposition {
     if let TimeoutClassification::TimedOut(TimeoutFailure { timeout_secs, .. }) = timeout {
-        if !matches!(output, HandlerOutput::Suspended { .. }) {
-            return (ExecutorResponse::Timeout { timeout_secs: *timeout_secs }, consumption);
-        }
+        output.timed_out(
+            actionqueue_core::bounded::BoundedError::new(format!(
+                "attempt timed out after {timeout_secs}s"
+            ))
+            .expect("bounded timeout"),
+        )
+    } else {
+        output
     }
-
-    let response = match output {
-        HandlerOutput::Success { output, .. } => ExecutorResponse::Success { output },
-        HandlerOutput::RetryableFailure { error, .. } => {
-            ExecutorResponse::RetryableFailure { error }
-        }
-        HandlerOutput::TerminalFailure { error, .. } => ExecutorResponse::TerminalFailure { error },
-        HandlerOutput::Suspended { output, .. } => ExecutorResponse::Suspended { output },
-    };
-    (response, consumption)
 }
 
 fn classify_timeout_cooperation(
@@ -457,6 +457,7 @@ fn classify_timeout_cooperation(
 
 #[cfg(test)]
 mod tests {
+    use actionqueue_core::disposition::{AttemptDisposition, DispositionOutcome};
     use std::sync::Mutex;
     use std::time::Duration;
 
@@ -467,7 +468,7 @@ mod tests {
         AttemptOutcomeKind, AttemptRunner, AttemptTimer, TimeoutCadencePolicy, TimeoutCooperation,
         TimeoutCooperationMetrics, TimeoutCooperationMetricsSnapshot,
     };
-    use crate::handler::{ExecutorContext, ExecutorHandler, HandlerInput, HandlerOutput};
+    use crate::handler::{ExecutorContext, ExecutorHandler, HandlerInput};
     use crate::retry::RetryDecision;
     use crate::timeout::{TimeoutClassification, TimeoutFailure, TimeoutReasonCode};
     use crate::types::ExecutorRequest;
@@ -488,18 +489,18 @@ mod tests {
     }
 
     struct RecordingHandler {
-        output: HandlerOutput,
+        output: AttemptDisposition,
         input: Mutex<Option<HandlerInput>>,
     }
 
     impl RecordingHandler {
-        fn new(output: HandlerOutput) -> Self {
+        fn new(output: AttemptDisposition) -> Self {
             Self { output, input: Mutex::new(None) }
         }
     }
 
     impl ExecutorHandler for RecordingHandler {
-        fn execute(&self, ctx: ExecutorContext) -> HandlerOutput {
+        fn execute(&self, ctx: ExecutorContext) -> AttemptDisposition {
             let input = ctx.input;
             *self.input.lock().unwrap() = Some(input);
             self.output.clone()
@@ -510,14 +511,17 @@ mod tests {
     fn run_attempt_propagates_ids_and_maps_success() {
         let run_id = RunId::new();
         let attempt_id = AttemptId::new();
-        let handler = RecordingHandler::new(HandlerOutput::Success {
-            output: Some(vec![1, 2, 3]),
-            consumption: vec![],
-        });
+        let handler =
+            RecordingHandler::new(actionqueue_core::disposition::AttemptDisposition::complete(
+                (Some(vec![1, 2, 3]))
+                    .map(|v| actionqueue_core::data_ref::DataRef::from_bytes(v).unwrap()),
+            ));
         let runner =
             AttemptRunner::with_timer(handler, FixedTimer { elapsed: Duration::from_millis(5) });
 
         let request = ExecutorRequest {
+            lease_fence: actionqueue_core::mutation::LeaseFence::new("test".into(), 1),
+            failure_attempt_count: 0,
             resume_context: None,
             causal_context: None,
             run_id,
@@ -526,7 +530,7 @@ mod tests {
             constraints: TaskConstraints::new(3, Some(60), None)
                 .expect("test constraints must be valid"),
             attempt_number: 2,
-            submission: None,
+
             children: None,
             cancellation_context: None,
         };
@@ -536,8 +540,10 @@ mod tests {
         assert_eq!(record.run_id, run_id);
         assert_eq!(record.attempt_id, attempt_id);
         assert_eq!(
-            record.response,
-            crate::types::ExecutorResponse::Success { output: Some(vec![1, 2, 3]) }
+            record.disposition,
+            AttemptDisposition::complete(Some(
+                actionqueue_core::data_ref::DataRef::from_bytes(vec![1, 2, 3]).unwrap()
+            ))
         );
         assert_eq!(record.retry_decision, Ok(RetryDecision::Complete));
         assert_eq!(record.retry_decision_input.outcome_kind, AttemptOutcomeKind::Success);
@@ -568,14 +574,17 @@ mod tests {
 
     #[test]
     fn run_attempt_marks_timeout_when_elapsed_exceeds_limit() {
-        let handler = RecordingHandler::new(HandlerOutput::Success {
-            output: Some(vec![42]),
-            consumption: vec![],
-        });
+        let handler =
+            RecordingHandler::new(actionqueue_core::disposition::AttemptDisposition::complete(
+                (Some(vec![42]))
+                    .map(|v| actionqueue_core::data_ref::DataRef::from_bytes(v).unwrap()),
+            ));
         let runner =
             AttemptRunner::with_timer(handler, FixedTimer { elapsed: Duration::from_secs(2) });
 
         let request = ExecutorRequest {
+            lease_fence: actionqueue_core::mutation::LeaseFence::new("test".into(), 1),
+            failure_attempt_count: 0,
             resume_context: None,
             causal_context: None,
             run_id: RunId::new(),
@@ -584,14 +593,23 @@ mod tests {
             constraints: TaskConstraints::new(2, Some(1), None)
                 .expect("test constraints must be valid"),
             attempt_number: 1,
-            submission: None,
+
             children: None,
             cancellation_context: None,
         };
 
         let record = runner.run_attempt(request);
 
-        assert_eq!(record.response, crate::types::ExecutorResponse::Timeout { timeout_secs: 1 });
+        assert_eq!(
+            record.disposition,
+            actionqueue_core::disposition::AttemptDisposition::complete(None).timed_out(
+                actionqueue_core::bounded::BoundedError::new(format!(
+                    "attempt timed out after {}s",
+                    1
+                ))
+                .unwrap()
+            )
+        );
         assert_eq!(record.retry_decision, Ok(RetryDecision::Retry));
         assert_eq!(record.retry_decision_input.outcome_kind, AttemptOutcomeKind::Timeout);
         assert_eq!(record.timeout_enforcement.cooperation, TimeoutCooperation::NonCooperative);
@@ -612,14 +630,18 @@ mod tests {
 
     #[test]
     fn run_attempt_preserves_retryable_failure_without_timeout() {
-        let handler = RecordingHandler::new(HandlerOutput::RetryableFailure {
-            error: "transient error".to_string(),
-            consumption: vec![],
-        });
+        let handler = RecordingHandler::new(
+            actionqueue_core::disposition::AttemptDisposition::retryable_failure(
+                actionqueue_core::bounded::BoundedError::new("transient error".to_string())
+                    .unwrap(),
+            ),
+        );
         let runner =
             AttemptRunner::with_timer(handler, FixedTimer { elapsed: Duration::from_millis(1) });
 
         let request = ExecutorRequest {
+            lease_fence: actionqueue_core::mutation::LeaseFence::new("test".into(), 1),
+            failure_attempt_count: 0,
             resume_context: None,
             causal_context: None,
             run_id: RunId::new(),
@@ -628,7 +650,7 @@ mod tests {
             constraints: TaskConstraints::new(5, Some(30), None)
                 .expect("test constraints must be valid"),
             attempt_number: 3,
-            submission: None,
+
             children: None,
             cancellation_context: None,
         };
@@ -636,14 +658,16 @@ mod tests {
         let record = runner.run_attempt(request);
 
         assert_eq!(
-            record.response,
-            crate::types::ExecutorResponse::RetryableFailure {
-                error: "transient error".to_string(),
-            }
+            record.disposition,
+            actionqueue_core::disposition::AttemptDisposition::retryable_failure(
+                actionqueue_core::bounded::BoundedError::new("transient error".to_string())
+                    .unwrap()
+            )
         );
         assert_eq!(record.retry_decision, Ok(RetryDecision::Retry));
         assert_eq!(record.retry_decision_input.outcome_kind, AttemptOutcomeKind::RetryableFailure);
-        assert_eq!(record.retry_decision_input.attempt_number, 3);
+        // Two prior yields do not consume the failure allowance.
+        assert_eq!(record.retry_decision_input.attempt_number, 1);
         assert_eq!(record.retry_decision_input.max_attempts, 5);
         assert_eq!(record.timeout_enforcement.cooperation, TimeoutCooperation::NotApplicable);
         assert_eq!(record.timeout_enforcement.cancellation_observation_latency, None);
@@ -653,15 +677,17 @@ mod tests {
     fn run_attempt_emits_timeout_cooperation_metric_once() {
         let metrics = TimeoutCooperationMetrics::default();
         let runner = AttemptRunner::with_timer_and_metrics(
-            RecordingHandler::new(HandlerOutput::Success {
-                output: Some(vec![7]),
-                consumption: vec![],
-            }),
+            RecordingHandler::new(actionqueue_core::disposition::AttemptDisposition::complete(
+                (Some(vec![7]))
+                    .map(|v| actionqueue_core::data_ref::DataRef::from_bytes(v).unwrap()),
+            )),
             FixedTimer { elapsed: Duration::from_secs(3) },
             metrics.clone(),
         );
 
         let request = ExecutorRequest {
+            lease_fence: actionqueue_core::mutation::LeaseFence::new("test".into(), 1),
+            failure_attempt_count: 0,
             resume_context: None,
             causal_context: None,
             run_id: RunId::new(),
@@ -670,7 +696,7 @@ mod tests {
             constraints: TaskConstraints::new(2, Some(1), None)
                 .expect("test constraints must be valid"),
             attempt_number: 1,
-            submission: None,
+
             children: None,
             cancellation_context: None,
         };
@@ -725,17 +751,113 @@ mod tests {
     }
 
     #[test]
-    fn classify_response_suspended_takes_priority_over_timeout() {
-        let output = HandlerOutput::Suspended { output: Some(vec![1, 2, 3]), consumption: vec![] };
-        let timeout = TimeoutClassification::TimedOut(TimeoutFailure {
-            timeout_secs: 10,
-            elapsed: Duration::from_secs(15),
-            reason_code: TimeoutReasonCode::DeadlineExceeded,
-        });
-        let (response, _) = super::classify_response(output, &timeout);
-        assert!(
-            matches!(response, crate::types::ExecutorResponse::Suspended { .. }),
-            "Suspended should take priority over Timeout, got: {response:?}"
+    fn timeout_overrides_every_handler_outcome_and_retains_consumption() {
+        use actionqueue_core::budget::{BudgetConsumption, BudgetDimension};
+        let consumption = vec![BudgetConsumption::new(BudgetDimension::Token, 42)];
+        use actionqueue_core::{
+            continuation::*,
+            ids::{SignalSequence, WaitId},
+        };
+        let wait = WaitSpec::new(
+            WaitId::new(),
+            SignalFilter {
+                tenant_id: None,
+                namespace: SignalNamespace::new("test").unwrap(),
+                kind: SignalKind::new("ready").unwrap(),
+                correlation_id: None,
+                source_ref: None,
+            },
+            WaitMatchPolicy::FirstMatch,
+            SignalEligibility::After(SignalSequence::new(0)),
+            None,
+        )
+        .unwrap();
+        let outputs = [
+            AttemptDisposition::awaiting(wait, None).with_consumption(consumption.clone()).unwrap(),
+            actionqueue_core::disposition::AttemptDisposition::complete(
+                (Some(vec![1, 2, 3]))
+                    .map(|v| actionqueue_core::data_ref::DataRef::from_bytes(v).unwrap()),
+            )
+            .with_consumption(consumption.clone())
+            .unwrap(),
+            actionqueue_core::disposition::AttemptDisposition::retryable_failure(
+                actionqueue_core::bounded::BoundedError::new("transient").unwrap(),
+            )
+            .with_consumption(consumption.clone())
+            .unwrap(),
+            actionqueue_core::disposition::AttemptDisposition::terminal_failure(
+                actionqueue_core::bounded::BoundedError::new("permanent").unwrap(),
+            )
+            .with_consumption(consumption.clone())
+            .unwrap(),
+            actionqueue_core::disposition::AttemptDisposition::suspended(None, None)
+                .with_consumption(consumption.clone())
+                .unwrap(),
+        ];
+        for output in outputs {
+            let run_id = RunId::new();
+            let attempt_id = AttemptId::new();
+            let runner = AttemptRunner::with_timer(
+                RecordingHandler::new(output),
+                FixedTimer { elapsed: Duration::from_secs(15) },
+            );
+            let record = runner.run_attempt(ExecutorRequest {
+                lease_fence: actionqueue_core::mutation::LeaseFence::new("test".into(), 1),
+                failure_attempt_count: 0,
+                resume_context: None,
+                causal_context: None,
+                run_id,
+                attempt_id,
+                payload: vec![],
+                constraints: TaskConstraints::new(2, Some(10), None).unwrap(),
+                attempt_number: 1,
+
+                children: None,
+                cancellation_context: None,
+            });
+            assert_eq!(
+                record.disposition,
+                actionqueue_core::disposition::AttemptDisposition::complete(None)
+                    .timed_out(
+                        actionqueue_core::bounded::BoundedError::new(format!(
+                            "attempt timed out after {}s",
+                            10
+                        ))
+                        .unwrap()
+                    )
+                    .with_consumption(consumption.clone())
+                    .unwrap()
+            );
+            assert_eq!(record.disposition.consumption(), consumption);
+            assert_eq!(record.retry_decision, Ok(RetryDecision::Retry));
+            assert!(record.timeout_classification.is_timed_out());
+        }
+    }
+
+    #[test]
+    fn budget_cancellation_without_timeout_preserves_suspension() {
+        let cancellation = crate::handler::CancellationContext::new();
+        cancellation.cancel();
+        let runner = AttemptRunner::with_timer(
+            RecordingHandler::new(AttemptDisposition::suspended(None, None)),
+            FixedTimer { elapsed: Duration::from_secs(1) },
         );
+        let record = runner.run_attempt(ExecutorRequest {
+            lease_fence: actionqueue_core::mutation::LeaseFence::new("test".into(), 1),
+            failure_attempt_count: 0,
+            resume_context: None,
+            causal_context: None,
+            run_id: RunId::new(),
+            attempt_id: AttemptId::new(),
+            payload: vec![],
+            constraints: TaskConstraints::new(1, None, None).unwrap(),
+            attempt_number: 1,
+
+            children: None,
+            cancellation_context: Some(cancellation),
+        });
+        assert!(matches!(record.disposition.outcome(), DispositionOutcome::Suspended { .. }));
+        assert_eq!(record.retry_decision, Ok(RetryDecision::Suspend));
+        assert!(!record.timeout_classification.is_timed_out());
     }
 }

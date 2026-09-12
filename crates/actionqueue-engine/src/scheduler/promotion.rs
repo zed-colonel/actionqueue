@@ -239,7 +239,8 @@ mod tests {
                 MutationCommand::RunStateTransition(details) => {
                     (details.sequence(), details.run_id())
                 }
-                MutationCommand::WaitEstablish(_)
+                MutationCommand::AttemptDispositionCommit(_)
+                | MutationCommand::WaitEstablish(_)
                 | MutationCommand::WaitSatisfy(_)
                 | MutationCommand::WaitTimeout(_)
                 | MutationCommand::WaitResolve(_)

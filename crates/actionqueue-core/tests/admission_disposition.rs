@@ -136,40 +136,80 @@ fn admission_checks_ownership_dependencies_and_counts() {
 }
 #[test]
 fn all_disposition_combinations_are_checked() {
+    // Exhaust every effect combination, both with and without consumption.
     for (index, outcome) in outcomes().into_iter().enumerate() {
-        for has_output in [false, true] {
-            for has_checkpoint in [false, true] {
-                for has_wait in [false, true] {
-                    for has_children in [false, true] {
-                        let parts = DispositionParts {
-                            output: has_output.then(|| checkpoint().data),
-                            checkpoint: has_checkpoint.then(checkpoint),
-                            wait: has_wait.then(wait),
-                            child_admissions: if has_children { vec![child()] } else { vec![] },
-                            ..Default::default()
-                        };
-                        let valid = match index {
-                            0 => !has_checkpoint && !has_wait,
-                            1 => has_wait,
-                            2 => !has_wait,
-                            _ => !has_children && !has_wait,
-                        };
-                        assert_eq!(
-                            AttemptDisposition::new(outcome.clone(), parts).is_ok(),
-                            valid,
-                            "outcome {index}"
-                        );
-                    }
-                }
+        for mask in 0u8..64 {
+            let has_output = mask & 1 != 0;
+            let has_checkpoint = mask & 2 != 0;
+            let has_wait = mask & 4 != 0;
+            let has_children = mask & 8 != 0;
+            let has_signals = mask & 16 != 0;
+            let parts = DispositionParts {
+                output: has_output.then(|| checkpoint().data),
+                checkpoint: has_checkpoint.then(checkpoint),
+                wait: has_wait.then(wait),
+                child_admissions: if has_children { vec![child()] } else { vec![] },
+                emitted_signals: if has_signals { vec![signal()] } else { vec![] },
+                consumption: if mask & 32 != 0 {
+                    vec![actionqueue_core::budget::BudgetConsumption::new(
+                        actionqueue_core::budget::BudgetDimension::Token,
+                        1,
+                    )]
+                } else {
+                    vec![]
+                },
+            };
+            let valid = match index {
+                0 => !has_checkpoint && !has_wait && !has_children,
+                1 => has_wait && !has_output,
+                2 => !has_output && !has_wait && !has_children && !has_signals,
+                _ => !has_output && !has_checkpoint && !has_wait && !has_children && !has_signals,
+            };
+            #[cfg(feature = "serde")]
+            {
+                let json = serde_json::json!({
+                    "outcome": outcome, "output": parts.output, "checkpoint": parts.checkpoint,
+                    "wait": parts.wait, "child_admissions": parts.child_admissions,
+                    "emitted_signals": parts.emitted_signals, "consumption": parts.consumption,
+                });
+                assert_eq!(
+                    serde_json::from_value::<AttemptDisposition>(json).is_ok(),
+                    valid,
+                    "JSON outcome {index}, effects {mask}"
+                );
+                let bytes = postcard::to_allocvec(&(
+                    &outcome,
+                    &parts.output,
+                    &parts.checkpoint,
+                    &parts.wait,
+                    &parts.child_admissions,
+                    &parts.emitted_signals,
+                    &parts.consumption,
+                ))
+                .unwrap();
+                assert_eq!(
+                    postcard::from_bytes::<AttemptDisposition>(&bytes).is_ok(),
+                    valid,
+                    "binary outcome {index}, effects {mask}"
+                );
             }
+            assert_eq!(
+                AttemptDisposition::new(outcome.clone(), parts).is_ok(),
+                valid,
+                "outcome {index}, effects {mask}"
+            );
         }
     }
 }
 #[test]
 fn disposition_collection_ceilings_apply() {
     for count in [64, 65] {
-        let p = DispositionParts { child_admissions: vec![child(); count], ..Default::default() };
-        assert_eq!(AttemptDisposition::new(DispositionOutcome::Complete, p).is_ok(), count == 64);
+        let p = DispositionParts {
+            wait: Some(wait()),
+            child_admissions: vec![child(); count],
+            ..Default::default()
+        };
+        assert_eq!(AttemptDisposition::new(DispositionOutcome::Awaiting, p).is_ok(), count == 64);
     }
     for count in [32, 33] {
         let p = DispositionParts { emitted_signals: vec![signal(); count], ..Default::default() };
@@ -280,4 +320,85 @@ fn consumption_ceiling_applies_to_construction_and_decode() {
             assert_eq!(postcard::from_bytes::<AttemptDisposition>(&bytes).is_ok(), count <= LIMIT);
         }
     }
+}
+
+#[test]
+fn timeout_discards_every_proposed_effect_and_preserves_consumption() {
+    use actionqueue_core::budget::{BudgetConsumption, BudgetDimension};
+    let consumption = vec![BudgetConsumption::new(BudgetDimension::Token, 42)];
+    let error = BoundedError {
+        code: BoundedCode::new("timeout").unwrap(),
+        message: BoundedMessage::new("expired").unwrap(),
+    };
+    for outcome in outcomes() {
+        let parts = match outcome {
+            DispositionOutcome::Complete => DispositionParts {
+                output: Some(checkpoint().data),
+                emitted_signals: vec![signal()],
+                ..Default::default()
+            },
+            DispositionOutcome::Awaiting => DispositionParts {
+                wait: Some(wait()),
+                checkpoint: Some(checkpoint()),
+                child_admissions: vec![child()],
+                emitted_signals: vec![signal()],
+                ..Default::default()
+            },
+            DispositionOutcome::Suspended { .. } => {
+                DispositionParts { checkpoint: Some(checkpoint()), ..Default::default() }
+            }
+            _ => DispositionParts::default(),
+        };
+        let result = AttemptDisposition::new(outcome, parts)
+            .unwrap()
+            .with_consumption(consumption.clone())
+            .unwrap()
+            .timed_out(error.clone());
+        assert_eq!(result.outcome(), &DispositionOutcome::Timeout { error: error.clone() });
+        assert_eq!(result.consumption(), consumption);
+        assert!(result.output().is_none());
+        assert!(result.checkpoint().is_none());
+        assert!(result.wait().is_none());
+        assert!(result.child_admissions().is_empty());
+        assert!(result.emitted_signals().is_empty());
+    }
+}
+
+#[test]
+fn yields_do_not_consume_failure_allowance() {
+    use actionqueue_core::run::RunState;
+    let mut failures = 0;
+    for _ in 0..100 {
+        for outcome in
+            [DispositionOutcome::Awaiting, DispositionOutcome::Suspended { reason: None }]
+        {
+            failures = outcome.accounting(failures, 1).unwrap().failure_attempt_count;
+        }
+    }
+    assert_eq!(failures, 0);
+    for outcome in outcomes().into_iter().filter(DispositionOutcome::is_failure) {
+        let first = outcome.accounting(failures, 1).unwrap();
+        assert_eq!(first.failure_attempt_count, 1);
+        assert_eq!(first.target_state, RunState::Failed);
+        let under_cap = outcome.accounting(0, 2).unwrap();
+        assert_eq!(
+            under_cap.target_state,
+            if matches!(outcome, DispositionOutcome::TerminalFailure { .. }) {
+                RunState::Failed
+            } else {
+                RunState::RetryWait
+            }
+        );
+        assert_eq!(
+            outcome.accounting(u32::MAX, 1),
+            Err(DispositionAccountingError::FailureCountOverflow)
+        );
+    }
+    for outcome in outcomes() {
+        assert_eq!(outcome.accounting(0, 0), Err(DispositionAccountingError::InvalidMaxAttempts));
+    }
+    assert_eq!(
+        DispositionOutcome::Complete.accounting(0, 1).unwrap().target_state,
+        RunState::Completed
+    );
 }

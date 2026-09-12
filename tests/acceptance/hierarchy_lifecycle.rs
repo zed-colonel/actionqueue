@@ -25,7 +25,9 @@ mod wf {
     use actionqueue_core::task::run_policy::RunPolicy;
     use actionqueue_core::task::task_spec::{TaskPayload, TaskSpec};
     use actionqueue_engine::time::clock::MockClock;
-    use actionqueue_executor_local::handler::{ExecutorContext, ExecutorHandler, HandlerOutput};
+    use actionqueue_executor_local::handler::{
+        AttemptDisposition, ExecutorContext, ExecutorHandler,
+    };
     use actionqueue_runtime::config::RuntimeConfig;
     use actionqueue_runtime::engine::ActionQueueEngine;
     use actionqueue_storage::mutation::authority::StorageMutationAuthority;
@@ -36,8 +38,8 @@ mod wf {
     struct NopHandler;
 
     impl ExecutorHandler for NopHandler {
-        fn execute(&self, _ctx: ExecutorContext) -> HandlerOutput {
-            HandlerOutput::Success { output: None, consumption: vec![] }
+        fn execute(&self, _ctx: ExecutorContext) -> AttemptDisposition {
+            actionqueue_core::disposition::AttemptDisposition::complete(None)
         }
     }
 

@@ -20,7 +20,9 @@ mod wf {
     use actionqueue_core::task::run_policy::RunPolicy;
     use actionqueue_core::task::task_spec::{TaskPayload, TaskSpec};
     use actionqueue_engine::time::clock::MockClock;
-    use actionqueue_executor_local::handler::{ExecutorContext, ExecutorHandler, HandlerOutput};
+    use actionqueue_executor_local::handler::{
+        AttemptDisposition, ExecutorContext, ExecutorHandler,
+    };
     use actionqueue_runtime::config::RuntimeConfig;
     use actionqueue_runtime::engine::ActionQueueEngine;
     use actionqueue_storage::mutation::authority::StorageMutationAuthority;
@@ -31,8 +33,11 @@ mod wf {
     struct EchoHandler;
 
     impl ExecutorHandler for EchoHandler {
-        fn execute(&self, ctx: ExecutorContext) -> HandlerOutput {
-            HandlerOutput::Success { output: Some(ctx.input.payload.clone()), consumption: vec![] }
+        fn execute(&self, ctx: ExecutorContext) -> AttemptDisposition {
+            actionqueue_core::disposition::AttemptDisposition::complete(
+                (Some(ctx.input.payload.clone()))
+                    .map(|v| actionqueue_core::data_ref::DataRef::from_bytes(v).unwrap()),
+            )
         }
     }
 

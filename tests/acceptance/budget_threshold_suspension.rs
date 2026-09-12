@@ -31,7 +31,7 @@ use actionqueue_core::task::run_policy::RunPolicy;
 use actionqueue_core::task::task_spec::{TaskPayload, TaskSpec};
 use actionqueue_engine::time::clock::MockClock;
 use actionqueue_executor_local::handler::{
-    CancellationContext, ExecutorContext, ExecutorHandler, HandlerOutput,
+    AttemptDisposition, CancellationContext, ExecutorContext, ExecutorHandler,
 };
 use actionqueue_executor_local::types::ExecutorRequest;
 use actionqueue_executor_local::AttemptRunner;
@@ -54,11 +54,12 @@ fn data_dir(label: &str) -> PathBuf {
 struct TokenConsumeRetryHandler;
 
 impl ExecutorHandler for TokenConsumeRetryHandler {
-    fn execute(&self, _ctx: ExecutorContext) -> HandlerOutput {
-        HandlerOutput::RetryableFailure {
-            error: "transient".to_string(),
-            consumption: vec![BudgetConsumption::new(BudgetDimension::Token, 500)],
-        }
+    fn execute(&self, _ctx: ExecutorContext) -> AttemptDisposition {
+        actionqueue_core::disposition::AttemptDisposition::retryable_failure(
+            actionqueue_core::bounded::BoundedError::new("transient".to_string()).unwrap(),
+        )
+        .with_consumption(vec![BudgetConsumption::new(BudgetDimension::Token, 500)])
+        .unwrap()
     }
 }
 
@@ -129,11 +130,11 @@ fn external_cancellation_context_reaches_handler() {
     struct SuspendOnCancelHandler;
 
     impl ExecutorHandler for SuspendOnCancelHandler {
-        fn execute(&self, ctx: ExecutorContext) -> HandlerOutput {
+        fn execute(&self, ctx: ExecutorContext) -> AttemptDisposition {
             if ctx.input.cancellation_context.token().is_cancelled() {
-                HandlerOutput::Suspended { output: None, consumption: vec![] }
+                actionqueue_core::disposition::AttemptDisposition::suspended(None, None)
             } else {
-                HandlerOutput::Success { output: None, consumption: vec![] }
+                actionqueue_core::disposition::AttemptDisposition::complete(None)
             }
         }
     }
@@ -145,6 +146,8 @@ fn external_cancellation_context_reaches_handler() {
     ctx.cancel();
 
     let request = ExecutorRequest {
+        lease_fence: actionqueue_core::mutation::LeaseFence::new("test".into(), 1),
+        failure_attempt_count: 0,
         resume_context: None,
         causal_context: None,
         run_id: RunId::new(),
@@ -152,7 +155,7 @@ fn external_cancellation_context_reaches_handler() {
         payload: vec![],
         constraints: TaskConstraints::new(3, None, None).expect("valid"),
         attempt_number: 1,
-        submission: None,
+
         children: None,
         cancellation_context: Some(ctx),
     };
@@ -161,8 +164,8 @@ fn external_cancellation_context_reaches_handler() {
 
     // Handler must observe the pre-signaled cancellation and return Suspended.
     assert_eq!(
-        outcome.response,
-        actionqueue_executor_local::types::ExecutorResponse::Suspended { output: None },
+        outcome.disposition,
+        actionqueue_core::disposition::AttemptDisposition::suspended(None, None),
         "handler must return Suspended when CancellationContext is pre-cancelled"
     );
 }

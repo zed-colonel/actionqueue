@@ -23,7 +23,7 @@ use actionqueue_core::task::metadata::TaskMetadata;
 use actionqueue_core::task::run_policy::RunPolicy;
 use actionqueue_core::task::task_spec::{TaskPayload, TaskSpec};
 use actionqueue_engine::time::clock::MockClock;
-use actionqueue_executor_local::handler::{ExecutorContext, ExecutorHandler, HandlerOutput};
+use actionqueue_executor_local::handler::{AttemptDisposition, ExecutorContext, ExecutorHandler};
 use actionqueue_runtime::config::{BackoffStrategyConfig, RuntimeConfig};
 use actionqueue_runtime::engine::ActionQueueEngine;
 
@@ -43,8 +43,8 @@ fn data_dir(label: &str) -> PathBuf {
 struct AlwaysSucceedHandler;
 
 impl ExecutorHandler for AlwaysSucceedHandler {
-    fn execute(&self, _ctx: ExecutorContext) -> HandlerOutput {
-        HandlerOutput::Success { output: None, consumption: vec![] }
+    fn execute(&self, _ctx: ExecutorContext) -> AttemptDisposition {
+        actionqueue_core::disposition::AttemptDisposition::complete(None)
     }
 }
 
@@ -138,11 +138,10 @@ async fn subscription_promoted_ready_run_survives_snapshot_restart_and_backup() 
     #[derive(Debug)]
     struct ConsumeBudget;
     impl ExecutorHandler for ConsumeBudget {
-        fn execute(&self, _ctx: ExecutorContext) -> HandlerOutput {
-            HandlerOutput::Success {
-                output: None,
-                consumption: vec![BudgetConsumption::new(BudgetDimension::Token, 1)],
-            }
+        fn execute(&self, _ctx: ExecutorContext) -> AttemptDisposition {
+            actionqueue_core::disposition::AttemptDisposition::complete(None)
+                .with_consumption(vec![BudgetConsumption::new(BudgetDimension::Token, 1)])
+                .unwrap()
         }
     }
     let base = tempfile::tempdir().unwrap();

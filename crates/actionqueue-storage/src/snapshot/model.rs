@@ -199,6 +199,7 @@ impl From<RunStateHistoryEntry> for SnapshotRunStateHistoryEntry {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct SnapshotAttemptHistoryEntry {
+    pub disposition: Option<Box<crate::mutation::disposition::DispositionRecord>>,
     pub accepted_start: Option<crate::recovery::resume::AcceptedStart>,
     pub finish_origin: actionqueue_core::continuation::AttemptFinishOrigin,
     /// The attempt identifier.
@@ -219,6 +220,7 @@ pub struct SnapshotAttemptHistoryEntry {
 impl From<AttemptHistoryEntry> for SnapshotAttemptHistoryEntry {
     fn from(entry: AttemptHistoryEntry) -> Self {
         Self {
+            disposition: entry.disposition.clone(),
             accepted_start: entry.accepted_start.clone(),
             finish_origin: entry.finish_origin,
             attempt_id: entry.attempt_id,

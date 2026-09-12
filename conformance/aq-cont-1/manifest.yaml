@@ -105,6 +105,14 @@ fixtures:
   sha256: 77084e88c8c26c94ede01e331fd0d054d1a73e8f346df4fb0e6cbf8c67ebbc5e
   variants: [replay, crash, race]
   introduced_by: AQ-07
+- id: AQ-CF-DISPOSITION-001
+  title: Projection v6 known-answer vector
+  invariants: [AQ-H2, AQ-H9, AQ-H13]
+  driver: embedded
+  path: projection-v6-vector.json
+  sha256: 3f1d07c8ed2d08065ba01c413afc43f6e5e81dc6b16cf82a78f3262408d61574
+  variants: [replay, crash, race]
+  introduced_by: AQ-08
 # Black-box drivers. Intentionally empty at AQ-01; populated by AQ-13.
 drivers: []
 acceptance_matrices:
@@ -191,7 +199,6 @@ continuations:
   - tests/acceptance/wait_crash.rs
   developmental_cases: [AQ-DD-006, AQ-DD-012]
   deferred:
-  - handler_disposition_cutover_AQ_08
   - physical_WAL_truncation
 
 resume_assignment:
@@ -207,3 +214,13 @@ resume_assignment:
   - tests/acceptance/checkpoint_resume.rs
   - tests/acceptance/resume_context_crash.rs
   developmental_cases: [AQ-DD-006, AQ-DD-011, AQ-DD-012]
+
+attempt_disposition:
+  introduced_by: AQ-08
+  wal_kind: 336
+  wal_record_schema: 1
+  snapshot_schema: 6
+  projection_version: 6
+  canonical_vector: projection-v6-vector.json
+  tests:
+  - tests/acceptance/attempt_disposition.rs

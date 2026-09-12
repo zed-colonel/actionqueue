@@ -14,7 +14,9 @@ mod wf {
     use actionqueue_core::task::run_policy::RunPolicy;
     use actionqueue_core::task::task_spec::{TaskPayload, TaskSpec};
     use actionqueue_engine::time::clock::MockClock;
-    use actionqueue_executor_local::handler::{ExecutorContext, ExecutorHandler, HandlerOutput};
+    use actionqueue_executor_local::handler::{
+        AttemptDisposition, ExecutorContext, ExecutorHandler,
+    };
     use actionqueue_runtime::config::RuntimeConfig;
     use actionqueue_runtime::engine::ActionQueueEngine;
 
@@ -22,8 +24,11 @@ mod wf {
     struct OutputHandler;
 
     impl ExecutorHandler for OutputHandler {
-        fn execute(&self, _ctx: ExecutorContext) -> HandlerOutput {
-            HandlerOutput::Success { output: Some(b"hello-output".to_vec()), consumption: vec![] }
+        fn execute(&self, _ctx: ExecutorContext) -> AttemptDisposition {
+            actionqueue_core::disposition::AttemptDisposition::complete(
+                (Some(b"hello-output".to_vec()))
+                    .map(|v| actionqueue_core::data_ref::DataRef::from_bytes(v).unwrap()),
+            )
         }
     }
 

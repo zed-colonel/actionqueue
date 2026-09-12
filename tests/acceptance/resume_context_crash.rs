@@ -13,7 +13,7 @@ impl actionqueue_executor_local::handler::ExecutorHandler for CrashRecording {
     fn execute(
         &self,
         c: actionqueue_executor_local::handler::ExecutorContext,
-    ) -> actionqueue_executor_local::handler::HandlerOutput {
+    ) -> actionqueue_executor_local::handler::AttemptDisposition {
         assert!(c.input.resume_context.as_ref().unwrap().checkpoint.is_some());
         assert!(c.input.causal_context.is_some());
         assert_eq!(c.input.payload, [0, 1, 255]);
@@ -67,6 +67,8 @@ fn resume_crash_child() {
             path.clone(),
         ))
         .run_attempt(actionqueue_executor_local::types::ExecutorRequest {
+            lease_fence: actionqueue_core::mutation::LeaseFence::new("test".into(), 1),
+            failure_attempt_count: 0,
             run_id: r,
             attempt_id: id,
             payload: task.payload().to_vec(),
@@ -76,7 +78,7 @@ fn resume_crash_child() {
             causal_context: p
                 .task_admission(task.id())
                 .map(|a| a.request().causal_context().clone()),
-            submission: None,
+
             children: None,
             cancellation_context: None,
         });

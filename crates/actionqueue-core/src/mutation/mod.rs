@@ -29,6 +29,8 @@ pub enum DurabilityPolicy {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[must_use = "mutation commands should be submitted to a MutationAuthority"]
 pub enum MutationCommand {
+    /// Atomically commit a complete lease-fenced worker disposition.
+    AttemptDispositionCommit(AttemptDispositionCommitCommand),
     /// Atomic continuation establishment.
     WaitEstablish(WaitEstablishCommand),
     /// Resolve using the earliest eligible durable signal.

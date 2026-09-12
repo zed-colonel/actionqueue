@@ -269,21 +269,20 @@ impl actionqueue_executor_local::handler::ExecutorHandler for ExternalFailure {
     fn execute(
         &self,
         c: actionqueue_executor_local::handler::ExecutorContext,
-    ) -> actionqueue_executor_local::handler::HandlerOutput {
-        use actionqueue_executor_local::handler::HandlerOutput;
+    ) -> actionqueue_executor_local::handler::AttemptDisposition {
+        use actionqueue_executor_local::handler::AttemptDisposition;
         if let Some(resume) = &c.input.resume_context {
             let data = &resume.checkpoint.as_ref().unwrap().data;
             assert!(data.verify_bytes(b"wrong backend bytes").is_err());
             let n = self.0 .0.lock().unwrap().len();
             self.0 .0.lock().unwrap().push(c.input);
             if n == 0 {
-                return HandlerOutput::RetryableFailure {
-                    error: "checkpoint unavailable".into(),
-                    consumption: vec![],
-                };
+                return actionqueue_core::disposition::AttemptDisposition::retryable_failure(
+                    actionqueue_core::bounded::BoundedError::new("checkpoint unavailable").unwrap(),
+                );
             }
         }
-        HandlerOutput::success()
+        AttemptDisposition::complete(None)
     }
 }
 #[tokio::test]
@@ -547,22 +546,36 @@ impl actionqueue_executor_local::handler::ExecutorHandler for OversizedResult {
     fn execute(
         &self,
         c: actionqueue_executor_local::handler::ExecutorContext,
-    ) -> actionqueue_executor_local::handler::HandlerOutput {
-        use actionqueue_executor_local::handler::HandlerOutput;
+    ) -> actionqueue_executor_local::handler::AttemptDisposition {
+        use actionqueue_executor_local::handler::AttemptDisposition;
         if c.input.run_id == self.run {
             let mut seen = self.seen.0.lock().unwrap();
+            let attempt_id = c.input.attempt_id;
             seen.push(c.input);
             if seen.len() <= self.failures {
                 let output = Some(vec![b'x'; self.rejected_bytes]);
                 return if self.suspended {
-                    HandlerOutput::Suspended { output, consumption: vec![] }
+                    AttemptDisposition::suspended(
+                        Some(CheckpointRef {
+                            checkpoint_id: CheckpointId::new(),
+                            created_by_attempt: attempt_id,
+                            data: DataRef::from_bytes(output.unwrap()).unwrap(),
+                        }),
+                        None,
+                    )
                 } else {
-                    HandlerOutput::Success { output, consumption: vec![] }
+                    actionqueue_core::disposition::AttemptDisposition::complete(
+                        (output)
+                            .map(|v| actionqueue_core::data_ref::DataRef::from_bytes(v).unwrap()),
+                    )
                 };
             }
         }
         // The exact boundary remains accepted, including a zero-byte limit.
-        HandlerOutput::Success { output: Some(vec![0; self.bytes]), consumption: vec![] }
+        actionqueue_core::disposition::AttemptDisposition::complete(
+            (Some(vec![0; self.bytes]))
+                .map(|v| actionqueue_core::data_ref::DataRef::from_bytes(v).unwrap()),
+        )
     }
 }
 
@@ -603,8 +616,9 @@ async fn output_limit_case(
         dispatch_concurrency: std::num::NonZeroUsize::new(1).unwrap(),
         continuation_limits: ContinuationLimits {
             output_bytes: limit,
+            checkpoint_bytes: limit,
             disposition_bytes: record_limit
-                .unwrap_or(ContinuationLimits::default().disposition_bytes),
+                .unwrap_or(actionqueue_core::limits::MAX_ADMISSION_RECORD_BYTES),
             ..Default::default()
         },
         backoff_strategy: actionqueue_runtime::config::BackoffStrategyConfig::Fixed {
@@ -625,13 +639,13 @@ async fn output_limit_case(
     let mut boot =
         ActionQueueEngine::new(config, handler).bootstrap_with_clock(MockClock::new(40)).unwrap();
     let _ = boot.run_until_idle().await.expect("oversized result must close normally");
-    let expected = if failures == 1 { RunState::Completed } else { RunState::Failed };
+    let expected = RunState::Failed;
     assert_eq!(boot.projection().get_run_state(&run), Some(&expected));
     assert!(boot.projection().get_lease_metadata(&run).is_none());
     assert!(boot.projection().pending_resume(run).is_none());
     {
         let inputs = seen.lock().unwrap();
-        assert_eq!(inputs.len(), if failures == 1 { 2 } else { 3 });
+        assert_eq!(inputs.len(), 1);
         for (n, input) in inputs.iter().enumerate() {
             assert_eq!(input.resume_context, context);
             let history = boot.projection().get_attempt_history(&run).unwrap();
@@ -639,7 +653,7 @@ async fn output_limit_case(
             assert!(attempt.finished_at().is_some());
             if n < failures {
                 assert_eq!(attempt.result(), Some(AttemptResultKind::Failure));
-                assert_eq!(attempt.error(), Some("handler result exceeds configured size limit"));
+                assert_eq!(attempt.error(), Some("invalid handler disposition"));
                 assert!(attempt.output().is_none());
             }
             if let Some(context) = &context {
@@ -679,8 +693,8 @@ async fn output_limit_case(
 }
 
 #[tokio::test]
-async fn oversized_success_closes_attempt_and_preserves_resume_retry_lineage() {
-    for limit in [actionqueue_core::limits::MAX_INLINE_DATA_BYTES, 8, 0] {
+async fn oversized_success_terminally_closes_attempt_and_preserves_resume_lineage() {
+    for limit in [actionqueue_core::limits::MAX_INLINE_DATA_BYTES - 1, 8, 0] {
         for resumed in [false, true] {
             for failures in [1, usize::MAX] {
                 output_limit_case(limit, resumed, failures, false, None).await;

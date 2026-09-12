@@ -192,11 +192,16 @@ impl ReplayReducer {
 }
 impl ReplayReducer {
     pub(crate) fn record_administrative_wake(&mut self, run: RunId, sequence: u64, timestamp: u64) {
-        let checkpoint_id = self
-            .get_attempt_history(&run)
-            .and_then(|h| h.last())
-            .and_then(|a| self.attempt_resume(run, a.attempt_id()))
-            .and_then(|c| c.checkpoint.map(|c| c.checkpoint_id));
+        let checkpoint_id = self.get_attempt_history(&run).and_then(|h| h.last()).and_then(|a| {
+            a.disposition
+                .as_ref()
+                .and_then(|d| d.disposition.checkpoint())
+                .map(|c| c.checkpoint_id)
+                .or_else(|| {
+                    self.attempt_resume(run, a.attempt_id())
+                        .and_then(|c| c.checkpoint.map(|c| c.checkpoint_id))
+                })
+        });
         let id = ResumeContextId(sequence);
         self.administrative_wakes.insert(
             id,

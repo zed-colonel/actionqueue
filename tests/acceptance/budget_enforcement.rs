@@ -17,7 +17,7 @@ use actionqueue_core::task::metadata::TaskMetadata;
 use actionqueue_core::task::run_policy::RunPolicy;
 use actionqueue_core::task::task_spec::{TaskPayload, TaskSpec};
 use actionqueue_engine::time::clock::MockClock;
-use actionqueue_executor_local::handler::{ExecutorContext, ExecutorHandler, HandlerOutput};
+use actionqueue_executor_local::handler::{AttemptDisposition, ExecutorContext, ExecutorHandler};
 use actionqueue_runtime::config::{BackoffStrategyConfig, RuntimeConfig};
 use actionqueue_runtime::engine::ActionQueueEngine;
 
@@ -39,14 +39,15 @@ struct TokenConsumingHandler {
 }
 
 impl ExecutorHandler for TokenConsumingHandler {
-    fn execute(&self, _ctx: ExecutorContext) -> HandlerOutput {
-        HandlerOutput::RetryableFailure {
-            error: "always-retry".to_string(),
-            consumption: vec![BudgetConsumption::new(
-                BudgetDimension::Token,
-                self.tokens_per_attempt,
-            )],
-        }
+    fn execute(&self, _ctx: ExecutorContext) -> AttemptDisposition {
+        actionqueue_core::disposition::AttemptDisposition::retryable_failure(
+            actionqueue_core::bounded::BoundedError::new("always-retry".to_string()).unwrap(),
+        )
+        .with_consumption(vec![BudgetConsumption::new(
+            BudgetDimension::Token,
+            self.tokens_per_attempt,
+        )])
+        .unwrap()
     }
 }
 

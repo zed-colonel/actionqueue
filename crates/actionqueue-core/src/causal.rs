@@ -40,6 +40,11 @@ impl CausalContext {
     pub fn trace_id(&self) -> &TraceId {
         &self.trace_id
     }
+    /// Overrides correlation for an explicitly forked child attribution.
+    pub fn with_correlation_id(mut self, value: CorrelationId) -> Self {
+        self.correlation_id = value;
+        self
+    }
     /// Returns the recorded correlation id.
     pub fn correlation_id(&self) -> &CorrelationId {
         &self.correlation_id

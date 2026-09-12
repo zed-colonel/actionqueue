@@ -12,6 +12,24 @@ pub(crate) fn check_event_profile(
 ) -> Result<(), StoreError> {
     use crate::wal::event::WalEventType as E;
     let required = match event {
+        E::AttemptDispositionCommitted { record } => {
+            for child in &record.children {
+                check_event_profile(
+                    &E::AdmissionCommitted {
+                        record: child.admission.clone(),
+                        runs: child.runs.clone(),
+                    },
+                    profile,
+                )?;
+            }
+            for signal in &record.signals {
+                check_event_profile(&E::SignalAdmitted { record: signal.clone() }, profile)?;
+            }
+            if let Some(wait) = record.wait_record() {
+                check_event_profile(&E::WaitEstablished { record: wait }, profile)?;
+            }
+            None
+        }
         E::WaitEstablished { record } => record.spec.filter().tenant_id.map(|_| "platform"),
         E::TaskCancellationCommitted { record } | E::RunCancellationCommitted { record } => {
             record.tenant_id.map(|_| "platform")

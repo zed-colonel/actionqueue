@@ -30,8 +30,20 @@ impl ReplayReducer {
         w: &crate::mutation::wait::WaitRecord,
     ) -> Result<(), ReplayReducerError> {
         if let Some(c) = &w.checkpoint {
+            self.index_produced_checkpoint(w.run_id, w.attempt_id, w.sequence, c)?;
+        }
+        Ok(())
+    }
+    pub(crate) fn index_produced_checkpoint(
+        &mut self,
+        run_id: RunId,
+        attempt_id: AttemptId,
+        sequence: u64,
+        c: &CheckpointRef,
+    ) -> Result<(), ReplayReducerError> {
+        {
             if c.checkpoint_id.is_nil()
-                || c.created_by_attempt != w.attempt_id
+                || c.created_by_attempt != attempt_id
                 || c.data.validate().is_err()
                 || self.checkpoints.contains_key(&c.checkpoint_id)
             {
@@ -40,9 +52,9 @@ impl ReplayReducer {
             self.checkpoints.insert(
                 c.checkpoint_id,
                 CheckpointRecord {
-                    run_id: w.run_id,
-                    attempt_id: w.attempt_id,
-                    sequence: w.sequence,
+                    run_id: run_id,
+                    attempt_id: attempt_id,
+                    sequence: sequence,
                     checkpoint: c.clone(),
                 },
             );

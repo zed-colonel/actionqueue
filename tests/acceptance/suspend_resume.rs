@@ -20,7 +20,7 @@ use actionqueue_core::task::metadata::TaskMetadata;
 use actionqueue_core::task::run_policy::RunPolicy;
 use actionqueue_core::task::task_spec::{TaskPayload, TaskSpec};
 use actionqueue_engine::time::clock::MockClock;
-use actionqueue_executor_local::handler::{ExecutorContext, ExecutorHandler, HandlerOutput};
+use actionqueue_executor_local::handler::{AttemptDisposition, ExecutorContext, ExecutorHandler};
 use actionqueue_runtime::config::{BackoffStrategyConfig, RuntimeConfig};
 use actionqueue_runtime::engine::ActionQueueEngine;
 
@@ -42,12 +42,12 @@ struct SuspendThenSucceedHandler {
 }
 
 impl ExecutorHandler for SuspendThenSucceedHandler {
-    fn execute(&self, _ctx: ExecutorContext) -> HandlerOutput {
+    fn execute(&self, _ctx: ExecutorContext) -> AttemptDisposition {
         let n = self.call_count.fetch_add(1, Ordering::SeqCst);
         if n == 0 {
-            HandlerOutput::Suspended { output: None, consumption: vec![] }
+            actionqueue_core::disposition::AttemptDisposition::suspended(None, None)
         } else {
-            HandlerOutput::Success { output: None, consumption: vec![] }
+            actionqueue_core::disposition::AttemptDisposition::complete(None)
         }
     }
 }

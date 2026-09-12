@@ -38,8 +38,7 @@ pub use attempt_runner::{
 pub use backoff::{BackoffConfigError, BackoffStrategy, ExponentialBackoff, FixedBackoff};
 pub use children::{ChildState, ChildrenSnapshot};
 pub use handler::{
-    AttemptMetadata, ExecutorContext, ExecutorHandler, HandlerInput, HandlerOutput,
-    TaskSubmissionPort,
+    AttemptDisposition, AttemptMetadata, ExecutorContext, ExecutorHandler, HandlerInput,
 };
 pub use handler::{CancellationContext, CancellationToken};
 pub use identity::{ExecutorIdentity, LocalExecutorIdentity};
@@ -49,4 +48,4 @@ pub use timeout::{
     classify_timeout, GuardedExecution, SystemTimeoutClock, TimeoutClassification, TimeoutClock,
     TimeoutFailure, TimeoutGuard, TimeoutReasonCode,
 };
-pub use types::{ExecutorRequest, ExecutorResponse};
+pub use types::ExecutorRequest;

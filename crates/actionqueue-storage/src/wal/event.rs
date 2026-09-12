@@ -42,6 +42,10 @@ impl WalEvent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum WalEventType {
+    /// One fully validated end-of-attempt semantic commit.
+    AttemptDispositionCommitted {
+        record: crate::mutation::disposition::DispositionRecord,
+    },
     /// Lease-fenced schema-2 start with atomic continuation assignment.
     AcceptedAttemptStarted {
         record: crate::recovery::resume::AcceptedStart,
@@ -145,7 +149,7 @@ pub enum WalEventType {
         error: Option<String>,
         /// Optional opaque output bytes produced by the handler.
         ///
-        /// Populated from `HandlerOutput::Success { output }` via the executor
+        /// Retained for explicit recovery/control closure records.
         /// response chain. Stored in the WAL for recovery and projection queries.
         // NOTE: #[serde(default)] is inert for postcard (non-self-describing format).
         // Retained for documentation symmetry with the snapshot model.

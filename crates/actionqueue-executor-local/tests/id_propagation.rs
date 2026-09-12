@@ -6,7 +6,8 @@ use std::time::Duration;
 use actionqueue_core::ids::{AttemptId, RunId};
 use actionqueue_core::task::constraints::TaskConstraints;
 use actionqueue_executor_local::{
-    AttemptRunner, AttemptTimer, ExecutorContext, ExecutorHandler, ExecutorRequest, HandlerOutput,
+    AttemptDisposition, AttemptRunner, AttemptTimer, ExecutorContext, ExecutorHandler,
+    ExecutorRequest,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -36,14 +37,16 @@ impl CapturingHandler {
 }
 
 impl ExecutorHandler for CapturingHandler {
-    fn execute(&self, ctx: ExecutorContext) -> HandlerOutput {
+    fn execute(&self, ctx: ExecutorContext) -> AttemptDisposition {
         let input = ctx.input;
         self.captured.lock().unwrap().push((input.run_id, input.attempt_id));
 
-        HandlerOutput::RetryableFailure {
-            error: "force retry path for ID propagation assertions".to_string(),
-            consumption: vec![],
-        }
+        actionqueue_core::disposition::AttemptDisposition::retryable_failure(
+            actionqueue_core::bounded::BoundedError::new(
+                "force retry path for ID propagation assertions".to_string(),
+            )
+            .unwrap(),
+        )
     }
 }
 
@@ -57,6 +60,8 @@ fn handler_receives_exact_run_and_attempt_ids_for_initial_attempt() {
         AttemptRunner::with_timer(handler, FixedTimer { elapsed: Duration::from_millis(2) });
 
     let request = ExecutorRequest {
+        lease_fence: actionqueue_core::mutation::LeaseFence::new("test".into(), 1),
+        failure_attempt_count: 0,
         resume_context: None,
         causal_context: None,
         run_id,
@@ -65,7 +70,7 @@ fn handler_receives_exact_run_and_attempt_ids_for_initial_attempt() {
         constraints: TaskConstraints::new(3, Some(30), None)
             .expect("test constraints should be valid"),
         attempt_number: 1,
-        submission: None,
+
         children: None,
         cancellation_context: None,
     };
@@ -95,6 +100,8 @@ fn retried_attempt_keeps_run_id_and_uses_provided_attempt_id_without_regeneratio
         TaskConstraints::new(3, Some(30), None).expect("test constraints should be valid");
 
     let first_request = ExecutorRequest {
+        lease_fence: actionqueue_core::mutation::LeaseFence::new("test".into(), 1),
+        failure_attempt_count: 0,
         resume_context: None,
         causal_context: None,
         run_id: stable_run_id,
@@ -102,11 +109,13 @@ fn retried_attempt_keeps_run_id_and_uses_provided_attempt_id_without_regeneratio
         payload: vec![],
         constraints: constraints.clone(),
         attempt_number: 1,
-        submission: None,
+
         children: None,
         cancellation_context: None,
     };
     let second_request = ExecutorRequest {
+        lease_fence: actionqueue_core::mutation::LeaseFence::new("test".into(), 1),
+        failure_attempt_count: 0,
         resume_context: None,
         causal_context: None,
         run_id: stable_run_id,
@@ -114,7 +123,7 @@ fn retried_attempt_keeps_run_id_and_uses_provided_attempt_id_without_regeneratio
         payload: vec![],
         constraints,
         attempt_number: 2,
-        submission: None,
+
         children: None,
         cancellation_context: None,
     };

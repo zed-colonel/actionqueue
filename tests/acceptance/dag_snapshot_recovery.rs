@@ -21,7 +21,9 @@ mod wf {
     use actionqueue_core::task::run_policy::RunPolicy;
     use actionqueue_core::task::task_spec::{TaskPayload, TaskSpec};
     use actionqueue_engine::time::clock::MockClock;
-    use actionqueue_executor_local::handler::{ExecutorContext, ExecutorHandler, HandlerOutput};
+    use actionqueue_executor_local::handler::{
+        AttemptDisposition, ExecutorContext, ExecutorHandler,
+    };
     use actionqueue_runtime::config::RuntimeConfig;
     use actionqueue_runtime::engine::ActionQueueEngine;
     use actionqueue_storage::mutation::authority::StorageMutationAuthority;
@@ -33,11 +35,11 @@ mod wf {
     }
 
     impl ExecutorHandler for TrackingHandler {
-        fn execute(&self, ctx: ExecutorContext) -> HandlerOutput {
+        fn execute(&self, ctx: ExecutorContext) -> AttemptDisposition {
             let name =
                 String::from_utf8(ctx.input.payload.clone()).unwrap_or_else(|_| "?".to_string());
             self.log.lock().unwrap().push(name);
-            HandlerOutput::Success { output: None, consumption: vec![] }
+            actionqueue_core::disposition::AttemptDisposition::complete(None)
         }
     }
 

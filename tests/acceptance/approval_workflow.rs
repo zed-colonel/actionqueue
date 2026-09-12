@@ -17,7 +17,7 @@ use actionqueue_core::task::metadata::TaskMetadata;
 use actionqueue_core::task::run_policy::RunPolicy;
 use actionqueue_core::task::task_spec::{TaskPayload, TaskSpec};
 use actionqueue_engine::time::clock::Clock;
-use actionqueue_executor_local::handler::{ExecutorContext, ExecutorHandler, HandlerOutput};
+use actionqueue_executor_local::handler::{AttemptDisposition, ExecutorContext, ExecutorHandler};
 use actionqueue_runtime::config::{BackoffStrategyConfig, RuntimeConfig};
 use actionqueue_runtime::engine::ActionQueueEngine;
 use actionqueue_workflow::dag::DependencyGate;
@@ -56,8 +56,8 @@ fn data_dir(label: &str) -> PathBuf {
 struct SucceedHandler;
 
 impl ExecutorHandler for SucceedHandler {
-    fn execute(&self, _ctx: ExecutorContext) -> HandlerOutput {
-        HandlerOutput::success()
+    fn execute(&self, _ctx: ExecutorContext) -> AttemptDisposition {
+        AttemptDisposition::complete(None)
     }
 }
 

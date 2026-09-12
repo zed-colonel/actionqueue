@@ -21,14 +21,16 @@ use actionqueue_engine::concurrency::lifecycle::{
     evaluate_state_transition, KeyLifecycleContext, LifecycleResult,
 };
 use actionqueue_engine::index::scheduled::ScheduledIndex;
-use actionqueue_engine::scheduler::attempt_finish::submit_attempt_finish_via_authority;
+#[path = "legacy_attempt_finish.rs"]
+mod legacy_attempt_finish;
 use actionqueue_engine::scheduler::promotion::{
     promote_scheduled_to_ready_via_authority, PromotionParams,
 };
-use actionqueue_executor_local::ExecutorResponse;
+use actionqueue_executor_local::AttemptDisposition;
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
 use http_body_util::BodyExt;
+use legacy_attempt_finish::submit_attempt_finish_via_authority;
 use serde_json::Value;
 use tower::Service;
 
@@ -670,14 +672,13 @@ pub fn execute_attempt_outcome_sequence_via_authority(
         let response = executor_response_for_outcome(outcome, attempt_number);
         let attempt_finish_sequence = next_sequence(authority.projection().latest_sequence());
         let _ = {
-            let __finish_cmd =
-                actionqueue_engine::scheduler::attempt_finish::build_attempt_finish_command(
-                    attempt_finish_sequence,
-                    run_id,
-                    attempt_id,
-                    &response,
-                    attempt_finish_sequence,
-                );
+            let __finish_cmd = legacy_attempt_finish::build_attempt_finish_command(
+                attempt_finish_sequence,
+                run_id,
+                attempt_id,
+                &response,
+                attempt_finish_sequence,
+            );
             submit_attempt_finish_via_authority(
                 __finish_cmd,
                 DurabilityPolicy::Immediate,
@@ -1074,14 +1075,13 @@ pub fn complete_once_run_via_authority(data_dir: &Path, task_id: TaskId) -> Comp
 
     let attempt_finish_sequence = next_sequence(authority.projection().latest_sequence());
     let _ = {
-        let __finish_cmd =
-            actionqueue_engine::scheduler::attempt_finish::build_attempt_finish_command(
-                attempt_finish_sequence,
-                run_id,
-                attempt_id,
-                &ExecutorResponse::Success { output: None },
-                attempt_finish_sequence,
-            );
+        let __finish_cmd = legacy_attempt_finish::build_attempt_finish_command(
+            attempt_finish_sequence,
+            run_id,
+            attempt_id,
+            &actionqueue_core::disposition::AttemptDisposition::complete(None),
+            attempt_finish_sequence,
+        );
         submit_attempt_finish_via_authority(
             __finish_cmd,
             DurabilityPolicy::Immediate,
@@ -1236,14 +1236,13 @@ pub fn complete_all_task_runs_via_authority(
 
         let attempt_finish_sequence = next_sequence(authority.projection().latest_sequence());
         let _ = {
-            let __finish_cmd =
-                actionqueue_engine::scheduler::attempt_finish::build_attempt_finish_command(
-                    attempt_finish_sequence,
-                    run_id,
-                    attempt_id,
-                    &ExecutorResponse::Success { output: None },
-                    attempt_finish_sequence,
-                );
+            let __finish_cmd = legacy_attempt_finish::build_attempt_finish_command(
+                attempt_finish_sequence,
+                run_id,
+                attempt_id,
+                &actionqueue_core::disposition::AttemptDisposition::complete(None),
+                attempt_finish_sequence,
+            );
             submit_attempt_finish_via_authority(
                 __finish_cmd,
                 DurabilityPolicy::Immediate,
@@ -1590,7 +1589,7 @@ pub fn submit_attempt_finish_response_via_authority(
     data_dir: &Path,
     run_id: RunId,
     attempt_id: AttemptId,
-    response: &ExecutorResponse,
+    response: &AttemptDisposition,
 ) -> u64 {
     let recovery = actionqueue_storage::recovery::bootstrap::load_projection_from_storage(data_dir)
         .expect("storage bootstrap should succeed");
@@ -1600,10 +1599,9 @@ pub fn submit_attempt_finish_response_via_authority(
     );
     let sequence = next_sequence(authority.projection().latest_sequence());
     let _ = {
-        let finish_cmd =
-            actionqueue_engine::scheduler::attempt_finish::build_attempt_finish_command(
-                sequence, run_id, attempt_id, response, sequence,
-            );
+        let finish_cmd = legacy_attempt_finish::build_attempt_finish_command(
+            sequence, run_id, attempt_id, response, sequence,
+        );
         submit_attempt_finish_via_authority(finish_cmd, DurabilityPolicy::Immediate, &mut authority)
     }
     .expect("attempt finish should succeed");
@@ -1613,16 +1611,34 @@ pub fn submit_attempt_finish_response_via_authority(
 fn executor_response_for_outcome(
     outcome: AttemptOutcomePlan,
     attempt_number: u32,
-) -> ExecutorResponse {
+) -> AttemptDisposition {
     match outcome {
-        AttemptOutcomePlan::Success => ExecutorResponse::Success { output: None },
-        AttemptOutcomePlan::RetryableFailure => ExecutorResponse::RetryableFailure {
-            error: format!("retryable failure at attempt {attempt_number}"),
-        },
-        AttemptOutcomePlan::TerminalFailure => ExecutorResponse::TerminalFailure {
-            error: format!("terminal failure at attempt {attempt_number}"),
-        },
-        AttemptOutcomePlan::Timeout => ExecutorResponse::Timeout { timeout_secs: 5 },
+        AttemptOutcomePlan::Success => {
+            actionqueue_core::disposition::AttemptDisposition::complete(None)
+        }
+        AttemptOutcomePlan::RetryableFailure => {
+            actionqueue_core::disposition::AttemptDisposition::retryable_failure(
+                actionqueue_core::bounded::BoundedError::new(format!(
+                    "retryable failure at attempt {attempt_number}"
+                ))
+                .unwrap(),
+            )
+        }
+        AttemptOutcomePlan::TerminalFailure => {
+            actionqueue_core::disposition::AttemptDisposition::terminal_failure(
+                actionqueue_core::bounded::BoundedError::new(format!(
+                    "terminal failure at attempt {attempt_number}"
+                ))
+                .unwrap(),
+            )
+        }
+        AttemptOutcomePlan::Timeout => actionqueue_core::disposition::AttemptDisposition::complete(
+            None,
+        )
+        .timed_out(
+            actionqueue_core::bounded::BoundedError::new(format!("attempt timed out after {}s", 5))
+                .unwrap(),
+        ),
     }
 }
 
@@ -1650,4 +1666,43 @@ fn expected_attempt_count_for_outcomes(
     }
 
     executed
+}
+
+/// Establishes child admissions and a due deadline in one disposition.
+#[allow(dead_code)]
+pub fn admit_children(
+    children: Vec<actionqueue_core::task::task_spec::TaskSpec>,
+) -> actionqueue_core::disposition::AttemptDisposition {
+    use actionqueue_core::{continuation::*, disposition::*, ids::*};
+    let wait = WaitSpec::new(
+        WaitId::new(),
+        SignalFilter {
+            tenant_id: None,
+            namespace: SignalNamespace::new("children").unwrap(),
+            kind: SignalKind::new("poll").unwrap(),
+            correlation_id: None,
+            source_ref: None,
+        },
+        WaitMatchPolicy::FirstMatch,
+        SignalEligibility::After(SignalSequence::new(0)),
+        Some(WaitDeadline { at: 1, policy: WaitTimeoutPolicy::ResumeWithTimeout }),
+    )
+    .unwrap();
+    let children = children
+        .into_iter()
+        .map(|s| {
+            ChildAdmission::new(
+                AdmissionKey::new(format!("child/{}", s.id())).unwrap(),
+                s,
+                vec![],
+                Default::default(),
+            )
+            .unwrap()
+        })
+        .collect();
+    AttemptDisposition::new(
+        DispositionOutcome::Awaiting,
+        DispositionParts { wait: Some(wait), child_admissions: children, ..Default::default() },
+    )
+    .unwrap()
 }

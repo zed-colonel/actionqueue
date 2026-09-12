@@ -28,6 +28,13 @@ struct SessionInner {
     writable: bool,
     writer_claimed: AtomicBool,
 }
+// Closing the descriptor alone leaves an OFD lock held by a descriptor inherited
+// by a concurrently forked child until exec. Release at the last session owner.
+impl Drop for SessionInner {
+    fn drop(&mut self) {
+        let _ = self._lock.unlock();
+    }
+}
 #[derive(Debug, Clone)]
 pub struct StoreSession(Arc<SessionInner>);
 impl StoreSession {
@@ -215,4 +222,25 @@ pub fn open_store(root: &Path, options: OpenOptions) -> Result<StoreSession, Sto
         writable,
         writer_claimed: AtomicBool::new(false),
     })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn last_session_releases_lock_even_with_inherited_descriptor() {
+        let root = std::env::temp_dir().join(format!("aq-session-{}", uuid::Uuid::new_v4()));
+        let session = open_store(&root, OpenOptions::Initialize { features: vec![] }).unwrap();
+        // A duplicate shares the open file description just as a fork does.
+        let inherited = session.0._lock.try_clone().unwrap();
+        let owner = session.clone();
+        drop(session);
+        assert!(matches!(open_store(&root, OpenOptions::ReadWrite), Err(StoreError::StoreInUse)));
+        drop(owner);
+        let reopened = open_store(&root, OpenOptions::ReadWrite).unwrap();
+        drop(inherited);
+        drop(reopened);
+        fs::remove_dir_all(root).unwrap();
+    }
 }

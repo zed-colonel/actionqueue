@@ -7,7 +7,7 @@ use std::str::FromStr;
 
 use actionqueue_core::ids::{AttemptId, RunId, TaskId};
 use actionqueue_core::run::state::RunState;
-use actionqueue_executor_local::ExecutorResponse;
+use actionqueue_executor_local::AttemptDisposition;
 use support::{MetricsTruth, StatsTruth};
 
 /// Deterministic scenario contract for crash-recovery acceptance proofs.
@@ -53,7 +53,7 @@ fn submit_attempt_finish_response_via_authority(
     data_dir: &Path,
     run_id: RunId,
     attempt_id: AttemptId,
-    response: &ExecutorResponse,
+    response: &AttemptDisposition,
 ) -> u64 {
     support::submit_attempt_finish_response_via_authority(data_dir, run_id, attempt_id, response)
 }
@@ -362,9 +362,12 @@ async fn crash_recovery_absent_completion_allows_recovery_path_with_stable_runid
         &data_dir,
         run_id,
         attempt_id_1,
-        &ExecutorResponse::RetryableFailure {
-            error: "cr-b attempt-1 retryable failure".to_string(),
-        },
+        &actionqueue_core::disposition::AttemptDisposition::retryable_failure(
+            actionqueue_core::bounded::BoundedError::new(
+                "cr-b attempt-1 retryable failure".to_string(),
+            )
+            .unwrap(),
+        ),
     );
     submit_run_state_transition_via_authority(
         &data_dir,
@@ -461,7 +464,7 @@ async fn crash_recovery_absent_completion_allows_recovery_path_with_stable_runid
         &data_dir,
         run_id,
         attempt_id_2,
-        &ExecutorResponse::Success { output: None },
+        &actionqueue_core::disposition::AttemptDisposition::complete(None),
     );
     submit_run_state_transition_via_authority(
         &data_dir,
@@ -852,7 +855,12 @@ async fn crash_recovery_running_state_preserves_lineage_and_allows_recovery() {
         &data_dir,
         run_id,
         attempt_id_1,
-        &ExecutorResponse::RetryableFailure { error: "t1-crash-recovery-uncertainty".to_string() },
+        &actionqueue_core::disposition::AttemptDisposition::retryable_failure(
+            actionqueue_core::bounded::BoundedError::new(
+                "t1-crash-recovery-uncertainty".to_string(),
+            )
+            .unwrap(),
+        ),
     );
     submit_run_state_transition_via_authority(
         &data_dir,
@@ -878,7 +886,7 @@ async fn crash_recovery_running_state_preserves_lineage_and_allows_recovery() {
         &data_dir,
         run_id,
         attempt_id_2,
-        &ExecutorResponse::Success { output: None },
+        &actionqueue_core::disposition::AttemptDisposition::complete(None),
     );
     submit_run_state_transition_via_authority(
         &data_dir,
@@ -969,7 +977,10 @@ async fn crash_recovery_between_attempt_lease_expiry_preserves_lineage_and_allow
         &data_dir,
         run_id,
         attempt_id_1,
-        &ExecutorResponse::Timeout { timeout_secs: 3 },
+        &actionqueue_core::disposition::AttemptDisposition::complete(None).timed_out(
+            actionqueue_core::bounded::BoundedError::new(format!("attempt timed out after {}s", 3))
+                .unwrap(),
+        ),
     );
     submit_run_state_transition_via_authority(
         &data_dir,
@@ -1109,7 +1120,7 @@ async fn crash_recovery_between_attempt_lease_expiry_preserves_lineage_and_allow
         &data_dir,
         run_id,
         attempt_id_2,
-        &ExecutorResponse::Success { output: None },
+        &actionqueue_core::disposition::AttemptDisposition::complete(None),
     );
     submit_run_state_transition_via_authority(
         &data_dir,

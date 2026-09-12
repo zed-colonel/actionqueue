@@ -19,14 +19,13 @@ use crate::snapshot::model::{
 
 /// Current snapshot schema version accepted by the explicit mapping boundary.
 ///
-/// Version history:
-/// - v5: Sprint 1 release (WAL v2, JSON snapshots)
-/// - v5: Sprint 2 additions — parent_task_id on TaskSpec, output on AttemptOutcome,
-///   legacy capability requirements on TaskConstraints (renamed to
-///   required_executor_traits in AQ-02)
-/// - v6: Sprint 2 review — dependency declarations persisted in snapshots
-/// - v7: Sprint 3 — budgets, subscriptions, Suspended run state
-pub const SNAPSHOT_SCHEMA_VERSION: u32 = 5;
+/// AQ-CONT-1 version history:
+/// - v2: Compound admission.
+/// - v3: Durable signal ingress.
+/// - v4: Wait establishment and resolution.
+/// - v5: Immutable checkpoints and accepted resume assignments.
+/// - v6: Compound dispositions and separate durable failure accounting.
+pub const SNAPSHOT_SCHEMA_VERSION: u32 = 6;
 
 /// Typed mapping and validation errors for snapshot/core parity enforcement.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -388,7 +387,20 @@ pub fn validate_snapshot(snapshot: &Snapshot) -> Result<(), SnapshotMappingError
         let invalid = SnapshotMappingError::InvalidAdmission;
         if !keys.insert((r.tenant_id(), r.key().clone()))
             || !admitted_tasks.insert(r.task_id())
-            || !sequences.insert(r.sequence())
+            || (!sequences.insert(r.sequence())
+                && !snapshot
+                    .runs
+                    .iter()
+                    .flat_map(|run| &run.attempts)
+                    .filter_map(|a| a.disposition.as_ref())
+                    .any(|d| {
+                        d.sequence == r.sequence()
+                            && snapshot
+                                .admissions
+                                .iter()
+                                .filter(|a| a.sequence() == r.sequence())
+                                .all(|a| d.children.iter().any(|c| &c.admission == a))
+                    }))
             || r.sequence() == 0
             || r.sequence() > snapshot.metadata.wal_sequence
             || r.request().digest().map_err(|_| invalid.clone())? != *r.digest()
@@ -670,6 +682,7 @@ pub fn map_snapshot_attempt_history(
     entries
         .into_iter()
         .map(|entry| crate::recovery::reducer::AttemptHistoryEntry {
+            disposition: entry.disposition.clone(),
             accepted_start: entry.accepted_start.clone(),
             finish_origin: entry.finish_origin,
             attempt_id: entry.attempt_id,

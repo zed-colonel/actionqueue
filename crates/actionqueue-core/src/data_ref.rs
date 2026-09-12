@@ -90,6 +90,16 @@ impl std::fmt::Display for DataValidationError {
 }
 impl std::error::Error for DataValidationError {}
 impl DataRef {
+    /// Constructs bounded inline data with a SHA-256 digest of the exact bytes.
+    pub fn from_bytes(bytes: Vec<u8>) -> Result<Self, BoundedValueError> {
+        use sha2::Digest;
+        let hash = ContentHash::new(
+            crate::bounded::HashAlgorithm::Sha256,
+            sha2::Sha256::digest(&bytes).to_vec(),
+        )?;
+        Ok(Self::Inline(InlineData::new(None, bytes, hash)?))
+    }
+
     /// Validates inline integrity. External structure is checked by its bounded types.
     pub fn validate(&self) -> Result<(), DataValidationError> {
         match self {

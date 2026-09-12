@@ -1,7 +1,7 @@
-//! Dynamic task submission: handler creates child tasks via SubmissionChannel.
+//! Dynamic task submission: handler creates child tasks via compound child admission.
 //!
 //! Proves that a Coordinator handler can propose new tasks during execution
-//! via `ExecutorContext.submission`, and that those tasks are durably created
+//! via `AttemptDisposition`, and that those tasks are durably created
 //! by the dispatch loop on the following tick.
 
 mod support;
@@ -18,7 +18,9 @@ mod wf {
     use actionqueue_core::task::run_policy::RunPolicy;
     use actionqueue_core::task::task_spec::{TaskPayload, TaskSpec};
     use actionqueue_engine::time::clock::MockClock;
-    use actionqueue_executor_local::handler::{ExecutorContext, ExecutorHandler, HandlerOutput};
+    use actionqueue_executor_local::handler::{
+        AttemptDisposition, ExecutorContext, ExecutorHandler,
+    };
     use actionqueue_runtime::config::RuntimeConfig;
     use actionqueue_runtime::engine::ActionQueueEngine;
 
@@ -36,16 +38,13 @@ mod wf {
     }
 
     impl ExecutorHandler for CoordinatorHandler {
-        fn execute(&self, ctx: ExecutorContext) -> HandlerOutput {
+        fn execute(&self, _ctx: ExecutorContext) -> AttemptDisposition {
             if self.submitted.swap(true, Ordering::SeqCst) {
                 // Already submitted — this attempt should not happen (Once policy).
-                return HandlerOutput::TerminalFailure {
-                    error: "coordinator executed more than once".to_string(),
-                    consumption: vec![],
-                };
+                return AttemptDisposition::complete(None);
             }
 
-            if let Some(ref sub) = ctx.submission {
+            {
                 let child_a = TaskSpec::new(
                     self.child_a_id,
                     TaskPayload::new(b"child_a".to_vec()),
@@ -66,11 +65,8 @@ mod wf {
                 .expect("valid child spec")
                 .with_parent(self.coordinator_id);
 
-                sub.submit(child_a, vec![]);
-                sub.submit(child_b, vec![]);
+                return super::support::admit_children(vec![child_a, child_b]);
             }
-
-            HandlerOutput::Success { output: None, consumption: vec![] }
         }
     }
 
@@ -78,8 +74,8 @@ mod wf {
     struct ChildHandler;
 
     impl ExecutorHandler for ChildHandler {
-        fn execute(&self, _ctx: ExecutorContext) -> HandlerOutput {
-            HandlerOutput::Success { output: None, consumption: vec![] }
+        fn execute(&self, _ctx: ExecutorContext) -> AttemptDisposition {
+            actionqueue_core::disposition::AttemptDisposition::complete(None)
         }
     }
 
@@ -90,7 +86,7 @@ mod wf {
     }
 
     impl ExecutorHandler for RoutingHandler {
-        fn execute(&self, ctx: ExecutorContext) -> HandlerOutput {
+        fn execute(&self, ctx: ExecutorContext) -> AttemptDisposition {
             let payload = ctx.input.payload.clone();
             if payload == b"coordinator" {
                 self.coordinator.execute(ctx)
@@ -143,7 +139,10 @@ mod wf {
         .expect("valid coordinator spec");
 
         eng.submit_task(coordinator_spec).expect("submit coordinator");
-        let _ = eng.run_until_idle().await.expect("run must complete");
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(10), eng.run_until_idle())
+            .await
+            .expect("handler must return a valid disposition")
+            .expect("run must complete");
 
         // Coordinator must be Completed.
         let coordinator_runs = eng.projection().run_ids_for_task(coordinator_id);

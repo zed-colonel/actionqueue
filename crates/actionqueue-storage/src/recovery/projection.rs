@@ -1,4 +1,4 @@
-//! Exact v5 projection image, validated hydration, and canonical SHA-256.
+//! Exact v6 projection image, validated hydration, and canonical SHA-256.
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -15,7 +15,7 @@ pub struct ProjectionDigest {
     pub hex: String,
 }
 #[derive(Debug, Clone)]
-pub(crate) struct ProjectionImageV5(pub Snapshot);
+pub(crate) struct ProjectionImageV6(pub Snapshot);
 fn invalid(e: impl std::fmt::Display) -> StoreError {
     StoreError::InvalidStore(e.to_string())
 }
@@ -35,7 +35,7 @@ fn canonical(value: &serde_json::Value, out: &mut Vec<u8>) -> Result<(), StoreEr
                 out.push(3);
                 out.extend_from_slice(&v.to_le_bytes());
             } else {
-                return Err(invalid("floating point is not permitted in projection v5"));
+                return Err(invalid("floating point is not permitted in projection v6"));
             }
         }
         V::String(v) => {
@@ -96,11 +96,11 @@ pub(crate) fn normalize(snapshot: &mut Snapshot) {
 pub(crate) fn snapshot_digest(snapshot: &Snapshot) -> Result<ProjectionDigest, StoreError> {
     let mut image = snapshot.clone();
     normalize(&mut image);
-    let mut bytes = b"AQ-CONT-1\0projection\0v5\0".to_vec();
+    let mut bytes = b"AQ-CONT-1\0projection\0v6\0".to_vec();
     canonical(&serde_json::to_value(image).map_err(invalid)?, &mut bytes)?;
     Ok(ProjectionDigest {
         algorithm: "sha256".into(),
-        version: 5,
+        version: 6,
         hex: format!("{:x}", Sha256::digest(bytes)),
     })
 }
@@ -108,15 +108,15 @@ fn convert<S: Serialize, T: serde::de::DeserializeOwned>(v: S) -> Result<T, Stor
     serde_json::from_value(serde_json::to_value(v).map_err(invalid)?).map_err(invalid)
 }
 impl ReplayReducer {
-    pub(crate) fn projection_image(&self) -> Result<ProjectionImageV5, StoreError> {
+    pub(crate) fn projection_image(&self) -> Result<ProjectionImageV6, StoreError> {
         let snapshot =
             crate::snapshot::build::build_snapshot_from_projection(self, 0).map_err(invalid)?;
-        Ok(ProjectionImageV5(snapshot))
+        Ok(ProjectionImageV6(snapshot))
     }
     pub fn projection_digest(&self) -> Result<ProjectionDigest, StoreError> {
         snapshot_digest(&self.projection_image()?.0)
     }
-    pub(crate) fn from_projection_image(image: ProjectionImageV5) -> Result<Self, StoreError> {
+    pub(crate) fn from_projection_image(image: ProjectionImageV6) -> Result<Self, StoreError> {
         let s = image.0;
         validate_snapshot(&s).map_err(invalid)?;
         let original_digest = snapshot_digest(&s)?;
@@ -198,6 +198,20 @@ impl ReplayReducer {
                 return Err(invalid("invalid dispatch sequence"));
             }
         }
+        let produced: Vec<_> = r
+            .attempt_history
+            .values()
+            .flatten()
+            .filter_map(|a| a.disposition.as_deref())
+            .filter(|d| d.disposition.wait().is_none())
+            .filter_map(|d| {
+                d.disposition.checkpoint().map(|c| (d.run_id, d.attempt_id, d.sequence, c.clone()))
+            })
+            .collect();
+        for (run, attempt, sequence, checkpoint) in produced {
+            r.index_produced_checkpoint(run, attempt, sequence, &checkpoint).map_err(invalid)?;
+        }
+        r.validate_disposition_history().map_err(invalid)?;
         r.hydrate_resume(&s.administrative_wakes, &s.administrative_pending).map_err(invalid)?;
         if r.projection_digest()? != original_digest {
             return Err(invalid("projection image loses state during hydration"));

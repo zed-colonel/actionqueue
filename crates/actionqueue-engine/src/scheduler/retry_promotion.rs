@@ -32,7 +32,7 @@ impl RetryPromotionResult {
 /// Promotes RetryWait runs to Ready based on backoff delay computation.
 ///
 /// For each run in `retry_waiting`, the function computes the `retry_ready_at`
-/// timestamp from the run's `attempt_count` and the provided backoff strategy.
+/// timestamp from the run's `failure_attempt_count` and the provided backoff strategy.
 /// Runs whose computed ready time is `<= current_time` are promoted.
 ///
 /// # Arguments
@@ -57,7 +57,7 @@ pub fn promote_retry_wait_to_ready(
             });
         }
 
-        let attempt_count = run.attempt_count();
+        let attempt_count = run.failure_attempt_count();
         let retry_wait_entered_at = run.last_state_change_at();
         let ready_at = actionqueue_executor_local::backoff::retry_ready_at(
             retry_wait_entered_at,
@@ -114,6 +114,15 @@ mod tests {
             run.transition_to(RunState::RetryWait).expect("valid transition");
         }
 
+        for _ in 0..attempt_count {
+            run.account_disposition(
+                &actionqueue_core::disposition::DispositionOutcome::RetryableFailure {
+                    error: actionqueue_core::bounded::BoundedError::new("").unwrap(),
+                },
+                u32::MAX,
+            )
+            .unwrap();
+        }
         // Record when the run entered RetryWait (simulates reducer behavior)
         run.record_state_change_at(retry_wait_entered_at);
         run

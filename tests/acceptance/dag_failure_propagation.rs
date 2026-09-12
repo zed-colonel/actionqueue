@@ -18,7 +18,9 @@ mod wf {
     use actionqueue_core::task::run_policy::RunPolicy;
     use actionqueue_core::task::task_spec::{TaskPayload, TaskSpec};
     use actionqueue_engine::time::clock::MockClock;
-    use actionqueue_executor_local::handler::{ExecutorContext, ExecutorHandler, HandlerOutput};
+    use actionqueue_executor_local::handler::{
+        AttemptDisposition, ExecutorContext, ExecutorHandler,
+    };
     use actionqueue_runtime::config::RuntimeConfig;
     use actionqueue_runtime::engine::ActionQueueEngine;
     use actionqueue_storage::mutation::authority::StorageMutationAuthority;
@@ -29,14 +31,16 @@ mod wf {
     struct SelectiveHandler;
 
     impl ExecutorHandler for SelectiveHandler {
-        fn execute(&self, ctx: ExecutorContext) -> HandlerOutput {
+        fn execute(&self, ctx: ExecutorContext) -> AttemptDisposition {
             if ctx.input.payload == b"fail" {
-                HandlerOutput::TerminalFailure {
-                    error: "intentional terminal failure".to_string(),
-                    consumption: vec![],
-                }
+                actionqueue_core::disposition::AttemptDisposition::terminal_failure(
+                    actionqueue_core::bounded::BoundedError::new(
+                        "intentional terminal failure".to_string(),
+                    )
+                    .unwrap(),
+                )
             } else {
-                HandlerOutput::Success { output: None, consumption: vec![] }
+                actionqueue_core::disposition::AttemptDisposition::complete(None)
             }
         }
     }

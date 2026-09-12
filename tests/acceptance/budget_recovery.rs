@@ -17,7 +17,7 @@ use actionqueue_core::task::metadata::TaskMetadata;
 use actionqueue_core::task::run_policy::RunPolicy;
 use actionqueue_core::task::task_spec::{TaskPayload, TaskSpec};
 use actionqueue_engine::time::clock::MockClock;
-use actionqueue_executor_local::handler::{ExecutorContext, ExecutorHandler, HandlerOutput};
+use actionqueue_executor_local::handler::{AttemptDisposition, ExecutorContext, ExecutorHandler};
 use actionqueue_runtime::config::{BackoffStrategyConfig, RuntimeConfig};
 use actionqueue_runtime::engine::ActionQueueEngine;
 
@@ -38,11 +38,12 @@ fn data_dir(label: &str) -> PathBuf {
 struct ThreeHundredTokenHandler;
 
 impl ExecutorHandler for ThreeHundredTokenHandler {
-    fn execute(&self, _ctx: ExecutorContext) -> HandlerOutput {
-        HandlerOutput::TerminalFailure {
-            error: "budget-consume-300".to_string(),
-            consumption: vec![BudgetConsumption::new(BudgetDimension::Token, 300)],
-        }
+    fn execute(&self, _ctx: ExecutorContext) -> AttemptDisposition {
+        actionqueue_core::disposition::AttemptDisposition::terminal_failure(
+            actionqueue_core::bounded::BoundedError::new("budget-consume-300".to_string()).unwrap(),
+        )
+        .with_consumption(vec![BudgetConsumption::new(BudgetDimension::Token, 300)])
+        .unwrap()
     }
 }
 

@@ -73,6 +73,8 @@ pub struct RunInstance {
 
     /// The number of attempts made so far.
     attempt_count: u32,
+    /// Committed failures, independent of physical starts.
+    failure_attempt_count: u32,
 
     /// The time at which this run was created.
     created_at: u64,
@@ -120,6 +122,7 @@ impl RunInstance {
             state: RunState::Scheduled,
             current_attempt_id: None,
             attempt_count: 0,
+            failure_attempt_count: 0,
             created_at,
             scheduled_at,
             effective_priority: 0,
@@ -161,6 +164,7 @@ impl RunInstance {
             state: RunState::Ready,
             current_attempt_id: None,
             attempt_count: 0,
+            failure_attempt_count: 0,
             created_at,
             scheduled_at,
             effective_priority,
@@ -212,6 +216,25 @@ impl RunInstance {
     /// Returns the number of started attempts for this run.
     pub fn attempt_count(&self) -> u32 {
         self.attempt_count
+    }
+
+    /// Returns failures committed by execution or interrupted-execution recovery.
+    pub fn failure_attempt_count(&self) -> u32 {
+        self.failure_attempt_count
+    }
+
+    /// Applies the shared accounting rules when an accepted attempt closes.
+    pub fn account_disposition(
+        &mut self,
+        outcome: &crate::disposition::DispositionOutcome,
+        max_attempts: u32,
+    ) -> Result<
+        crate::disposition::DispositionAccounting,
+        crate::disposition::DispositionAccountingError,
+    > {
+        let accounting = outcome.accounting(self.failure_attempt_count, max_attempts)?;
+        self.failure_attempt_count = accounting.failure_attempt_count;
+        Ok(accounting)
     }
 
     /// Returns the run creation timestamp.
@@ -492,6 +515,8 @@ impl<'de> serde::Deserialize<'de> for RunInstance {
             state: RunState,
             current_attempt_id: Option<AttemptId>,
             attempt_count: u32,
+            #[serde(default)]
+            failure_attempt_count: u32,
             created_at: u64,
             scheduled_at: u64,
             effective_priority: i32,
@@ -507,6 +532,10 @@ impl<'de> serde::Deserialize<'de> for RunInstance {
         }
         if wire.task_id.as_uuid().is_nil() {
             return Err(serde::de::Error::custom("task_id must not be nil"));
+        }
+
+        if wire.failure_attempt_count > wire.attempt_count {
+            return Err(serde::de::Error::custom("failures exceed accepted starts"));
         }
 
         // Validate state/attempt consistency
@@ -529,6 +558,7 @@ impl<'de> serde::Deserialize<'de> for RunInstance {
             state: wire.state,
             current_attempt_id: wire.current_attempt_id,
             attempt_count: wire.attempt_count,
+            failure_attempt_count: wire.failure_attempt_count,
             created_at: wire.created_at,
             scheduled_at: wire.scheduled_at,
             effective_priority: wire.effective_priority,

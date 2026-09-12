@@ -16,3 +16,5 @@ pub(crate) mod validate_admission;
 mod validate_signal;
 
 pub mod wait;
+
+pub mod disposition;
