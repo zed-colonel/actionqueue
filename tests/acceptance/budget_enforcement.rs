@@ -6,7 +6,6 @@
 
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use actionqueue_core::budget::{BudgetConsumption, BudgetDimension};
@@ -21,15 +20,8 @@ use actionqueue_executor_local::handler::{AttemptDisposition, ExecutorContext, E
 use actionqueue_runtime::config::{BackoffStrategyConfig, RuntimeConfig};
 use actionqueue_runtime::engine::ActionQueueEngine;
 
-static COUNTER: AtomicUsize = AtomicUsize::new(0);
-
-fn data_dir(label: &str) -> PathBuf {
-    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let dir = PathBuf::from("target")
-        .join("tmp")
-        .join(format!("7a-budget-enforce-{label}-{}-{n}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("data dir should be creatable");
-    dir
+fn data_dir(label: &str) -> tempfile::TempDir {
+    tempfile::Builder::new().prefix(label).tempdir().expect("test data dir")
 }
 
 /// Handler that always issues a retryable failure and reports token consumption.
@@ -72,7 +64,7 @@ async fn budget_exhaustion_blocks_dispatch_after_cap_reached() {
 
     let clock = MockClock::new(1000);
     let handler = TokenConsumingHandler { tokens_per_attempt: 500 };
-    let engine = ActionQueueEngine::new(make_config(dir.clone()), handler);
+    let engine = ActionQueueEngine::new(make_config(dir.path().to_path_buf()), handler);
     let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap");
 
     // max_attempts=5 so budget exhaustion blocks before the retry cap fires.
@@ -118,5 +110,4 @@ async fn budget_exhaustion_blocks_dispatch_after_cap_reached() {
     assert_ne!(*state, RunState::Failed, "run must NOT fail after budget exhaustion");
 
     boot.shutdown().expect("shutdown");
-    let _ = std::fs::remove_dir_all(&dir);
 }

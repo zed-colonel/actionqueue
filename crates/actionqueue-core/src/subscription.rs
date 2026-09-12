@@ -1,8 +1,8 @@
 //! Subscription domain types for event-driven task promotion.
 //!
 //! Subscriptions allow tasks to be promoted to Ready when specific events
-//! occur — task completion, run state changes, budget threshold crossings,
-//! or application-defined custom events. The dispatch loop evaluates active
+//! occur — task completion, run state changes, or budget threshold crossings.
+//! The dispatch loop evaluates active
 //! subscriptions each tick and triggers those whose filters match.
 
 use std::fmt::{Display, Formatter};
@@ -84,10 +84,5 @@ pub enum EventFilter {
         dimension: BudgetDimension,
         /// The consumption percentage (0-100) at which to trigger.
         threshold_pct: u8,
-    },
-    /// Fires when an application-defined event with this key is emitted.
-    Custom {
-        /// The application-defined event key.
-        key: String,
     },
 }

@@ -1,7 +1,7 @@
 //! Per-task budget state tracking.
 //!
 //! Tracks in-memory budget state derived from durable WAL events. The tracker
-//! is the authoritative in-memory view of consumption against allocations.
+//! mirrors the authoritative storage projection.
 //! The dispatch loop consults the tracker to gate dispatch and determine when
 //! to signal suspension.
 
@@ -42,9 +42,7 @@ pub enum ConsumeResult {
 
 /// In-memory per-task budget tracker.
 ///
-/// Reconstructed from WAL events at bootstrap via [`BudgetTracker::allocate`]
-/// and [`BudgetTracker::consume`] calls. The dispatch loop updates the tracker
-/// each tick as WorkerResults arrive.
+/// Restored from the storage projection at bootstrap and after accepted mutations.
 #[derive(Debug, Default)]
 pub struct BudgetTracker {
     budgets: HashMap<(TaskId, BudgetDimension), BudgetState>,
@@ -54,6 +52,12 @@ impl BudgetTracker {
     /// Creates an empty tracker.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Restores all state from an authoritative durable projection record.
+    /// Explicit exhaustion must not be inferred from consumption.
+    pub fn restore(&mut self, task_id: TaskId, dimension: BudgetDimension, state: BudgetState) {
+        self.budgets.insert((task_id, dimension), state);
     }
 
     /// Registers a budget allocation for a task/dimension pair.
@@ -156,6 +160,25 @@ mod tests {
     use actionqueue_core::ids::TaskId;
 
     use super::{BudgetTracker, ConsumeResult};
+
+    #[test]
+    fn restore_preserves_explicit_exhaustion_and_zero_consumption() {
+        let mut tracker = BudgetTracker::new();
+        let task = TaskId::new();
+        tracker.restore(
+            task,
+            BudgetDimension::Token,
+            super::BudgetState { limit: 100, consumed: 0, exhausted: true },
+        );
+        assert!(tracker.is_any_exhausted(task));
+        assert_eq!(tracker.remaining(task, BudgetDimension::Token), Some(100));
+        tracker.restore(
+            task,
+            BudgetDimension::Token,
+            super::BudgetState { limit: 0, consumed: 0, exhausted: false },
+        );
+        assert!(!tracker.is_any_exhausted(task));
+    }
 
     #[test]
     fn allocate_and_consume_within_budget() {

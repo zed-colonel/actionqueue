@@ -11,7 +11,6 @@
 
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use actionqueue_core::budget::{BudgetConsumption, BudgetDimension};
@@ -27,15 +26,8 @@ use actionqueue_executor_local::handler::{AttemptDisposition, ExecutorContext, E
 use actionqueue_runtime::config::{BackoffStrategyConfig, RuntimeConfig};
 use actionqueue_runtime::engine::ActionQueueEngine;
 
-static COUNTER: AtomicUsize = AtomicUsize::new(0);
-
-fn data_dir(label: &str) -> PathBuf {
-    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let dir = PathBuf::from("target")
-        .join("tmp")
-        .join(format!("7f-budget-thresh-{label}-{}-{n}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("data dir");
-    dir
+fn data_dir(label: &str) -> tempfile::TempDir {
+    tempfile::Builder::new().prefix(label).tempdir().expect("test data dir")
 }
 
 /// Handler: Task B reports 400 token consumption; everything else succeeds.
@@ -73,7 +65,7 @@ async fn budget_threshold_triggers_subscription_promotion() {
     let clock = MockClock::new(1000);
     let task_b_id = TaskId::new();
     let handler = ThresholdHandler;
-    let engine = ActionQueueEngine::new(make_config(dir.clone()), handler);
+    let engine = ActionQueueEngine::new(make_config(dir.path().to_path_buf()), handler);
     let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap");
 
     // Task B: Once, budget 500 tokens.
@@ -139,5 +131,4 @@ async fn budget_threshold_triggers_subscription_promotion() {
     }
 
     boot.shutdown().expect("shutdown");
-    let _ = std::fs::remove_dir_all(&dir);
 }

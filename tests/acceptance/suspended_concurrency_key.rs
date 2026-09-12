@@ -24,15 +24,8 @@ use actionqueue_executor_local::handler::{AttemptDisposition, ExecutorContext, E
 use actionqueue_runtime::config::{BackoffStrategyConfig, RuntimeConfig};
 use actionqueue_runtime::engine::ActionQueueEngine;
 
-static COUNTER: AtomicUsize = AtomicUsize::new(0);
-
-fn data_dir(label: &str) -> PathBuf {
-    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let dir = PathBuf::from("target")
-        .join("tmp")
-        .join(format!("7i-suspended-ck-{label}-{}-{n}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("data dir should be creatable");
-    dir
+fn data_dir(label: &str) -> tempfile::TempDir {
+    tempfile::Builder::new().prefix(label).tempdir().expect("test data dir")
 }
 
 /// Suspends on call 0; succeeds on all subsequent calls.
@@ -90,7 +83,7 @@ async fn suspended_run_holds_concurrency_key_with_hold_during_retry_policy() {
     let clock = MockClock::new(1000);
     let call_count = Arc::new(AtomicUsize::new(0));
     let handler = SuspendOnFirstCallHandler { call_count: Arc::clone(&call_count) };
-    let engine = ActionQueueEngine::new(make_config(dir.clone()), handler);
+    let engine = ActionQueueEngine::new(make_config(dir.path().to_path_buf()), handler);
     let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap");
 
     let shared_key = "exclusive-resource";
@@ -134,7 +127,6 @@ async fn suspended_run_holds_concurrency_key_with_hold_during_retry_policy() {
     );
 
     boot.shutdown().expect("shutdown");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// With ReleaseOnRetry, a suspended run releases the concurrency key.
@@ -147,7 +139,7 @@ async fn suspended_run_releases_concurrency_key_with_release_on_retry_policy() {
     let clock = MockClock::new(1000);
     let call_count = Arc::new(AtomicUsize::new(0));
     let handler = SuspendOnFirstCallHandler { call_count: Arc::clone(&call_count) };
-    let engine = ActionQueueEngine::new(make_config(dir.clone()), handler);
+    let engine = ActionQueueEngine::new(make_config(dir.path().to_path_buf()), handler);
     let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap");
 
     let shared_key = "shared-resource";
@@ -195,5 +187,4 @@ async fn suspended_run_releases_concurrency_key_with_release_on_retry_policy() {
     assert_eq!(state_a_final, RunState::Suspended, "task A must still be Suspended (not resumed)");
 
     boot.shutdown().expect("shutdown");
-    let _ = std::fs::remove_dir_all(&dir);
 }

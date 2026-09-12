@@ -7,7 +7,6 @@
 
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use actionqueue_core::budget::{BudgetConsumption, BudgetDimension};
@@ -21,15 +20,8 @@ use actionqueue_executor_local::handler::{AttemptDisposition, ExecutorContext, E
 use actionqueue_runtime::config::{BackoffStrategyConfig, RuntimeConfig};
 use actionqueue_runtime::engine::ActionQueueEngine;
 
-static COUNTER: AtomicUsize = AtomicUsize::new(0);
-
-fn data_dir(label: &str) -> PathBuf {
-    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let dir = PathBuf::from("target")
-        .join("tmp")
-        .join(format!("7g-budget-recovery-{label}-{}-{n}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("data dir should be creatable");
-    dir
+fn data_dir(label: &str) -> tempfile::TempDir {
+    tempfile::Builder::new().prefix(label).tempdir().expect("test data dir")
 }
 
 /// Always fails terminally, consuming 300 tokens per attempt.
@@ -74,7 +66,8 @@ async fn budget_state_survives_wal_recovery() {
     // ---- Phase 1: allocate, consume 300 tokens via terminal failure, then drop ----
     {
         let clock = MockClock::new(1000);
-        let engine = ActionQueueEngine::new(make_config(dir.clone()), ThreeHundredTokenHandler);
+        let engine =
+            ActionQueueEngine::new(make_config(dir.path().to_path_buf()), ThreeHundredTokenHandler);
         let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap phase 1");
 
         // max_attempts=1 with TerminalFailure → exactly one dispatch, then Failed.
@@ -113,7 +106,8 @@ async fn budget_state_survives_wal_recovery() {
     // ---- Phase 2: re-bootstrap and verify WAL recovery restores budget state ----
     {
         let clock = MockClock::new(1000);
-        let engine = ActionQueueEngine::new(make_config(dir.clone()), ThreeHundredTokenHandler);
+        let engine =
+            ActionQueueEngine::new(make_config(dir.path().to_path_buf()), ThreeHundredTokenHandler);
         let boot = engine.bootstrap_with_clock(clock).expect("bootstrap phase 2");
 
         let budget_recovered =
@@ -130,8 +124,6 @@ async fn budget_state_survives_wal_recovery() {
 
         boot.shutdown().expect("shutdown phase 2");
     }
-
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Budget replenishment resets consumed to 0 and survives WAL recovery.
@@ -148,7 +140,8 @@ async fn budget_replenishment_survives_wal_recovery() {
     // ---- Phase 1: allocate, exhaust, replenish, then drop ----
     {
         let clock = MockClock::new(1000);
-        let engine = ActionQueueEngine::new(make_config(dir.clone()), ThreeHundredTokenHandler);
+        let engine =
+            ActionQueueEngine::new(make_config(dir.path().to_path_buf()), ThreeHundredTokenHandler);
         let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap phase 1");
 
         // max_attempts=5 so we get multiple dispatches before exhaustion.
@@ -188,7 +181,8 @@ async fn budget_replenishment_survives_wal_recovery() {
     // ---- Phase 2: re-bootstrap and verify replenishment state persisted ----
     {
         let clock = MockClock::new(1000);
-        let engine = ActionQueueEngine::new(make_config(dir.clone()), ThreeHundredTokenHandler);
+        let engine =
+            ActionQueueEngine::new(make_config(dir.path().to_path_buf()), ThreeHundredTokenHandler);
         let boot = engine.bootstrap_with_clock(clock).expect("bootstrap phase 2");
 
         let budget_recovered =
@@ -205,6 +199,4 @@ async fn budget_replenishment_survives_wal_recovery() {
 
         boot.shutdown().expect("shutdown phase 2");
     }
-
-    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -14,7 +14,7 @@ fn unique_data_dir(label: &str) -> PathBuf {
         .expect("system clock must be after unix epoch")
         .as_nanos();
     let pid = std::process::id();
-    PathBuf::from(format!("target/tmp/{label}-{pid}-{now}"))
+    std::env::temp_dir().join(format!("{label}-{pid}-{now}"))
 }
 
 #[test]

@@ -290,6 +290,7 @@ pub struct SnapshotSubscription {
     /// The subscribing task identifier.
     pub task_id: actionqueue_core::ids::TaskId,
     /// The event filter for this subscription.
+    #[cfg_attr(feature = "serde", serde(with = "crate::structural_filter"))]
     pub filter: EventFilter,
     /// The timestamp when the subscription was created.
     pub created_at: u64,

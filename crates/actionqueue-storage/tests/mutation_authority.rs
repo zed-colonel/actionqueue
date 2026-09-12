@@ -1990,7 +1990,7 @@ fn d04_sprint3_n6_subscription_create_duplicate_rejected() {
             3,
             sub_id,
             task_id,
-            EventFilter::Custom { key: "my-event".to_string() },
+            EventFilter::TaskCompleted { task_id },
             6_000,
         )),
         DurabilityPolicy::Immediate,
