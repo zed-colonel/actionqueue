@@ -16,6 +16,7 @@ actionqueue-storage = "0.1.2"
 actionqueue-runtime = "0.1.2"
 serde = { version = "1.0", features = ["derive"], optional = true }
 axum = "0.7"
+tokio = { version = "1", features = ["rt", "time"] }
 serde_json = "1.0"
 prometheus = "0.13"
 tracing = "0.1"

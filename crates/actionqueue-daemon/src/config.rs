@@ -66,6 +66,9 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DaemonConfig {
+    /// Remote capacity, execution lease, and retry policy.
+    #[cfg(feature = "actor")]
+    pub remote_policy: actionqueue_runtime::remote::RemotePolicy,
     /// The bind address (IP and port) for the daemon HTTP server.
     ///
     /// This is the primary operational surface for read-only introspection
@@ -121,6 +124,8 @@ pub struct DaemonConfig {
 impl Default for DaemonConfig {
     fn default() -> Self {
         Self {
+            #[cfg(feature = "actor")]
+            remote_policy: Default::default(),
             bind_address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8787),
             data_dir: PathBuf::from("~/.actionqueue/data"),
             enable_control: false,
@@ -182,6 +187,11 @@ impl DaemonConfig {
     ///
     /// Returns a `ConfigError` if any field contains an invalid value.
     pub fn validate(&self) -> Result<(), ConfigError> {
+        #[cfg(feature = "actor")]
+        self.remote_policy.validate().map_err(|e| ConfigError {
+            code: ConfigErrorCode::InvalidBindAddress,
+            message: e.to_string(),
+        })?;
         // Validate bind address
         if self.bind_address.port() == 0 {
             return Err(ConfigError {

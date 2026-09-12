@@ -141,7 +141,8 @@ fn resolution_races_preserve_first_commit_and_identical_retries_append_nothing()
             };
             let first_outcome = commit!(&mut a, proposal(first, seq(&a)));
             let before = a.projection().projection_digest().unwrap();
-            let retry = a.submit_command(proposal(second, 0), DurabilityPolicy::Immediate);
+            let retry =
+                a.submit_command(fixture_control(proposal(second, 0)), DurabilityPolicy::Immediate);
             if first == second {
                 assert!(
                     matches!(retry.unwrap().applied(),AppliedMutation::Wait(WaitOutcome::AlreadyResolved{sequence,..}) if *sequence==first_outcome)
@@ -414,7 +415,9 @@ fn every_new_mutation_fault_boundary_is_fenced_and_replayable() {
             };
             let before = a.projection().projection_digest().unwrap();
             actionqueue_storage::store::fault::fail_once(point);
-            assert!(a.submit_command(cmd.clone(), DurabilityPolicy::Immediate).is_err());
+            assert!(a
+                .submit_command(fixture_control(cmd.clone()), DurabilityPolicy::Immediate)
+                .is_err());
             assert!(a.recovery_required());
             if point != "authority_after_publish" {
                 assert_eq!(before, a.projection().projection_digest().unwrap());
@@ -909,7 +912,14 @@ async fn daemon_run_and_task_cancellation_resolve_waits_through_compound_control
         let mut a = open_store(dir.path(), OpenOptions::Initialize { features: vec![] })
             .unwrap()
             .into_authority()
-            .unwrap();
+            .unwrap()
+            .with_host(actionqueue_core::control::HostControlContext {
+                actor_id: None,
+                scope: actionqueue_core::control::ControlScope::SingleTenant,
+                attribution: actionqueue_core::causal::ControlMutationContext::new(
+                    actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                ),
+            });
         let r = running(&mut a, 1, None, false);
         let w = WaitId::new();
         establish_wait(&mut a, r, spec(w, None));
@@ -1034,7 +1044,7 @@ fn reacquisition_by_same_owner_changes_fence_and_heartbeat_preserves_it() {
 #[test]
 fn scoped_waits_never_observe_other_tenants_or_unscoped_signals() {
     let dir = tempfile::tempdir().unwrap();
-    let mut a = s::open(dir.path());
+    let mut a = s::open_platform(dir.path());
     let tenant = TenantId::new();
     let other = TenantId::new();
     for t in [tenant, other] {
@@ -1060,7 +1070,7 @@ fn scoped_waits_never_observe_other_tenants_or_unscoped_signals() {
     )
     .unwrap();
     establish_wait(&mut a, r, w);
-    let _ = s::submit(&mut a, s::envelope(1, 25)).unwrap();
+    assert!(s::submit(&mut a, s::envelope(1, 25)).is_err());
     let mut e = s::envelope(1, 26);
     e.tenant_id = Some(other);
     let _ = s::submit(&mut a, e).unwrap();
@@ -1075,14 +1085,14 @@ fn scoped_waits_never_observe_other_tenants_or_unscoped_signals() {
     };
     assert!(matches!(
         a.submit_command(MutationCommand::WaitResolve(control), DurabilityPolicy::Immediate),
-        Err(MutationAuthorityError::Wait(WaitRejection::TenantMismatch))
+        Err(MutationAuthorityError::Control(_))
     ));
     let mut e = s::envelope(1, 27);
     e.tenant_id = Some(tenant);
     let _ = s::submit(&mut a, e).unwrap();
     assert_eq!(reconcile(&mut a, 30).unwrap(), 1);
     assert!(
-        matches!(a.projection().pending_resume(r).unwrap().wake,WakeReason::Signal{signal_sequence,..} if signal_sequence.get()==3)
+        matches!(a.projection().pending_resume(r).unwrap().wake,WakeReason::Signal{signal_sequence,..} if signal_sequence.get()==2)
     );
 }
 #[test]

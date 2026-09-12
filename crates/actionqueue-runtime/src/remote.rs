@@ -288,3 +288,164 @@ pub fn submit_result<W: WalWriter>(
     )
     .map_err(err)
 }
+
+/// Configured limits for a daemon that serves remote workers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct RemotePolicy {
+    pub max_concurrent: usize,
+    pub lease_timeout_secs: u64,
+    pub retry_delay_secs: u64,
+}
+impl Default for RemotePolicy {
+    fn default() -> Self {
+        Self { max_concurrent: 4, lease_timeout_secs: 300, retry_delay_secs: 5 }
+    }
+}
+impl RemotePolicy {
+    pub fn validate(&self) -> Result<(), ControlError> {
+        if self.max_concurrent == 0 || !(3..=86400).contains(&self.lease_timeout_secs) {
+            return Err(err("invalid remote dispatch policy"));
+        }
+        Ok(())
+    }
+}
+/// One serialized scheduler maintenance pass. The host calls this on its timer
+/// and before remote ingress. All state comes from the durable projection.
+pub fn maintain<W: WalWriter>(
+    a: &mut StorageMutationAuthority<W, ReplayReducer>,
+    now: u64,
+    policy: RemotePolicy,
+) -> Result<(), ControlError> {
+    policy.validate()?;
+    let mut expired: Vec<_> = a
+        .projection()
+        .actors()
+        .map(|(_, r)| r)
+        .filter(|r| {
+            r.deregistered_at.is_none()
+                && now
+                    >= r.last_heartbeat_at
+                        .unwrap_or(r.registered_at)
+                        .saturating_add(r.heartbeat_interval_secs.saturating_mul(3))
+        })
+        .map(|r| r.actor_id)
+        .collect();
+    expired.sort_by_key(|id| *id.as_uuid());
+    for actor_id in expired {
+        let _ = a
+            .submit_command(
+                MutationCommand::RecoveryControl(Box::new(MutationCommand::ActorDeregister(
+                    ActorDeregisterCommand::new(
+                        a.projection().latest_sequence().saturating_add(1),
+                        actor_id,
+                        now,
+                    ),
+                ))),
+                DurabilityPolicy::Immediate,
+            )
+            .map_err(err)?;
+    }
+    reconcile_subscriptions(a, now)?;
+    crate::waits::recover_expired_execution(a, now).map_err(err)?;
+    crate::waits::reconcile(a, now).map_err(err)?;
+    reconcile_subscriptions(a, now)?;
+    let retry: Vec<_> = a
+        .projection()
+        .run_instances()
+        .filter(|r| r.state() == RunState::RetryWait)
+        .cloned()
+        .collect();
+    let backoff = actionqueue_executor_local::FixedBackoff::new(std::time::Duration::from_secs(
+        policy.retry_delay_secs,
+    ));
+    let promotion = actionqueue_engine::scheduler::retry_promotion::promote_retry_wait_to_ready(
+        &retry, now, &backoff,
+    )
+    .map_err(err)?;
+    for run in promotion.promoted() {
+        let _ = a
+            .submit_command(
+                MutationCommand::RunStateTransition(RunStateTransitionCommand::new(
+                    a.projection().latest_sequence().saturating_add(1),
+                    run.id(),
+                    RunState::RetryWait,
+                    RunState::Ready,
+                    now,
+                )),
+                DurabilityPolicy::Immediate,
+            )
+            .map_err(err)?;
+    }
+    Ok(())
+}
+/// Capacity and lease policy applied under the same exclusive owner as acceptance.
+pub fn claim_with_policy<W: WalWriter>(
+    a: &mut StorageMutationAuthority<W, ReplayReducer>,
+    host: &HostControlContext,
+    request: RemoteClaim,
+    now: u64,
+    policy: RemotePolicy,
+) -> Result<RemoteWork, ControlError> {
+    actor(a, host, QueueAction::ClaimRun)?;
+    policy.validate()?;
+    let retry = a
+        .projection()
+        .get_run_instance(&request.run_id)
+        .is_some_and(|r| r.current_attempt_id() == Some(request.attempt_id));
+    if !retry
+        && a.projection()
+            .run_instances()
+            .filter(|r| matches!(r.state(), RunState::Leased | RunState::Running))
+            .count()
+            >= policy.max_concurrent
+    {
+        return Err(err("dispatch capacity unavailable"));
+    }
+    claim(a, host, request, now, policy.lease_timeout_secs)
+}
+
+/// Repair the result-to-reactivity gap from durable facts, including after a crash.
+/// Only subscriptions created before the observed transition are eligible. A
+/// trigger changes Scheduled eligibility; it never resolves a durable wait.
+fn reconcile_subscriptions<W: WalWriter>(
+    a: &mut StorageMutationAuthority<W, ReplayReducer>,
+    now: u64,
+) -> Result<(), ControlError> {
+    use actionqueue_core::subscription::EventFilter;
+    let p = a.projection();
+    let mut ready: Vec<_> = p
+        .subscriptions()
+        .filter(|(_, s)| s.canceled_at.is_none() && s.triggered_at.is_none())
+        .filter(|(_, s)| match s.filter {
+            EventFilter::TaskCompleted { task_id } => {
+                p.task_terminal_status(task_id).is_some()
+                    && p.runs_for_task(task_id).any(|r| r.state() == RunState::Completed)
+                    && p.runs_for_task(task_id).any(|r| r.last_state_change_at() >= s.created_at)
+            }
+            EventFilter::RunStateChanged { task_id, state } => p
+                .runs_for_task(task_id)
+                .any(|r| r.state() == state && r.last_state_change_at() >= s.created_at),
+            EventFilter::BudgetThreshold { task_id, dimension, threshold_pct } => {
+                p.get_budget(&task_id, dimension).is_some_and(|b| {
+                    b.limit > 0
+                        && (b.consumed as u128) * 100 >= (b.limit as u128) * (threshold_pct as u128)
+                })
+            }
+        })
+        .map(|(id, _)| *id)
+        .collect();
+    ready.sort_by_key(|id| *id.as_uuid());
+    for id in ready {
+        let _ = a
+            .submit_command(
+                MutationCommand::SubscriptionTrigger(SubscriptionTriggerCommand::new(
+                    a.projection().latest_sequence().saturating_add(1),
+                    id,
+                    now,
+                )),
+                DurabilityPolicy::Immediate,
+            )
+            .map_err(err)?;
+    }
+    Ok(())
+}

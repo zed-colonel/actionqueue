@@ -46,6 +46,12 @@
 //! )
 //! .expect("task spec should be valid");
 //!
+//! authority.set_control_context(Some(actionqueue_core::control::HostControlContext {
+//!     actor_id: None,
+//!     scope: actionqueue_core::control::ControlScope::SingleTenant,
+//!     attribution: actionqueue_core::causal::ControlMutationContext::new(
+//!         actionqueue_core::bounded::OpaqueRef::new("example-host").unwrap()),
+//! }));
 //! authority
 //!     .submit_command(
 //!         MutationCommand::TaskCreate(TaskCreateCommand::new(2, task_spec, 0)),

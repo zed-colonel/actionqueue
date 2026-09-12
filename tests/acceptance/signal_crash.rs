@@ -35,7 +35,15 @@ fn failed_admissions_fence_writer_and_authority_until_recovery() {
             Err(MutationAuthorityError::RecoveryRequired)
         ));
         let (writer, projection) = a.into_parts();
-        let a = Authority::new(writer, projection);
+        let a = Authority::new(writer, projection).with_host(
+            actionqueue_core::control::HostControlContext {
+                actor_id: None,
+                scope: actionqueue_core::control::ControlScope::SingleTenant,
+                attribution: actionqueue_core::causal::ControlMutationContext::new(
+                    actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                ),
+            },
+        );
         assert!(a.recovery_required());
         drop(a);
         let mut a = reopen(dir.path());

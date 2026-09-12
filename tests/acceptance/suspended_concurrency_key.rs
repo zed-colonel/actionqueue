@@ -84,7 +84,15 @@ async fn suspended_run_holds_concurrency_key_with_hold_during_retry_policy() {
     let call_count = Arc::new(AtomicUsize::new(0));
     let handler = SuspendOnFirstCallHandler { call_count: Arc::clone(&call_count) };
     let engine = ActionQueueEngine::new(make_config(dir.path().to_path_buf()), handler);
-    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap");
+    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap").with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     let shared_key = "exclusive-resource";
 
@@ -140,7 +148,15 @@ async fn suspended_run_releases_concurrency_key_with_release_on_retry_policy() {
     let call_count = Arc::new(AtomicUsize::new(0));
     let handler = SuspendOnFirstCallHandler { call_count: Arc::clone(&call_count) };
     let engine = ActionQueueEngine::new(make_config(dir.path().to_path_buf()), handler);
-    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap");
+    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap").with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     let shared_key = "shared-resource";
 

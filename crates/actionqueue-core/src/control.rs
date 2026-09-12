@@ -11,6 +11,8 @@ use crate::{
 pub enum ControlScope {
     /// Host-authorized administration of the whole store.
     Store,
+    /// Host-authorized actor provisioning in one named tenant; grants no execution authority.
+    ProvisionTenant(TenantId),
     /// One explicit tenant namespace.
     Tenant(TenantId),
     /// Explicit namespace of a store without the platform profile.

@@ -3,9 +3,7 @@ use actionqueue_core::{
     bounded::OpaqueRef, causal::ControlMutationContext, continuation::*, ids::*, limits::*,
     mutation::*, time::clock::MockClock,
 };
-use actionqueue_runtime::signals::{
-    pin_signal, retire_signals, unpin_signal, SignalAdmissionError,
-};
+use actionqueue_runtime::signals::SignalAdmissionError;
 use actionqueue_storage::{
     mutation::MutationAuthorityError,
     snapshot::{

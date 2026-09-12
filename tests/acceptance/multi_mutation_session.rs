@@ -45,7 +45,14 @@ fn multi_mutation_session_produces_consistent_projection_after_each_step() {
     let mut authority = actionqueue_storage::mutation::authority::StorageMutationAuthority::new(
         recovery.wal_writer,
         recovery.projection,
-    );
+    )
+    .with_host(actionqueue_core::control::HostControlContext {
+        actor_id: None,
+        scope: actionqueue_core::control::ControlScope::SingleTenant,
+        attribution: actionqueue_core::causal::ControlMutationContext::new(
+            actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+        ),
+    });
 
     // Mutation 1: Create task A.
     let task_a_id = TaskId::new();
@@ -116,14 +123,30 @@ fn multi_mutation_session_produces_consistent_projection_after_each_step() {
 
     // Mutation 5: Pause engine.
     let seq5 = next_seq(&authority);
-    let cmd5 = MutationCommand::EnginePause(EnginePauseCommand::new(seq5, seq5));
+    let cmd5 = MutationCommand::EnginePause(EnginePauseCommand::new(seq5, seq5)).with_control(
+        &actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::Store,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
     let _ =
         authority.submit_command(cmd5, DurabilityPolicy::Immediate).expect("pause should succeed");
     assert!(authority.projection().is_engine_paused());
 
     // Mutation 6: Resume engine.
     let seq6 = next_seq(&authority);
-    let cmd6 = MutationCommand::EngineResume(EngineResumeCommand::new(seq6, seq6));
+    let cmd6 = MutationCommand::EngineResume(EngineResumeCommand::new(seq6, seq6)).with_control(
+        &actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::Store,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
     let _ =
         authority.submit_command(cmd6, DurabilityPolicy::Immediate).expect("resume should succeed");
     assert!(!authority.projection().is_engine_paused());

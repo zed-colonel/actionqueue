@@ -2,6 +2,7 @@
 //!
 //! Verifies that tenants can be created and actors are scoped to their tenant.
 
+mod host_support;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -34,6 +35,7 @@ impl ExecutorHandler for NoopHandler {
 
 fn make_config(dir: PathBuf) -> RuntimeConfig {
     RuntimeConfig {
+        store_features: actionqueue_storage::store::capabilities(),
         data_dir: dir,
         backoff_strategy: BackoffStrategyConfig::Fixed { interval: Duration::ZERO },
         dispatch_concurrency: NonZeroUsize::new(1).expect("non-zero"),
@@ -48,7 +50,15 @@ async fn two_tenants_created_and_actors_scoped() {
     let dir = data_dir("two-tenants");
     let clock = MockClock::new(1000);
     let engine = ActionQueueEngine::new(make_config(dir), NoopHandler);
-    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap");
+    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap").with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::Store,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     let tenant_alpha = TenantId::new();
     let tenant_beta = TenantId::new();
@@ -64,10 +74,16 @@ async fn two_tenants_created_and_actors_scoped() {
     let actor_a = ActorId::new();
     let actor_b = ActorId::new();
 
+    boot.set_control_context(Some(host_support::host(
+        actionqueue_core::control::ControlScope::ProvisionTenant(tenant_alpha),
+    )));
     boot.register_actor(
         ActorRegistration::new(actor_a, "alpha-worker", caps.clone(), 30).with_tenant(tenant_alpha),
     )
     .expect("register alpha actor");
+    boot.set_control_context(Some(host_support::host(
+        actionqueue_core::control::ControlScope::ProvisionTenant(tenant_beta),
+    )));
     boot.register_actor(
         ActorRegistration::new(actor_b, "beta-worker", caps, 30).with_tenant(tenant_beta),
     )
@@ -95,7 +111,15 @@ async fn tenant_name_preserved() {
     let dir = data_dir("name");
     let clock = MockClock::new(1000);
     let engine = ActionQueueEngine::new(make_config(dir), NoopHandler);
-    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap");
+    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap").with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::Store,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     let id = TenantId::new();
     boot.create_tenant(TenantRegistration::new(id, "Acme Digital Corporation")).expect("create");

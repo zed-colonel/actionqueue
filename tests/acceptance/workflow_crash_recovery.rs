@@ -73,7 +73,16 @@ mod wf {
         // Phase 1: submit both tasks and declare step2→step1 dependency.
         {
             let engine = ActionQueueEngine::new(engine_config(&data_dir), EchoHandler);
-            let mut eng = engine.bootstrap_with_clock(MockClock::new(1000)).expect("bootstrap");
+            let mut eng = engine
+                .bootstrap_with_clock(MockClock::new(1000))
+                .expect("bootstrap")
+                .with_host(actionqueue_core::control::HostControlContext {
+                    actor_id: None,
+                    scope: actionqueue_core::control::ControlScope::SingleTenant,
+                    attribution: actionqueue_core::causal::ControlMutationContext::new(
+                        actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                    ),
+                });
 
             let spec1 = TaskSpec::new(
                 step1_id,
@@ -100,7 +109,14 @@ mod wf {
         // Declare dependency via authority.
         {
             let recovery = load_projection_from_storage(&data_dir).expect("recovery");
-            let mut auth = StorageMutationAuthority::new(recovery.wal_writer, recovery.projection);
+            let mut auth = StorageMutationAuthority::new(recovery.wal_writer, recovery.projection)
+                .with_host(actionqueue_core::control::HostControlContext {
+                    actor_id: None,
+                    scope: actionqueue_core::control::ControlScope::SingleTenant,
+                    attribution: actionqueue_core::causal::ControlMutationContext::new(
+                        actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                    ),
+                });
             let seq = auth.projection().latest_sequence() + 1;
             let _ = auth
                 .submit_command(
@@ -118,8 +134,16 @@ mod wf {
         // Phase 2: first run — step1 completes, step2 becomes eligible and completes.
         {
             let engine = ActionQueueEngine::new(engine_config(&data_dir), EchoHandler);
-            let mut eng =
-                engine.bootstrap_with_clock(MockClock::new(1000)).expect("bootstrap after declare");
+            let mut eng = engine
+                .bootstrap_with_clock(MockClock::new(1000))
+                .expect("bootstrap after declare")
+                .with_host(actionqueue_core::control::HostControlContext {
+                    actor_id: None,
+                    scope: actionqueue_core::control::ControlScope::SingleTenant,
+                    attribution: actionqueue_core::causal::ControlMutationContext::new(
+                        actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                    ),
+                });
             let _ = eng.run_until_idle().await.expect("run");
 
             // Both steps must have completed.
@@ -138,8 +162,16 @@ mod wf {
         // Phase 3: restart again — verify completed state + output survive.
         {
             let engine = ActionQueueEngine::new(engine_config(&data_dir), EchoHandler);
-            let eng =
-                engine.bootstrap_with_clock(MockClock::new(2000)).expect("bootstrap after restart");
+            let eng = engine
+                .bootstrap_with_clock(MockClock::new(2000))
+                .expect("bootstrap after restart")
+                .with_host(actionqueue_core::control::HostControlContext {
+                    actor_id: None,
+                    scope: actionqueue_core::control::ControlScope::SingleTenant,
+                    attribution: actionqueue_core::causal::ControlMutationContext::new(
+                        actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                    ),
+                });
 
             let step1_runs = eng.projection().run_ids_for_task(step1_id);
             let step2_runs = eng.projection().run_ids_for_task(step2_id);
@@ -199,7 +231,16 @@ mod wf {
         // Submit parent and child (with parent_task_id set) via engine.
         {
             let engine = ActionQueueEngine::new(engine_config(&data_dir), EchoHandler);
-            let mut eng = engine.bootstrap_with_clock(MockClock::new(1000)).expect("bootstrap");
+            let mut eng = engine
+                .bootstrap_with_clock(MockClock::new(1000))
+                .expect("bootstrap")
+                .with_host(actionqueue_core::control::HostControlContext {
+                    actor_id: None,
+                    scope: actionqueue_core::control::ControlScope::SingleTenant,
+                    attribution: actionqueue_core::causal::ControlMutationContext::new(
+                        actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                    ),
+                });
 
             let parent_spec = TaskSpec::new(
                 parent_id,
@@ -228,8 +269,16 @@ mod wf {
         // Restart and verify the parent-child relationship is in the projection.
         {
             let engine = ActionQueueEngine::new(engine_config(&data_dir), EchoHandler);
-            let eng =
-                engine.bootstrap_with_clock(MockClock::new(2000)).expect("bootstrap after restart");
+            let eng = engine
+                .bootstrap_with_clock(MockClock::new(2000))
+                .expect("bootstrap after restart")
+                .with_host(actionqueue_core::control::HostControlContext {
+                    actor_id: None,
+                    scope: actionqueue_core::control::ControlScope::SingleTenant,
+                    attribution: actionqueue_core::causal::ControlMutationContext::new(
+                        actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                    ),
+                });
 
             // Both tasks must be Completed.
             let parent_runs = eng.projection().run_ids_for_task(parent_id);

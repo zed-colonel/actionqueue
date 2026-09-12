@@ -71,7 +71,16 @@ async fn misfire_eager_catchup_promotes_all_overdue_runs_in_single_tick() {
     };
 
     let engine = ActionQueueEngine::new(config, InstantSuccessHandler);
-    let mut bootstrapped = engine.bootstrap_with_clock(clock).expect("bootstrap should succeed");
+    let mut bootstrapped = engine
+        .bootstrap_with_clock(clock)
+        .expect("bootstrap should succeed")
+        .with_host(actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        });
 
     // Submit a Repeat(5, 1s) task.
     let task_id = TaskId::new();
@@ -144,8 +153,16 @@ async fn misfire_eager_catchup_promotes_all_overdue_runs_in_single_tick() {
     };
 
     let engine2 = ActionQueueEngine::new(config2, InstantSuccessHandler);
-    let mut bootstrapped2 =
-        engine2.bootstrap_with_clock(advanced_clock).expect("re-bootstrap should succeed");
+    let mut bootstrapped2 = engine2
+        .bootstrap_with_clock(advanced_clock)
+        .expect("re-bootstrap should succeed")
+        .with_host(actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        });
 
     // Verify runs are still Scheduled (no tick has been issued).
     for run_id in &run_ids {
@@ -216,7 +233,16 @@ async fn misfire_partial_catchup_promotes_only_overdue_runs() {
     };
 
     let engine1 = ActionQueueEngine::new(config1, InstantSuccessHandler);
-    let mut boot1 = engine1.bootstrap_with_clock(submit_clock).expect("bootstrap should succeed");
+    let mut boot1 = engine1
+        .bootstrap_with_clock(submit_clock)
+        .expect("bootstrap should succeed")
+        .with_host(actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        });
 
     let task_id = TaskId::new();
     let spec = TaskSpec::new(
@@ -248,8 +274,16 @@ async fn misfire_partial_catchup_promotes_only_overdue_runs() {
     };
 
     let engine2 = ActionQueueEngine::new(config2, InstantSuccessHandler);
-    let mut boot2 =
-        engine2.bootstrap_with_clock(partial_clock).expect("re-bootstrap should succeed");
+    let mut boot2 = engine2
+        .bootstrap_with_clock(partial_clock)
+        .expect("re-bootstrap should succeed")
+        .with_host(actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        });
 
     // Tick at t=1025: scheduled_at <= 1025 means t=1000, 1010, 1020 are due.
     let tick = boot2.tick().await.expect("tick should succeed");
@@ -288,7 +322,16 @@ async fn misfire_no_coalescing_with_extreme_gap() {
     };
 
     let engine1 = ActionQueueEngine::new(config1, InstantSuccessHandler);
-    let mut boot1 = engine1.bootstrap_with_clock(submit_clock).expect("bootstrap should succeed");
+    let mut boot1 = engine1
+        .bootstrap_with_clock(submit_clock)
+        .expect("bootstrap should succeed")
+        .with_host(actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        });
 
     let task_id = TaskId::new();
     let spec = TaskSpec::new(
@@ -314,8 +357,16 @@ async fn misfire_no_coalescing_with_extreme_gap() {
     };
 
     let engine2 = ActionQueueEngine::new(config2, InstantSuccessHandler);
-    let mut boot2 =
-        engine2.bootstrap_with_clock(extreme_clock).expect("re-bootstrap should succeed");
+    let mut boot2 = engine2
+        .bootstrap_with_clock(extreme_clock)
+        .expect("re-bootstrap should succeed")
+        .with_host(actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        });
 
     let tick = boot2.tick().await.expect("tick should succeed");
     assert_eq!(

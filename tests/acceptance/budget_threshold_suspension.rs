@@ -74,7 +74,15 @@ async fn budget_exhaustion_blocks_further_dispatch() {
     let clock = MockClock::new(1000);
     let handler = TokenConsumeRetryHandler;
     let engine = ActionQueueEngine::new(make_config(dir.path().to_path_buf()), handler);
-    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap");
+    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap").with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     let task_id = TaskId::new();
     let constraints = TaskConstraints::new(5, None, None).expect("valid");

@@ -48,7 +48,15 @@ async fn compute_only_actor_cannot_handle_compute_review_task() {
     let dir = data_dir("compute-only");
     let clock = MockClock::new(1000);
     let engine = ActionQueueEngine::new(make_config(dir), NoopHandler);
-    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap");
+    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap").with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     let actor_a = ActorId::new();
     let actor_b = ActorId::new();
@@ -150,7 +158,14 @@ async fn local_claim_requires_explicit_matching_traits() {
             config.local_executor_traits.as_ref().is_some_and(|t| t.as_slice().len() == 2);
         let mut boot = ActionQueueEngine::new(config, NoopHandler)
             .bootstrap_with_clock(MockClock::new(1000))
-            .unwrap();
+            .unwrap()
+            .with_host(actionqueue_core::control::HostControlContext {
+                actor_id: None,
+                scope: actionqueue_core::control::ControlScope::SingleTenant,
+                attribution: actionqueue_core::causal::ControlMutationContext::new(
+                    actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                ),
+            });
         let task = TaskSpec::new(
             TaskId::new(),
             actionqueue_core::task::task_spec::TaskPayload::new(vec![]),
@@ -170,14 +185,30 @@ async fn local_claim_requires_explicit_matching_traits() {
 #[tokio::test]
 async fn actor_tenant_replacement_is_rejected_without_append() {
     use actionqueue_core::ids::TenantId;
-    let mut boot = ActionQueueEngine::new(make_config(data_dir("tenant-replacement")), NoopHandler)
+    let mut config = make_config(data_dir("tenant-replacement"));
+    config.store_features = actionqueue_storage::store::capabilities();
+    let mut boot = ActionQueueEngine::new(config, NoopHandler)
         .bootstrap_with_clock(MockClock::new(1000))
-        .unwrap();
+        .unwrap()
+        .with_host(actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::Store,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        });
     let id = ActorId::new();
     let traits = ExecutorTraits::new(vec!["compute".into()]).unwrap();
     let tenant = TenantId::new();
     boot.create_tenant(actionqueue_core::platform::TenantRegistration::new(tenant, "tenant"))
         .unwrap();
+    boot.set_control_context(Some(actionqueue_core::control::HostControlContext {
+        actor_id: None,
+        scope: actionqueue_core::control::ControlScope::ProvisionTenant(tenant),
+        attribution: actionqueue_core::causal::ControlMutationContext::new(
+            actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+        ),
+    }));
     boot.register_actor(
         ActorRegistration::new(id, "first", traits.clone(), 30).with_tenant(tenant),
     )

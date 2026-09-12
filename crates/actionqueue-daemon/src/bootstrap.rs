@@ -281,6 +281,10 @@ pub fn bootstrap_with_authenticator(
 
     let store_session = recovery.wal_writer.inner().session().cloned();
     let mut authority = StorageMutationAuthority::new(recovery.wal_writer, recovery.projection);
+    if config.enable_control {
+        actionqueue_runtime::waits::recover_execution(&mut authority, SystemClock.now())
+            .map_err(|e| BootstrapError::Dependency(format!("execution_recovery: {e}")))?;
+    }
     actionqueue_runtime::waits::recover_cancellations(&mut authority, SystemClock.now())
         .map_err(|e| BootstrapError::Dependency(format!("control_reconciliation: {e}")))?;
     actionqueue_runtime::waits::reconcile(&mut authority, SystemClock.now())
@@ -330,6 +334,10 @@ pub fn bootstrap_with_authenticator(
             ready_status,
         )
     };
+    #[cfg(feature = "actor")]
+    {
+        router_state_inner.remote_policy = config.remote_policy;
+    }
     router_state_inner.store_session = store_session;
     router_state_inner.host_authenticator = hook;
     let router_state = std::sync::Arc::new(router_state_inner);
@@ -376,7 +384,6 @@ mod tests {
         assert!(router_state.ready_status.is_ready());
         assert_eq!(router_state.router_config.control_enabled, control_flag);
         assert_eq!(router_state.router_config.metrics_enabled, state.metrics().is_enabled());
-        drop(router_state);
         drop(state);
         std::fs::remove_dir_all(data_dir).expect("remove bootstrap test directory");
     }

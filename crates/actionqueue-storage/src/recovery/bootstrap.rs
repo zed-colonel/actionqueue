@@ -163,7 +163,13 @@ pub(crate) fn recover(
 pub fn load_projection_from_storage(
     data_root: &std::path::Path,
 ) -> Result<RecoveryBootstrap, RecoveryBootstrapError> {
-    load_projection_with_features(data_root, crate::store::capabilities())
+    // A platform-capable binary does not silently enable tenancy on a new
+    // local store. Existing manifests remain authoritative; hosts opt in via
+    // load_projection_with_features when provisioning a platform store.
+    load_projection_with_features(
+        data_root,
+        crate::store::capabilities().into_iter().filter(|f| f != "platform").collect(),
+    )
 }
 pub fn load_projection_with_features(
     data_root: &std::path::Path,

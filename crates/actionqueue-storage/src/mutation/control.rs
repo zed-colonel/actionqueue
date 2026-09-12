@@ -14,7 +14,8 @@ pub fn authorize<W: WalWriter>(
         .unwrap_or(false);
     authorize_projection(a.projection(), platform, host, action)
 }
-fn authorize_projection(
+/// Authorizes inspection against the same projection used to construct a response.
+pub fn authorize_projection(
     p: &ReplayReducer,
     platform: bool,
     host: &HostControlContext,
@@ -23,6 +24,16 @@ fn authorize_projection(
     if action.requires_store() {
         return if host.scope == ControlScope::Store {
             Ok(None)
+        } else {
+            Err(ControlError::Unauthorized)
+        };
+    }
+    if let ControlScope::ProvisionTenant(tenant) = host.scope {
+        return if platform
+            && action == QueueAction::RegisterActor
+            && p.get_tenant(&tenant).is_some()
+        {
+            Ok(Some(tenant))
         } else {
             Err(ControlError::Unauthorized)
         };
@@ -118,4 +129,204 @@ pub(crate) fn validate_remote_projection(
         return Err(ControlError::Mutation("conflicting result retry".into()));
     }
     Ok(None)
+}
+
+/// Complete control classification; execution commands have their own structural
+/// attempt, lease, scheduler or recovery preconditions.
+pub fn action(command: &actionqueue_core::mutation::MutationCommand) -> Option<QueueAction> {
+    use actionqueue_core::mutation::{CancelTarget, MutationCommand as M};
+    use QueueAction as Q;
+    Some(match command {
+        M::AdmissionCommit(_) | M::TaskCreate(_) | M::DependencyDeclare(_) => Q::AdmitTask,
+        M::SignalAdmit(_) => Q::AdmitSignal,
+        M::Cancel(c) => match c.target {
+            CancelTarget::Task(_) => Q::CancelTask,
+            CancelTarget::Run(_) => Q::CancelRun,
+        },
+        M::TaskCancel(_) => Q::CancelTask,
+        M::WaitResolve(_) => Q::ResolveWait,
+        M::WaitCancel(_) => Q::CancelWait,
+        M::SignalPin(_) | M::SignalUnpin(_) | M::RetireSignals(_) => Q::RetainSignal,
+        M::EnginePause(_) => Q::PauseEngine,
+        M::EngineResume(_) => Q::ResumeEngine,
+        M::RunSuspend(_) => Q::SuspendRun,
+        M::RunResume(_) => Q::ResumeRun,
+        M::ActorRegister(_) => Q::RegisterActor,
+        M::ActorDeregister(_) => Q::DeregisterActor,
+        M::ActorHeartbeat(_) => Q::HeartbeatActor,
+        M::TenantCreate(_) => Q::ManageTenant,
+        M::RoleAssign(_) | M::CapabilityGrant(_) | M::CapabilityRevoke(_) => Q::ManagePermission,
+        M::BudgetAllocate(_) | M::BudgetReplenish(_) | M::BudgetConsume(_) => Q::ManageBudget,
+        M::SubscriptionCreate(_) | M::SubscriptionCancel(_) => Q::ManageSubscription,
+        M::LedgerAppend(_) => Q::AppendLedger,
+        _ => return None,
+    })
+}
+/// Rechecks authorization, target namespace and embedded attribution before any
+/// duplicate response or append. Administrative suspension becomes a fenced
+/// disposition here, so direct callers cannot leave a live accepted attempt.
+pub(crate) fn prepare_control(
+    p: &ReplayReducer,
+    platform: bool,
+    host: &HostControlContext,
+    mut command: actionqueue_core::mutation::MutationCommand,
+) -> Result<actionqueue_core::mutation::MutationCommand, ControlError> {
+    use actionqueue_core::mutation::*;
+    use MutationCommand as M;
+    let action = action(&command).ok_or(ControlError::Unauthorized)?;
+    let tenant = authorize_projection(p, platform, host, action)?;
+    let task_scope = |id| p.get_task(&id).map(|t| t.tenant_id()).ok_or(ControlError::NotFound);
+    let run_scope = |id| {
+        p.get_run_instance(&id).ok_or(ControlError::NotFound).and_then(|r| task_scope(r.task_id()))
+    };
+    let actor_scope = |id| p.get_actor(&id).map(|r| r.tenant_id).ok_or(ControlError::NotFound);
+    let context = |actual: Option<&actionqueue_core::causal::ControlMutationContext>| {
+        if actual.is_some_and(|a| a != &host.attribution) {
+            Err(ControlError::Unauthorized)
+        } else {
+            Ok(())
+        }
+    };
+    let target = match &mut command {
+        M::AdmissionCommit(c) => {
+            context(c.control_context())?;
+            let tenant = c.plan().task_spec().tenant_id();
+            *c = AdmissionCommitCommand::new(
+                c.expected_sequence(),
+                c.plan().clone(),
+                Some(host.attribution.clone()),
+                c.timestamp(),
+            );
+            tenant
+        }
+        M::SignalAdmit(c) => {
+            context(c.envelope().control_context.as_ref())?;
+            let mut envelope = c.envelope().clone();
+            envelope.control_context = Some(host.attribution.clone());
+            let tenant = envelope.tenant_id;
+            *c = SignalAdmitCommand::new(c.expected_sequence(), envelope);
+            tenant
+        }
+        M::Cancel(c) => {
+            context(c.control_context.as_ref())?;
+            check_scope(tenant, c.tenant_id)?;
+            c.control_context = Some(host.attribution.clone());
+            match c.target {
+                CancelTarget::Task(id) => task_scope(id)?,
+                CancelTarget::Run(id) => run_scope(id)?,
+            }
+        }
+        M::WaitResolve(c) => {
+            context(Some(&c.control_context))?;
+            check_scope(tenant, c.tenant_id)?;
+            run_scope(c.run_id)?
+        }
+        M::WaitCancel(c) => {
+            context(Some(c.control_context()))?;
+            check_scope(tenant, c.tenant_id())?;
+            run_scope(c.run_id())?
+        }
+        M::SignalPin(c) | M::SignalUnpin(c) => {
+            context(c.control_context.as_ref())?;
+            c.control_context = Some(host.attribution.clone());
+            c.tenant_id
+        }
+        M::RetireSignals(c) => {
+            context(c.control_context.as_ref())?;
+            c.control_context = Some(host.attribution.clone());
+            c.tenant_id
+        }
+        M::TaskCreate(c) => c.task_spec().tenant_id(),
+        M::TaskCancel(c) => task_scope(c.task_id())?,
+        M::DependencyDeclare(c) => {
+            for id in c.depends_on() {
+                check_scope(tenant, task_scope(*id)?)?;
+            }
+            task_scope(c.task_id())?
+        }
+        M::RunSuspend(c) => run_scope(c.run_id())?,
+        M::RunResume(c) => run_scope(c.run_id())?,
+        M::ActorRegister(c) => c.registration().tenant_id(),
+        M::ActorHeartbeat(c) => {
+            if host.actor_id != Some(c.actor_id()) {
+                return Err(ControlError::Unauthorized);
+            }
+            actor_scope(c.actor_id())?
+        }
+        M::ActorDeregister(c) => actor_scope(c.actor_id())?,
+        M::BudgetAllocate(c) => task_scope(c.task_id())?,
+        M::BudgetReplenish(c) => task_scope(c.task_id())?,
+        M::BudgetConsume(c) => task_scope(c.task_id())?,
+        M::SubscriptionCreate(c) => {
+            use actionqueue_core::subscription::EventFilter;
+            let (EventFilter::TaskCompleted { task_id }
+            | EventFilter::RunStateChanged { task_id, .. }
+            | EventFilter::BudgetThreshold { task_id, .. }) = c.filter();
+            check_scope(tenant, task_scope(*task_id)?)?;
+            task_scope(c.task_id())?
+        }
+        M::SubscriptionCancel(c) => task_scope(
+            p.subscriptions()
+                .find(|(id, _)| **id == c.subscription_id())
+                .ok_or(ControlError::NotFound)?
+                .1
+                .task_id,
+        )?,
+        M::LedgerAppend(c) => {
+            if c.entry().actor_id().is_some() && c.entry().actor_id() != host.actor_id {
+                return Err(ControlError::Unauthorized);
+            }
+            Some(c.entry().tenant_id())
+        }
+        _ => tenant,
+    };
+    if !action.requires_store() {
+        check_scope(tenant, target)?;
+    }
+    if let M::RunSuspend(c) = command {
+        let run = p.get_run_instance(&c.run_id()).ok_or(ControlError::NotFound)?;
+        let lease = p.get_lease_metadata(&c.run_id()).ok_or(ControlError::NotFound)?;
+        let reason = c
+            .reason()
+            .map(actionqueue_core::bounded::BoundedCode::new)
+            .transpose()
+            .map_err(|e| ControlError::Mutation(e.to_string()))?;
+        return Ok(M::AttemptDispositionCommit(AttemptDispositionCommitCommand::new(
+            AttemptCommitExpectation::new(
+                c.sequence(),
+                c.run_id(),
+                run.current_attempt_id().ok_or(ControlError::NotFound)?,
+                actionqueue_core::run::RunState::Running,
+                LeaseFence::new(lease.owner().into(), lease.granted_at_sequence()),
+            ),
+            actionqueue_core::disposition::AttemptDisposition::suspended(None, reason),
+            c.timestamp(),
+        )));
+    }
+    Ok(command)
+}
+/// Only recovery-derived controls may omit host attribution. Their durable
+/// antecedents are checked here, independently of the caller's claimed origin.
+pub(crate) fn validate_recovery(
+    p: &ReplayReducer,
+    c: &actionqueue_core::mutation::MutationCommand,
+) -> Result<(), ControlError> {
+    use actionqueue_core::mutation::{CancelTarget, MutationCommand as M};
+    let valid = match c {
+        M::ActorDeregister(c) => p.get_actor(&c.actor_id()).is_some_and(|a| a.deregistered_at.is_none()
+            && c.timestamp() >= a.last_heartbeat_at.unwrap_or(a.registered_at).saturating_add(a.heartbeat_interval_secs.saturating_mul(3))),
+        M::Cancel(c) if c.control_context.is_none() => match c.target {
+            CancelTarget::Task(id) => p.get_task(&id).is_some_and(|t| t.tenant_id() == c.tenant_id && (
+                p.is_task_canceled(id) || (t.child_lifecycle_policy() == actionqueue_core::task::task_spec::ChildLifecyclePolicy::Required && t.parent_task_id().is_some_and(|parent| p.is_task_canceled(parent)))
+                || p.dependency_declarations().any(|(task,deps)| task == id && deps.iter().any(|d| p.task_terminal_status(*d).is_some_and(|s| s != actionqueue_core::continuation::TaskTerminalStatus::Succeeded)))
+            )),
+            _ => false,
+        },
+        _ => false,
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(ControlError::Unauthorized)
+    }
 }

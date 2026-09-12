@@ -23,7 +23,13 @@ pub fn eligible(p: &ReplayReducer, run: RunId, traits: Option<&ExecutorTraits>, 
     if p.is_engine_paused()
         || p.is_task_canceled(r.task_id())
         || !matches!(r.state(), RunState::Ready | RunState::Scheduled)
-        || (r.state() == RunState::Scheduled && r.scheduled_at() > now)
+        || (r.state() == RunState::Scheduled
+            && r.scheduled_at() > now
+            && !p.subscriptions().any(|(_, s)| {
+                s.task_id == r.task_id()
+                    && s.triggered_at.is_some_and(|at| r.created_at() <= at)
+                    && s.canceled_at.is_none()
+            }))
         || !actionqueue_core::executor::matches_requirements(
             traits,
             task.constraints().required_executor_traits(),

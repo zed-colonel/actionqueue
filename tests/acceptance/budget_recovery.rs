@@ -68,7 +68,15 @@ async fn budget_state_survives_wal_recovery() {
         let clock = MockClock::new(1000);
         let engine =
             ActionQueueEngine::new(make_config(dir.path().to_path_buf()), ThreeHundredTokenHandler);
-        let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap phase 1");
+        let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap phase 1").with_host(
+            actionqueue_core::control::HostControlContext {
+                actor_id: None,
+                scope: actionqueue_core::control::ControlScope::SingleTenant,
+                attribution: actionqueue_core::causal::ControlMutationContext::new(
+                    actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                ),
+            },
+        );
 
         // max_attempts=1 with TerminalFailure → exactly one dispatch, then Failed.
         let constraints = TaskConstraints::new(1, None, None).expect("valid constraints");
@@ -108,7 +116,15 @@ async fn budget_state_survives_wal_recovery() {
         let clock = MockClock::new(1000);
         let engine =
             ActionQueueEngine::new(make_config(dir.path().to_path_buf()), ThreeHundredTokenHandler);
-        let boot = engine.bootstrap_with_clock(clock).expect("bootstrap phase 2");
+        let boot = engine.bootstrap_with_clock(clock).expect("bootstrap phase 2").with_host(
+            actionqueue_core::control::HostControlContext {
+                actor_id: None,
+                scope: actionqueue_core::control::ControlScope::SingleTenant,
+                attribution: actionqueue_core::causal::ControlMutationContext::new(
+                    actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                ),
+            },
+        );
 
         let budget_recovered =
             boot.projection().get_budget(&task_id, BudgetDimension::Token).expect("budget");
@@ -142,7 +158,15 @@ async fn budget_replenishment_survives_wal_recovery() {
         let clock = MockClock::new(1000);
         let engine =
             ActionQueueEngine::new(make_config(dir.path().to_path_buf()), ThreeHundredTokenHandler);
-        let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap phase 1");
+        let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap phase 1").with_host(
+            actionqueue_core::control::HostControlContext {
+                actor_id: None,
+                scope: actionqueue_core::control::ControlScope::SingleTenant,
+                attribution: actionqueue_core::causal::ControlMutationContext::new(
+                    actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                ),
+            },
+        );
 
         // max_attempts=5 so we get multiple dispatches before exhaustion.
         let constraints = TaskConstraints::new(5, None, None).expect("valid constraints");
@@ -183,7 +207,15 @@ async fn budget_replenishment_survives_wal_recovery() {
         let clock = MockClock::new(1000);
         let engine =
             ActionQueueEngine::new(make_config(dir.path().to_path_buf()), ThreeHundredTokenHandler);
-        let boot = engine.bootstrap_with_clock(clock).expect("bootstrap phase 2");
+        let boot = engine.bootstrap_with_clock(clock).expect("bootstrap phase 2").with_host(
+            actionqueue_core::control::HostControlContext {
+                actor_id: None,
+                scope: actionqueue_core::control::ControlScope::SingleTenant,
+                attribution: actionqueue_core::causal::ControlMutationContext::new(
+                    actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                ),
+            },
+        );
 
         let budget_recovered =
             boot.projection().get_budget(&task_id, BudgetDimension::Token).expect("budget");

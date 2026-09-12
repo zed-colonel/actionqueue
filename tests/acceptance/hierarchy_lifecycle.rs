@@ -79,7 +79,14 @@ mod wf {
         // the parent task — all via authority, before the engine runs.
         {
             let recovery = load_projection_from_storage(&data_dir).expect("recovery must succeed");
-            let mut auth = StorageMutationAuthority::new(recovery.wal_writer, recovery.projection);
+            let mut auth = StorageMutationAuthority::new(recovery.wal_writer, recovery.projection)
+                .with_host(actionqueue_core::control::HostControlContext {
+                    actor_id: None,
+                    scope: actionqueue_core::control::ControlScope::SingleTenant,
+                    attribution: actionqueue_core::causal::ControlMutationContext::new(
+                        actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                    ),
+                });
 
             // Create parent task and its run.
             let seq = auth.projection().latest_sequence() + 1;
@@ -156,8 +163,16 @@ mod wf {
         // Phase 2: bootstrap engine and tick once — cascade_hierarchy_cancellations fires.
         {
             let engine = ActionQueueEngine::new(engine_config(&data_dir), NopHandler);
-            let mut eng =
-                engine.bootstrap_with_clock(MockClock::new(ts)).expect("bootstrap must succeed");
+            let mut eng = engine
+                .bootstrap_with_clock(MockClock::new(ts))
+                .expect("bootstrap must succeed")
+                .with_host(actionqueue_core::control::HostControlContext {
+                    actor_id: None,
+                    scope: actionqueue_core::control::ControlScope::SingleTenant,
+                    attribution: actionqueue_core::causal::ControlMutationContext::new(
+                        actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                    ),
+                });
 
             // Tick processes cascade (step 0c) which cancels children.
             let _ = eng.tick().await.expect("tick must succeed");

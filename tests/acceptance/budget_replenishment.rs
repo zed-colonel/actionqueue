@@ -68,7 +68,15 @@ async fn budget_replenishment_unblocks_dispatch() {
     let call_count = Arc::new(AtomicUsize::new(0));
     let handler = ExhaustThenSucceedHandler { call_count: Arc::clone(&call_count) };
     let engine = ActionQueueEngine::new(make_config(dir.path().to_path_buf()), handler);
-    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap");
+    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap").with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     let task_id = TaskId::new();
     let constraints = TaskConstraints::new(10, None, None).expect("valid constraints");

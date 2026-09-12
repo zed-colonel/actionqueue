@@ -76,8 +76,16 @@ mod wf {
             let log = Arc::clone(&execution_log);
             let engine =
                 ActionQueueEngine::new(engine_config(&data_dir, None), TrackingHandler { log });
-            let mut eng =
-                engine.bootstrap_with_clock(MockClock::new(1000)).expect("bootstrap must succeed");
+            let mut eng = engine
+                .bootstrap_with_clock(MockClock::new(1000))
+                .expect("bootstrap must succeed")
+                .with_host(actionqueue_core::control::HostControlContext {
+                    actor_id: None,
+                    scope: actionqueue_core::control::ControlScope::SingleTenant,
+                    attribution: actionqueue_core::causal::ControlMutationContext::new(
+                        actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                    ),
+                });
             eng.submit_task(make_once_spec(step1_id, b"step1")).expect("submit step1");
             eng.submit_task(make_once_spec(step2_id, b"step2")).expect("submit step2");
             eng.submit_task(make_once_spec(step3_id, b"step3")).expect("submit step3");
@@ -89,7 +97,15 @@ mod wf {
         {
             let recovery = load_projection_from_storage(&data_dir).expect("recovery must succeed");
             let mut authority =
-                StorageMutationAuthority::new(recovery.wal_writer, recovery.projection);
+                StorageMutationAuthority::new(recovery.wal_writer, recovery.projection).with_host(
+                    actionqueue_core::control::HostControlContext {
+                        actor_id: None,
+                        scope: actionqueue_core::control::ControlScope::SingleTenant,
+                        attribution: actionqueue_core::causal::ControlMutationContext::new(
+                            actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                        ),
+                    },
+                );
 
             let seq = authority.projection().latest_sequence() + 1;
             let _ = authority
@@ -124,8 +140,16 @@ mod wf {
             // Use a snapshot threshold of 1 to force a snapshot write after minimal events.
             let engine =
                 ActionQueueEngine::new(engine_config(&data_dir, Some(1)), TrackingHandler { log });
-            let mut eng =
-                engine.bootstrap_with_clock(MockClock::new(1000)).expect("bootstrap must succeed");
+            let mut eng = engine
+                .bootstrap_with_clock(MockClock::new(1000))
+                .expect("bootstrap must succeed")
+                .with_host(actionqueue_core::control::HostControlContext {
+                    actor_id: None,
+                    scope: actionqueue_core::control::ControlScope::SingleTenant,
+                    attribution: actionqueue_core::causal::ControlMutationContext::new(
+                        actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                    ),
+                });
             let _ = eng.run_until_idle().await.expect("run must complete");
 
             // Verify all three completed (step1 → step2 → step3 in order).

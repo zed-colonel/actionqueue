@@ -1,78 +1,106 @@
-# AQ-11 implementation status
+# AQ-11 implementation and remediation
 
-This branch contains an incomplete implementation of the accepted AQ-11 design.
-Passing the added tests alone does not close the work item's exit gate.
+AQ-11 uses one storage control boundary for embedded, daemon, CLI, and direct
+Rust callers. Host identity, explicit scope, current queue permissions, target
+namespace, and embedded attribution consistency are checked before duplicate
+acknowledgement or append. Routing traits and opaque causal references grant no
+permission. Controls without an authenticated host binding fail closed.
 
-## Implemented
+## Host integration
 
-- Explicit local executor traits and a shared exact-subset routing/eligibility
-  predicate; local and remote execution use the same four-record lease/start path.
-- Versioned remote claim/result envelopes, stable actor-ID lease owners, fenced
-  lease renewal, canonical tagged SHA-256 disposition encoding, and an independent
-  Python known-answer vector.
-- Strict remote result processing and independent storage checks for active actor,
-  tenant, permissions, revision, digest, and accepted fence. Invalid remote results
-  do not enter the local handler-proposal terminal-failure fallback.
-- Exact accepted claim/result retries; result identity is reconstructed from the
-  immutable stored disposition/fence rather than stored in a second audit record.
-- Remote checkpoint/resume assignment and WAL/snapshot recovery tests.
-- Typed queue-action permissions and a host context that cannot be deserialized.
-  The shared services authorize from current durable grants before duplicate
-  acknowledgement and enforce exact scopes. Custom capabilities and role names
-  do not imply new queue-action grants.
-- The control service supports attributed admission, signal admission,
-  cancellation, explicit wait resolution, and administrative mutation commands.
-  Administrative suspension through this service commits a suspension disposition
-  that closes the execution fence. Administrative resumption preserves attribution.
-- WAL kind 352/schema 1 wraps an underlying mutation and host attribution in one
-  frame. Snapshot/projection version 8 preserves the context history. Version 7
-  stores require an explicit future migration; they cannot be opened for mutation.
-- A configurable host authentication hook for daemon control, actor and platform
-  routes. Missing hooks fail closed; disabled controls leave these routes absent.
-  Actor claim/result/renewal routes and durable read-projection synchronization.
-- Tenant-immutable actor registration, replacement-index cleanup, deterministic
-  timeout order, and department-index synchronization after successful mutation.
+Use `runtime::control::execute_control` for admission, signal admission, task/run
+cancellation, and wait resolution/cancellation. `execute_mutation` handles the
+administrative command vocabulary, including signal pin/unpin/retirement.
+`inspect_wait` and `inspect_signal` authorize current grants. Embedded convenience
+methods require `with_host` or `set_control_context`; the authority also supports
+scoped `with_control_context` calls. Temporary bindings are restored after errors
+and unwinding. The host constructs `HostControlContext`; request JSON cannot.
 
-## Remaining work before integration
+Platform stores require a named `Tenant` scope, an active actor, a role, and the
+specific current `QueueAction` grant. `Store` scope covers store administration.
+A separate host-authorized `ProvisionTenant(id)` scope permits actor registration
+in exactly one existing tenant. It grants no inspection, dispatch, or result
+permission. This permits fresh tenant provisioning entirely through the control
+boundary, before the first actor has a role or grant.
 
-1. Migrate all older runtime and direct mutation entry points. They still permit
-   context-free control commands and can bypass the new service's authorization.
-   In particular, raw admission/signal/cancellation and old administrative,
-   actor/platform, budget and subscription entry points need mandatory attribution
-   and explicit internal-operation provenance. Raw `RunSuspend` still differs
-   from the safe administrative service path.
-2. Complete the service's inspection and signal-retention APIs, wait cancellation,
-   and CLI host-context plumbing. Existing general inspection routes have not
-   been converted to tenant-authenticated inspection.
-3. Complete remote scheduler integration: the standalone daemon service handles
-   Scheduled/Ready work, while retry promotion still belongs to the dispatch
-   loop. The daemon claim route currently uses a 300-second lease and lacks
-   host-configured dispatch capacity; embedded claims do enforce worker slots and
-   live-worker key reservations. Remote liveness/recovery requires further daemon
-   integration and configuration. Embedded renewal/claimable convenience methods
-   are also missing.
-4. Extend failure/race coverage to every partial remote claim boundary,
-   simultaneous local/remote claims, renewal races, complete remote tenant and
-   grant-revocation cases, and every administrative control operation. Add an
-   independently generated compound disposition vector covering all effect types.
-5. Audit attributed-frame configured size ceilings and consistency between
-   per-operation control fields and the outer attribution envelope. Existing
-   operation-specific creation limits are checked before the generic envelope is
-   attached; this requires consolidation at storage preparation.
+New local stores default to compiled capabilities excluding `platform`. Hosts
+opt into platform tenancy through `RuntimeConfig::store_features` or storage's
+`load_projection_with_features`/`OpenOptions::Initialize`. Existing store
+manifests remain authoritative regardless of binary features.
 
-## Design choices
+Daemon hosts pass an `Authenticator` to `bootstrap_with_authenticator`. The CLI
+requires `daemon --enable-control --auth-file PATH`. The file contains a JSON
+array of trusted identities, each with `token`, `actor_id`, `scope`, and
+`attribution` fields. Tokens must be unique, at least 32 printable ASCII bytes;
+requests send `Authorization: Bearer <token>`. Scope and attribution are operator
+configuration, never accepted from request bodies. Missing or invalid
+configuration is rejected. CLI task submission binds a trusted local CLI caller
+to the explicit single namespace; it cannot infer a tenant from submitted data.
 
-Accepted-result deduplication uses the already durable, complete disposition and
-fence. This satisfies the required durable identity without adding another record
-or changing the disposition record shape. The new attribution envelope is a
-separate WAL record kind containing the mutation itself, not a separate audit
-append. These are implementation choices within the accepted atomicity design.
-The remaining items above are unfinished scope, not claimed design exceptions.
+Task/run HTTP inspection uses authentication even when controls are disabled,
+authorizes against the same current projection used to construct responses, and
+filters tenant scope before lookup and pagination. A platform store without a
+host hook rejects inspection. Legacy anonymous inspection is restricted to the
+single namespace of a non-platform store. Mutating routes remain gated by
+`enable_control` and authentication.
 
-## Verification
+## Execution and recovery
 
-Focused remote protocol, host attribution, routing, budget-continuation and
-snapshot/replay checks pass. The final operator handoff reports the complete
-requested command matrix and its scratch log location. ADR-016 explicitly retains
-its outstanding context-free-entry-point verification; ADR-017 records the
-implemented envelope decision.
+Local and remote eligibility share FIFO selection, executor trait matching,
+dependency, budget, pause, namespace, and concurrency-key gates. Remote claims
+and results use the same accepted-start and atomic disposition paths as embedded
+execution. Embedded runtime exposes claimable, claim, renewal, and result methods.
+The daemon serializes remote ingress and its 100 ms maintenance timer under one
+mutation owner. `DaemonConfig::remote_policy` controls capacity, lease duration,
+and retry delay. Maintenance handles actor liveness, partial/expired executions,
+retry promotion, cancellations, durable waits, and secondary subscription
+reconciliation after remote results or crashes. Internal subscription triggers
+can make Scheduled runs eligible early; they cannot resolve Awaiting/Suspended
+continuations.
+
+Execution commands retain their typed attempt/lease/scheduler preconditions.
+`RecoveryControl` permits only controls justified by durable antecedents:
+heartbeat timeout and cancellation propagation. It cannot supply an anonymous
+administrative wildcard. Administrative suspension becomes a fenced suspension
+disposition at storage, closing the attempt and lease together.
+
+## Persistence and limits
+
+Every host control has attribution in the same WAL frame as its mutation.
+Kind 352/schema 2 encodes the bounded attribution plus the original binary inner
+frame, avoiding JSON inflation of binary payloads. The reader still supports
+schema 1 and rejects nested envelopes or mismatched store/sequence identities.
+Snapshot/projection version 8 retains attribution history. Version 7 migration
+remains outside the accepted design.
+
+The authority validates complete encoded frames against configured and hard
+limits before append. Oversize proposals are definitive rejections and do not
+fence the store. Signal quota accounting includes the immutable attribution
+envelope both live and after snapshot hydration.
+
+## Review evidence
+
+- F-001: central mandatory controls, current authorization before duplicates,
+  consistency rejection, host-bound convenience paths, recovery antecedents,
+  and fenced suspension; `acceptance_control_mutation_attribution`.
+- F-002: configured serialized remote scheduler and timer; HTTP capacity, retry,
+  expiry, renewal, idle deadline/liveness tests and subscription crash repair.
+- F-003: HTTP anonymous/missing-scope/cross-tenant inspection and revocation
+  against an intentionally stale read projection; `http::tenant_tests`.
+- F-004: wait and signal inspection, wait cancellation, retention, embedded
+  claimable/renewal, operation attribution and all tenant permission checks.
+- F-005: CLI bootstrap tests cover absent/unreadable/malformed and valid host
+  configuration; bearer tests cover successful and failed authentication.
+- F-006: fresh tenants and actors are provisioned only through supported
+  attributed controls in the platform and HTTP tests.
+- F-007: complete-frame boundary rejection, usable authority after rejection,
+  and signal accounting/recovery tests.
+- F-008: all partial remote claim prefixes, competing local/remote claims,
+  renewal/result/cancellation orderings, platform HTTP remote revocation,
+  compound-effect envelope rejection, ordinary/developmental cancellation,
+  operation-wide attribution, and independent canonical vectors. The independent
+  Python generator covers checkpoint, wait, child admission, emitted signal,
+  all consumption dimensions, and a separate legal completion with output.
+
+The original trait matching, actor replacement, remote FIFO, and versioned
+snapshot/conformance regression tests remain in the feature matrix (F-009–F-014).

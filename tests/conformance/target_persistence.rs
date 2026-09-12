@@ -433,7 +433,15 @@ fn cancellation_before_creation_is_rejected_before_append_and_projection_publica
     let dir = tempfile::tempdir().unwrap();
     let source = dir.path().join("source");
     let t = TaskId::new();
-    let mut authority = init(&source).into_authority().unwrap();
+    let mut authority = init(&source).into_authority().unwrap().with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
     let _ = authority
         .submit_command(
             MutationCommand::TaskCreate(TaskCreateCommand::new(2, task(t), 100)),
@@ -472,7 +480,15 @@ fn cancellation_before_creation_is_rejected_before_append_and_projection_publica
     drop(w);
     // Equality is valid, and a rejected attempt must leave sequence 3 available.
     let mut authority =
-        open_store(&source, OpenOptions::ReadWrite).unwrap().into_authority().unwrap();
+        open_store(&source, OpenOptions::ReadWrite).unwrap().into_authority().unwrap().with_host(
+            actionqueue_core::control::HostControlContext {
+                actor_id: None,
+                scope: actionqueue_core::control::ControlScope::SingleTenant,
+                attribution: actionqueue_core::causal::ControlMutationContext::new(
+                    actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                ),
+            },
+        );
     let _ = authority
         .submit_command(
             MutationCommand::TaskCancel(TaskCancelCommand::new(3, t, 100)),
@@ -1116,11 +1132,27 @@ fn durable_append_recovers_after_failure_before_projection_publication() {
         DurabilityPolicy, EnginePauseCommand, MutationAuthority, MutationCommand,
     };
     let dir = tempfile::tempdir().unwrap();
-    let mut authority = init(dir.path()).into_authority().unwrap();
+    let mut authority = init(dir.path()).into_authority().unwrap().with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
     actionqueue_storage::store::fault::fail_once("authority_before_publish");
     assert!(authority
         .submit_command(
-            MutationCommand::EnginePause(EnginePauseCommand::new(2, 42)),
+            MutationCommand::EnginePause(EnginePauseCommand::new(2, 42)).with_control(
+                &actionqueue_core::control::HostControlContext {
+                    actor_id: None,
+                    scope: actionqueue_core::control::ControlScope::Store,
+                    attribution: actionqueue_core::causal::ControlMutationContext::new(
+                        actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap()
+                    )
+                }
+            ),
             DurabilityPolicy::Immediate
         )
         .is_err());

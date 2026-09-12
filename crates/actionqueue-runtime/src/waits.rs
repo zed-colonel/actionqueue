@@ -116,7 +116,10 @@ pub fn recover_execution<W: WalWriter>(
     let mut ids: Vec<_> = a
         .projection()
         .run_instances()
-        .filter(|r| matches!(r.state(), RunState::Running | RunState::Leased))
+        .filter(|r| {
+            matches!(r.state(), RunState::Running | RunState::Leased)
+                || a.projection().get_lease(&r.id()).is_some()
+        })
         .map(|r| r.id())
         .collect();
     ids.sort();
@@ -187,6 +190,9 @@ fn recover_run<W: WalWriter>(
             )),
             DurabilityPolicy::Immediate,
         )?;
+    }
+    if state == RunState::Ready {
+        return Ok(());
     }
     let target = if state == RunState::Leased {
         RunState::Ready
@@ -274,13 +280,15 @@ pub fn recover_cancellations<W: WalWriter>(
         for task in targets {
             let tenant_id = a.projection().get_task(&task).expect("indexed task").tenant_id();
             let _ = a.submit_command(
-                MutationCommand::Cancel(CancelCommand {
-                    expected_sequence: next(a)?,
-                    target: CancelTarget::Task(task),
-                    tenant_id,
-                    control_context: None,
-                    timestamp: now,
-                }),
+                MutationCommand::RecoveryControl(Box::new(MutationCommand::Cancel(
+                    CancelCommand {
+                        expected_sequence: next(a)?,
+                        target: CancelTarget::Task(task),
+                        tenant_id,
+                        control_context: None,
+                        timestamp: now,
+                    },
+                ))),
                 DurabilityPolicy::Immediate,
             )?;
         }

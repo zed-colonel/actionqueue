@@ -116,8 +116,16 @@ mod wf {
                 child: ChildHandler,
             },
         );
-        let mut eng =
-            engine.bootstrap_with_clock(MockClock::new(1000)).expect("bootstrap must succeed");
+        let mut eng = engine
+            .bootstrap_with_clock(MockClock::new(1000))
+            .expect("bootstrap must succeed")
+            .with_host(actionqueue_core::control::HostControlContext {
+                actor_id: None,
+                scope: actionqueue_core::control::ControlScope::SingleTenant,
+                attribution: actionqueue_core::causal::ControlMutationContext::new(
+                    actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                ),
+            });
 
         let coordinator_spec = TaskSpec::new(
             coordinator_id,

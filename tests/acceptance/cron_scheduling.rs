@@ -72,7 +72,16 @@ mod wf {
         let clock = AdvancableClock::new(1000);
 
         let engine = ActionQueueEngine::new(engine_config(&data_dir), InstantSuccessHandler);
-        let mut eng = engine.bootstrap_with_clock(clock).expect("bootstrap must succeed");
+        let mut eng = engine
+            .bootstrap_with_clock(clock)
+            .expect("bootstrap must succeed")
+            .with_host(actionqueue_core::control::HostControlContext {
+                actor_id: None,
+                scope: actionqueue_core::control::ControlScope::SingleTenant,
+                attribution: actionqueue_core::causal::ControlMutationContext::new(
+                    actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                ),
+            });
 
         // Unbounded cron: no max_occurrences limit.
         let cron_policy = CronPolicy::new("* * * * * * *").expect("valid cron expression");
@@ -110,7 +119,16 @@ mod wf {
 
         let clock = AdvancableClock::new(1000);
         let engine = ActionQueueEngine::new(engine_config(&data_dir), InstantSuccessHandler);
-        let mut eng = engine.bootstrap_with_clock(clock).expect("bootstrap must succeed");
+        let mut eng = engine
+            .bootstrap_with_clock(clock)
+            .expect("bootstrap must succeed")
+            .with_host(actionqueue_core::control::HostControlContext {
+                actor_id: None,
+                scope: actionqueue_core::control::ControlScope::SingleTenant,
+                attribution: actionqueue_core::causal::ControlMutationContext::new(
+                    actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                ),
+            });
 
         let cron_policy = CronPolicy::new("* * * * * * *")
             .expect("valid cron expression")
@@ -148,7 +166,16 @@ mod wf {
 
         let clock = AdvancableClock::new(1000);
         let engine = ActionQueueEngine::new(engine_config(&data_dir), InstantSuccessHandler);
-        let mut eng = engine.bootstrap_with_clock(clock.clone()).expect("bootstrap must succeed");
+        let mut eng = engine
+            .bootstrap_with_clock(clock.clone())
+            .expect("bootstrap must succeed")
+            .with_host(actionqueue_core::control::HostControlContext {
+                actor_id: None,
+                scope: actionqueue_core::control::ControlScope::SingleTenant,
+                attribution: actionqueue_core::causal::ControlMutationContext::new(
+                    actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                ),
+            });
 
         let cron_policy = CronPolicy::new("* * * * * * *")
             .expect("valid cron expression")
@@ -216,7 +243,16 @@ mod wf {
 
         let clock = AdvancableClock::new(1000);
         let engine = ActionQueueEngine::new(engine_config(&data_dir), InstantSuccessHandler);
-        let mut eng = engine.bootstrap_with_clock(clock.clone()).expect("bootstrap must succeed");
+        let mut eng = engine
+            .bootstrap_with_clock(clock.clone())
+            .expect("bootstrap must succeed")
+            .with_host(actionqueue_core::control::HostControlContext {
+                actor_id: None,
+                scope: actionqueue_core::control::ControlScope::SingleTenant,
+                attribution: actionqueue_core::causal::ControlMutationContext::new(
+                    actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                ),
+            });
 
         // Unbounded cron — should maintain a rolling window of CRON_WINDOW_SIZE.
         let cron_policy = CronPolicy::new("* * * * * * *").expect("valid cron expression");

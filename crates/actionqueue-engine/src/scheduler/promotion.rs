@@ -278,7 +278,8 @@ mod tests {
                 | MutationCommand::CapabilityGrant(_)
                 | MutationCommand::CapabilityRevoke(_)
                 | MutationCommand::LedgerAppend(_)
-                | MutationCommand::Control { .. } => {
+                | MutationCommand::Control { .. }
+                | MutationCommand::RecoveryControl(_) => {
                     return Err("unexpected command in promotion authority test");
                 }
             };

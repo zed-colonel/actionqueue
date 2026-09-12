@@ -2365,6 +2365,47 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         Ok(())
     }
 
+    /// Constructs an explicitly host-bound embedded control surface.
+    pub fn with_host(mut self, host: actionqueue_core::control::HostControlContext) -> Self {
+        self.set_control_context(Some(host));
+        self
+    }
+    /// Binds a trusted host identity/scope for embedded control convenience methods.
+    /// Execution and recovery do not inherit control permissions from this binding.
+    pub fn set_control_context(
+        &mut self,
+        host: Option<actionqueue_core::control::HostControlContext>,
+    ) {
+        self.authority.set_control_context(host);
+    }
+    /// Inspects eligible remote work under current grants.
+    #[cfg(feature = "actor")]
+    pub fn claimable_remote(
+        &self,
+        host: &actionqueue_core::control::HostControlContext,
+    ) -> Result<Vec<actionqueue_core::ids::RunId>, actionqueue_core::control::ControlError> {
+        crate::remote::claimable(&self.authority, host, self.clock.now())
+    }
+    /// Renews the named remote attempt and fence.
+    #[cfg(feature = "actor")]
+    pub fn renew_remote(
+        &mut self,
+        host: &actionqueue_core::control::HostControlContext,
+        run_id: actionqueue_core::ids::RunId,
+        attempt_id: actionqueue_core::ids::AttemptId,
+        fence: actionqueue_core::mutation::LeaseFence,
+        expiry: u64,
+    ) -> Result<(), actionqueue_core::control::ControlError> {
+        crate::remote::renew(
+            &mut self.authority,
+            host,
+            run_id,
+            attempt_id,
+            fence,
+            self.clock.now(),
+            expiry,
+        )
+    }
     /// Authenticated remote claim sharing this loop's worker slots and key gate.
     #[cfg(feature = "actor")]
     pub fn claim_remote(
@@ -2551,7 +2592,21 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         let timed_out = self.heartbeat_monitor.check_timeouts(now);
         for actor_id in timed_out {
             tracing::warn!(%actor_id, "actor heartbeat timeout — deregistering");
-            self.deregister_actor(actor_id)?;
+            let _ = self
+                .authority
+                .submit_command(
+                    MutationCommand::RecoveryControl(Box::new(MutationCommand::ActorDeregister(
+                        actionqueue_core::mutation::ActorDeregisterCommand::new(
+                            self.next_sequence()?,
+                            actor_id,
+                            now,
+                        ),
+                    ))),
+                    DurabilityPolicy::Immediate,
+                )
+                .map_err(DispatchError::Authority)?;
+            self.actor_registry.deregister(actor_id);
+            self.heartbeat_monitor.remove(actor_id);
         }
         Ok(())
     }
@@ -2886,7 +2941,14 @@ mod tests {
     fn direct_dispatch_rejects_unsafe_continuation_limits() {
         let dir = tempfile::tempdir().unwrap();
         let recovery = load_projection_from_storage(dir.path()).unwrap();
-        let mut authority = StorageMutationAuthority::new(recovery.wal_writer, recovery.projection);
+        let mut authority = StorageMutationAuthority::new(recovery.wal_writer, recovery.projection)
+            .with_host(actionqueue_core::control::HostControlContext {
+                actor_id: None,
+                scope: actionqueue_core::control::ControlScope::SingleTenant,
+                attribution: actionqueue_core::causal::ControlMutationContext::new(
+                    actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                ),
+            });
         let digest = authority.projection().projection_digest().unwrap();
         authority.set_continuation_limits(actionqueue_core::limits::ContinuationLimits {
             disposition_bytes: 99,
@@ -2927,7 +2989,14 @@ mod tests {
         MockClock,
     > {
         let recovery = load_projection_from_storage(dir).unwrap();
-        let authority = StorageMutationAuthority::new(recovery.wal_writer, recovery.projection);
+        let authority = StorageMutationAuthority::new(recovery.wal_writer, recovery.projection)
+            .with_host(actionqueue_core::control::HostControlContext {
+                actor_id: None,
+                scope: actionqueue_core::control::ControlScope::SingleTenant,
+                attribution: actionqueue_core::causal::ControlMutationContext::new(
+                    actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                ),
+            });
         DispatchLoop::new(
             authority,
             handler,

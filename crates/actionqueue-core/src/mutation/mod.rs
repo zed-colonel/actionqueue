@@ -29,6 +29,8 @@ pub enum DurabilityPolicy {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[must_use = "mutation commands should be submitted to a MutationAuthority"]
 pub enum MutationCommand {
+    /// A recovery-derived control, independently checked against durable antecedents.
+    RecoveryControl(Box<MutationCommand>),
     /// Explicit host control; nested envelopes are rejected.
     Control { host: crate::control::HostControlContext, command: Box<MutationCommand> },
     /// Atomically commit a complete lease-fenced worker disposition.

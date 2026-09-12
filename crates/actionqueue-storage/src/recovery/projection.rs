@@ -193,6 +193,11 @@ impl ReplayReducer {
             r.latest_sequence,
         )
         .map_err(invalid)?;
+        for record in &s.signals {
+            r.signals
+                .account_control(record, r.control_history.get(&record.wal_sequence()))
+                .map_err(invalid)?;
+        }
         for record in r.signals.records() {
             r.validate_signal_references(record.envelope()).map_err(invalid)?;
         }

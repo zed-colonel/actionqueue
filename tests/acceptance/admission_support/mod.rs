@@ -1,4 +1,6 @@
 #![allow(dead_code)]
+#[path = "../host_support.rs"]
+mod host_support;
 use actionqueue_core::{
     admission::{AdmissionPlan, EnsureTaskRequest},
     causal::CausalContext,
@@ -54,9 +56,37 @@ pub fn request(n: u64) -> EnsureTaskRequest {
     .unwrap()
 }
 pub fn open(path: &std::path::Path) -> Authority {
+    let session = open_store(
+        path,
+        OpenOptions::Initialize {
+            features: capabilities().into_iter().filter(|f| f != "platform").collect(),
+        },
+    )
+    .unwrap();
+    let projection = recover_read_only(&session, RepairPolicy::Strict).unwrap().projection;
+    Authority::new(WalFsWriter::new(session).unwrap(), projection).with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    )
+}
+#[cfg(feature = "platform")]
+pub fn open_platform(path: &std::path::Path) -> Authority {
     let session = open_store(path, OpenOptions::Initialize { features: capabilities() }).unwrap();
     let projection = recover_read_only(&session, RepairPolicy::Strict).unwrap().projection;
-    Authority::new(WalFsWriter::new(session).unwrap(), projection)
+    Authority::new(WalFsWriter::new(session).unwrap(), projection).with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    )
 }
 pub fn command(q: EnsureTaskRequest, sequence: u64, timestamp: u64) -> AdmissionCommitCommand {
     let control = q.control_context().cloned();
@@ -110,11 +140,34 @@ pub fn ensure(
     actionqueue_core::admission::EnsureTaskOutcome,
     actionqueue_runtime::admission::AdmissionError,
 > {
-    actionqueue_runtime::admission::ensure_task(
-        a,
-        q,
-        &actionqueue_core::time::clock::MockClock::new(at),
-    )
+    let host = actionqueue_core::control::HostControlContext {
+        actor_id: None,
+        scope: actionqueue_core::control::ControlScope::SingleTenant,
+        attribution: q.control_context().cloned().unwrap_or_else(|| {
+            actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            )
+        }),
+    };
+    #[cfg(feature = "platform")]
+    let host = if let Some(tenant) = q.task_spec().tenant_id() {
+        let mut h = host_support::tenant(a, tenant).map_err(|e| {
+            actionqueue_runtime::admission::AdmissionError::Storage(
+                actionqueue_storage::mutation::MutationAuthorityError::Control(e),
+            )
+        })?;
+        h.attribution = host.attribution;
+        h
+    } else {
+        host
+    };
+    a.with_control_context(&host, |a| {
+        actionqueue_runtime::admission::ensure_task(
+            a,
+            q,
+            &actionqueue_core::time::clock::MockClock::new(at),
+        )
+    })
 }
 pub fn image(a: &Authority) -> actionqueue_storage::snapshot::model::Snapshot {
     let mut image =

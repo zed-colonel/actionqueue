@@ -197,7 +197,14 @@ async fn runtime_delivers_original_causal_payload_and_wake_once_aq_dd_006() {
     let mut boot =
         actionqueue_runtime::engine::ActionQueueEngine::new(config, Recording(seen.clone()))
             .bootstrap_with_clock(MockClock::new(40))
-            .unwrap();
+            .unwrap()
+            .with_host(actionqueue_core::control::HostControlContext {
+                actor_id: None,
+                scope: actionqueue_core::control::ControlScope::SingleTenant,
+                attribution: actionqueue_core::causal::ControlMutationContext::new(
+                    actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                ),
+            });
     let _ = boot.run_until_idle().await.unwrap();
     assert_eq!(boot.projection().get_run_state(&r), Some(&RunState::Completed));
     let inputs = seen.lock().unwrap();
@@ -319,7 +326,14 @@ async fn external_resolution_failure_uses_normal_handler_retry() {
         ExternalFailure(Recording(seen.clone())),
     )
     .bootstrap_with_clock(MockClock::new(40))
-    .unwrap();
+    .unwrap()
+    .with_host(actionqueue_core::control::HostControlContext {
+        actor_id: None,
+        scope: actionqueue_core::control::ControlScope::SingleTenant,
+        attribution: actionqueue_core::causal::ControlMutationContext::new(
+            actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+        ),
+    });
     let _ = boot.run_until_idle().await.unwrap();
     assert_eq!(boot.projection().get_run_state(&r), Some(&RunState::Completed));
     let seen = seen.lock().unwrap();
@@ -366,7 +380,14 @@ async fn exhausted_budget_retains_input_until_replenished() {
     let mut boot =
         actionqueue_runtime::engine::ActionQueueEngine::new(config, Recording(seen.clone()))
             .bootstrap_with_clock(MockClock::new(40))
-            .unwrap();
+            .unwrap()
+            .with_host(actionqueue_core::control::HostControlContext {
+                actor_id: None,
+                scope: actionqueue_core::control::ControlScope::SingleTenant,
+                attribution: actionqueue_core::causal::ControlMutationContext::new(
+                    actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                ),
+            });
     let _ = boot.tick().await.unwrap();
     assert_eq!(boot.projection().pending_resume(r), Some(context.clone()));
     assert!(seen.lock().unwrap().is_empty());
@@ -636,8 +657,16 @@ async fn output_limit_case(
         suspended,
         seen: Recording(seen.clone()),
     };
-    let mut boot =
-        ActionQueueEngine::new(config, handler).bootstrap_with_clock(MockClock::new(40)).unwrap();
+    let mut boot = ActionQueueEngine::new(config, handler)
+        .bootstrap_with_clock(MockClock::new(40))
+        .unwrap()
+        .with_host(actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        });
     let _ = boot.run_until_idle().await.expect("oversized result must close normally");
     let expected = RunState::Failed;
     assert_eq!(boot.projection().get_run_state(&run), Some(&expected));
@@ -788,7 +817,14 @@ async fn unsafe_record_limits_reject_before_bootstrap_and_minimum_recovers_activ
         config.continuation_limits.disposition_bytes = minimum;
         let mut boot = ActionQueueEngine::new(config, Recording(seen.clone()))
             .bootstrap_with_clock(MockClock::new(40))
-            .unwrap();
+            .unwrap()
+            .with_host(actionqueue_core::control::HostControlContext {
+                actor_id: None,
+                scope: actionqueue_core::control::ControlScope::SingleTenant,
+                attribution: actionqueue_core::causal::ControlMutationContext::new(
+                    actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                ),
+            });
         let closed = boot
             .projection()
             .get_attempt_history(&run)

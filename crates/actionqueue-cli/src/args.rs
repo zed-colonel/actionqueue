@@ -21,6 +21,8 @@ pub enum Command {
 /// Arguments for the `daemon` command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DaemonArgs {
+    /// Trusted host bearer identity configuration file.
+    pub auth_file: Option<PathBuf>,
     /// Optional data directory override.
     pub data_dir: Option<PathBuf>,
     /// Optional HTTP API bind address (`IP:PORT`).
@@ -143,6 +145,7 @@ fn parse_daemon(args: &[String]) -> Result<Command, String> {
     let mut data_dir: Option<PathBuf> = None;
     let mut bind: Option<String> = None;
     let mut metrics_bind: Option<String> = None;
+    let mut auth_file = None;
     let mut enable_control = false;
     let mut json = false;
 
@@ -152,6 +155,9 @@ fn parse_daemon(args: &[String]) -> Result<Command, String> {
             "--data-dir" => data_dir = Some(PathBuf::from(require_value(&mut iter, "--data-dir")?)),
             "--bind" => bind = Some(require_value(&mut iter, "--bind")?),
             "--metrics-bind" => metrics_bind = Some(require_value(&mut iter, "--metrics-bind")?),
+            "--auth-file" => {
+                auth_file = Some(PathBuf::from(require_value(&mut iter, "--auth-file")?))
+            }
             "--enable-control" => enable_control = true,
             "--json" => json = true,
             "--help" | "-h" => return Err(USAGE_DAEMON.to_string()),
@@ -162,7 +168,14 @@ fn parse_daemon(args: &[String]) -> Result<Command, String> {
         }
     }
 
-    Ok(Command::Daemon(DaemonArgs { data_dir, bind, metrics_bind, enable_control, json }))
+    Ok(Command::Daemon(DaemonArgs {
+        auth_file,
+        data_dir,
+        bind,
+        metrics_bind,
+        enable_control,
+        json,
+    }))
 }
 
 fn parse_submit(args: &[String]) -> Result<Command, String> {
@@ -250,7 +263,8 @@ Options:
     --data-dir <PATH>       Path to the data directory (default: ~/.actionqueue/data)
     --bind <ADDRESS>        HTTP API bind address (default: 127.0.0.1:8787)
     --metrics-bind <ADDR>   Metrics endpoint bind address (default: 127.0.0.1:9090)
-    --enable-control        Enable control endpoints (cancel, pause, resume)
+    --enable-control        Enable authenticated control endpoints (requires --auth-file)
+    --auth-file <PATH>      Trusted host bearer identity configuration
     --json                  Emit machine-readable JSON on stdout
     --help, -h              Show this help message
 "#;

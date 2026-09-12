@@ -16,10 +16,25 @@ fn host(id: ActorId) -> HostControlContext {
     }
 }
 fn setup(path: &std::path::Path) -> (s::Authority, HostControlContext, RunId) {
-    let mut a = open_store(path, OpenOptions::Initialize { features: vec!["actor".into()] })
-        .unwrap()
-        .into_authority()
-        .unwrap();
+    let mut a = open_store(
+        path,
+        OpenOptions::Initialize {
+            features: actionqueue_storage::store::capabilities()
+                .into_iter()
+                .filter(|f| f != "platform")
+                .collect(),
+        },
+    )
+    .unwrap()
+    .into_authority()
+    .unwrap()
+    .with_host(actionqueue_core::control::HostControlContext {
+        actor_id: None,
+        scope: actionqueue_core::control::ControlScope::SingleTenant,
+        attribution: actionqueue_core::causal::ControlMutationContext::new(
+            actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+        ),
+    });
     let id = ActorId::new();
     commit!(
         &mut a,
@@ -67,6 +82,12 @@ fn canonical_known_answer() {
     let d = AttemptDisposition::complete(None);
     assert_eq!(hex(&canonical_disposition(&d)), fixture["canonical_hex"]);
     assert_eq!(hex(&disposition_digest(&d).0), fixture["sha256"]);
+    for name in ["compound", "output"] {
+        let d: AttemptDisposition =
+            serde_json::from_value(fixture[name]["disposition"].clone()).unwrap();
+        assert_eq!(hex(&canonical_disposition(&d)), fixture[name]["canonical_hex"], "{name}");
+        assert_eq!(hex(&disposition_digest(&d).0), fixture[name]["sha256"], "{name}");
+    }
 }
 #[test]
 fn accepted_claim_and_result_retries_are_append_free_after_recovery() {
@@ -98,7 +119,36 @@ fn rejected_envelopes_leave_all_state_unchanged() {
     let dir = tempfile::tempdir().unwrap();
     let (mut a, h, r) = setup(dir.path());
     let w = remote::claim(&mut a, &h, request(r), 11, 30).unwrap();
-    let good = result(&w, AttemptDisposition::complete(None));
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../conformance/aq-cont-1/disposition-v1-vector.json"
+    ))
+    .unwrap();
+    let mut proposal = fixture["compound"]["disposition"].clone();
+    proposal["checkpoint"]["created_by_attempt"] = serde_json::json!(w.attempt_id);
+    #[cfg(not(feature = "workflow"))]
+    {
+        proposal["child_admissions"] = serde_json::json!([]);
+    }
+    #[cfg(not(feature = "budget"))]
+    {
+        proposal["consumption"] = serde_json::json!([]);
+    }
+    #[cfg(feature = "budget")]
+    for dimension in [
+        actionqueue_core::budget::BudgetDimension::Token,
+        actionqueue_core::budget::BudgetDimension::CostCents,
+        actionqueue_core::budget::BudgetDimension::TimeSecs,
+    ] {
+        let c = MutationCommand::BudgetAllocate(BudgetAllocateCommand::new(
+            seq(&a),
+            w.task_id,
+            dimension,
+            100,
+            11,
+        ));
+        let _ = execute_mutation(&mut a, &h, c).unwrap();
+    }
+    let good = result(&w, serde_json::from_value(proposal).unwrap());
     let before = a.projection().projection_digest().unwrap();
     for case in 0..6 {
         let mut d = good.clone();
@@ -116,7 +166,7 @@ fn rejected_envelopes_leave_all_state_unchanged() {
         assert_eq!(before, a.projection().projection_digest().unwrap());
     }
     assert!(remote::submit_result(&mut a, &host(ActorId::new()), good.clone(), 12).is_err());
-    assert!(remote::submit_result(&mut a, &h, good, 41).is_err());
+    assert!(remote::submit_result(&mut a, &h, good.clone(), 41).is_err());
     assert_eq!(before, a.projection().projection_digest().unwrap());
     assert!(remote::renew(
         &mut a,
@@ -131,6 +181,13 @@ fn rejected_envelopes_leave_all_state_unchanged() {
     assert_eq!(before, a.projection().projection_digest().unwrap());
     remote::renew(&mut a, &h, r, w.attempt_id, w.lease_fence.clone(), 12, 50).unwrap();
     assert_eq!(a.projection().get_lease_metadata(&r).unwrap().expiry(), 50);
+    // The same complete proposal is valid under the accepted identity. This
+    // proves rejection guards protect effects that would otherwise commit.
+    remote::submit_result(&mut a, &h, good, 13).unwrap();
+    assert_eq!(a.projection().get_run_state(&r), Some(&RunState::Awaiting));
+    assert_eq!(a.projection().signals().statistics().retained, 1);
+    assert!(a.projection().waits().active(r).unwrap().checkpoint.is_some());
+    parity(&a);
 }
 #[test]
 fn remote_checkpoint_and_resume_assignment_survive_lost_responses() {
@@ -229,4 +286,234 @@ fn remote_fifo_uses_creation_order_even_when_scheduling_times_differ() {
     let before = seq(&a);
     assert!(remote::claim(&mut a, &h, request(newest), 30, 30).is_err());
     assert_eq!(seq(&a), before);
+}
+
+struct FailAt<W> {
+    inner: W,
+    remaining: usize,
+}
+impl<W: actionqueue_storage::wal::writer::WalWriter> actionqueue_storage::wal::writer::WalWriter
+    for FailAt<W>
+{
+    fn store_session(&self) -> Option<&actionqueue_storage::store::StoreSession> {
+        self.inner.store_session()
+    }
+    fn fence(&mut self) {
+        self.inner.fence();
+    }
+    fn recovery_required(&self) -> bool {
+        self.inner.recovery_required()
+    }
+    fn append(
+        &mut self,
+        e: &actionqueue_storage::wal::event::WalEvent,
+    ) -> Result<(), actionqueue_storage::wal::writer::WalWriterError> {
+        if self.remaining == 0 {
+            return Err(actionqueue_storage::wal::writer::WalWriterError::IoError(
+                "claim prefix crash".into(),
+            ));
+        }
+        self.remaining -= 1;
+        self.inner.append(e)
+    }
+    fn flush(&mut self) -> Result<(), actionqueue_storage::wal::writer::WalWriterError> {
+        self.inner.flush()
+    }
+    fn close(self) -> Result<(), actionqueue_storage::wal::writer::WalWriterError> {
+        self.inner.close()
+    }
+}
+#[test]
+fn every_partial_remote_claim_prefix_recovers_without_stranded_ownership() {
+    for prefix in 0..=5 {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, h, r) = setup(dir.path());
+        let q = request(r);
+        let (writer, p) = a.into_parts();
+        let mut a = actionqueue_storage::mutation::StorageMutationAuthority::new(
+            FailAt { inner: writer, remaining: prefix },
+            p,
+        );
+        let result = remote::claim(&mut a, &h, q, 11, 30);
+        assert_eq!(result.is_ok(), prefix == 5);
+        drop(a);
+        let mut a = s::reopen(dir.path());
+        actionqueue_runtime::waits::recover_execution(&mut a, 12).unwrap();
+        remote::maintain(
+            &mut a,
+            13,
+            remote::RemotePolicy { retry_delay_secs: 0, ..Default::default() },
+        )
+        .unwrap();
+        assert!(a.projection().get_lease(&r).is_none());
+        assert!(a.projection().get_run_instance(&r).unwrap().current_attempt_id().is_none());
+        if prefix == 5 {
+            assert_eq!(a.projection().get_run_state(&r), Some(&RunState::Failed));
+            assert_eq!(a.projection().get_run_instance(&r).unwrap().failure_attempt_count(), 1);
+        } else {
+            let work = remote::claim(&mut a, &h, request(r), 14, 30).unwrap();
+            assert_eq!(work.failure_attempt_count, 0);
+        }
+        parity(&a);
+    }
+}
+#[test]
+fn local_and_remote_claims_serialize_one_accepted_attempt() {
+    for _ in 0..8 {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut a, h, r) = setup(dir.path());
+        transition(&mut a, r, RunState::Ready, 11);
+        let a = std::sync::Arc::new(Mutex::new(a));
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let remote_a = a.clone();
+        let remote_barrier = barrier.clone();
+        let remote = std::thread::spawn(move || {
+            remote_barrier.wait();
+            remote::claim(&mut remote_a.lock().unwrap(), &h, request(r), 12, 30).is_ok()
+        });
+        barrier.wait();
+        let local = {
+            let mut a = a.lock().unwrap();
+            if actionqueue_runtime::claim::eligible(a.projection(), r, None, 12) {
+                actionqueue_runtime::claim::accept(&mut a, r, AttemptId::new(), "local", 12, 42)
+                    .is_ok()
+            } else {
+                false
+            }
+        };
+        assert_ne!(local, remote.join().unwrap());
+        let a = a.lock().unwrap();
+        assert_eq!(a.projection().get_attempt_history(&r).unwrap().len(), 1);
+        parity(&a);
+    }
+}
+#[test]
+fn renewal_result_and_cancellation_races_preserve_the_accepted_fence() {
+    for renew_first in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut a, h, r) = setup(dir.path());
+        let w = remote::claim(&mut a, &h, request(r), 11, 30).unwrap();
+        if renew_first {
+            remote::renew(&mut a, &h, r, w.attempt_id, w.lease_fence.clone(), 12, 60).unwrap();
+        }
+        remote::submit_result(&mut a, &h, result(&w, AttemptDisposition::complete(None)), 13)
+            .unwrap();
+        let before = a.projection().projection_digest().unwrap();
+        assert!(remote::renew(&mut a, &h, r, w.attempt_id, w.lease_fence.clone(), 14, 70).is_err());
+        assert_eq!(before, a.projection().projection_digest().unwrap());
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let (mut a, h, r) = setup(dir.path());
+    let w = remote::claim(&mut a, &h, request(r), 11, 30).unwrap();
+    execute_control(
+        &mut a,
+        &h,
+        ControlOperation::Cancel(CancelTarget::Run(r)),
+        &MockClock::new(12),
+    )
+    .unwrap();
+    let before = a.projection().projection_digest().unwrap();
+    assert!(remote::renew(&mut a, &h, r, w.attempt_id, w.lease_fence.clone(), 13, 60).is_err());
+    assert!(remote::submit_result(&mut a, &h, result(&w, AttemptDisposition::complete(None)), 13)
+        .is_err());
+    assert_eq!(before, a.projection().projection_digest().unwrap());
+    parity(&a);
+}
+
+#[cfg(feature = "budget")]
+#[test]
+fn remote_maintenance_repairs_result_subscription_gap_without_waking_waits() {
+    use actionqueue_core::{
+        budget::BudgetDimension,
+        subscription::*,
+        task::{run_policy::RunPolicy, task_spec::*},
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let (mut a, h, r) = setup(dir.path());
+    let work = remote::claim(&mut a, &h, request(r), 11, 30).unwrap();
+    let task = TaskId::new();
+    let task_spec = TaskSpec::new(
+        task,
+        TaskPayload::new(vec![]),
+        RunPolicy::repeat(2, 10000).unwrap(),
+        Default::default(),
+        Default::default(),
+    )
+    .unwrap();
+    execute_control(
+        &mut a,
+        &h,
+        ControlOperation::AdmitTask(
+            actionqueue_core::admission::EnsureTaskRequest::for_task(task_spec, vec![]).unwrap(),
+        ),
+        &MockClock::new(11),
+    )
+    .unwrap();
+    let future = a.projection().runs_for_task(task).find(|r| r.scheduled_at() > 1000).unwrap().id();
+    let waiting = running(&mut a, 9, None, false);
+    let c = command(&a, waiting, spec_wait());
+    establish(&mut a, c).unwrap();
+    let waiting_task = a.projection().get_run_instance(&waiting).unwrap().task_id();
+    let mut ids = Vec::new();
+    for (target, filter) in [
+        (task, EventFilter::TaskCompleted { task_id: work.task_id }),
+        (
+            waiting_task,
+            EventFilter::RunStateChanged { task_id: work.task_id, state: RunState::Completed },
+        ),
+    ] {
+        let id = SubscriptionId::new();
+        let c = MutationCommand::SubscriptionCreate(SubscriptionCreateCommand::new(
+            seq(&a),
+            id,
+            target,
+            filter,
+            11,
+        ));
+        let _ = execute_mutation(&mut a, &h, c).unwrap();
+        ids.push(id);
+    }
+    remote::submit_result(&mut a, &h, result(&work, AttemptDisposition::complete(None)), 21)
+        .unwrap();
+    let siblings: Vec<_> = a
+        .projection()
+        .runs_for_task(work.task_id)
+        .filter(|x| x.id() != r)
+        .map(|x| x.id())
+        .collect();
+    for id in siblings {
+        execute_control(
+            &mut a,
+            &h,
+            ControlOperation::Cancel(CancelTarget::Run(id)),
+            &MockClock::new(21),
+        )
+        .unwrap();
+    }
+    // Crash after the atomic result and before secondary reactivity writes.
+    assert!(ids.iter().all(|id| a
+        .projection()
+        .get_subscription(id)
+        .unwrap()
+        .triggered_at
+        .is_none()));
+    drop(a);
+    let mut a = s::reopen(dir.path());
+    remote::maintain(&mut a, 22, remote::RemotePolicy::default()).unwrap();
+    assert!(
+        ids.iter().all(|id| a.projection().get_subscription(id).unwrap().triggered_at.is_some()),
+        "subs={:?}, run={:?}, status={:?}",
+        a.projection().subscriptions().collect::<Vec<_>>(),
+        a.projection().get_run_instance(&r),
+        a.projection().task_terminal_status(work.task_id)
+    );
+    assert!(remote::claimable(&a, &h, 22).unwrap().contains(&future));
+    assert_eq!(a.projection().get_run_state(&waiting), Some(&RunState::Awaiting));
+    let before = seq(&a);
+    remote::maintain(&mut a, 22, remote::RemotePolicy::default()).unwrap();
+    assert_eq!(seq(&a), before);
+    parity(&a);
+    fn spec_wait() -> WaitSpec {
+        spec(WaitId::new(), None)
+    }
 }

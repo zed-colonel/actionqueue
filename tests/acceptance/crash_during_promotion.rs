@@ -32,7 +32,14 @@ fn crash_during_promotion_preserves_promoted_state() {
     {
         let recovery = load_projection_from_storage(&data_dir).expect("bootstrap should succeed");
 
-        let mut authority = StorageMutationAuthority::new(recovery.wal_writer, recovery.projection);
+        let mut authority = StorageMutationAuthority::new(recovery.wal_writer, recovery.projection)
+            .with_host(actionqueue_core::control::HostControlContext {
+                actor_id: None,
+                scope: actionqueue_core::control::ControlScope::SingleTenant,
+                attribution: actionqueue_core::causal::ControlMutationContext::new(
+                    actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                ),
+            });
 
         let runs: Vec<_> = authority.projection().run_instances().cloned().collect();
         let scheduled = ScheduledIndex::from(runs.as_slice());

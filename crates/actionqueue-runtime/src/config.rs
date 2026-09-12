@@ -7,6 +7,8 @@ use std::time::Duration;
 /// Configuration for the ActionQueue runtime.
 #[derive(Debug, Clone)]
 pub struct RuntimeConfig {
+    /// Feature profile for new stores. Platform tenancy requires explicit opt-in.
+    pub store_features: Vec<String>,
     /// Labels offered by the local executor; absence satisfies only unconstrained tasks.
     pub local_executor_traits: Option<actionqueue_core::executor::ExecutorTraits>,
     /// Limits for newly committed continuation data. The disposition quota must
@@ -55,6 +57,10 @@ pub enum BackoffStrategyConfig {
 impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
+            store_features: actionqueue_storage::store::capabilities()
+                .into_iter()
+                .filter(|f| f != "platform")
+                .collect(),
             local_executor_traits: None,
             continuation_limits: Default::default(),
             signal_limits: Default::default(),

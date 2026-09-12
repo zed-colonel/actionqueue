@@ -70,7 +70,15 @@ async fn actor_crash_detected_at_timeout() {
     let dir = data_dir("crash");
     let clock = AdvancableClock::new(1000);
     let engine = ActionQueueEngine::new(make_config(dir), NoopHandler);
-    let mut boot = engine.bootstrap_with_clock(clock.clone()).expect("bootstrap");
+    let mut boot = engine.bootstrap_with_clock(clock.clone()).expect("bootstrap").with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     let actor_id = ActorId::new();
     let caps = ExecutorTraits::new(vec!["work".to_string()]).expect("caps");
@@ -98,7 +106,15 @@ async fn only_crashed_actor_deregistered() {
     let dir = data_dir("partial-crash");
     let clock = AdvancableClock::new(1000);
     let engine = ActionQueueEngine::new(make_config(dir), NoopHandler);
-    let mut boot = engine.bootstrap_with_clock(clock.clone()).expect("bootstrap");
+    let mut boot = engine.bootstrap_with_clock(clock.clone()).expect("bootstrap").with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     let crashed_id = ActorId::new();
     let alive_id = ActorId::new();
@@ -111,6 +127,13 @@ async fn only_crashed_actor_deregistered() {
 
     // Advance to t=1025 and send a heartbeat for the alive actor only.
     clock.advance(25);
+    boot.set_control_context(Some(actionqueue_core::control::HostControlContext {
+        actor_id: Some(alive_id),
+        scope: actionqueue_core::control::ControlScope::SingleTenant,
+        attribution: actionqueue_core::causal::ControlMutationContext::new(
+            actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+        ),
+    }));
     boot.actor_heartbeat(alive_id).expect("heartbeat for alive");
 
     // Advance past crashed actor's timeout but not alive actor's new timeout.

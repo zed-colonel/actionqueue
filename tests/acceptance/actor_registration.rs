@@ -77,7 +77,15 @@ async fn actor_registers_and_is_active() {
     let dir = data_dir("register");
     let clock = AdvancableClock::new(1000);
     let engine = ActionQueueEngine::new(make_config(dir), NoopHandler);
-    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap");
+    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap").with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     let actor_id = ActorId::new();
     boot.register_actor(make_registration(actor_id)).expect("register");
@@ -92,7 +100,15 @@ async fn actor_deregisters_explicitly() {
     let dir = data_dir("deregister");
     let clock = AdvancableClock::new(1000);
     let engine = ActionQueueEngine::new(make_config(dir), NoopHandler);
-    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap");
+    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap").with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     let actor_id = ActorId::new();
     boot.register_actor(make_registration(actor_id)).expect("register");
@@ -107,7 +123,15 @@ async fn actor_heartbeat_timeout_deregisters_actor() {
     let dir = data_dir("timeout");
     let clock = AdvancableClock::new(1000);
     let engine = ActionQueueEngine::new(make_config(dir), NoopHandler);
-    let mut boot = engine.bootstrap_with_clock(clock.clone()).expect("bootstrap");
+    let mut boot = engine.bootstrap_with_clock(clock.clone()).expect("bootstrap").with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     let actor_id = ActorId::new();
     // interval=10s, multiplier=3 (default) → timeout=30s.
@@ -132,13 +156,28 @@ async fn actor_heartbeat_resets_timeout() {
     let dir = data_dir("reset");
     let clock = AdvancableClock::new(1000);
     let engine = ActionQueueEngine::new(make_config(dir), NoopHandler);
-    let mut boot = engine.bootstrap_with_clock(clock.clone()).expect("bootstrap");
+    let mut boot = engine.bootstrap_with_clock(clock.clone()).expect("bootstrap").with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     let actor_id = ActorId::new();
     boot.register_actor(make_registration(actor_id)).expect("register");
 
     // Advance to t=1025 and send a heartbeat.
     clock.advance(25);
+    boot.set_control_context(Some(actionqueue_core::control::HostControlContext {
+        actor_id: Some(actor_id),
+        scope: actionqueue_core::control::ControlScope::SingleTenant,
+        attribution: actionqueue_core::causal::ControlMutationContext::new(
+            actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+        ),
+    }));
     boot.actor_heartbeat(actor_id).expect("heartbeat");
 
     // Advance to t=1029 (25 more seconds, new timeout = 1025+30=1055 > 1029).

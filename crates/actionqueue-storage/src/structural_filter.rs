@@ -110,10 +110,22 @@ mod recovery_tests {
     fn removed_filter_fails_closed_without_repair_or_snapshot_fallback() {
         for snapshot_case in [false, true] {
             let dir = tempfile::tempdir().unwrap();
-            let session =
-                open_store(dir.path(), OpenOptions::Initialize { features: capabilities() })
-                    .unwrap();
-            let mut a = session.into_authority().unwrap();
+            let session = open_store(
+                dir.path(),
+                OpenOptions::Initialize {
+                    features: capabilities().into_iter().filter(|f| f != "platform").collect(),
+                },
+            )
+            .unwrap();
+            let mut a = session.into_authority().unwrap().with_host(
+                actionqueue_core::control::HostControlContext {
+                    actor_id: None,
+                    scope: actionqueue_core::control::ControlScope::SingleTenant,
+                    attribution: actionqueue_core::causal::ControlMutationContext::new(
+                        actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                    ),
+                },
+            );
             let task = TaskId::new();
             let spec = TaskSpec::new(
                 task,
@@ -170,17 +182,31 @@ mod recovery_tests {
                         + u32::from_le_bytes(bytes[offset + 40..offset + 44].try_into().unwrap())
                             as usize;
                 }
-                let mut payload = bytes[offset + 52..offset + 52 + 34].to_vec(); // two UUIDs
-                assert_eq!(bytes[offset + 52 + 34], 0); // original TaskCompleted tag
+                // Schema 2 attribution prefixes the original binary inner frame.
+                assert_eq!(
+                    u16::from_le_bytes(bytes[offset + 12..offset + 14].try_into().unwrap()),
+                    352
+                );
+                let attribution_len =
+                    u32::from_le_bytes(bytes[offset + 52..offset + 56].try_into().unwrap())
+                        as usize;
+                let inner = offset + 56 + attribution_len;
+                let mut payload = bytes[inner + 52..inner + 52 + 34].to_vec(); // two UUIDs
+                assert_eq!(bytes[inner + 52 + 34], 0); // original TaskCompleted tag
                 payload.extend([3, 1, b'x', 2]); // removed filter and timestamp
-                bytes.truncate(offset + 52);
-                bytes[offset + 40..offset + 44]
-                    .copy_from_slice(&(payload.len() as u32).to_le_bytes());
-                bytes[offset + 44..offset + 48]
-                    .copy_from_slice(&crc32fast::hash(&payload).to_le_bytes());
-                let crc = crc32fast::hash(&bytes[offset..offset + 48]);
-                bytes[offset + 48..offset + 52].copy_from_slice(&crc.to_le_bytes());
+                bytes.truncate(inner + 52);
                 bytes.extend(payload);
+                // Repair both checksums so recovery must reject the removed
+                // semantic variant rather than incidental framing corruption.
+                for frame in [inner, offset] {
+                    let payload_len = bytes.len() - frame - 52;
+                    let payload_crc = crc32fast::hash(&bytes[frame + 52..]);
+                    bytes[frame + 40..frame + 44]
+                        .copy_from_slice(&(payload_len as u32).to_le_bytes());
+                    bytes[frame + 44..frame + 48].copy_from_slice(&payload_crc.to_le_bytes());
+                    let header_crc = crc32fast::hash(&bytes[frame..frame + 48]);
+                    bytes[frame + 48..frame + 52].copy_from_slice(&header_crc.to_le_bytes());
+                }
                 std::fs::write(&wal_path, bytes).unwrap();
             }
             let before_wal = std::fs::read(&wal_path).unwrap();

@@ -57,7 +57,15 @@ async fn subscription_promotes_future_scheduled_run_on_completion() {
     let clock = MockClock::new(1000);
     let handler = AlwaysSucceedHandler;
     let engine = ActionQueueEngine::new(make_config(dir.path().to_path_buf()), handler);
-    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap");
+    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap").with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     // Task B: Once, scheduled now (time=1000).
     let task_b_id = TaskId::new();

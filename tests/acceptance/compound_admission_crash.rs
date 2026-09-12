@@ -14,7 +14,13 @@ fn reopen(path: &std::path::Path) -> Authority {
     let session = open_store(path, OpenOptions::ReadWrite).unwrap();
     let projection = recover_read_only(&session, RepairPolicy::TruncatePartial).unwrap().projection;
     let writer = WalFsWriter::new_with_repair(session, RepairPolicy::TruncatePartial).unwrap();
-    Authority::new(writer, projection)
+    Authority::new(writer, projection).with_host(actionqueue_core::control::HostControlContext {
+        actor_id: None,
+        scope: actionqueue_core::control::ControlScope::SingleTenant,
+        attribution: actionqueue_core::causal::ControlMutationContext::new(
+            actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+        ),
+    })
 }
 const POINTS: &[&str] = &[
     "wal_before_append",
@@ -34,7 +40,7 @@ fn injected_failures_preserve_atomicity_and_fence_cached_duplicates() {
         let c = command(with_dependencies(&request(2), vec![id(1)]), 3, 42);
         let mut prepared = a.projection().clone();
         let record = actionqueue_storage::mutation::admission::AdmissionRecord::new(
-            with_dependencies(&request(2), vec![id(1)]),
+            attributed(with_dependencies(&request(2), vec![id(1)])),
             c.plan().digest().clone(),
             42,
             3,
@@ -46,7 +52,8 @@ fn injected_failures_preserve_atomicity_and_fence_cached_duplicates() {
                 record,
                 runs: c.plan().runs().to_vec(),
             },
-        );
+        )
+        .with_control((&fixture_host()).into());
         prepared.apply(&event).unwrap();
         let expected_digest = prepared.projection_digest().unwrap();
         fault::fail_once(point);
@@ -75,7 +82,15 @@ fn injected_failures_preserve_atomicity_and_fence_cached_duplicates() {
             writer.append(&event),
             Err(actionqueue_storage::wal::writer::WalWriterError::Poisoned)
         ));
-        let rewrapped = Authority::new(writer, projection);
+        let rewrapped = Authority::new(writer, projection).with_host(
+            actionqueue_core::control::HostControlContext {
+                actor_id: None,
+                scope: actionqueue_core::control::ControlScope::SingleTenant,
+                attribution: actionqueue_core::causal::ControlMutationContext::new(
+                    actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                ),
+            },
+        );
         assert!(matches!(
             rewrapped.lookup_admission(&request(1)),
             Err(MutationAuthorityError::RecoveryRequired)
@@ -129,20 +144,23 @@ fn crash_child() {
     let c = command(q.clone(), 3, 42);
     let mut prepared = a.projection().clone();
     let record = actionqueue_storage::mutation::admission::AdmissionRecord::new(
-        q,
+        attributed(q),
         c.plan().digest().clone(),
         42,
         3,
     )
     .unwrap();
     prepared
-        .apply(&actionqueue_storage::wal::event::WalEvent::new(
-            3,
-            actionqueue_storage::wal::event::WalEventType::AdmissionCommitted {
-                record,
-                runs: c.plan().runs().to_vec(),
-            },
-        ))
+        .apply(
+            &actionqueue_storage::wal::event::WalEvent::new(
+                3,
+                actionqueue_storage::wal::event::WalEventType::AdmissionCommitted {
+                    record,
+                    runs: c.plan().runs().to_vec(),
+                },
+            )
+            .with_control((&fixture_host()).into()),
+        )
         .unwrap();
     std::fs::write(
         path.join("expected.json"),
@@ -228,5 +246,27 @@ fn subprocess_kill_at_each_boundary_recovers_complete_admission_or_none() {
         assert_eq!(outcome.is_created(), current.metadata.wal_sequence == 2);
         assert_eq!(a.projection().latest_sequence(), 3);
         assert_eq!(a.projection().admissions().count(), 2);
+    }
+}
+
+fn attributed(
+    q: actionqueue_core::admission::EnsureTaskRequest,
+) -> actionqueue_core::admission::EnsureTaskRequest {
+    actionqueue_core::admission::EnsureTaskRequest::new(
+        q.admission_key().clone(),
+        q.task_spec().clone(),
+        q.dependencies().to_vec(),
+        q.causal_context().clone(),
+        Some(fixture_host().attribution),
+    )
+    .unwrap()
+}
+fn fixture_host() -> actionqueue_core::control::HostControlContext {
+    actionqueue_core::control::HostControlContext {
+        actor_id: None,
+        scope: actionqueue_core::control::ControlScope::SingleTenant,
+        attribution: actionqueue_core::causal::ControlMutationContext::new(
+            actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+        ),
     }
 }

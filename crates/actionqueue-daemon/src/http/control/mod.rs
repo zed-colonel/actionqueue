@@ -58,6 +58,9 @@ pub(crate) fn internal_authority_error(
     >,
 ) -> axum::response::Response {
     let message = match error {
+        actionqueue_storage::mutation::MutationAuthorityError::Control(_) => {
+            return axum::response::IntoResponse::into_response(axum::http::StatusCode::FORBIDDEN)
+        }
         actionqueue_storage::mutation::MutationAuthorityError::Disposition(_) => {
             "disposition rejected"
         }

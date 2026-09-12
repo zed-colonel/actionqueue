@@ -85,8 +85,16 @@ mod wf {
             engine_config(&data_dir),
             SpawnAndSucceedHandler { coordinator_id, child_a_id, child_b_id },
         );
-        let mut eng =
-            engine.bootstrap_with_clock(MockClock::new(1000)).expect("bootstrap must succeed");
+        let mut eng = engine
+            .bootstrap_with_clock(MockClock::new(1000))
+            .expect("bootstrap must succeed")
+            .with_host(actionqueue_core::control::HostControlContext {
+                actor_id: None,
+                scope: actionqueue_core::control::ControlScope::SingleTenant,
+                attribution: actionqueue_core::causal::ControlMutationContext::new(
+                    actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                ),
+            });
 
         eng.submit_task(make_spec(coordinator_id, b"coordinator")).expect("submit coordinator");
         let _ = tokio::time::timeout(std::time::Duration::from_secs(10), eng.run_until_idle())
@@ -187,7 +195,14 @@ mod wf {
         // is populated when the coordinator runs.
         {
             let recovery = load_projection_from_storage(&data_dir).expect("recovery must succeed");
-            let mut auth = StorageMutationAuthority::new(recovery.wal_writer, recovery.projection);
+            let mut auth = StorageMutationAuthority::new(recovery.wal_writer, recovery.projection)
+                .with_host(actionqueue_core::control::HostControlContext {
+                    actor_id: None,
+                    scope: actionqueue_core::control::ControlScope::SingleTenant,
+                    attribution: actionqueue_core::causal::ControlMutationContext::new(
+                        actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                    ),
+                });
 
             // Submit coordinator task (scheduled later so children run first).
             let coordinator_spec = make_spec(coordinator_id, b"coordinator");
@@ -261,8 +276,16 @@ mod wf {
             );
             // Clock at 1100 so both children (scheduled at 1000) and coordinator (at 1100)
             // are immediately eligible.
-            let mut eng =
-                engine.bootstrap_with_clock(MockClock::new(1100)).expect("bootstrap must succeed");
+            let mut eng = engine
+                .bootstrap_with_clock(MockClock::new(1100))
+                .expect("bootstrap must succeed")
+                .with_host(actionqueue_core::control::HostControlContext {
+                    actor_id: None,
+                    scope: actionqueue_core::control::ControlScope::SingleTenant,
+                    attribution: actionqueue_core::causal::ControlMutationContext::new(
+                        actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                    ),
+                });
             let _ = tokio::time::timeout(std::time::Duration::from_secs(10), eng.run_until_idle())
                 .await
                 .expect("handler must return a valid disposition")

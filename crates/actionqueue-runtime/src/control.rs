@@ -16,6 +16,8 @@ pub enum ControlOperation {
     AdmitSignal(actionqueue_core::continuation::AdmitSignalRequest),
     /// Cancel a task or run.
     Cancel(CancelTarget),
+    /// Cancel an identified wait and its owning run.
+    CancelWait { run_id: actionqueue_core::ids::RunId, wait_id: actionqueue_core::ids::WaitId },
     /// Resolve an identified wait.
     ResolveWait { run_id: actionqueue_core::ids::RunId, wait_id: actionqueue_core::ids::WaitId },
 }
@@ -31,6 +33,14 @@ pub enum ControlOutcome {
 }
 /// Authenticates scope and authorizes before idempotency/target inspection.
 pub fn execute_control<W: WalWriter>(
+    a: &mut StorageMutationAuthority<W, ReplayReducer>,
+    host: &HostControlContext,
+    operation: ControlOperation,
+    clock: &impl Clock,
+) -> Result<ControlOutcome, ControlError> {
+    a.with_control_context(host, |a| execute_bound_control(a, host, operation, clock))
+}
+fn execute_bound_control<W: WalWriter>(
     a: &mut StorageMutationAuthority<W, ReplayReducer>,
     host: &HostControlContext,
     operation: ControlOperation,
@@ -96,6 +106,20 @@ pub fn execute_control<W: WalWriter>(
             .map(ControlOutcome::Mutation)
             .map_err(|e| err(e.to_string()))
         }
+        ControlOperation::CancelWait { run_id, wait_id } => {
+            let tenant = authorize(a, host, QueueAction::CancelWait)?;
+            let c = MutationCommand::WaitCancel(
+                WaitCancelCommand::new(
+                    a.projection().latest_sequence().saturating_add(1),
+                    run_id,
+                    wait_id,
+                    host.attribution.clone(),
+                    clock.now(),
+                )
+                .with_tenant(tenant),
+            );
+            execute_mutation(a, host, c).map(ControlOutcome::Mutation)
+        }
         ControlOperation::ResolveWait { run_id, wait_id } => {
             let tenant = authorize(a, host, QueueAction::ResolveWait)?;
             let task =
@@ -129,86 +153,31 @@ pub fn execute_mutation<W: WalWriter>(
     host: &HostControlContext,
     command: MutationCommand,
 ) -> Result<MutationOutcome, ControlError> {
-    use MutationCommand as M;
-    use QueueAction as Q;
-    let action = match &command {
-        M::EnginePause(_) => Q::PauseEngine,
-        M::EngineResume(_) => Q::ResumeEngine,
-        M::RunSuspend(_) => Q::SuspendRun,
-        M::RunResume(_) => Q::ResumeRun,
-        M::ActorRegister(_) => Q::RegisterActor,
-        M::ActorDeregister(_) => Q::DeregisterActor,
-        M::ActorHeartbeat(_) => Q::HeartbeatActor,
-        M::TenantCreate(_) => Q::ManageTenant,
-        M::RoleAssign(_) | M::CapabilityGrant(_) | M::CapabilityRevoke(_) => Q::ManagePermission,
-        M::BudgetAllocate(_) | M::BudgetReplenish(_) | M::BudgetConsume(_) => Q::ManageBudget,
-        M::SubscriptionCreate(_) | M::SubscriptionCancel(_) => Q::ManageSubscription,
-        M::LedgerAppend(_) => Q::AppendLedger,
-        _ => return Err(ControlError::Unauthorized),
-    };
-    let tenant = authorize(a, host, action)?;
-    let task_scope =
-        |id| a.projection().get_task(&id).map(|t| t.tenant_id()).ok_or(ControlError::NotFound);
-    let run_scope = |id| {
-        a.projection()
-            .get_run_instance(&id)
-            .ok_or(ControlError::NotFound)
-            .and_then(|r| task_scope(r.task_id()))
-    };
-    let actor_scope =
-        |id| a.projection().get_actor(&id).map(|r| r.tenant_id).ok_or(ControlError::NotFound);
-    let target = match &command {
-        M::RunSuspend(c) => run_scope(c.run_id())?,
-        M::RunResume(c) => run_scope(c.run_id())?,
-        M::ActorRegister(c) => c.registration().tenant_id(),
-        M::ActorHeartbeat(c) => {
-            if host.actor_id != Some(c.actor_id()) {
-                return Err(ControlError::Unauthorized);
-            }
-            actor_scope(c.actor_id())?
-        }
-        M::ActorDeregister(c) => actor_scope(c.actor_id())?,
-        M::BudgetAllocate(c) => task_scope(c.task_id())?,
-        M::BudgetReplenish(c) => task_scope(c.task_id())?,
-        M::BudgetConsume(c) => task_scope(c.task_id())?,
-        M::SubscriptionCreate(c) => task_scope(c.task_id())?,
-        M::SubscriptionCancel(c) => task_scope(
-            a.projection()
-                .subscriptions()
-                .find(|(id, _)| **id == c.subscription_id())
-                .ok_or(ControlError::NotFound)?
-                .1
-                .task_id,
-        )?,
-        M::LedgerAppend(c) => Some(c.entry().tenant_id()),
-        _ => tenant,
-    };
-    if !action.requires_store() {
-        check_scope(tenant, target)?;
-    }
-    let command = if let M::RunSuspend(c) = command {
-        let run = a.projection().get_run_instance(&c.run_id()).ok_or(ControlError::NotFound)?;
-        let lease = a.projection().get_lease_metadata(&c.run_id()).ok_or(ControlError::NotFound)?;
-        let attempt = run.current_attempt_id().ok_or(ControlError::NotFound)?;
-        let reason = c
-            .reason()
-            .map(actionqueue_core::bounded::BoundedCode::new)
-            .transpose()
-            .map_err(|e| ControlError::Mutation(e.to_string()))?;
-        M::AttemptDispositionCommit(AttemptDispositionCommitCommand::new(
-            AttemptCommitExpectation::new(
-                c.sequence(),
-                c.run_id(),
-                attempt,
-                actionqueue_core::run::RunState::Running,
-                LeaseFence::new(lease.owner().into(), lease.granted_at_sequence()),
-            ),
-            actionqueue_core::disposition::AttemptDisposition::suspended(None, reason),
-            c.timestamp(),
-        ))
-    } else {
-        command
-    };
     a.submit_command(command.with_control(host), DurabilityPolicy::Immediate)
         .map_err(|e| ControlError::Mutation(e.to_string()))
+}
+
+/// Inspect one wait within the authenticated namespace, using current grants.
+pub fn inspect_wait<W: WalWriter>(
+    a: &StorageMutationAuthority<W, ReplayReducer>,
+    host: &HostControlContext,
+    id: actionqueue_core::ids::WaitId,
+) -> Result<actionqueue_storage::mutation::wait::WaitRecord, ControlError> {
+    let tenant = authorize(a, host, QueueAction::InspectWait)?;
+    let wait = a.projection().waits().get(id).ok_or(ControlError::NotFound)?;
+    let run = a.projection().get_run_instance(&wait.run_id).ok_or(ControlError::NotFound)?;
+    check_scope(
+        tenant,
+        a.projection().get_task(&run.task_id()).ok_or(ControlError::NotFound)?.tenant_id(),
+    )?;
+    Ok(wait.clone())
+}
+/// Inspect one signal; an absent tenant is never a wildcard.
+pub fn inspect_signal<W: WalWriter>(
+    a: &StorageMutationAuthority<W, ReplayReducer>,
+    host: &HostControlContext,
+    id: &actionqueue_core::ids::SignalId,
+) -> Result<actionqueue_storage::mutation::signal::SignalRecord, ControlError> {
+    let tenant = authorize(a, host, QueueAction::InspectSignal)?;
+    a.projection().signals().get_signal(tenant, id).cloned().ok_or(ControlError::NotFound)
 }

@@ -684,6 +684,9 @@ impl ReplayReducer {
                 self.validate_signal_references(record.envelope())
                     .map_err(ReplayReducerError::Signal)?;
                 self.signals.insert(record.clone()).map_err(ReplayReducerError::Signal)?;
+                self.signals
+                    .account_control(record, event.control())
+                    .map_err(ReplayReducerError::Signal)?;
                 self.signal_arrived(record.envelope());
             }
             WalEventType::SignalPinned { record } | WalEventType::SignalUnpinned { record } => {

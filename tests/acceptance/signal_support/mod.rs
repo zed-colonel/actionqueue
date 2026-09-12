@@ -1,6 +1,8 @@
 #![allow(dead_code)]
+#[path = "../host_support.rs"]
+pub mod host_support;
 use actionqueue_core::{continuation::*, ids::*, mutation::*, time::clock::MockClock};
-use actionqueue_runtime::signals::{admit_signal, SignalAdmissionError};
+use actionqueue_runtime::signals::SignalAdmissionError;
 use actionqueue_storage::{
     mutation::StorageMutationAuthority,
     recovery::{bootstrap::recover_read_only, reducer::ReplayReducer},
@@ -9,8 +11,31 @@ use actionqueue_storage::{
 };
 pub type Authority = StorageMutationAuthority<WalFsWriter, ReplayReducer>;
 pub fn open(path: &std::path::Path) -> Authority {
+    let session = open_store(
+        path,
+        OpenOptions::Initialize {
+            features: capabilities().into_iter().filter(|f| f != "platform").collect(),
+        },
+    )
+    .unwrap();
+    session.into_authority().unwrap().with_host(actionqueue_core::control::HostControlContext {
+        actor_id: None,
+        scope: actionqueue_core::control::ControlScope::SingleTenant,
+        attribution: actionqueue_core::causal::ControlMutationContext::new(
+            actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+        ),
+    })
+}
+#[cfg(feature = "platform")]
+pub fn open_platform(path: &std::path::Path) -> Authority {
     let session = open_store(path, OpenOptions::Initialize { features: capabilities() }).unwrap();
-    session.into_authority().unwrap()
+    session.into_authority().unwrap().with_host(actionqueue_core::control::HostControlContext {
+        actor_id: None,
+        scope: actionqueue_core::control::ControlScope::SingleTenant,
+        attribution: actionqueue_core::causal::ControlMutationContext::new(
+            actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+        ),
+    })
 }
 pub fn reopen(path: &std::path::Path) -> Authority {
     let session = open_store(path, OpenOptions::ReadWrite).unwrap();
@@ -19,6 +44,13 @@ pub fn reopen(path: &std::path::Path) -> Authority {
         WalFsWriter::new_with_repair(session, RepairPolicy::TruncatePartial).unwrap(),
         projection,
     )
+    .with_host(actionqueue_core::control::HostControlContext {
+        actor_id: None,
+        scope: actionqueue_core::control::ControlScope::SingleTenant,
+        attribution: actionqueue_core::causal::ControlMutationContext::new(
+            actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+        ),
+    })
 }
 pub fn id(n: u64) -> SignalId {
     SignalId::new(format!("signal/{n}")).unwrap()
@@ -66,9 +98,22 @@ pub fn submit(
         actionqueue_storage::recovery::reducer::ReplayReducerError,
     >,
 > {
+    let host = ingress_host(&SignalIngressContext {
+        tenant_id: e.tenant_id,
+        control_context: e.control_context.clone(),
+    });
+    #[cfg(feature = "platform")]
+    let host = if let Some(tenant) = e.tenant_id {
+        let mut h = host_support::tenant(a, tenant)
+            .map_err(actionqueue_storage::mutation::MutationAuthorityError::Control)?;
+        h.attribution = host.attribution;
+        h
+    } else {
+        host
+    };
     let seq = a.projection().latest_sequence().saturating_add(1);
     a.submit_command(
-        MutationCommand::SignalAdmit(SignalAdmitCommand::new(seq, e)),
+        MutationCommand::SignalAdmit(SignalAdmitCommand::new(seq, e)).with_control(&host),
         DurabilityPolicy::Immediate,
     )
 }
@@ -91,4 +136,58 @@ pub fn sequences(a: &Authority, f: &SignalFilter, after: u64) -> Vec<u64> {
         .iter()
         .map(|r| r.sequence().get())
         .collect()
+}
+
+fn ingress_host(ingress: &SignalIngressContext) -> actionqueue_core::control::HostControlContext {
+    actionqueue_core::control::HostControlContext {
+        actor_id: None,
+        scope: actionqueue_core::control::ControlScope::SingleTenant,
+        attribution: ingress.control_context.clone().unwrap_or_else(|| {
+            actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            )
+        }),
+    }
+}
+pub fn admit_signal(
+    a: &mut Authority,
+    request: AdmitSignalRequest,
+    ingress: SignalIngressContext,
+    clock: &impl actionqueue_core::time::clock::Clock,
+) -> Result<AdmitSignalOutcome, SignalAdmissionError> {
+    a.with_control_context(&ingress_host(&ingress), |a| {
+        actionqueue_runtime::signals::admit_signal(a, request, ingress, clock)
+    })
+}
+pub fn pin_signal(
+    a: &mut Authority,
+    id: SignalId,
+    pin: SignalPinId,
+    ingress: SignalIngressContext,
+    clock: &impl actionqueue_core::time::clock::Clock,
+) -> Result<usize, SignalAdmissionError> {
+    a.with_control_context(&ingress_host(&ingress), |a| {
+        actionqueue_runtime::signals::pin_signal(a, id, pin, ingress, clock)
+    })
+}
+pub fn unpin_signal(
+    a: &mut Authority,
+    id: SignalId,
+    pin: SignalPinId,
+    ingress: SignalIngressContext,
+    clock: &impl actionqueue_core::time::clock::Clock,
+) -> Result<usize, SignalAdmissionError> {
+    a.with_control_context(&ingress_host(&ingress), |a| {
+        actionqueue_runtime::signals::unpin_signal(a, id, pin, ingress, clock)
+    })
+}
+pub fn retire_signals(
+    a: &mut Authority,
+    ids: Vec<SignalSequence>,
+    ingress: SignalIngressContext,
+    clock: &impl actionqueue_core::time::clock::Clock,
+) -> Result<usize, SignalAdmissionError> {
+    a.with_control_context(&ingress_host(&ingress), |a| {
+        actionqueue_runtime::signals::retire_signals(a, ids, ingress, clock)
+    })
 }

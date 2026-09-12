@@ -71,17 +71,26 @@ impl RunSummary {
 /// This handler responds to `GET /api/v1/runs` with a deterministic, side-effect-free
 /// payload containing run summaries derived from authoritative projection state.
 #[tracing::instrument(skip_all)]
-pub async fn handle(state: State<super::RouterState>, raw_query: RawQuery) -> impl IntoResponse {
+pub async fn handle(
+    state: State<super::RouterState>,
+    host: Option<axum::Extension<actionqueue_core::control::HostControlContext>>,
+    raw_query: RawQuery,
+) -> impl IntoResponse {
     let pagination = match parse_pagination(raw_query.0.as_deref()) {
         Ok(pagination) => pagination,
         Err(error) => return pagination_error(error).into_response(),
     };
 
-    let projection = match super::read_projection(&state) {
+    let projection = match super::read_inspection_projection(&state) {
         Ok(guard) => guard,
         Err(response) => return *response,
     };
-    let response = build_runs_list_response(&projection, pagination);
+    let tenant =
+        match super::auth::inspection_scope(&state, &projection, host.as_ref().map(|h| &h.0)) {
+            Ok(tenant) => tenant,
+            Err(response) => return response,
+        };
+    let response = build_runs_list_response_scoped(&projection, pagination, tenant);
     Json(response).into_response()
 }
 
@@ -92,12 +101,22 @@ pub fn register_routes(
     router.route("/api/v1/runs", axum::routing::get(handle))
 }
 
+#[cfg(test)]
 fn build_runs_list_response(
     projection: &actionqueue_storage::recovery::reducer::ReplayReducer,
     pagination: Pagination,
 ) -> RunListResponse {
+    build_runs_list_response_scoped(projection, pagination, None)
+}
+
+fn build_runs_list_response_scoped(
+    projection: &actionqueue_storage::recovery::reducer::ReplayReducer,
+    pagination: Pagination,
+    tenant: Option<actionqueue_core::ids::TenantId>,
+) -> RunListResponse {
     let mut summaries: Vec<RunSummary> = projection
         .run_instances()
+        .filter(|r| projection.get_task(&r.task_id()).is_some_and(|t| t.tenant_id() == tenant))
         .map(|run_instance| {
             let task_id = run_instance.task_id();
             let task_spec = projection.get_task(&task_id);
@@ -374,7 +393,7 @@ mod tests {
         let pagination = Pagination { limit: 100, offset: 0 };
         let response = build_runs_list_response(&reducer, pagination);
 
-        assert_eq!(response.runs.len(), 3);
+        assert_eq!(response.runs.len(), 2);
 
         // Runs sorted by scheduled_at ascending
         // First run: has concurrency key (scheduled_at=500)
@@ -385,8 +404,7 @@ mod tests {
         assert_eq!(response.runs[1].run_id, run_id_no_key.to_string());
         assert_eq!(response.runs[1].concurrency_key, None);
 
-        // Third run: task missing from reducer, should have null concurrency_key (scheduled_at=700)
-        assert_eq!(response.runs[2].run_id, run_id_missing_task.to_string());
-        assert_eq!(response.runs[2].concurrency_key, None);
+        // A run without a known owning task has no authorized tenant namespace.
+        assert!(response.runs.iter().all(|r| r.run_id != run_id_missing_task.to_string()));
     }
 }

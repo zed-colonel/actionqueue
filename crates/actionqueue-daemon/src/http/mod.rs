@@ -47,6 +47,10 @@ pub struct RouterStateInner {
     /// Used by [`build_router`] to determine which optional route sets
     /// (control endpoints, metrics) are registered.
     pub(crate) router_config: RouterConfig,
+    #[cfg(feature = "actor")]
+    pub(crate) remote_policy: actionqueue_runtime::remote::RemotePolicy,
+    #[cfg(feature = "actor")]
+    pub(crate) maintenance_started: AtomicBool,
 
     /// Shared projection state for stats and introspection.
     ///
@@ -132,6 +136,10 @@ impl RouterStateInner {
         ready_status: ReadyStatus,
     ) -> Self {
         Self {
+            #[cfg(feature = "actor")]
+            remote_policy: Default::default(),
+            #[cfg(feature = "actor")]
+            maintenance_started: AtomicBool::new(false),
             host_authenticator: None,
             store_session: None,
             router_config,
@@ -155,8 +163,12 @@ impl RouterStateInner {
         ready_status: ReadyStatus,
     ) -> Self {
         Self {
+            #[cfg(feature = "actor")]
+            remote_policy: Default::default(),
+            #[cfg(feature = "actor")]
+            maintenance_started: AtomicBool::new(false),
             host_authenticator: None,
-            store_session: None,
+            store_session: control_authority.lock().ok().and_then(|a| a.store_session().cloned()),
             router_config,
             shared_projection,
             control_authority: Some(control_authority),
@@ -175,6 +187,8 @@ pub mod actors;
 pub mod auth;
 pub mod control;
 pub mod health;
+#[cfg(feature = "actor")]
+pub mod maintenance;
 pub mod metrics;
 pub mod pagination;
 #[cfg(feature = "platform")]
@@ -234,16 +248,21 @@ fn projection_poison_response() -> axum::response::Response {
 ///
 /// An axum Router configured with all registered routes and the shared state.
 pub fn build_router(state: RouterState) -> axum::Router {
+    #[cfg(feature = "actor")]
+    maintenance::start(&state);
     let control_enabled = state.router_config.control_enabled;
     let metrics_enabled = state.router_config.metrics_enabled;
     let router: axum::Router<RouterState> = axum::Router::new();
     let router = health::register_routes(router);
     let router = ready::register_routes(router);
     let router = stats::register_routes(router);
-    let router = tasks_list::register_routes(router);
-    let router = runs_list::register_routes(router);
-    let router = run_get::register_routes(router);
-    let router = task_get::register_routes(router);
+    let inspection = tasks_list::register_routes(axum::Router::new());
+    let inspection = runs_list::register_routes(inspection);
+    let inspection = run_get::register_routes(inspection);
+    let inspection = task_get::register_routes(inspection).route_layer(
+        axum::middleware::from_fn_with_state(state.clone(), auth::authenticate_inspection),
+    );
+    let router = router.merge(inspection);
     let router = metrics::register_routes(router, metrics_enabled);
     let controls = control::register_routes(axum::Router::new(), control_enabled);
     #[cfg(feature = "actor")]
@@ -280,3 +299,19 @@ pub(crate) fn execute_host_mutation<W: actionqueue_storage::wal::writer::WalWrit
     })?;
     Ok(result)
 }
+
+/// Inspection snapshots and grant checks use the same authoritative revision.
+pub(crate) fn read_inspection_projection(
+    state: &RouterState,
+) -> Result<ReplayReducer, Box<axum::response::Response>> {
+    if let Some(authority) = &state.control_authority {
+        return authority
+            .lock()
+            .map(|a| a.projection().clone())
+            .map_err(|_| Box::new(projection_poison_response()));
+    }
+    read_projection(state).map(|p| p.clone())
+}
+
+#[cfg(all(test, feature = "platform"))]
+mod tenant_tests;

@@ -188,9 +188,12 @@ async fn claimable_runs(
     let Some(a) = state.control_authority.as_ref() else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
-    let Ok(a) = a.lock() else {
+    let Ok(mut a) = a.lock() else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
+    if crate::http::maintenance::maintain_locked(&state, &mut a).is_err() {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
     match actionqueue_runtime::remote::claimable(&a, &host, state.clock.now()) {
         Ok(runs) => Json(serde_json::json!({"runs":runs})).into_response(),
         Err(_) => StatusCode::FORBIDDEN.into_response(),
@@ -211,7 +214,16 @@ async fn claim_run(
     let Ok(mut a) = a.lock() else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
-    match actionqueue_runtime::remote::claim(&mut a, &host, request, state.clock.now(), 300) {
+    if crate::http::maintenance::maintain_locked(&state, &mut a).is_err() {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
+    match actionqueue_runtime::remote::claim_with_policy(
+        &mut a,
+        &host,
+        request,
+        state.clock.now(),
+        state.remote_policy,
+    ) {
         Ok(work) => {
             if let Err(e) = crate::http::sync_projection(&state, &a) {
                 return e;
@@ -236,8 +248,14 @@ async fn submit_result(
     let Ok(mut a) = a.lock() else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
+    if crate::http::maintenance::maintain_locked(&state, &mut a).is_err() {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
     match actionqueue_runtime::remote::submit_result(&mut a, &host, request, state.clock.now()) {
         Ok(()) => {
+            if crate::http::maintenance::maintain_locked(&state, &mut a).is_err() {
+                return StatusCode::SERVICE_UNAVAILABLE.into_response();
+            }
             if let Err(e) = crate::http::sync_projection(&state, &a) {
                 return e;
             }
@@ -269,6 +287,9 @@ async fn renew_lease(
     let Ok(mut a) = a.lock() else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
+    if crate::http::maintenance::maintain_locked(&state, &mut a).is_err() {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
     match actionqueue_runtime::remote::renew(
         &mut a,
         &host,
@@ -279,6 +300,9 @@ async fn renew_lease(
         request.expiry,
     ) {
         Ok(()) => {
+            if crate::http::maintenance::maintain_locked(&state, &mut a).is_err() {
+                return StatusCode::SERVICE_UNAVAILABLE.into_response();
+            }
             if let Err(e) = crate::http::sync_projection(&state, &a) {
                 return e;
             }
