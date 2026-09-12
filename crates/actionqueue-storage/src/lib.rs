@@ -64,3 +64,6 @@ pub mod wal;
 
 /// Target store identity and ownership.
 pub mod store;
+
+#[cfg(feature = "serde")]
+mod structural_filter;

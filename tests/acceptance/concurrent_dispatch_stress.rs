@@ -27,9 +27,8 @@ static STRESS_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 fn stress_data_dir(label: &str) -> PathBuf {
     let count = STRESS_COUNTER.fetch_add(1, Ordering::SeqCst);
-    let dir = PathBuf::from("target")
-        .join("tmp")
-        .join(format!("p6-008-stress-{label}-{}-{count}", std::process::id()));
+    let dir =
+        std::env::temp_dir().join(format!("p6-008-stress-{label}-{}-{count}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("stress data dir should be creatable");
     dir
 }

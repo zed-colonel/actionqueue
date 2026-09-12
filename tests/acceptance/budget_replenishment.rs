@@ -21,15 +21,8 @@ use actionqueue_executor_local::handler::{AttemptDisposition, ExecutorContext, E
 use actionqueue_runtime::config::{BackoffStrategyConfig, RuntimeConfig};
 use actionqueue_runtime::engine::ActionQueueEngine;
 
-static COUNTER: AtomicUsize = AtomicUsize::new(0);
-
-fn data_dir(label: &str) -> PathBuf {
-    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let dir = PathBuf::from("target")
-        .join("tmp")
-        .join(format!("7b-budget-replenish-{label}-{}-{n}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("data dir should be creatable");
-    dir
+fn data_dir(label: &str) -> tempfile::TempDir {
+    tempfile::Builder::new().prefix(label).tempdir().expect("test data dir")
 }
 
 /// First two invocations: retryable failure consuming 500 tokens each.
@@ -74,7 +67,7 @@ async fn budget_replenishment_unblocks_dispatch() {
     let clock = MockClock::new(1000);
     let call_count = Arc::new(AtomicUsize::new(0));
     let handler = ExhaustThenSucceedHandler { call_count: Arc::clone(&call_count) };
-    let engine = ActionQueueEngine::new(make_config(dir.clone()), handler);
+    let engine = ActionQueueEngine::new(make_config(dir.path().to_path_buf()), handler);
     let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap");
 
     let task_id = TaskId::new();
@@ -134,5 +127,4 @@ async fn budget_replenishment_unblocks_dispatch() {
     );
 
     boot.shutdown().expect("shutdown");
-    let _ = std::fs::remove_dir_all(&dir);
 }

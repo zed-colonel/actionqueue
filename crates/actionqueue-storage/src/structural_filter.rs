@@ -1,0 +1,200 @@
+//! Frozen structural subscription filter encoding shared by WAL and snapshots.
+//! Tags 0, 1, 2 retain their original order. Removed tag 3 is never reassigned.
+use actionqueue_core::{
+    budget::BudgetDimension, ids::TaskId, run::state::RunState, subscription::EventFilter,
+};
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) enum StructuralFilter {
+    TaskCompleted { task_id: TaskId },
+    RunStateChanged { task_id: TaskId, state: RunState },
+    BudgetThreshold { task_id: TaskId, dimension: BudgetDimension, threshold_pct: u8 },
+}
+impl From<&EventFilter> for StructuralFilter {
+    fn from(value: &EventFilter) -> Self {
+        match *value {
+            EventFilter::TaskCompleted { task_id } => Self::TaskCompleted { task_id },
+            EventFilter::RunStateChanged { task_id, state } => {
+                Self::RunStateChanged { task_id, state }
+            }
+            EventFilter::BudgetThreshold { task_id, dimension, threshold_pct } => {
+                Self::BudgetThreshold { task_id, dimension, threshold_pct }
+            }
+        }
+    }
+}
+impl From<StructuralFilter> for EventFilter {
+    fn from(value: StructuralFilter) -> Self {
+        match value {
+            StructuralFilter::TaskCompleted { task_id } => Self::TaskCompleted { task_id },
+            StructuralFilter::RunStateChanged { task_id, state } => {
+                Self::RunStateChanged { task_id, state }
+            }
+            StructuralFilter::BudgetThreshold { task_id, dimension, threshold_pct } => {
+                Self::BudgetThreshold { task_id, dimension, threshold_pct }
+            }
+        }
+    }
+}
+pub(crate) fn serialize<S: serde::Serializer>(
+    value: &EventFilter,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serde::Serialize::serialize(&StructuralFilter::from(value), serializer)
+}
+pub(crate) fn deserialize<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<EventFilter, D::Error> {
+    Ok(<StructuralFilter as serde::Deserialize>::deserialize(deserializer)?.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn retained_bytes_and_removed_tag_are_frozen() {
+        let task_id = "11111111-1111-1111-1111-111111111111".parse().unwrap();
+        for (tag, filter, suffix) in [
+            (0, EventFilter::TaskCompleted { task_id }, vec![]),
+            (1, EventFilter::RunStateChanged { task_id, state: RunState::Scheduled }, vec![0]),
+            (
+                2,
+                EventFilter::BudgetThreshold {
+                    task_id,
+                    dimension: BudgetDimension::Token,
+                    threshold_pct: 80,
+                },
+                vec![0, 80],
+            ),
+        ] {
+            let dto = StructuralFilter::from(&filter);
+            let mut fixture = vec![tag, 16];
+            fixture.extend([0x11; 16]);
+            fixture.extend(suffix);
+            assert_eq!(postcard::to_allocvec(&dto).unwrap(), fixture);
+            assert_eq!(postcard::to_allocvec(&filter).unwrap(), fixture);
+            assert_eq!(serde_json::to_vec(&dto).unwrap(), serde_json::to_vec(&filter).unwrap());
+            assert_eq!(
+                EventFilter::from(postcard::from_bytes::<StructuralFilter>(&fixture).unwrap()),
+                filter
+            );
+        }
+        // Original tag 3 followed by a postcard string; it must fail closed.
+        assert!(postcard::from_bytes::<StructuralFilter>(&[3, 1, b'x']).is_err());
+        assert!(serde_json::from_str::<StructuralFilter>(r#"{"Custom":{"key":"x"}}"#).is_err());
+    }
+}
+
+#[cfg(all(test, feature = "budget"))]
+mod recovery_tests {
+    use super::*;
+    use crate::{
+        recovery::bootstrap::recover_read_only,
+        snapshot::{
+            build::build_snapshot_from_projection,
+            writer::{SnapshotFsWriter, SnapshotWriter},
+        },
+        store::{capabilities, open_store, OpenOptions},
+        wal::{fs_writer::WalFsWriter, repair::RepairPolicy},
+    };
+    use actionqueue_core::{
+        mutation::*,
+        subscription::SubscriptionId,
+        task::{
+            run_policy::RunPolicy,
+            task_spec::{TaskPayload, TaskSpec},
+        },
+    };
+
+    #[test]
+    fn removed_filter_fails_closed_without_repair_or_snapshot_fallback() {
+        for snapshot_case in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let session =
+                open_store(dir.path(), OpenOptions::Initialize { features: capabilities() })
+                    .unwrap();
+            let mut a = session.into_authority().unwrap();
+            let task = TaskId::new();
+            let spec = TaskSpec::new(
+                task,
+                TaskPayload::new(vec![]),
+                RunPolicy::Once,
+                Default::default(),
+                Default::default(),
+            )
+            .unwrap();
+            let _ = a
+                .submit_command(
+                    MutationCommand::TaskCreate(TaskCreateCommand::new(2, spec, 1)),
+                    DurabilityPolicy::Immediate,
+                )
+                .unwrap();
+            let _ = a
+                .submit_command(
+                    MutationCommand::SubscriptionCreate(SubscriptionCreateCommand::new(
+                        3,
+                        SubscriptionId::new(),
+                        task,
+                        EventFilter::TaskCompleted { task_id: task },
+                        2,
+                    )),
+                    DurabilityPolicy::Immediate,
+                )
+                .unwrap();
+            let session = a.store_session().unwrap();
+            let wal_path = session.wal_path();
+            let snapshot_path = session.snapshot_path();
+            if snapshot_case {
+                let snapshot = build_snapshot_from_projection(a.projection(), 3).unwrap();
+                let mut writer = SnapshotFsWriter::new(session).unwrap();
+                writer.write(&snapshot).unwrap();
+                writer.close().unwrap();
+            }
+            drop(a);
+            if snapshot_case {
+                let bytes = std::fs::read(&snapshot_path).unwrap();
+                let mut envelope: serde_json::Value = serde_json::from_slice(&bytes[20..]).unwrap();
+                envelope["projection"]["subscriptions"][0]["filter"] =
+                    serde_json::json!({"Custom": {"key": "x"}});
+                let payload = serde_json::to_vec(&envelope).unwrap();
+                let mut changed = bytes[..12].to_vec();
+                changed.extend((payload.len() as u32).to_le_bytes());
+                changed.extend(crc32fast::hash(&payload).to_le_bytes());
+                changed.extend(payload);
+                std::fs::write(&snapshot_path, changed).unwrap();
+            } else {
+                let mut bytes = std::fs::read(&wal_path).unwrap();
+                let mut offset = 0;
+                for _ in 0..2 {
+                    offset += 52
+                        + u32::from_le_bytes(bytes[offset + 40..offset + 44].try_into().unwrap())
+                            as usize;
+                }
+                let mut payload = bytes[offset + 52..offset + 52 + 34].to_vec(); // two UUIDs
+                assert_eq!(bytes[offset + 52 + 34], 0); // original TaskCompleted tag
+                payload.extend([3, 1, b'x', 2]); // removed filter and timestamp
+                bytes.truncate(offset + 52);
+                bytes[offset + 40..offset + 44]
+                    .copy_from_slice(&(payload.len() as u32).to_le_bytes());
+                bytes[offset + 44..offset + 48]
+                    .copy_from_slice(&crc32fast::hash(&payload).to_le_bytes());
+                let crc = crc32fast::hash(&bytes[offset..offset + 48]);
+                bytes[offset + 48..offset + 52].copy_from_slice(&crc.to_le_bytes());
+                bytes.extend(payload);
+                std::fs::write(&wal_path, bytes).unwrap();
+            }
+            let before_wal = std::fs::read(&wal_path).unwrap();
+            let before_snapshot = std::fs::read(&snapshot_path).ok();
+            for policy in [RepairPolicy::Strict, RepairPolicy::TruncatePartial] {
+                let session = open_store(dir.path(), OpenOptions::ReadWrite).unwrap();
+                let error = recover_read_only(&session, policy).unwrap_err().to_string();
+                assert!(error.contains("variant") || error.contains("DecodeFailure"), "{error}");
+                if !snapshot_case {
+                    assert!(WalFsWriter::new_with_repair(session, policy).is_err());
+                }
+                assert_eq!(std::fs::read(&wal_path).unwrap(), before_wal);
+                assert_eq!(std::fs::read(&snapshot_path).ok(), before_snapshot);
+            }
+        }
+    }
+}

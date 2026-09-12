@@ -47,8 +47,12 @@ pub struct RunGetResponse {
     pub attempts: Vec<RunAttemptEntry>,
     /// Lease metadata if a lease is active.
     pub lease: Option<RunLeaseEntry>,
-    /// Block reason when the run is not Ready.
+    /// Dispatch block reason, including exhausted budgets on Ready runs.
     pub block_reason: Option<&'static str>,
+    /// Satisfied wait whose input is pending dispatch.
+    pub satisfied_wait_id: Option<String>,
+    /// Stable identity of the pending continuation input.
+    pub pending_context_id: Option<actionqueue_core::continuation::ResumeContextId>,
 }
 
 /// Run state history entry for the response payload.
@@ -94,6 +98,26 @@ pub struct RunLeaseEntry {
 }
 
 impl RunGetResponse {
+    fn with_dispatch_status(
+        mut self,
+        projection: &actionqueue_storage::recovery::reducer::ReplayReducer,
+        run_id: RunId,
+    ) -> Self {
+        let run = projection.get_run_instance(&run_id).expect("inspected run");
+        if run.state() == actionqueue_core::run::state::RunState::Ready
+            && projection
+                .budgets()
+                .any(|((task, _), budget)| *task == run.task_id() && budget.exhausted)
+        {
+            self.block_reason = Some("budget");
+        }
+        if let Some(context) = projection.pending_resume(run_id) {
+            self.satisfied_wait_id = context.wait_id().map(|id| id.to_string());
+            self.pending_context_id = Some(context.context_id);
+        }
+        self
+    }
+
     /// Builds a run get response from projection records.
     fn from_record(
         run_instance: &actionqueue_core::run::run_instance::RunInstance,
@@ -148,6 +172,8 @@ impl RunGetResponse {
             attempts,
             lease,
             block_reason,
+            satisfied_wait_id: None,
+            pending_context_id: None,
         }
     }
 }
@@ -212,7 +238,8 @@ pub async fn handle(
     let attempts = projection.get_attempt_history(&run_id).unwrap_or(&[]);
     let lease = projection.get_lease_metadata(&run_id);
 
-    let response = RunGetResponse::from_record(run_instance, history, attempts, lease);
+    let response = RunGetResponse::from_record(run_instance, history, attempts, lease)
+        .with_dispatch_status(&projection, run_id);
     (StatusCode::OK, Json(response)).into_response()
 }
 
@@ -528,6 +555,73 @@ mod tests {
         let lease = reducer.get_lease_metadata(&run_id);
 
         let response = RunGetResponse::from_record(run_instance, history, attempts, lease);
+        assert_eq!(response.block_reason, None);
+    }
+
+    #[test]
+    fn ready_budget_status_uses_projection_exhaustion() {
+        use actionqueue_core::budget::BudgetDimension;
+        let mut reducer = ReplayReducer::new();
+        let task_id = TaskId::new();
+        let run_id = RunId::new();
+        apply_event(
+            &mut reducer,
+            1,
+            WalEventType::TaskCreated { task_spec: task_spec(task_id), timestamp: 900 },
+        );
+        apply_event(
+            &mut reducer,
+            2,
+            WalEventType::RunCreated { run_instance: run_instance_scheduled(run_id, task_id) },
+        );
+        apply_event(
+            &mut reducer,
+            3,
+            WalEventType::RunStateChanged {
+                run_id,
+                previous_state: RunState::Scheduled,
+                new_state: RunState::Ready,
+                timestamp: 1001,
+            },
+        );
+        apply_event(
+            &mut reducer,
+            4,
+            WalEventType::BudgetAllocated {
+                task_id,
+                dimension: BudgetDimension::TimeSecs,
+                limit: 10,
+                timestamp: 1002,
+            },
+        );
+        apply_event(
+            &mut reducer,
+            5,
+            WalEventType::BudgetExhausted {
+                task_id,
+                dimension: BudgetDimension::TimeSecs,
+                timestamp: 1003,
+            },
+        );
+        let response =
+            RunGetResponse::from_record(reducer.get_run_instance(&run_id).unwrap(), &[], &[], None)
+                .with_dispatch_status(&reducer, run_id);
+        assert_eq!(response.block_reason, Some("budget"));
+        assert_eq!(response.state, RunState::Ready);
+        assert!(response.lease.is_none());
+        apply_event(
+            &mut reducer,
+            6,
+            WalEventType::BudgetReplenished {
+                task_id,
+                dimension: BudgetDimension::TimeSecs,
+                new_limit: 20,
+                timestamp: 1004,
+            },
+        );
+        let response =
+            RunGetResponse::from_record(reducer.get_run_instance(&run_id).unwrap(), &[], &[], None)
+                .with_dispatch_status(&reducer, run_id);
         assert_eq!(response.block_reason, None);
     }
 

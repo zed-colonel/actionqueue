@@ -25,13 +25,8 @@ use actionqueue_executor_local::handler::{AttemptDisposition, ExecutorContext, E
 use actionqueue_runtime::config::{BackoffStrategyConfig, RuntimeConfig};
 use actionqueue_runtime::engine::ActionQueueEngine;
 
-static COUNTER: AtomicUsize = AtomicUsize::new(0);
-
-fn data_dir(label: &str) -> PathBuf {
-    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let dir = std::env::temp_dir().join(format!("7h-cascade-{label}-{}-{n}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("data dir");
-    dir
+fn data_dir(label: &str) -> tempfile::TempDir {
+    tempfile::Builder::new().prefix(label).tempdir().expect("test data dir")
 }
 
 /// Coordinator handler:
@@ -81,7 +76,7 @@ async fn coordinator_budget_exhaustion_blocks_resume_dispatch() {
     let parent_id = TaskId::new();
     let call_count = Arc::new(AtomicUsize::new(0));
     let handler = CascadeHandler { call_count: Arc::clone(&call_count) };
-    let engine = ActionQueueEngine::new(make_config(dir.clone()), handler);
+    let engine = ActionQueueEngine::new(make_config(dir.path().to_path_buf()), handler);
     let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap");
 
     // Submit coordinator task with 500-token budget.
@@ -158,5 +153,4 @@ async fn coordinator_budget_exhaustion_blocks_resume_dispatch() {
     assert_eq!(*child_state, RunState::Completed, "child must be Completed");
 
     boot.shutdown().expect("shutdown");
-    let _ = std::fs::remove_dir_all(&dir);
 }
