@@ -668,3 +668,108 @@ fn exact_encoded_record_limit_and_cumulative_signal_quota_are_enforced() {
     assert_eq!(seq(&a), before);
     assert_eq!(a.projection().signals().statistics().retained, 0);
 }
+
+#[derive(Clone)]
+struct ExpiryClock(std::sync::Arc<std::sync::atomic::AtomicU64>);
+impl actionqueue_core::time::clock::Clock for ExpiryClock {
+    fn now(&self) -> u64 {
+        self.0.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+struct ExpiryHandler(tokio::sync::mpsc::UnboundedSender<()>);
+impl actionqueue_executor_local::handler::ExecutorHandler for ExpiryHandler {
+    fn execute(
+        &self,
+        _: actionqueue_executor_local::handler::ExecutorContext,
+    ) -> AttemptDisposition {
+        let disposition =
+            AttemptDisposition::complete(Some(DataRef::from_bytes(vec![42]).unwrap()));
+        self.0.send(()).unwrap();
+        disposition
+    }
+}
+
+// F-009: a delayed scheduler must retire expired ownership even when its handler has
+// returned. Both retry allowance and a shared concurrency key must remain usable.
+#[tokio::test]
+async fn delayed_tick_recovers_expired_execution_and_advances_queued_task() {
+    use actionqueue_runtime::{
+        config::{BackoffStrategyConfig, RuntimeConfig},
+        engine::ActionQueueEngine,
+    };
+    use std::{
+        sync::{
+            atomic::{AtomicU64, Ordering},
+            Arc,
+        },
+        time::Duration,
+    };
+    for max_attempts in [1, 2] {
+        for delayed_time in [1003, 1009] {
+            let dir = tempfile::tempdir().unwrap();
+            let clock = ExpiryClock(Arc::new(AtomicU64::new(1000)));
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            let mut boot = ActionQueueEngine::new(
+                RuntimeConfig {
+                    data_dir: dir.path().into(),
+                    dispatch_concurrency: std::num::NonZeroUsize::new(1).unwrap(),
+                    lease_timeout_secs: 3,
+                    backoff_strategy: BackoffStrategyConfig::Fixed { interval: Duration::ZERO },
+                    ..Default::default()
+                },
+                ExpiryHandler(tx),
+            )
+            .bootstrap_with_clock(clock.clone())
+            .unwrap();
+            let mut first = admission_support::request(1).task_spec().clone();
+            first
+                .set_constraints(
+                    TaskConstraints::new(max_attempts, None, Some("expiry-key".into())).unwrap(),
+                )
+                .unwrap();
+            let first_id = first.id();
+            boot.submit_task(first).unwrap();
+            assert_eq!(boot.tick().await.unwrap().dispatched, 1);
+            tokio::time::timeout(Duration::from_secs(10), rx.recv()).await.unwrap().unwrap();
+            let mut second = admission_support::request(2).task_spec().clone();
+            second
+                .set_constraints(TaskConstraints::new(1, None, Some("expiry-key".into())).unwrap())
+                .unwrap();
+            let second_id = second.id();
+            boot.submit_task(second).unwrap();
+            clock.0.store(delayed_time, Ordering::SeqCst);
+            let _ = boot.tick().await.unwrap();
+            let _ = tokio::time::timeout(Duration::from_secs(10), boot.run_until_idle())
+                .await
+                .unwrap()
+                .unwrap();
+            let run = boot.projection().runs_for_task(first_id).next().unwrap();
+            assert_eq!(
+                run.state(),
+                if max_attempts == 1 { RunState::Failed } else { RunState::Completed }
+            );
+            assert_eq!(run.attempt_count(), max_attempts);
+            assert_eq!(run.failure_attempt_count(), 1);
+            assert!(boot.projection().get_lease(&run.id()).is_none());
+            let history = boot.projection().get_attempt_history(&run.id()).unwrap();
+            assert_eq!(history[0].result(), Some(AttemptResultKind::Failure));
+            assert_eq!(history[0].finished_at(), Some(delayed_time));
+            assert_eq!(
+                history[0].finish_origin(),
+                actionqueue_core::continuation::AttemptFinishOrigin::Recovery
+            );
+            assert!(history[0].output_ref().is_none());
+            assert!(history[0].disposition.is_none(), "stale effects must never commit");
+            let second = boot.projection().runs_for_task(second_id).next().unwrap();
+            assert_eq!(second.state(), RunState::Completed);
+            assert_eq!(second.attempt_count(), 1);
+            assert_eq!(second.failure_attempt_count(), 0);
+            assert_eq!(boot.projection().key_reservations().count(), 0);
+            let digest = boot.projection().projection_digest().unwrap();
+            boot.shutdown().unwrap();
+            let a = s::reopen(dir.path());
+            assert_eq!(a.projection().projection_digest().unwrap(), digest);
+            parity(&a);
+        }
+    }
+}

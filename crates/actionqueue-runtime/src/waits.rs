@@ -110,80 +110,111 @@ pub fn recover_execution<W: WalWriter>(
         .collect();
     ids.sort();
     for id in ids {
-        let state = *a.projection().get_run_state(&id).unwrap();
-        if state == RunState::Running {
-            if let Some(attempt) =
-                a.projection().get_run_instance(&id).unwrap().current_attempt_id()
-            {
-                let _ = a.submit_command(
-                    MutationCommand::AttemptFinish(
-                        AttemptFinishCommand::new(
-                            next(a)?,
-                            id,
-                            attempt,
-                            AttemptOutcome::failure(crate::config::EXECUTOR_INTERRUPTED),
-                            now,
-                        )
-                        .with_recovery_origin(),
-                    ),
-                    DurabilityPolicy::Immediate,
-                )?;
-            }
-        }
-        if let Some((owner, expiry)) = a.projection().get_lease(&id).cloned() {
+        recover_run(a, id, now)?;
+    }
+    Ok(())
+}
+/// Live expiry recovery is selected from durable ownership, never from a worker result.
+/// The mutation owner runs this before heartbeats and dispatch. Bootstrap still recovers
+/// all interrupted executions, including those whose leases have not yet elapsed.
+pub(crate) fn recover_expired_execution<W: WalWriter>(
+    a: &mut StorageMutationAuthority<W, ReplayReducer>,
+    now: u64,
+) -> Result<Vec<(actionqueue_core::ids::RunId, Option<actionqueue_core::ids::AttemptId>)>, WaitError>
+{
+    next(a)?;
+    let mut expired: Vec<_> = a
+        .projection()
+        .run_instances()
+        .filter(|run| matches!(run.state(), RunState::Running | RunState::Leased))
+        .filter(|run| {
+            a.projection().get_lease_metadata(&run.id()).is_some_and(|lease| now >= lease.expiry())
+        })
+        .map(|run| (run.id(), run.current_attempt_id()))
+        .collect();
+    expired.sort_by_key(|(run_id, _)| *run_id);
+    for (id, _) in &expired {
+        recover_run(a, *id, now)?;
+    }
+    Ok(expired)
+}
+
+// Each durable prefix uses the same restart-safe recovery path as bootstrap. Finishing
+// the accepted attempt accounts one failure; releasing its lease and transitioning the
+// run then applies the retry cap and concurrency reservation policy.
+fn recover_run<W: WalWriter>(
+    a: &mut StorageMutationAuthority<W, ReplayReducer>,
+    id: actionqueue_core::ids::RunId,
+    now: u64,
+) -> Result<(), WaitError> {
+    let state = *a.projection().get_run_state(&id).unwrap();
+    if state == RunState::Running {
+        if let Some(attempt) = a.projection().get_run_instance(&id).unwrap().current_attempt_id() {
             let _ = a.submit_command(
-                MutationCommand::LeaseRelease(LeaseReleaseCommand::new(
-                    next(a)?,
-                    id,
-                    owner,
-                    expiry,
-                    now,
-                )),
+                MutationCommand::AttemptFinish(
+                    AttemptFinishCommand::new(
+                        next(a)?,
+                        id,
+                        attempt,
+                        AttemptOutcome::failure(crate::config::EXECUTOR_INTERRUPTED),
+                        now,
+                    )
+                    .with_recovery_origin(),
+                ),
                 DurabilityPolicy::Immediate,
             )?;
         }
-        let target = if state == RunState::Leased {
-            RunState::Ready
-        } else if !a.projection().dispatch_has_started(id) {
-            RunState::RetryWait
-        } else {
-            let r = a.projection().get_run_instance(&id).unwrap();
-            let last = a
-                .projection()
-                .get_attempt_history(&id)
-                .and_then(|h| h.last())
-                .and_then(|a| a.result());
-            if last == Some(AttemptResultKind::Success) {
-                RunState::Completed
-            } else if last == Some(AttemptResultKind::Suspended) {
-                RunState::Suspended
-            } else {
-                let failures = r.failure_attempt_count() as usize;
-                if failures
-                    < a.projection().get_task(&r.task_id()).unwrap().constraints().max_attempts()
-                        as usize
-                {
-                    RunState::RetryWait
-                } else {
-                    RunState::Failed
-                }
-            }
-        };
-        let state = *a.projection().get_run_state(&id).unwrap();
-        if state == target {
-            continue;
-        }
+    }
+    if let Some((owner, expiry)) = a.projection().get_lease(&id).cloned() {
         let _ = a.submit_command(
-            MutationCommand::RunStateTransition(RunStateTransitionCommand::new(
+            MutationCommand::LeaseRelease(LeaseReleaseCommand::new(
                 next(a)?,
                 id,
-                state,
-                target,
+                owner,
+                expiry,
                 now,
             )),
             DurabilityPolicy::Immediate,
         )?;
     }
+    let target = if state == RunState::Leased {
+        RunState::Ready
+    } else if !a.projection().dispatch_has_started(id) {
+        RunState::RetryWait
+    } else {
+        let r = a.projection().get_run_instance(&id).unwrap();
+        let last =
+            a.projection().get_attempt_history(&id).and_then(|h| h.last()).and_then(|a| a.result());
+        if last == Some(AttemptResultKind::Success) {
+            RunState::Completed
+        } else if last == Some(AttemptResultKind::Suspended) {
+            RunState::Suspended
+        } else {
+            let failures = r.failure_attempt_count() as usize;
+            if failures
+                < a.projection().get_task(&r.task_id()).unwrap().constraints().max_attempts()
+                    as usize
+            {
+                RunState::RetryWait
+            } else {
+                RunState::Failed
+            }
+        }
+    };
+    let state = *a.projection().get_run_state(&id).unwrap();
+    if state == target {
+        return Ok(());
+    }
+    let _ = a.submit_command(
+        MutationCommand::RunStateTransition(RunStateTransitionCommand::new(
+            next(a)?,
+            id,
+            state,
+            target,
+            now,
+        )),
+        DurabilityPolicy::Immediate,
+    )?;
     Ok(())
 }
 /// Complete legacy partial task controls and descendant/dependency cascades before matching.
