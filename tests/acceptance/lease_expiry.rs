@@ -94,8 +94,8 @@ async fn assert_http_run_truth(
     expected_attempt_ids: &[String],
     expected_block_reason: Option<&str>,
 ) {
-    let runs = support::get_json(router, "/api/v1/runs").await;
-    let run_entries = runs["runs"]
+    let runs = support::get_json(router, "/api/v2/runs").await;
+    let run_entries = runs["items"]
         .as_array()
         .expect("runs list should be an array")
         .iter()
@@ -109,7 +109,7 @@ async fn assert_http_run_truth(
         u64::try_from(expected_attempt_ids.len()).expect("attempt length should fit in u64")
     );
 
-    let run_get_path = format!("/api/v1/runs/{run_id}");
+    let run_get_path = format!("/api/v2/runs/{run_id}");
     let run_get = support::get_json(router, &run_get_path).await;
     assert_eq!(run_get["run_id"], run_id.to_string());
     assert_eq!(run_get["task_id"], task_id_literal);
@@ -119,7 +119,7 @@ async fn assert_http_run_truth(
         u64::try_from(expected_attempt_ids.len()).expect("attempt length should fit in u64")
     );
 
-    let attempt_ids = run_get["attempts"]
+    let attempt_ids = run_get["attempts"]["items"]
         .as_array()
         .expect("attempts should be an array")
         .iter()

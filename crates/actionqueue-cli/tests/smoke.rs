@@ -5,7 +5,7 @@ use std::process::Command;
 
 /// Returns command invocation for `actionqueue-cli` binary under test.
 fn cli() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_actionqueue-cli"))
+    Command::new(env!("CARGO_BIN_EXE_actionqueue"))
 }
 
 fn unique_data_dir(label: &str) -> PathBuf {
@@ -18,201 +18,31 @@ fn unique_data_dir(label: &str) -> PathBuf {
 }
 
 #[test]
-fn daemon_command_json_success_uses_stdout_and_zero_exit() {
-    let data_dir = unique_data_dir("smoke-daemon-json");
-
-    let output = cli()
-        .args([
-            "daemon",
-            "--data-dir",
-            data_dir.to_str().expect("data dir path should be UTF-8"),
-            "--bind",
-            "127.0.0.1:9898",
-            "--json",
-        ])
-        .output()
-        .expect("daemon command should execute");
-
-    assert!(output.status.success(), "daemon command should exit with code 0");
-
-    let stdout = String::from_utf8(output.stdout).expect("stdout should be valid UTF-8");
-    let stderr = String::from_utf8(output.stderr).expect("stderr should be valid UTF-8");
-
-    assert!(stderr.trim().is_empty(), "success path must keep stderr empty");
-
-    let parsed: serde_json::Value =
-        serde_json::from_str(&stdout).expect("daemon --json output should be valid JSON");
-    assert_eq!(parsed["command"], "daemon");
-    assert_eq!(parsed["bind_address"], "127.0.0.1:9898");
-    assert!(parsed["ready"].is_boolean());
-}
-
-#[test]
-fn submit_once_json_success_creates_one_run() {
-    let data_dir = unique_data_dir("smoke-submit-once");
-
-    let output = cli()
-        .args([
-            "submit",
-            "--data-dir",
-            data_dir.to_str().expect("data dir path should be UTF-8"),
-            "--task-id",
-            "123e4567-e89b-12d3-a456-426614174000",
-            "--run-policy",
-            "once",
-            "--json",
-        ])
-        .output()
-        .expect("submit command should execute");
-
-    assert!(output.status.success(), "submit once should succeed");
-
-    let stdout = String::from_utf8(output.stdout).expect("stdout should be valid UTF-8");
-    let stderr = String::from_utf8(output.stderr).expect("stderr should be valid UTF-8");
-    assert!(stderr.trim().is_empty(), "success path must keep stderr empty");
-
-    let parsed: serde_json::Value =
-        serde_json::from_str(&stdout).expect("submit --json output should be valid JSON");
-    assert_eq!(parsed["command"], "submit");
-    assert_eq!(parsed["run_policy"], "once");
-    assert_eq!(parsed["runs_created"], 1);
-}
-
-#[test]
-fn submit_repeat_json_success_creates_repeat_runs() {
-    let data_dir = unique_data_dir("smoke-submit-repeat");
-
-    let output = cli()
-        .args([
-            "submit",
-            "--data-dir",
-            data_dir.to_str().expect("data dir path should be UTF-8"),
-            "--task-id",
-            "223e4567-e89b-12d3-a456-426614174000",
-            "--run-policy",
-            "repeat:3:60",
-            "--json",
-        ])
-        .output()
-        .expect("submit repeat command should execute");
-
-    assert!(output.status.success(), "submit repeat should succeed");
-
-    let stdout = String::from_utf8(output.stdout).expect("stdout should be valid UTF-8");
-    let parsed: serde_json::Value =
-        serde_json::from_str(&stdout).expect("submit repeat JSON should parse");
-    assert_eq!(parsed["command"], "submit");
-    assert_eq!(parsed["run_policy"], "repeat:3:60");
-    assert_eq!(parsed["runs_created"], 3);
-}
-
-#[test]
-fn stats_formats_return_consistent_deterministic_fields() {
-    let data_dir = unique_data_dir("smoke-stats-json");
-    drop(
-        actionqueue_storage::store::open_store(
-            &data_dir,
-            actionqueue_storage::store::OpenOptions::Initialize { features: vec![] },
-        )
-        .unwrap(),
-    );
-
-    let output = cli()
-        .args([
-            "stats",
-            "--data-dir",
-            data_dir.to_str().expect("data dir path should be UTF-8"),
-            "--format",
-            "json",
-        ])
-        .output()
-        .expect("stats command should execute");
-
-    assert!(output.status.success(), "stats json should succeed");
-    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
-
-    let parsed: serde_json::Value =
-        serde_json::from_str(&stdout).expect("stats JSON should parse deterministically");
-    assert_eq!(parsed["command"], "stats");
-    assert!(parsed["summary"]["total_tasks"].is_u64());
-    assert!(parsed["summary"]["total_runs"].is_u64());
-    assert!(parsed["summary"]["latest_sequence"].is_u64());
-    assert!(parsed["summary"]["runs_by_state"].is_object());
-
-    let text_output = cli()
-        .args(["stats", "--data-dir", data_dir.to_str().unwrap(), "--format", "text"])
-        .output()
-        .expect("stats text command should execute");
-    assert!(text_output.status.success());
-    let text = String::from_utf8(text_output.stdout).unwrap();
-    let mut expected =
-        vec!["command=stats".to_string(), format!("data_dir={}", data_dir.display())];
-    for key in ["total_tasks", "total_runs", "latest_sequence"] {
-        expected.push(format!("{key}={}", parsed["summary"][key]));
-    }
-    for state in [
-        "scheduled",
-        "ready",
-        "leased",
-        "running",
-        "retry_wait",
-        "suspended",
-        "awaiting",
-        "completed",
-        "failed",
-        "canceled",
-    ] {
-        expected.push(format!("runs_{state}={}", parsed["summary"]["runs_by_state"][state]));
-    }
-    expected.push(format!("attempts_total={}", parsed["summary"]["attempts_total"]));
-    assert_eq!(text.lines().collect::<Vec<_>>(), expected);
-}
-
-#[test]
-fn invalid_usage_emits_structured_stderr_and_non_zero_exit() {
-    let output = cli()
-        .args(["submit", "--run-policy", "once"])
-        .output()
-        .expect("invalid usage invocation should execute");
-
-    assert!(!output.status.success(), "invalid usage should be non-zero");
-    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
-    let payload: serde_json::Value =
-        serde_json::from_str(&stderr).expect("stderr payload should be JSON");
-
-    assert_eq!(payload["error_kind"], "validation");
-    assert_eq!(payload["error_code"], "input_validation_failed");
-    assert!(payload["message"].as_str().is_some());
-}
-
-#[test]
 fn storage_commands_verify_roundtrip_and_never_initialize_inspection() {
     let base = unique_data_dir("smoke-storage");
     let source = base.join("source");
     let backup = base.join("backup");
     let dest = base.join("restored");
     let refused = cli()
-        .args(["storage", "inspect", "--data-dir", source.to_str().unwrap(), "--json"])
+        .args(["store", "inspect", "--data-dir", source.to_str().unwrap(), "--json"])
         .output()
         .unwrap();
     assert!(!refused.status.success());
     assert!(!source.exists());
+    let request_file = base.join("request.json");
+    std::fs::create_dir_all(&base).unwrap();
+    std::fs::write(&request_file, serde_json::to_vec(&request()).unwrap()).unwrap();
     let submitted = cli()
-        .args([
-            "submit",
-            "--data-dir",
-            source.to_str().unwrap(),
-            "--task-id",
-            "123e4567-e89b-12d3-a456-426614174099",
-            "--run-policy",
-            "once",
-            "--json",
-        ])
+        .args(["ensure-task", "--offline", "--data-dir"])
+        .arg(&source)
+        .arg("--file")
+        .arg(&request_file)
+        .arg("--json")
         .output()
         .unwrap();
     assert!(submitted.status.success(), "{}", String::from_utf8_lossy(&submitted.stderr));
     let inspect = cli()
-        .args(["storage", "inspect", "--data-dir", source.to_str().unwrap(), "--json"])
+        .args(["store", "inspect", "--data-dir", source.to_str().unwrap(), "--json"])
         .output()
         .unwrap();
     assert!(inspect.status.success());
@@ -220,7 +50,6 @@ fn storage_commands_verify_roundtrip_and_never_initialize_inspection() {
     assert_eq!(before["task_count"], 1);
     let copied = cli()
         .args([
-            "storage",
             "backup",
             "--data-dir",
             source.to_str().unwrap(),
@@ -233,7 +62,6 @@ fn storage_commands_verify_roundtrip_and_never_initialize_inspection() {
     assert!(copied.status.success(), "{}", String::from_utf8_lossy(&copied.stderr));
     let restored = cli()
         .args([
-            "storage",
             "restore",
             "--input",
             backup.to_str().unwrap(),
@@ -245,7 +73,7 @@ fn storage_commands_verify_roundtrip_and_never_initialize_inspection() {
         .unwrap();
     assert!(restored.status.success(), "{}", String::from_utf8_lossy(&restored.stderr));
     let after = cli()
-        .args(["storage", "inspect", "--data-dir", dest.to_str().unwrap(), "--json"])
+        .args(["store", "inspect", "--data-dir", dest.to_str().unwrap(), "--json"])
         .output()
         .unwrap();
     let after: serde_json::Value = serde_json::from_slice(&after.stdout).unwrap();
@@ -253,7 +81,6 @@ fn storage_commands_verify_roundtrip_and_never_initialize_inspection() {
     assert_eq!(after["manifest"]["store_id"], before["manifest"]["store_id"]);
     let refused = cli()
         .args([
-            "storage",
             "restore",
             "--input",
             backup.to_str().unwrap(),
@@ -309,7 +136,7 @@ fn restore_rejects_fifo_descriptor_and_inventory_without_blocking() {
         fs::remove_file(&path).unwrap();
         assert!(Command::new("mkfifo").arg(&path).status().unwrap().success());
         let mut child = cli()
-            .args(["storage", "restore", "--input"])
+            .args(["restore", "--input"])
             .arg(&backup)
             .arg("--data-dir")
             .arg(&dest)
@@ -353,35 +180,172 @@ fn restore_rejects_fifo_descriptor_and_inventory_without_blocking() {
     fs::remove_dir_all(base).unwrap();
 }
 
-#[test]
-fn submit_retry_reports_original_admission_and_changed_meaning_conflicts() {
-    let data_dir = unique_data_dir("admission-retry");
-    let run = |policy| {
-        cli()
-            .args([
-                "submit",
-                "--task-id",
-                "11111111-1111-4111-8111-111111111111",
-                "--run-policy",
-                policy,
-                "--data-dir",
-                data_dir.to_str().unwrap(),
-                "--json",
-            ])
-            .output()
-            .unwrap()
+fn request() -> actionqueue_core::admission::EnsureTaskRequest {
+    use actionqueue_core::{
+        admission::EnsureTaskRequest,
+        ids::TaskId,
+        task::{
+            constraints::TaskConstraints,
+            metadata::TaskMetadata,
+            run_policy::RunPolicy,
+            task_spec::{TaskPayload, TaskSpec},
+        },
     };
-    let first = run("once");
-    assert!(first.status.success(), "{}", String::from_utf8_lossy(&first.stderr));
-    let duplicate = run("once");
-    assert!(duplicate.status.success());
-    let original: serde_json::Value = serde_json::from_slice(&first.stdout).unwrap();
-    let repeated: serde_json::Value = serde_json::from_slice(&duplicate.stdout).unwrap();
-    assert_eq!(original["admission_status"], "created");
-    assert_eq!(repeated["admission_status"], "already_exists");
-    assert_eq!(original["admission_sequence"], repeated["admission_sequence"]);
-    assert_eq!(original["latest_sequence"], repeated["latest_sequence"]);
-    assert_eq!(repeated["runs_created"], 0);
-    assert!(!run("repeat:2:5").status.success());
-    let _ = std::fs::remove_dir_all(data_dir);
+    EnsureTaskRequest::for_task(
+        TaskSpec::new(
+            TaskId::new(),
+            TaskPayload::new(b"CLI_SECRET_PAYLOAD".to_vec()),
+            RunPolicy::Once,
+            TaskConstraints::default(),
+            TaskMetadata::default(),
+        )
+        .unwrap(),
+        vec![],
+    )
+    .unwrap()
+}
+#[test]
+fn canonical_offline_admission_retry_conflict_and_redaction() {
+    let base = unique_data_dir("aq12-offline");
+    std::fs::create_dir_all(&base).unwrap();
+    let store = base.join("store");
+    let file = base.join("request.json");
+    let q = request();
+    std::fs::write(&file, serde_json::to_vec(&q).unwrap()).unwrap();
+    for result in ["Created", "AlreadyExists"] {
+        let out = cli()
+            .args(["ensure-task", "--offline", "--data-dir"])
+            .arg(&store)
+            .arg("--file")
+            .arg(&file)
+            .arg("--json")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert!(v[result].is_object());
+    }
+    let out = cli()
+        .args(["task", "inspect", &q.task_spec().id().to_string(), "--offline", "--data-dir"])
+        .arg(&store)
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("CLI_SECRET_PAYLOAD"));
+    let mut changed = q.task_spec().clone();
+    changed.set_payload(actionqueue_core::task::task_spec::TaskPayload::new(
+        b"DIFFERENT_SECRET".to_vec(),
+    ));
+    let changed = actionqueue_core::admission::EnsureTaskRequest::new(
+        q.admission_key().clone(),
+        changed,
+        vec![],
+        q.causal_context().clone(),
+        None,
+    )
+    .unwrap();
+    std::fs::write(&file, serde_json::to_vec(&changed).unwrap()).unwrap();
+    let out = cli()
+        .args(["ensure-task", "--offline", "--data-dir"])
+        .arg(&store)
+        .arg("--file")
+        .arg(&file)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(4));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("conflict"));
+    assert!(!String::from_utf8_lossy(&out.stderr).contains("DIFFERENT_SECRET"));
+    for old in ["submit", "stats", "storage"] {
+        assert!(!cli().arg(old).output().unwrap().status.success());
+    }
+    std::fs::remove_dir_all(base).unwrap();
+}
+#[cfg(unix)]
+#[test]
+fn daemon_serves_authenticated_cli_requests_and_releases_store_on_sigterm() {
+    use std::{
+        io::{BufRead, BufReader},
+        process::Stdio,
+        time::{Duration, Instant},
+    };
+    let base = unique_data_dir("aq12-serve");
+    std::fs::create_dir_all(&base).unwrap();
+    let store = base.join("store");
+    let auth = base.join("auth.json");
+    let token = base.join("token");
+    let q = request();
+    let file = base.join("request.json");
+    std::fs::write(&file, serde_json::to_vec(&q).unwrap()).unwrap();
+    let secret = "0123456789abcdef0123456789abcdef";
+    std::fs::write(&token, secret).unwrap();
+    let attribution = actionqueue_core::causal::ControlMutationContext::new(
+        actionqueue_core::bounded::OpaqueRef::new("operator").unwrap(),
+    );
+    std::fs::write(&auth,serde_json::to_vec(&serde_json::json!([{"token":secret,"actor_id":null,"scope":"SingleTenant","attribution":attribution}])).unwrap()).unwrap();
+    let reservation = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = reservation.local_addr().unwrap().to_string();
+    drop(reservation);
+    let mut child = cli()
+        .args(["daemon", "--data-dir"])
+        .arg(&store)
+        .args(["--bind", &address, "--enable-control", "--auth-file"])
+        .arg(&auth)
+        .arg("--json")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines() {
+            if let Ok(line) = line {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
+                    if v["bind_address"].is_string() {
+                        let _ = tx.send(v);
+                        break;
+                    }
+                }
+            }
+        }
+    });
+    let startup = match rx.recv_timeout(Duration::from_secs(10)) {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = child.kill();
+            let output = child.wait_with_output().unwrap();
+            panic!("startup failed {e}: {}", String::from_utf8_lossy(&output.stderr))
+        }
+    };
+    let url = format!("http://{}", startup["bind_address"].as_str().unwrap());
+    let out = cli()
+        .args(["ensure-task", "--daemon", &url, "--token-file"])
+        .arg(&token)
+        .arg("--file")
+        .arg(&file)
+        .arg("--json")
+        .output()
+        .unwrap();
+    let denied = cli().args(["store", "inspect", "--data-dir"]).arg(&store).output().unwrap();
+    assert!(Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .unwrap()
+        .success());
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while child.try_wait().unwrap().is_none() {
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            panic!("shutdown timed out");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(!denied.status.success());
+    let after =
+        cli().args(["store", "inspect", "--data-dir"]).arg(&store).arg("--json").output().unwrap();
+    assert!(after.status.success(), "{}", String::from_utf8_lossy(&after.stderr));
+    assert!(!String::from_utf8_lossy(&out.stdout).contains(secret));
+    std::fs::remove_dir_all(base).unwrap();
 }

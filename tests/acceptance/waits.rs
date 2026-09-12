@@ -943,9 +943,9 @@ async fn daemon_run_and_task_cancellation_resolve_waits_through_compound_control
         )
         .unwrap();
         let path = if task_control {
-            format!("/api/v1/tasks/{task}/cancel")
+            format!("/api/v2/tasks/{task}:cancel")
         } else {
-            format!("/api/v1/runs/{r}/cancel")
+            format!("/api/v2/runs/{r}:cancel")
         };
         let response = state
             .http_router()

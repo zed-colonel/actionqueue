@@ -3,8 +3,6 @@
 use serde::Serialize;
 
 pub mod daemon;
-pub mod stats;
-pub mod submit;
 
 /// Stable classification for CLI failure lanes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -128,3 +126,5 @@ pub fn resolve_data_dir(override_dir: Option<&std::path::Path>) -> std::path::Pa
 }
 
 pub mod storage;
+
+pub mod api;

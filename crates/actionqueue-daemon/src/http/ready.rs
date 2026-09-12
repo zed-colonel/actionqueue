@@ -76,6 +76,18 @@ impl ReadyResponse {
 /// It reflects the bootstrap state contained in RouterState.
 #[tracing::instrument(skip_all)]
 pub async fn handle(state: State<super::RouterState>) -> impl IntoResponse {
+    let failed = state.operational_failed.load(std::sync::atomic::Ordering::Acquire)
+        || state.shared_projection.is_poisoned()
+        || state
+            .control_authority
+            .as_ref()
+            .is_some_and(|a| a.lock().map(|a| a.recovery_required()).unwrap_or(true));
+    if failed {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ReadyResponse::not_ready("recovery_required")),
+        );
+    }
     if state.ready_status.is_ready() {
         (StatusCode::OK, Json(ReadyResponse::ready()))
     } else {

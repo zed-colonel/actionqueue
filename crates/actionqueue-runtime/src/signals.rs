@@ -60,7 +60,7 @@ pub fn admit_signal<W: WalWriter>(
     authority: &mut StorageMutationAuthority<W, ReplayReducer>,
     request: AdmitSignalRequest,
     ingress: SignalIngressContext,
-    clock: &impl Clock,
+    clock: &(impl Clock + ?Sized),
 ) -> Result<AdmitSignalOutcome, SignalAdmissionError> {
     let mut envelope = request.envelope(&ingress, 0);
     if let Some(outcome) = authority.lookup_signal(&envelope)? {
@@ -91,7 +91,7 @@ fn pin_command<W: WalWriter>(
     signal_id: SignalId,
     pin_id: SignalPinId,
     ingress: SignalIngressContext,
-    clock: &impl Clock,
+    clock: &(impl Clock + ?Sized),
 ) -> SignalPinCommand {
     // Saturated expected sequence still permits the authority's idempotent no-op path.
     let expected_sequence = authority.projection().latest_sequence().saturating_add(1);
@@ -116,7 +116,7 @@ pub fn pin_signal<W: WalWriter>(
     signal_id: SignalId,
     pin_id: SignalPinId,
     ingress: SignalIngressContext,
-    clock: &impl Clock,
+    clock: &(impl Clock + ?Sized),
 ) -> Result<usize, SignalAdmissionError> {
     let command = pin_command(authority, signal_id, pin_id, ingress, clock);
     retention_result(
@@ -130,7 +130,7 @@ pub fn unpin_signal<W: WalWriter>(
     signal_id: SignalId,
     pin_id: SignalPinId,
     ingress: SignalIngressContext,
-    clock: &impl Clock,
+    clock: &(impl Clock + ?Sized),
 ) -> Result<usize, SignalAdmissionError> {
     let command = pin_command(authority, signal_id, pin_id, ingress, clock);
     retention_result(
@@ -143,7 +143,7 @@ pub fn retire_signals<W: WalWriter>(
     authority: &mut StorageMutationAuthority<W, ReplayReducer>,
     sequences: Vec<SignalSequence>,
     ingress: SignalIngressContext,
-    clock: &impl Clock,
+    clock: &(impl Clock + ?Sized),
 ) -> Result<usize, SignalAdmissionError> {
     let c = RetireSignalsCommand {
         expected_sequence: authority.projection().latest_sequence().saturating_add(1),

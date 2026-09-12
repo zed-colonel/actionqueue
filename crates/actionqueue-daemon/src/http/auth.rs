@@ -27,7 +27,6 @@ pub async fn authenticate(
     if !state.router_config.control_enabled {
         return StatusCode::NOT_FOUND.into_response();
     }
-    #[cfg(feature = "actor")]
     super::maintenance::start(&state);
     let Some(hook) = &state.host_authenticator else {
         return StatusCode::UNAUTHORIZED.into_response();
@@ -41,14 +40,12 @@ pub async fn authenticate(
 }
 
 /// Authentication for inspection is independent of the control-enable switch.
-/// Legacy anonymous inspection is restricted to explicit non-platform stores
-/// without an authentication hook; a platform store always fails closed.
+/// Every store profile fails closed when no host hook is configured.
 pub async fn authenticate_inspection(
     State(state): State<RouterState>,
     mut request: Request,
     next: Next,
 ) -> Response {
-    let platform = platform_profile(&state);
     if let Some(hook) = &state.host_authenticator {
         match hook(request.headers(), request.uri()) {
             Ok(host) => {
@@ -56,38 +53,11 @@ pub async fn authenticate_inspection(
             }
             Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
         }
-    } else if platform {
+    } else {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     next.run(request).await
 }
-fn platform_profile(state: &RouterState) -> bool {
-    state
-        .store_session
-        .as_ref()
-        .is_some_and(|s| s.manifest().features.iter().any(|f| f == "platform"))
-}
-/// Authorize against the locked response projection before target lookup. In
-/// single-tenant anonymous mode absence denotes exactly the single namespace.
-pub(crate) fn inspection_scope(
-    state: &RouterState,
-    projection: &actionqueue_storage::recovery::reducer::ReplayReducer,
-    host: Option<&HostControlContext>,
-) -> Result<Option<actionqueue_core::ids::TenantId>, Response> {
-    let platform = platform_profile(state);
-    match host {
-        Some(host) => actionqueue_storage::mutation::control::authorize_projection(
-            projection,
-            platform,
-            host,
-            actionqueue_core::control::QueueAction::InspectTask,
-        )
-        .map_err(|_| StatusCode::FORBIDDEN.into_response()),
-        None if !platform && state.host_authenticator.is_none() => Ok(None),
-        None => Err(StatusCode::UNAUTHORIZED.into_response()),
-    }
-}
-
 /// Builds a trusted bearer hook from operator-owned configuration bytes. This is
 /// configuration ingress, never an HTTP request body. Each token binds exactly
 /// one principal/scope. Queue permissions are still checked for every operation.

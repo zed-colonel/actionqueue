@@ -96,9 +96,9 @@ pub struct DaemonConfig {
     /// Feature flag to enable control endpoints.
     ///
     /// When `false` (the default), control endpoints are unreachable. When
-    /// `true`, control endpoints (`/api/v1/tasks/:task_id/cancel`,
-    /// `/api/v1/runs/:run_id/cancel`, `/api/v1/engine/pause`,
-    /// `/api/v1/engine/resume`) are registered and may be invoked.
+    /// `true`, control endpoints (`/api/v2/tasks/:task_id/cancel`,
+    /// `/api/v2/runs/:run_id/cancel`, `/api/v2/engine/pause`,
+    /// `/api/v2/engine/resume`) are registered and may be invoked.
     ///
     /// # Safety
     ///

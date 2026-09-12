@@ -9,7 +9,19 @@ pub(crate) fn maintain_locked<W: WalWriter>(
     state: &RouterState,
     a: &mut StorageMutationAuthority<W, ReplayReducer>,
 ) -> Result<(), ControlError> {
+    #[cfg(feature = "actor")]
     let result = actionqueue_runtime::remote::maintain(a, state.clock.now(), state.remote_policy);
+    #[cfg(not(feature = "actor"))]
+    let result = actionqueue_runtime::waits::reconcile_batch(
+        a,
+        state.clock.now(),
+        actionqueue_runtime::waits::MATCH_BATCH,
+    )
+    .map(|_| ())
+    .map_err(|_| ControlError::Mutation("reconciliation failed".into()));
+    if result.is_err() || a.recovery_required() {
+        state.operational_failed.store(true, std::sync::atomic::Ordering::Release);
+    }
     // Even a failed multi-record pass may have made durable progress.
     super::sync_projection(state, a)
         .map_err(|_| ControlError::Mutation("projection unavailable".into()))?;
@@ -21,12 +33,16 @@ pub fn tick(state: &RouterState) -> Result<(), ControlError> {
     else {
         return Ok(());
     };
+    let Ok(_permit) = state.authority_lane.try_acquire() else { return Ok(()); };
     let mut authority =
         authority.lock().map_err(|_| ControlError::Mutation("authority poisoned".into()))?;
+    if state.operational_failed.load(std::sync::atomic::Ordering::Acquire) {
+        return Err(ControlError::Mutation("recovery required".into()));
+    }
     maintain_locked(state, &mut authority)
 }
 pub(crate) fn start(state: &RouterState) {
-    if state.control_authority.is_none() {
+    if !state.background_maintenance || state.control_authority.is_none() {
         return;
     }
     let Ok(runtime) = tokio::runtime::Handle::try_current() else {
@@ -43,9 +59,13 @@ pub(crate) fn start(state: &RouterState) {
             let Some(state) = weak.upgrade() else {
                 break;
             };
-            if let Err(error) = tick(&state) {
-                tracing::error!(%error, "remote scheduler maintenance failed");
-            }
+            let _ = tokio::task::spawn_blocking(move || {
+                if tick(&state).is_err() {
+                    state.operational_failed.store(true, std::sync::atomic::Ordering::Release);
+                    tracing::error!("continuation maintenance failed");
+                }
+            })
+            .await;
         }
     });
 }

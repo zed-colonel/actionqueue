@@ -17,7 +17,8 @@ pub async fn handle(state: State<super::RouterState>) -> impl IntoResponse {
 
     match state.metrics.encode_text() {
         Ok(encoded) => {
-            let mut response = encoded.body.into_response();
+            let mut response =
+                (encoded.body + &crate::metrics::continuation::encode(&state)).into_response();
             if let Ok(value) = HeaderValue::from_str(&encoded.content_type) {
                 response.headers_mut().insert(axum::http::header::CONTENT_TYPE, value);
             }

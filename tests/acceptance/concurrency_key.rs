@@ -14,9 +14,9 @@ use actionqueue_engine::concurrency::key_gate::{ConcurrencyKey, KeyGate};
 struct ConcurrencyScenarioSpec {
     /// Human-readable scenario label used for isolated data-dir naming.
     label: &'static str,
-    /// Exact `/api/v1/stats` expectation before restart.
+    /// Exact `/api/v2/stats` expectation before restart.
     expected_stats_pre_restart: StatsTruth,
-    /// Exact `/api/v1/stats` expectation after restart.
+    /// Exact `/api/v2/stats` expectation after restart.
     expected_stats_post_restart: StatsTruth,
     /// Exact `/metrics` expectation before restart.
     expected_metrics_pre_restart: MetricsTruth,
@@ -26,7 +26,7 @@ struct ConcurrencyScenarioSpec {
 
 use support::{MetricsTruth, StatsTruth};
 
-/// Deterministic per-run assertion contract for `/api/v1/runs` and `/api/v1/runs/:id`.
+/// Deterministic per-run assertion contract for `/api/v2/runs` and `/api/v2/runs/:id`.
 #[derive(Debug, Clone, Copy)]
 struct RunRowTruth<'a> {
     run_id: actionqueue_core::ids::RunId,
@@ -65,7 +65,7 @@ fn seed_once_run_to_leased(
     }
 }
 
-/// Asserts required aggregate parity truth from `/api/v1/stats`.
+/// Asserts required aggregate parity truth from `/api/v2/stats`.
 async fn assert_stats_truth(router: &mut axum::Router<()>, expected: StatsTruth) {
     support::assert_stats_truth(router, expected).await;
 }
@@ -77,8 +77,8 @@ async fn assert_metrics_truth(router: &mut axum::Router<()>, expected: MetricsTr
 
 /// Asserts deterministic run identity/state/concurrency-key truth from read surfaces.
 async fn assert_run_rows_truth(router: &mut axum::Router<()>, expected_rows: &[RunRowTruth<'_>]) {
-    let runs = support::get_json(router, "/api/v1/runs").await;
-    let rows = runs["runs"].as_array().expect("runs list should be an array");
+    let runs = support::get_json(router, "/api/v2/runs").await;
+    let rows = runs["items"].as_array().expect("runs list should be an array");
     assert_eq!(rows.len(), expected_rows.len(), "scenario must expose exactly expected run count");
 
     for expected in expected_rows {
@@ -93,7 +93,7 @@ async fn assert_run_rows_truth(router: &mut axum::Router<()>, expected_rows: &[R
         )
         .await;
 
-        let run_get_path = format!("/api/v1/runs/{}", expected.run_id);
+        let run_get_path = format!("/api/v2/runs/{}", expected.run_id);
         let run_get = support::get_json(router, &run_get_path).await;
         assert_eq!(run_get["run_id"], expected.run_id.to_string());
         assert_eq!(run_get["state"], expected.expected_state);

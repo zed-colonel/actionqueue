@@ -20,3 +20,5 @@ pub mod wait;
 pub mod disposition;
 
 pub mod control;
+
+pub mod telemetry;

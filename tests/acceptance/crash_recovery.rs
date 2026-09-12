@@ -58,7 +58,7 @@ fn submit_attempt_finish_response_via_authority(
     support::submit_attempt_finish_response_via_authority(data_dir, run_id, attempt_id, response)
 }
 
-/// Asserts required read-API truth for `/api/v1/runs` and `/api/v1/runs/:id`.
+/// Asserts required read-API truth for `/api/v2/runs` and `/api/v2/runs/:id`.
 #[allow(clippy::too_many_arguments)] // Test assertion helper with naturally many parameters
 async fn assert_http_truth(
     router: &mut axum::Router<()>,
@@ -68,8 +68,8 @@ async fn assert_http_truth(
     expected_attempt_ids: &[String],
     expected_block_reason: Option<&str>,
 ) {
-    let runs = support::get_json(router, "/api/v1/runs").await;
-    let run_entries = runs["runs"]
+    let runs = support::get_json(router, "/api/v2/runs").await;
+    let run_entries = runs["items"]
         .as_array()
         .expect("runs list should be an array")
         .iter()
@@ -83,7 +83,7 @@ async fn assert_http_truth(
         u64::try_from(expected_attempt_ids.len()).expect("attempt length should fit in u64")
     );
 
-    let run_get_path = format!("/api/v1/runs/{run_id}");
+    let run_get_path = format!("/api/v2/runs/{run_id}");
     let run_get = support::get_json(router, &run_get_path).await;
     assert_eq!(run_get["run_id"], run_id.to_string());
     assert_eq!(run_get["task_id"], task_id_literal);
@@ -93,7 +93,7 @@ async fn assert_http_truth(
         u64::try_from(expected_attempt_ids.len()).expect("attempt length should fit in u64")
     );
 
-    let attempt_ids = run_get["attempts"]
+    let attempt_ids = run_get["attempts"]["items"]
         .as_array()
         .expect("attempts should be an array")
         .iter()
@@ -112,7 +112,7 @@ async fn assert_http_truth(
     }
 }
 
-/// Asserts required aggregate parity truth from `/api/v1/stats`.
+/// Asserts required aggregate parity truth from `/api/v2/stats`.
 async fn assert_stats_truth(router: &mut axum::Router<()>, expected: StatsTruth) {
     support::assert_stats_truth(router, expected).await;
 }
@@ -146,7 +146,7 @@ async fn assert_restart_parity(
         "pre-restart attempt lineage must be preserved exactly after restart"
     );
 
-    let stats = support::get_json(router, "/api/v1/stats").await;
+    let stats = support::get_json(router, "/api/v2/stats").await;
     assert_eq!(stats["latest_sequence"], checkpoint.pre_restart_sequence);
     assert_eq!(
         stats["attempts_total"],
@@ -701,7 +701,7 @@ async fn crash_recovery_active_lease_at_crash_closes_to_ready_without_phantom_te
     .await;
 
     let run_get =
-        support::get_json(&mut post_restart_router, &format!("/api/v1/runs/{run_id}")).await;
+        support::get_json(&mut post_restart_router, &format!("/api/v2/runs/{run_id}")).await;
     assert_ne!(run_get["state"], "Completed");
     assert_ne!(run_get["state"], "Failed");
     assert_ne!(run_get["state"], "Canceled");
@@ -836,7 +836,7 @@ async fn crash_recovery_running_state_preserves_lineage_and_allows_recovery() {
     );
 
     // Run should not be in any terminal state after restart.
-    let run_get_path = format!("/api/v1/runs/{run_id}");
+    let run_get_path = format!("/api/v2/runs/{run_id}");
     let run_get = support::get_json(&mut post_restart_router, &run_get_path).await;
     assert_ne!(run_get["state"], "Completed");
     assert_ne!(run_get["state"], "Failed");

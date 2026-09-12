@@ -11,7 +11,7 @@ keywords = ["cli", "task-queue", "daemon", "command-line"]
 categories = ["command-line-utilities"]
 
 [[bin]]
-name = "actionqueue-cli"
+name = "actionqueue"
 path = "src/main.rs"
 
 [features]
@@ -31,3 +31,10 @@ actionqueue-storage = "0.1.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tracing = "0.1"
+
+tokio = { version = "1", features = ["rt-multi-thread", "net", "signal", "macros"] }
+axum = "0.7"
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+tower = { version = "0.4", features = ["util"] }

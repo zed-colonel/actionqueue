@@ -27,3 +27,7 @@ pub mod remote;
 #[cfg(feature = "workflow")]
 mod cron;
 pub mod reactivity;
+
+pub mod inspection;
+pub mod store;
+pub mod views;

@@ -58,31 +58,45 @@ pub fn run(args: DaemonArgs) -> Result<CommandOutput, CliError> {
         },
     )?;
 
-    let ready = state.ready_status();
-    let metrics_bind = state.config().metrics_bind.map(|addr| addr.to_string());
-
-    if args.json {
-        return Ok(CommandOutput::Json(json!({
-            "command": "daemon",
-            "data_dir": data_dir.display().to_string(),
-            "bind_address": state.config().bind_address.to_string(),
-            "metrics_bind": metrics_bind,
-            "control_enabled": state.config().enable_control,
-            "ready": ready.is_ready(),
-            "ready_reason": ready.reason(),
-        })));
-    }
-
-    let lines = [
-        "command=daemon".to_string(),
-        format!("data_dir={}", data_dir.display()),
-        format!("bind_address={}", state.config().bind_address),
-        format!("metrics_bind={}", metrics_bind.as_deref().unwrap_or("disabled")),
-        format!("control_enabled={}", state.config().enable_control),
-        format!("ready={}", ready.is_ready()),
-        format!("ready_reason={}", ready.reason()),
-    ];
-    Ok(CommandOutput::Text(lines.join("\n")))
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|_| CliError::runtime("runtime_unavailable", "unable to start runtime"))?;
+    runtime.block_on(async move {
+        let listener = tokio::net::TcpListener::bind(state.config().bind_address)
+            .await
+            .map_err(|_| CliError::runtime("bind_failed", "unable to bind listener"))?;
+        let address = listener
+            .local_addr()
+            .map_err(|_| CliError::runtime("bind_failed", "listener unavailable"))?;
+        println!(
+            "{}",
+            json!({"command":"daemon", "bind_address":address.to_string(), "ready":true})
+        );
+        // Bootstrap/store ownership is retained until graceful shutdown completes.
+        let router = actionqueue_daemon::http::build_router(state.router_state().clone());
+        axum::serve(listener, router)
+            .with_graceful_shutdown(async {
+                #[cfg(unix)]
+                {
+                    if let Ok(mut term) =
+                        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                    {
+                        tokio::select! { _ = tokio::signal::ctrl_c() => {}, _ = term.recv() => {} }
+                    } else {
+                        let _ = tokio::signal::ctrl_c().await;
+                    }
+                }
+                #[cfg(not(unix))]
+                {
+                    let _ = tokio::signal::ctrl_c().await;
+                }
+            })
+            .await
+            .map_err(|_| CliError::runtime("serve_failed", "HTTP server stopped unexpectedly"))?;
+        drop(state);
+        Ok(CommandOutput::Json(json!({"status":"stopped"})))
+    })
 }
 
 fn parse_socket_addr(raw: &str, field: &str) -> Result<SocketAddr, CliError> {
@@ -117,7 +131,11 @@ mod tests {
             actionqueue_core::bounded::OpaqueRef::new("trusted-cli-host").unwrap(),
         );
         std::fs::write(&path, serde_json::to_vec(&json!([{"token":"0123456789abcdef0123456789abcdef", "actor_id":null,"scope":"SingleTenant","attribution":h}])).unwrap()).unwrap();
-        assert!(run(args).is_ok());
+        // Valid server startup and shutdown are covered by black-box process tests.
+        assert!(actionqueue_daemon::http::auth::bearer_authenticator(
+            &std::fs::read(path).unwrap()
+        )
+        .is_ok());
         std::fs::remove_dir_all(root).unwrap();
     }
 }

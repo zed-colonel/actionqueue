@@ -1813,6 +1813,44 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         Ok(summary)
     }
 
+    /// Host-bound service entry point; no principal is synthesized when context is missing.
+    pub fn control(
+        &mut self,
+        operation: crate::control::ControlOperation,
+    ) -> Result<crate::control::ControlOutcome, crate::control::ServiceError> {
+        let host = self.authority.control_context().cloned().ok_or(
+            crate::control::ServiceError::Authorization(
+                actionqueue_core::control::ControlError::Unauthorized,
+            ),
+        )?;
+        let result =
+            crate::control::execute_control(&mut self.authority, &host, operation, &self.clock);
+        self.refresh_coordination();
+        result
+    }
+    /// Inspection always uses the configured host and actual store profile.
+    pub fn inspector(
+        &self,
+        policy: crate::inspection::DisclosurePolicy,
+        display_references: bool,
+    ) -> Result<crate::inspection::Inspector<'_>, crate::inspection::InspectionError> {
+        let host = self
+            .authority
+            .control_context()
+            .ok_or(crate::inspection::InspectionError::Unauthorized)?;
+        let platform = self
+            .authority
+            .store_session()
+            .is_some_and(|s| s.manifest().features.iter().any(|f| f == "platform"));
+        crate::inspection::Inspector::new(
+            self.projection(),
+            host,
+            platform,
+            policy,
+            display_references,
+            self.clock.now(),
+        )
+    }
     /// Idempotent convenience admission using stable task/<uuid> key, trace, and correlation.
     /// Retain the task UUID on retry. Outbox callers should supply explicit ensure_task requests.
     pub fn submit_task(&mut self, spec: TaskSpec) -> Result<EnsureTaskOutcome, AdmissionError> {

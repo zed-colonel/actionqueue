@@ -18,6 +18,8 @@ pub struct SignalIngressContext {
 }
 /// Validated producer-controlled fields. Receipt time and scope are assigned separately.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields, try_from = "SignalRequestWire"))]
 pub struct AdmitSignalRequest {
     signal_id: SignalId,
     namespace: SignalNamespace,
@@ -97,6 +99,7 @@ pub fn effective_payload_hash(
 }
 /// Successful admission or exact retry of an immutable identity, including retired records.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum AdmitSignalOutcome {
     /// A new durable signal.
     Admitted { signal_id: SignalId, sequence: SignalSequence },
@@ -154,3 +157,35 @@ crate::bounded::bounded_text!(
     crate::limits::MAX_SIGNAL_ID_BYTES,
     crate::bounded::TextGrammar::Opaque
 );
+
+#[cfg(feature = "serde")]
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SignalRequestWire {
+    signal_id: SignalId,
+    namespace: SignalNamespace,
+    kind: SignalKind,
+    correlation_id: Option<CorrelationId>,
+    causation: Option<CausationLink>,
+    source_ref: Option<OpaqueRef>,
+    payload: Option<DataRef>,
+    payload_hash: Option<ContentHash>,
+    occurred_at: Option<u64>,
+}
+#[cfg(feature = "serde")]
+impl TryFrom<SignalRequestWire> for AdmitSignalRequest {
+    type Error = SignalRejection;
+    fn try_from(w: SignalRequestWire) -> Result<Self, Self::Error> {
+        Self::new(
+            w.signal_id,
+            w.namespace,
+            w.kind,
+            w.correlation_id,
+            w.causation,
+            w.source_ref,
+            w.payload,
+            w.payload_hash,
+            w.occurred_at,
+        )
+    }
+}

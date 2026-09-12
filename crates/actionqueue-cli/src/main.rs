@@ -15,7 +15,7 @@ fn main() {
     if args.len() < 2 {
         emit_error_and_exit(CliError::usage(
             "usage_missing_command",
-            "Usage: actionqueue-cli <command> [options]\nAvailable commands: daemon, submit, stats",
+            "Usage: actionqueue <command> [options]\nAvailable commands: daemon, submit, stats",
         ));
     }
 
@@ -37,10 +37,9 @@ fn main() {
     };
 
     let outcome = match parsed {
+        Command::Api(args) => cmd::api::run(args),
         Command::Daemon(daemon_args) => cmd::daemon::run(daemon_args),
-        Command::Submit(submit_args) => cmd::submit::run(submit_args),
         Command::Storage(args) => cmd::storage::run(args),
-        Command::Stats(stats_args) => cmd::stats::run(stats_args),
     };
 
     match outcome {

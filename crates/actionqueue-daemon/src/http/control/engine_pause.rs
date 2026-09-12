@@ -1,6 +1,6 @@
 //! Engine pause control route handler.
 //!
-//! This module implements `POST /api/v1/engine/pause` through the mutation
+//! This module implements `POST /api/v2/engine/pause` through the mutation
 //! authority lane. The handler is deterministic, idempotent, and never mutates
 //! projection state directly.
 

@@ -5,12 +5,7 @@
 //!
 //! - [`health`] - Liveness endpoint (`GET /healthz`)
 //! - [`ready`] - Readiness endpoint (`GET /ready`)
-//! - [`stats`] - Aggregate statistics endpoint (`GET /api/v1/stats`)
-//! - [`tasks_list`] - Task listing endpoint (`GET /api/v1/tasks`)
-//! - [`task_get`] - Single task endpoint (`GET /api/v1/tasks/:task_id`)
-//! - [`runs_list`] - Run listing endpoint (`GET /api/v1/runs`)
-//! - [`run_get`] - Single run endpoint (`GET /api/v1/runs/:run_id`)
-//! - [`control`] - Feature-gated control endpoints (cancel + pause/resume)
+//! V2 operations are registered by [`api`].
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -40,6 +35,10 @@ pub type ControlMutationAuthority =
 /// This state is read-only. Handlers must not mutate any fields or introduce
 /// interior mutability beyond `Arc` cloning.
 pub struct RouterStateInner {
+    pub(crate) background_maintenance: bool,
+    pub(crate) disclosure_policy: actionqueue_runtime::inspection::DisclosurePolicy,
+    pub(crate) authority_lane: Arc<tokio::sync::Semaphore>,
+    pub(crate) operational_failed: AtomicBool,
     pub(crate) host_authenticator: Option<auth::HostAuthenticator>,
     pub(crate) store_session: Option<actionqueue_storage::store::StoreSession>,
     /// Router configuration for routing decisions.
@@ -49,7 +48,6 @@ pub struct RouterStateInner {
     pub(crate) router_config: RouterConfig,
     #[cfg(feature = "actor")]
     pub(crate) remote_policy: actionqueue_runtime::remote::RemotePolicy,
-    #[cfg(feature = "actor")]
     pub(crate) maintenance_started: AtomicBool,
 
     /// Shared projection state for stats and introspection.
@@ -119,6 +117,19 @@ pub struct RouterObservability {
 }
 
 impl RouterStateInner {
+    /// Offline adapters retain exclusive storage ownership but do not drive execution.
+    pub fn without_background_maintenance(mut self) -> Self {
+        self.background_maintenance = false;
+        self
+    }
+    /// Trusted disclosure policy; request query flags do not grant this authority.
+    pub fn with_disclosure_policy(
+        mut self,
+        policy: actionqueue_runtime::inspection::DisclosurePolicy,
+    ) -> Self {
+        self.disclosure_policy = policy;
+        self
+    }
     /// Installs the trusted host authentication hook before building the router.
     pub fn with_host_authenticator(mut self, hook: auth::HostAuthenticator) -> Self {
         self.host_authenticator = Some(hook);
@@ -138,8 +149,11 @@ impl RouterStateInner {
         Self {
             #[cfg(feature = "actor")]
             remote_policy: Default::default(),
-            #[cfg(feature = "actor")]
             maintenance_started: AtomicBool::new(false),
+            background_maintenance: true,
+            disclosure_policy: Default::default(),
+            authority_lane: Arc::new(tokio::sync::Semaphore::new(32)),
+            operational_failed: AtomicBool::new(false),
             host_authenticator: None,
             store_session: None,
             router_config,
@@ -165,8 +179,11 @@ impl RouterStateInner {
         Self {
             #[cfg(feature = "actor")]
             remote_policy: Default::default(),
-            #[cfg(feature = "actor")]
             maintenance_started: AtomicBool::new(false),
+            background_maintenance: true,
+            disclosure_policy: Default::default(),
+            authority_lane: Arc::new(tokio::sync::Semaphore::new(32)),
+            operational_failed: AtomicBool::new(false),
             host_authenticator: None,
             store_session: control_authority.lock().ok().and_then(|a| a.store_session().cloned()),
             router_config,
@@ -184,21 +201,16 @@ impl RouterStateInner {
 
 #[cfg(feature = "actor")]
 pub mod actors;
+pub mod api;
 pub mod auth;
 pub mod control;
 pub mod health;
-#[cfg(feature = "actor")]
 pub mod maintenance;
 pub mod metrics;
-pub mod pagination;
 #[cfg(feature = "platform")]
 pub mod platform;
 pub mod ready;
-pub mod run_get;
-pub mod runs_list;
 pub mod stats;
-pub mod task_get;
-pub mod tasks_list;
 
 /// Acquires a read lock on the shared projection, returning HTTP 500 on poison.
 pub(crate) fn read_projection(
@@ -226,7 +238,7 @@ fn projection_poison_response() -> axum::response::Response {
     use axum::Json;
 
     (
-        StatusCode::INTERNAL_SERVER_ERROR,
+        StatusCode::SERVICE_UNAVAILABLE,
         Json(serde_json::json!({
             "error": "internal_error",
             "message": "shared projection lock poisoned"
@@ -248,7 +260,6 @@ fn projection_poison_response() -> axum::response::Response {
 ///
 /// An axum Router configured with all registered routes and the shared state.
 pub fn build_router(state: RouterState) -> axum::Router {
-    #[cfg(feature = "actor")]
     maintenance::start(&state);
     let control_enabled = state.router_config.control_enabled;
     let metrics_enabled = state.router_config.metrics_enabled;
@@ -256,29 +267,32 @@ pub fn build_router(state: RouterState) -> axum::Router {
     let router = health::register_routes(router);
     let router = ready::register_routes(router);
     let router = stats::register_routes(router);
-    let inspection = tasks_list::register_routes(axum::Router::new());
-    let inspection = runs_list::register_routes(inspection);
-    let inspection = run_get::register_routes(inspection);
-    let inspection = task_get::register_routes(inspection).route_layer(
-        axum::middleware::from_fn_with_state(state.clone(), auth::authenticate_inspection),
-    );
+    let inspection = api::reads().route_layer(axum::middleware::from_fn_with_state(
+        state.clone(),
+        auth::authenticate_inspection,
+    ));
     let router = router.merge(inspection);
     let router = metrics::register_routes(router, metrics_enabled);
-    let controls = control::register_routes(axum::Router::new(), control_enabled);
+    let controls = axum::Router::new();
+    let controls = control::register_routes(controls, control_enabled);
     #[cfg(feature = "actor")]
     let controls = if control_enabled { actors::register_routes(controls) } else { controls };
     #[cfg(feature = "platform")]
     let controls = if control_enabled { platform::register_routes(controls) } else { controls };
+    let controls = if control_enabled { controls.route_layer(axum::middleware::from_fn_with_state(state.clone(),api::blocking_adapter)).merge(api::writes()) } else { controls };
     let controls = if control_enabled {
         controls
             .route_layer(axum::middleware::from_fn_with_state(state.clone(), auth::authenticate))
     } else {
         controls
     };
-    router.merge(controls).with_state(state)
+    router
+        .merge(controls)
+        .layer(axum::middleware::from_fn(api::sanitize_errors))
+        .layer(axum::extract::DefaultBodyLimit::max(2 * 1024 * 1024))
+        .with_state(state)
 }
 
-#[cfg(feature = "actor")]
 pub(crate) fn sync_projection<W: actionqueue_storage::wal::writer::WalWriter>(
     state: &RouterState,
     a: &StorageMutationAuthority<W, ReplayReducer>,
@@ -293,11 +307,13 @@ pub(crate) fn execute_host_mutation<W: actionqueue_storage::wal::writer::WalWrit
     host: &actionqueue_core::control::HostControlContext,
     command: actionqueue_core::mutation::MutationCommand,
 ) -> Result<actionqueue_core::mutation::MutationOutcome, actionqueue_core::control::ControlError> {
-    let result = actionqueue_runtime::control::execute_mutation(a, host, command)?;
+    let result = actionqueue_runtime::control::execute_mutation(a, host, command);
     sync_projection(state, a).map_err(|_| {
+        state.operational_failed.store(true, Ordering::Release);
         actionqueue_core::control::ControlError::Mutation("projection unavailable".into())
     })?;
-    Ok(result)
+    if a.recovery_required() {state.operational_failed.store(true,Ordering::Release);}
+    result
 }
 
 /// Inspection snapshots and grant checks use the same authoritative revision.

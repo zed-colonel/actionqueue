@@ -7,14 +7,14 @@ use std::str::FromStr;
 
 use actionqueue_core::ids::{RunId, TaskId};
 
-/// Asserts the pre-completion `/api/v1/runs` task-scoped cardinality equals expected count.
+/// Asserts the pre-completion `/api/v2/runs` task-scoped cardinality equals expected count.
 async fn assert_pre_completion_run_cardinality(
     router: &mut axum::Router<()>,
     task_id_literal: &str,
     count: u32,
 ) {
-    let runs = support::get_json(router, "/api/v1/runs").await;
-    let task_runs = runs["runs"]
+    let runs = support::get_json(router, "/api/v2/runs").await;
+    let task_runs = runs["items"]
         .as_array()
         .expect("runs list should be an array")
         .iter()
@@ -23,7 +23,7 @@ async fn assert_pre_completion_run_cardinality(
     assert_eq!(task_runs.len(), usize::try_from(count).expect("count should fit in usize"));
 }
 
-/// Asserts required `/api/v1/stats`, `/api/v1/runs`, and `/api/v1/runs/:id` truths.
+/// Asserts required `/api/v2/stats`, `/api/v2/runs`, and `/api/v2/runs/:id` truths.
 async fn assert_post_completion_read_surfaces(
     router: &mut axum::Router<()>,
     task_id_literal: &str,
@@ -31,7 +31,7 @@ async fn assert_post_completion_read_surfaces(
     completions: &[support::CompletionEvidence],
     count: u32,
 ) {
-    let stats = support::get_json(router, "/api/v1/stats").await;
+    let stats = support::get_json(router, "/api/v2/stats").await;
     assert_eq!(stats["total_runs"], count);
     assert_eq!(stats["runs_by_state"]["completed"], count);
     assert_eq!(stats["runs_by_state"]["scheduled"], 0);
@@ -45,8 +45,8 @@ async fn assert_post_completion_read_surfaces(
         .map(|evidence| (evidence.run_id.to_string(), evidence.attempt_id.to_string()))
         .collect::<BTreeMap<String, String>>();
 
-    let runs = support::get_json(router, "/api/v1/runs").await;
-    let task_runs = runs["runs"]
+    let runs = support::get_json(router, "/api/v2/runs").await;
+    let task_runs = runs["items"]
         .as_array()
         .expect("runs list should be an array")
         .iter()
@@ -65,13 +65,14 @@ async fn assert_post_completion_read_surfaces(
     assert_eq!(actual_id_set, expected_id_set);
 
     for run_id in expected_run_ids {
-        let run_get_path = format!("/api/v1/runs/{run_id}");
+        let run_get_path = format!("/api/v2/runs/{run_id}");
         let run_get = support::get_json(router, &run_get_path).await;
         assert_eq!(run_get["state"], "Completed");
         assert_eq!(run_get["attempt_count"], 1);
         assert_eq!(run_get["block_reason"], "terminal");
 
-        let attempts = run_get["attempts"].as_array().expect("attempts should be an array");
+        let attempts =
+            run_get["attempts"]["items"].as_array().expect("attempts should be an array");
         assert_eq!(attempts.len(), 1);
         assert_eq!(attempts[0]["result"], "Success");
 

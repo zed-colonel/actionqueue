@@ -1,36 +1,30 @@
-# actionqueue-cli
+# actionqueue
 
-Command-line interface for the ActionQueue task queue engine.
+The canonical executable is `actionqueue`.
 
-## Overview
-
-This crate provides the CLI binary for operating ActionQueue:
-
-- `daemon` -- Start the HTTP server with runtime configuration
-- `submit` -- Submit a new task specification
-- `stats` -- Print task/run statistics
-
-Supports JSON and text output formats. Exit codes: 0 (success), 2 (usage), 3 (validation), 4 (runtime), 5 (connectivity).
-
-## Part of the ActionQueue workspace
-
-See the [workspace root](https://github.com/zed-colonel/actionqueue) for full documentation.
-
-## License
-
-Apache-2.0
-
-## AQ-CONT-1 offline storage
-
-```sh
-actionqueue-cli storage inspect --data-dir ./data --json
-actionqueue-cli storage backup --data-dir ./data --output ./queue-backup --json
-actionqueue-cli storage restore --input ./queue-backup --data-dir ./restored --json
+```text
+actionqueue daemon --data-dir STORE --enable-control --auth-file host.json
+actionqueue ensure-task --file request.json --daemon http://127.0.0.1:8787 --token-file token
+actionqueue task inspect TASK_ID --offline --data-dir STORE --json
+actionqueue admission inspect --key KEY --offline --data-dir STORE
+actionqueue signal admit --file signal.json --offline --data-dir STORE
+actionqueue signal inspect SIGNAL_ID --offline --data-dir STORE
+actionqueue wait inspect WAIT_ID --offline --data-dir STORE
+actionqueue wait cancel WAIT_ID --run RUN_ID --offline --data-dir STORE
+actionqueue wait resolve WAIT_ID --run RUN_ID --offline --data-dir STORE
+actionqueue run inspect RUN_ID --offline --data-dir STORE
+actionqueue trace TRACE_ID --offline --data-dir STORE
+actionqueue trace --correlation ID --offline --data-dir STORE
+actionqueue inspect --origin-ref REF --offline --data-dir STORE
+actionqueue store inspect --data-dir STORE
+actionqueue backup --data-dir STORE --output BACKUP
+actionqueue restore --input BACKUP --data-dir EMPTY_DESTINATION
 ```
 
-Stop the runtime before offline inspection, stats, backup, or restore. A live writable
-session returns `store_in_use`. These commands never initialize or repair a source.
-Restore requires an absent/empty destination, preserves store identity and sequence,
-and verifies checksums and projection equivalence before publishing. Payload bytes are
-not included in inspection output; external artifact contents are outside the backup.
-See [the storage format and ownership rules](../actionqueue-storage/README.md).
+Use daemon access while its store lock is held. Tokens come from a file or
+`ACTIONQUEUE_TOKEN`. Offline access is explicitly single-tenant; platform stores
+require an authenticated host. The HTTP client currently supports local loopback
+HTTP connections. JSON uses the v2 response schemas; text renders the same
+redacted structural content. Creates and duplicates exit successfully; conflicts,
+invalid input, and unavailability have distinct codes. See
+[AQ-12 APIs](../../docs/aq-12-apis.md).

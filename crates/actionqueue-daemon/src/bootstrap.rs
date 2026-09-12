@@ -271,6 +271,9 @@ pub fn bootstrap_with_authenticator(
 
     // Validate configuration first
     config.validate()?;
+    if config.enable_control && hook.is_none() {
+        return Err(BootstrapError::Dependency("host_auth_required".into()));
+    }
 
     let recovery = load_projection_from_storage(&config.data_dir).map_err(map_recovery_error)?;
     let wal_path = recovery.wal_path.clone();
@@ -290,11 +293,7 @@ pub fn bootstrap_with_authenticator(
     actionqueue_runtime::waits::reconcile(&mut authority, SystemClock.now())
         .map_err(|e| BootstrapError::Dependency(format!("wait_reconciliation: {e}")))?;
     let projection = authority.projection().clone();
-    let control_authority = if config.enable_control {
-        Some(std::sync::Arc::new(std::sync::Mutex::new(authority)))
-    } else {
-        None
-    };
+    let control_authority = Some(std::sync::Arc::new(std::sync::Mutex::new(authority)));
 
     // Create metrics registry
     let metrics =

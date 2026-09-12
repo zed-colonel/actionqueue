@@ -329,6 +329,7 @@ impl MutationProjection for ReplayReducer {
 #[derive(Debug)]
 pub struct StorageMutationAuthority<W: WalWriter, P: MutationProjection> {
     wal_writer: W,
+    telemetry: super::telemetry::QueueTelemetry,
     projection: P,
     host_context: Option<actionqueue_core::control::HostControlContext>,
     recovery_required: bool,
@@ -340,6 +341,10 @@ pub struct StorageMutationAuthority<W: WalWriter, P: MutationProjection> {
 }
 
 impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
+    /// Shared process-lifetime authority observations.
+    pub fn telemetry(&self) -> &super::telemetry::QueueTelemetry {
+        &self.telemetry
+    }
     /// Constructs an explicitly host-bound authority for embedded controls.
     pub fn with_host(mut self, host: actionqueue_core::control::HostControlContext) -> Self {
         self.host_context = Some(host);
@@ -391,6 +396,7 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
         let recovery_required = wal_writer.recovery_required();
         Self {
             wal_writer,
+            telemetry: Default::default(),
             projection,
             host_context: None,
             recovery_required,
@@ -449,9 +455,16 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
             ));
         }
         let digest = request.digest().map_err(MutationAuthorityError::Admission)?;
-        self.projection
-            .resolve_admission(request.task_spec().tenant_id(), request.admission_key(), &digest)
-            .map_err(MutationAuthorityError::Admission)
+        let result = self.projection.resolve_admission(
+            request.task_spec().tenant_id(),
+            request.admission_key(),
+            &digest,
+        );
+        self.telemetry.admission_lookup(
+            matches!(result, Ok(Some(_))),
+            matches!(result, Err(AdmissionRejection::Conflict { .. })),
+        );
+        result.map_err(MutationAuthorityError::Admission)
     }
     /// Returns the lifetime store session for session-bound operations.
     pub fn store_session(&self) -> Option<&crate::store::StoreSession> {
@@ -1527,14 +1540,12 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
     }
 }
 
-impl<W: WalWriter, P: MutationProjection> MutationAuthority for StorageMutationAuthority<W, P> {
-    type Error = MutationAuthorityError<P::Error>;
-
-    fn submit_command(
+impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
+    fn submit_inner(
         &mut self,
         command: MutationCommand,
         durability: DurabilityPolicy,
-    ) -> Result<MutationOutcome, Self::Error> {
+    ) -> Result<MutationOutcome, MutationAuthorityError<P::Error>> {
         if self.recovery_required {
             return Err(MutationAuthorityError::RecoveryRequired);
         }
@@ -1839,6 +1850,7 @@ impl<W: WalWriter, P: MutationProjection> MutationAuthority for StorageMutationA
 
         // Publish the already validated state only after durability succeeds.
         self.projection = prepared;
+        self.telemetry.committed(&event, frame_bytes);
 
         crate::store::fault::checkpoint("authority_after_publish").map_err(|error| {
             self.recovery_required = true;
@@ -2643,5 +2655,21 @@ mod tests {
             }
             other => panic!("expected PartialDurability, got {other:?}"),
         }
+    }
+}
+
+impl<W: WalWriter, P: MutationProjection> MutationAuthority for StorageMutationAuthority<W, P> {
+    type Error = MutationAuthorityError<P::Error>;
+    fn submit_command(
+        &mut self,
+        command: MutationCommand,
+        durability: DurabilityPolicy,
+    ) -> Result<MutationOutcome, Self::Error> {
+        let disposition = matches!(&command, MutationCommand::AttemptDispositionCommit(_));
+        let result = self.submit_inner(command, durability);
+        if disposition && result.is_err() {
+            self.telemetry.disposition_rejected();
+        }
+        result
     }
 }

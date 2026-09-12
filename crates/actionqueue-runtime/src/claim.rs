@@ -13,45 +13,85 @@ use actionqueue_storage::{
 type Error = MutationAuthorityError<ReplayReducerError>;
 /// Pure scheduling gates shared by local and remote claims. Namespace checks are
 /// a separate authenticated boundary; traits confer no authority.
-pub fn eligible(p: &ReplayReducer, run: RunId, traits: Option<&ExecutorTraits>, now: u64) -> bool {
+/// Typed blockers computed from the same projection used for dispatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EligibilityReason {
+    Missing,
+    Paused,
+    Canceled,
+    State,
+    Schedule,
+    Executor,
+    Dependency,
+    Budget,
+    Concurrency,
+}
+pub fn eligibility(
+    p: &ReplayReducer,
+    run: RunId,
+    traits: Option<&ExecutorTraits>,
+    now: u64,
+) -> Vec<EligibilityReason> {
+    use EligibilityReason::*;
     let Some(r) = p.get_run_instance(&run) else {
-        return false;
+        return vec![Missing];
     };
     let Some(task) = p.get_task(&r.task_id()) else {
-        return false;
+        return vec![Missing];
     };
-    if p.is_engine_paused()
-        || p.is_task_canceled(r.task_id())
-        || !matches!(r.state(), RunState::Ready | RunState::Scheduled)
-        || (r.state() == RunState::Scheduled
-            && r.scheduled_at() > now
-            && !p.subscriptions().any(|(_, s)| {
-                s.task_id == r.task_id()
-                    && s.triggered_at.is_some_and(|at| r.created_at() <= at)
-                    && s.canceled_at.is_none()
-            }))
-        || !actionqueue_core::executor::matches_requirements(
-            traits,
-            task.constraints().required_executor_traits(),
-        )
-        || p.dependency_declarations().any(|(id, deps)| {
-            id == r.task_id()
-                && deps.iter().any(|id| {
-                    p.task_terminal_status(*id)
-                        != Some(actionqueue_core::continuation::TaskTerminalStatus::Succeeded)
-                })
+    let mut reasons = Vec::new();
+    if p.is_engine_paused() {
+        reasons.push(Paused);
+    }
+    if p.is_task_canceled(r.task_id()) {
+        reasons.push(Canceled);
+    }
+    if !matches!(r.state(), RunState::Ready | RunState::Scheduled) {
+        reasons.push(State);
+    }
+    if r.state() == RunState::Scheduled
+        && r.scheduled_at() > now
+        && !p.subscriptions().any(|(_, s)| {
+            s.task_id == r.task_id()
+                && s.triggered_at.is_some_and(|at| r.created_at() <= at)
+                && s.canceled_at.is_none()
         })
-        || p.budgets().any(|((id, _), b)| *id == r.task_id() && b.exhausted)
     {
-        return false;
+        reasons.push(Schedule);
     }
-    if let Some(key) = task.constraints().concurrency_key() {
-        if p.key_reservations().any(|(holder, held)| holder != run && held == key) {
-            return false;
-        }
+    if !actionqueue_core::executor::matches_requirements(
+        traits,
+        task.constraints().required_executor_traits(),
+    ) {
+        reasons.push(Executor);
     }
-    true
+    if p.dependency_declarations().any(|(id, deps)| {
+        id == r.task_id()
+            && deps.iter().any(|id| {
+                p.task_terminal_status(*id)
+                    != Some(actionqueue_core::continuation::TaskTerminalStatus::Succeeded)
+            })
+    }) {
+        reasons.push(Dependency);
+    }
+    if p.budgets().any(|((id, _), b)| *id == r.task_id() && b.exhausted) {
+        reasons.push(Budget);
+    }
+    if task
+        .constraints()
+        .concurrency_key()
+        .is_some_and(|key| p.key_reservations().any(|(holder, held)| holder != run && held == key))
+    {
+        reasons.push(Concurrency);
+    }
+    reasons
 }
+/// Boolean dispatch wrapper retaining the exact existing gate behavior.
+pub fn eligible(p: &ReplayReducer, run: RunId, traits: Option<&ExecutorTraits>, now: u64) -> bool {
+    eligibility(p, run, traits, now).is_empty()
+}
+
 fn next<W: WalWriter>(a: &StorageMutationAuthority<W, ReplayReducer>) -> Result<u64, Error> {
     a.projection()
         .latest_sequence()

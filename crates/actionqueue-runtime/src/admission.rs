@@ -46,7 +46,7 @@ impl From<MutationAuthorityError<ReplayReducerError>> for AdmissionError {
 pub fn ensure_task<W: WalWriter>(
     authority: &mut StorageMutationAuthority<W, ReplayReducer>,
     request: EnsureTaskRequest,
-    clock: &impl Clock,
+    clock: &(impl Clock + ?Sized),
 ) -> Result<EnsureTaskOutcome, AdmissionError> {
     if let Some(outcome) = authority.lookup_admission(&request)? {
         return Ok(outcome);

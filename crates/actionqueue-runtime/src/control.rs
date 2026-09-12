@@ -36,17 +36,17 @@ pub fn execute_control<W: WalWriter>(
     a: &mut StorageMutationAuthority<W, ReplayReducer>,
     host: &HostControlContext,
     operation: ControlOperation,
-    clock: &impl Clock,
-) -> Result<ControlOutcome, ControlError> {
+    clock: &(impl Clock + ?Sized),
+) -> Result<ControlOutcome, ServiceError> {
     a.with_control_context(host, |a| execute_bound_control(a, host, operation, clock))
 }
 fn execute_bound_control<W: WalWriter>(
     a: &mut StorageMutationAuthority<W, ReplayReducer>,
     host: &HostControlContext,
     operation: ControlOperation,
-    clock: &impl Clock,
-) -> Result<ControlOutcome, ControlError> {
-    let err = |e: String| ControlError::Mutation(e);
+    clock: &(impl Clock + ?Sized),
+) -> Result<ControlOutcome, ServiceError> {
+    let err = |e| ServiceError::Storage(e);
     match operation {
         ControlOperation::AdmitTask(request) => {
             let tenant = authorize(a, host, QueueAction::AdmitTask)?;
@@ -58,10 +58,10 @@ fn execute_bound_control<W: WalWriter>(
                 request.causal_context().clone(),
                 Some(host.attribution.clone()),
             )
-            .map_err(|e| err(e.to_string()))?;
+            .map_err(|e| ServiceError::Admission(crate::admission::AdmissionError::Rejected(e)))?;
             crate::admission::ensure_task(a, request, clock)
                 .map(ControlOutcome::Task)
-                .map_err(|e| err(e.to_string()))
+                .map_err(ServiceError::Admission)
         }
         ControlOperation::AdmitSignal(request) => {
             let tenant = authorize(a, host, QueueAction::AdmitSignal)?;
@@ -75,7 +75,7 @@ fn execute_bound_control<W: WalWriter>(
                 clock,
             )
             .map(ControlOutcome::Signal)
-            .map_err(|e| err(e.to_string()))
+            .map_err(ServiceError::Signal)
         }
         ControlOperation::Cancel(target) => {
             let action = match target {
@@ -104,7 +104,7 @@ fn execute_bound_control<W: WalWriter>(
                 DurabilityPolicy::Immediate,
             )
             .map(ControlOutcome::Mutation)
-            .map_err(|e| err(e.to_string()))
+            .map_err(err)
         }
         ControlOperation::CancelWait { run_id, wait_id } => {
             let tenant = authorize(a, host, QueueAction::CancelWait)?;
@@ -118,7 +118,9 @@ fn execute_bound_control<W: WalWriter>(
                 )
                 .with_tenant(tenant),
             );
-            execute_mutation(a, host, c).map(ControlOutcome::Mutation)
+            execute_mutation(a, host, c)
+                .map(ControlOutcome::Mutation)
+                .map_err(ServiceError::Authorization)
         }
         ControlOperation::ResolveWait { run_id, wait_id } => {
             let tenant = authorize(a, host, QueueAction::ResolveWait)?;
@@ -140,7 +142,7 @@ fn execute_bound_control<W: WalWriter>(
                 DurabilityPolicy::Immediate,
             )
             .map(ControlOutcome::Mutation)
-            .map_err(|e| err(e.to_string()))
+            .map_err(err)
         }
     }
 }
@@ -181,3 +183,66 @@ pub fn inspect_signal<W: WalWriter>(
     let tenant = authorize(a, host, QueueAction::InspectSignal)?;
     a.projection().signals().get_signal(tenant, id).cloned().ok_or(ControlError::NotFound)
 }
+
+/// Typed public service failures. Display is deliberately independent of request data.
+#[derive(Debug)]
+pub enum ServiceError {
+    /// Host authentication, grant or namespace failure.
+    Authorization(ControlError),
+    /// Admission rejection or storage failure.
+    Admission(crate::admission::AdmissionError),
+    /// Signal rejection, storage failure or committed identity requiring recovery.
+    Signal(crate::signals::SignalAdmissionError),
+    /// Uncertain storage mutation.
+    Storage(MutationAuthorityError<actionqueue_storage::recovery::reducer::ReplayReducerError>),
+}
+impl From<ControlError> for ServiceError {
+    fn from(error: ControlError) -> Self {
+        Self::Authorization(error)
+    }
+}
+impl ServiceError {
+    /// Stable redacted classification, shared by transports.
+    pub fn code(&self) -> &'static str {
+        use crate::{admission::AdmissionError as A, signals::SignalAdmissionError as S};
+        match self {
+            Self::Authorization(ControlError::Unauthorized) => "forbidden",
+            Self::Admission(A::Storage(MutationAuthorityError::Control(
+                ControlError::Unauthorized,
+            )))
+            | Self::Signal(S::Storage(MutationAuthorityError::Control(
+                ControlError::Unauthorized,
+            )))
+            | Self::Storage(MutationAuthorityError::Control(ControlError::Unauthorized)) => {
+                "forbidden"
+            }
+            Self::Storage(MutationAuthorityError::Wait(
+                actionqueue_core::mutation::WaitRejection::WaitAlreadyResolved,
+            )) => "conflict",
+            Self::Storage(
+                MutationAuthorityError::Wait(_) | MutationAuthorityError::Validation(_),
+            ) => "invalid_request",
+            Self::Authorization(ControlError::Scope | ControlError::NotFound) => "not_found",
+            Self::Admission(A::Rejected(
+                actionqueue_core::admission::AdmissionRejection::Conflict { .. },
+            ))
+            | Self::Signal(S::Rejected(
+                actionqueue_core::continuation::SignalRejection::Conflict,
+            )) => "conflict",
+            Self::Signal(S::Rejected(
+                actionqueue_core::continuation::SignalRejection::Capacity,
+            )) => "backpressure",
+            Self::Admission(A::Rejected(_) | A::Derivation(_)) | Self::Signal(S::Rejected(_)) => {
+                "invalid_request"
+            }
+            Self::Signal(S::Matching { .. }) => "signal_committed_recovery_required",
+            _ => "storage_unavailable",
+        }
+    }
+}
+impl std::fmt::Display for ServiceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.code())
+    }
+}
+impl std::error::Error for ServiceError {}

@@ -209,15 +209,16 @@ async fn http_requires_control_mode_and_a_host_hook() {
                 ..Default::default()
             },
             hook,
-        )
-        .unwrap();
+        );
+        if enabled && !authenticated { assert!(state.is_err()); continue; }
+        let state=state.unwrap();
         let response = state
             .http_router()
             .clone()
             .oneshot(
                 axum::http::Request::builder()
                     .method("POST")
-                    .uri("/api/v1/engine/pause")
+                    .uri("/api/v2/engine/pause")
                     .body(axum::body::Body::empty())
                     .unwrap(),
             )

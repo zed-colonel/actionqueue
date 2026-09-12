@@ -15,9 +15,9 @@ use serde_json::Value;
 struct ObservabilityScenarioSpec {
     /// Human-readable deterministic scenario label used for isolated data-dir naming.
     label: &'static str,
-    /// Exact `/api/v1/stats` expectation before restart.
+    /// Exact `/api/v2/stats` expectation before restart.
     expected_stats_pre_restart: StatsTruth,
-    /// Exact `/api/v1/stats` expectation after restart.
+    /// Exact `/api/v2/stats` expectation after restart.
     expected_stats_post_restart: StatsTruth,
     /// Exact `/metrics` expectation before restart.
     expected_metrics_pre_restart: MetricsTruth,
@@ -27,7 +27,7 @@ struct ObservabilityScenarioSpec {
 
 use support::{MetricsTruth, StatsTruth};
 
-/// Deterministic per-row assertion contract for `/api/v1/runs`.
+/// Deterministic per-row assertion contract for `/api/v2/runs`.
 #[derive(Debug, Clone)]
 struct RunsListTruth {
     run_id: RunId,
@@ -37,7 +37,7 @@ struct RunsListTruth {
     expected_concurrency_key: Option<&'static str>,
 }
 
-/// Deterministic per-run assertion contract for `/api/v1/runs/:id`.
+/// Deterministic per-run assertion contract for `/api/v2/runs/:id`.
 #[derive(Debug, Clone)]
 struct RunGetTruth {
     run_id: RunId,
@@ -94,7 +94,7 @@ fn required_metric_family_prefixes() -> &'static [&'static str] {
     ]
 }
 
-/// Asserts deterministic `/api/v1/runs` identity and lifecycle-summary truth.
+/// Asserts deterministic `/api/v2/runs` identity and lifecycle-summary truth.
 async fn assert_runs_list_truth(router: &mut axum::Router<()>, expected_rows: &[RunsListTruth]) {
     let actual_rows = support::runs_list_rows_sorted_by_run_id(router).await;
 
@@ -119,7 +119,7 @@ async fn assert_runs_list_truth(router: &mut axum::Router<()>, expected_rows: &[
     }
 }
 
-/// Asserts deterministic `/api/v1/runs/:id` identity, lineage, and lifecycle truth.
+/// Asserts deterministic `/api/v2/runs/:id` identity, lineage, and lifecycle truth.
 async fn assert_run_get_truth(router: &mut axum::Router<()>, expected_runs: &[RunGetTruth]) {
     for expected in expected_runs {
         let payload = support::run_get(router, expected.run_id).await;
@@ -135,7 +135,7 @@ async fn assert_run_get_truth(router: &mut axum::Router<()>, expected_runs: &[Ru
             }
         }
 
-        let attempts = payload["attempts"].as_array().expect("attempts must be an array");
+        let attempts = payload["attempts"]["items"].as_array().expect("attempts must be an array");
         let actual_attempt_ids = attempts
             .iter()
             .map(|entry| {
@@ -157,7 +157,7 @@ async fn assert_run_get_truth(router: &mut axum::Router<()>, expected_runs: &[Ru
         assert_eq!(actual_attempt_ids, expected.expected_attempt_ids);
         assert_eq!(actual_attempt_results, expected.expected_attempt_results);
 
-        let actual_history = payload["state_history"]
+        let actual_history = payload["state_history"]["items"]
             .as_array()
             .expect("state_history should be an array")
             .iter()
@@ -175,7 +175,7 @@ async fn assert_run_get_truth(router: &mut axum::Router<()>, expected_runs: &[Ru
     }
 }
 
-/// Asserts deterministic aggregate parity truth from `/api/v1/stats`.
+/// Asserts deterministic aggregate parity truth from `/api/v2/stats`.
 async fn assert_stats_truth(router: &mut axum::Router<()>, expected: StatsTruth) {
     support::assert_stats_truth(router, expected).await;
 }
@@ -312,7 +312,7 @@ async fn capture_read_surface_snapshot(router: &mut axum::Router<()>) -> ReadSur
         run_get_by_run_id.insert(run_id_text, payload);
     }
 
-    let stats_payload = support::get_json(router, "/api/v1/stats").await;
+    let stats_payload = support::get_json(router, "/api/v2/stats").await;
     let metrics_text = support::get_text(router, "/metrics").await;
 
     ReadSurfaceSnapshot {

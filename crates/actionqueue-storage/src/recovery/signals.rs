@@ -135,7 +135,7 @@ impl SignalIndex {
     pub fn statistics(&self) -> SignalStatistics {
         self.stats
     }
-    pub(crate) fn records(&self) -> impl Iterator<Item = &SignalRecord> {
+    pub fn records(&self) -> impl Iterator<Item = &SignalRecord> {
         self.records.values()
     }
     pub(crate) fn account_control(
