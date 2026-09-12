@@ -906,19 +906,32 @@ async fn daemon_run_and_task_cancellation_resolve_waits_through_compound_control
     use tower::ServiceExt;
     for task_control in [false, true] {
         let dir = tempfile::tempdir().unwrap();
-        let mut a = s::open(dir.path());
+        let mut a = open_store(dir.path(), OpenOptions::Initialize { features: vec![] })
+            .unwrap()
+            .into_authority()
+            .unwrap();
         let r = running(&mut a, 1, None, false);
         let w = WaitId::new();
         establish_wait(&mut a, r, spec(w, None));
         let task = a.projection().get_run_instance(&r).unwrap().task_id();
         drop(a);
-        let state =
-            actionqueue_daemon::bootstrap::bootstrap(actionqueue_daemon::config::DaemonConfig {
+        let state = actionqueue_daemon::bootstrap::bootstrap_with_authenticator(
+            actionqueue_daemon::config::DaemonConfig {
                 data_dir: dir.path().to_path_buf(),
                 enable_control: true,
                 ..Default::default()
-            })
-            .unwrap();
+            },
+            Some(std::sync::Arc::new(|_, _| {
+                Ok(actionqueue_core::control::HostControlContext {
+                    actor_id: None,
+                    scope: actionqueue_core::control::ControlScope::SingleTenant,
+                    attribution: ControlMutationContext::new(
+                        OpaqueRef::new("wait-test-host").unwrap(),
+                    ),
+                })
+            })),
+        )
+        .unwrap();
         let path = if task_control {
             format!("/api/v1/tasks/{task}/cancel")
         } else {

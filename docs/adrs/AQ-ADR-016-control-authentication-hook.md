@@ -40,3 +40,20 @@ platform tests prove references do not widen permissions.
 | Accepted on | 2026-09-09 |
 | Superseded by | — |
 | Deferred verification | Verified in `AQ-02`: `ControlMutationContext` round trip, and the acceptance proof that executor traits grant no RBAC permission (`tests/acceptance/executor_trait_matching.rs`). Deferred to `AQ-11`: rejection of control mutations without context, and verbatim replay of context. |
+
+## AQ-11 implementation evidence
+
+The shared host service uses `HostControlContext` (not deserializable) and typed
+queue-action grants. HTTP actor/platform/control routes fail closed without a
+configured host hook. Explicit scope and current permission checks precede
+idempotency responses. `acceptance_control_mutation_attribution` covers body
+attribution replacement, permission revocation, reference neutrality, attributed
+WAL/snapshot replay, and administrative suspension/resumption through the service.
+
+WAL kind 352/schema 1 contains the underlying mutation and control attribution in
+one frame. Snapshot/projection version 8 retains those contexts. Existing version
+7 stores are rejected by manifest validation before mutation.
+
+The remaining ADR verification is rejection of context-free submissions through
+all older mutation/runtime entry points; those entry points have not yet all been
+migrated to the host service.

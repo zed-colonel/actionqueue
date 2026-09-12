@@ -72,6 +72,7 @@ enum CancelDisposition {
 #[tracing::instrument(skip(state))]
 pub async fn handle(
     state: State<crate::http::RouterState>,
+    axum::Extension(host): axum::Extension<actionqueue_core::control::HostControlContext>,
     Path(run_id_str): Path<String>,
 ) -> impl IntoResponse {
     let authority_handle = match &state.control_authority {
@@ -98,10 +99,26 @@ pub async fn handle(
         }
     };
 
+    let scope = match actionqueue_runtime::control::authorize(
+        &authority,
+        &host,
+        actionqueue_core::control::QueueAction::CancelRun,
+    ) {
+        Ok(scope) => scope,
+        Err(_) => return StatusCode::FORBIDDEN.into_response(),
+    };
     let run_id = match parse_run_id(&run_id_str) {
         Some(run_id) => run_id,
         None => return invalid_run_id_response(&run_id_str),
     };
+    if authority
+        .projection()
+        .get_run_instance(&run_id)
+        .and_then(|r| authority.projection().get_task(&r.task_id()))
+        .is_some_and(|t| t.tenant_id() != scope)
+    {
+        return StatusCode::FORBIDDEN.into_response();
+    }
 
     let Some(current_state) = authority.projection().get_run_state(&run_id).copied() else {
         return run_not_found_response(&run_id_str);
@@ -126,18 +143,13 @@ pub async fn handle(
             let command = MutationCommand::Cancel(CancelCommand {
                 expected_sequence: sequence,
                 target: CancelTarget::Run(run_id),
-                tenant_id: authority
-                    .projection()
-                    .get_run_instance(&run_id)
-                    .and_then(|r| authority.projection().get_task(&r.task_id()))
-                    .and_then(|t| t.tenant_id()),
-                control_context: Some(actionqueue_core::causal::ControlMutationContext::new(
-                    actionqueue_core::bounded::OpaqueRef::new("daemon-control").expect("bounded"),
-                )),
+                tenant_id: scope,
+                control_context: Some(host.attribution.clone()),
                 timestamp: state.clock.now(),
             });
 
-            match authority.submit_command(command, DurabilityPolicy::Immediate) {
+            match authority.submit_command(command.with_control(&host), DurabilityPolicy::Immediate)
+            {
                 Ok(_) => {
                     match crate::http::write_projection(&state) {
                         Ok(mut guard) => *guard = authority.projection().clone(),
@@ -171,14 +183,8 @@ pub async fn handle(
             let retry_command = MutationCommand::Cancel(CancelCommand {
                 expected_sequence: retry_sequence,
                 target: CancelTarget::Run(run_id),
-                tenant_id: authority
-                    .projection()
-                    .get_run_instance(&run_id)
-                    .and_then(|r| authority.projection().get_task(&r.task_id()))
-                    .and_then(|t| t.tenant_id()),
-                control_context: Some(actionqueue_core::causal::ControlMutationContext::new(
-                    actionqueue_core::bounded::OpaqueRef::new("daemon-control").expect("bounded"),
-                )),
+                tenant_id: scope,
+                control_context: Some(host.attribution.clone()),
                 timestamp: state.clock.now(),
             });
 

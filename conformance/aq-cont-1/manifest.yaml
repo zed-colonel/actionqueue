@@ -6,7 +6,7 @@
 # increments `package_revision`; normative change requires a contract amendment.
 schema_version: 1
 package: conformance/aq-cont-1
-package_revision: 6
+package_revision: 7
 status: scaffold
 contract: AQ-CONT-1
 contract_revision: STACK-2026-07-20-CLEAN-1
@@ -137,6 +137,23 @@ fixtures:
   sha256: e4e8da534ece9f7fdfdc2519d35f919d84bb61f82e8e74e2c3287dcb0f095c44
   variants: [replay, crash, race]
   introduced_by: AQ-09
+
+- id: AQ-CF-REMOTE-001
+  title: Canonical disposition v1 independent known-answer vector
+  invariants: [AQ-H9, AQ-H16]
+  driver: embedded
+  path: disposition-v1-vector.json
+  sha256: 58a60d1500afd764b07f5293d54ee7cc77725bf824650d62e5c046ec574c7d30
+  variants: [replay]
+  introduced_by: AQ-11
+- id: AQ-CF-CONTROL-001
+  title: Projection v8 with durable host control attribution
+  invariants: [AQ-H2, AQ-H15]
+  driver: embedded
+  path: projection-v8-vector.json
+  sha256: 154d47eec2d830d87da7d7f40dfc9f5567002f855c97b05b3f1dc0bfd1f2c5a6
+  variants: [replay]
+  introduced_by: AQ-11
 
 # Black-box drivers. Intentionally empty at AQ-01; populated by AQ-13.
 drivers: []

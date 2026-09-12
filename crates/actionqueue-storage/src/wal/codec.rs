@@ -68,7 +68,9 @@ pub(crate) fn header(bytes: &[u8]) -> Result<Header, DecodeError> {
         return Err(DecodeError::HeaderIntegrity);
     }
     let kind = u16::from_le_bytes(bytes[12..14].try_into().unwrap());
-    wire_v1::check_kind(kind)?;
+    if kind != 352 {
+        wire_v1::check_kind(kind)?;
+    }
     let schema = u16::from_le_bytes(bytes[14..16].try_into().unwrap());
     if schema != 1 && schema != wire_v1::schema(kind) && !(schema == 2 && matches!(kind, 16 | 256))
     {
@@ -104,7 +106,12 @@ pub fn encode(event: &WalEvent) -> Result<Vec<u8>, EncodeError> {
     encode_for_store(event, uuid::Uuid::nil())
 }
 pub fn encode_for_store(event: &WalEvent, store_id: uuid::Uuid) -> Result<Vec<u8>, EncodeError> {
-    let payload = wire_v1::encode_payload(event.event())?;
+    let payload = if event.control().is_some() {
+        serde_json::to_vec(event).map_err(|e| EncodeError::Serialization(e.to_string()))?
+    } else {
+        wire_v1::encode_payload(event.event())?
+    };
+
     if matches!(wire_v1::kind(event.event()), 288..=291)
         && payload.len() + HEADER_LEN > actionqueue_core::limits::MAX_SIGNAL_RECORD_BYTES
     {
@@ -121,8 +128,11 @@ pub fn encode_for_store(event: &WalEvent, store_id: uuid::Uuid) -> Result<Vec<u8
     let mut bytes = Vec::with_capacity(HEADER_LEN + payload.len());
     bytes.extend_from_slice(MAGIC);
     bytes.extend_from_slice(&VERSION.to_le_bytes());
-    bytes.extend_from_slice(&wire_v1::kind(event.event()).to_le_bytes());
-    let schema = if matches!(
+    let kind = if event.control().is_some() { 352 } else { wire_v1::kind(event.event()) };
+    bytes.extend_from_slice(&kind.to_le_bytes());
+    let schema = if kind == 352 {
+        1
+    } else if matches!(
         event.event(),
         super::event::WalEventType::AttemptStarted { .. }
             | super::event::WalEventType::AttemptFinished { .. }
@@ -149,6 +159,14 @@ pub fn decode(bytes: &[u8]) -> Result<WalEvent, DecodeError> {
     let actual = crc32fast::hash(payload);
     if h.crc != actual {
         return Err(DecodeError::CrcMismatch { expected: h.crc, actual });
+    }
+    if h.kind == 352 {
+        let event: WalEvent =
+            serde_json::from_slice(payload).map_err(|e| DecodeError::Decode(e.to_string()))?;
+        if event.sequence() != h.sequence || event.control().is_none() {
+            return Err(DecodeError::Decode("invalid attributed frame".into()));
+        }
+        return Ok(event);
     }
     Ok(WalEvent::new(h.sequence, wire_v1::decode_schema(h.kind, h.schema, payload)?))
 }

@@ -166,6 +166,7 @@ async fn local_claim_requires_explicit_matching_traits() {
     }
 }
 
+#[cfg(feature = "platform")]
 #[tokio::test]
 async fn actor_tenant_replacement_is_rejected_without_append() {
     use actionqueue_core::ids::TenantId;

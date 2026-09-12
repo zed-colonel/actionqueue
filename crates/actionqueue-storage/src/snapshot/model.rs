@@ -22,6 +22,7 @@ use crate::recovery::reducer::{AttemptHistoryEntry, LeaseMetadata, RunStateHisto
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct Snapshot {
+    pub control_history: Vec<(u64, actionqueue_core::control::ControlAttribution)>,
     pub dispatch_sequences: Vec<(RunId, u64)>,
     pub administrative_wakes: Vec<crate::recovery::resume::AdministrativeWake>,
     pub administrative_pending: Vec<(RunId, actionqueue_core::continuation::ResumeContextId)>,

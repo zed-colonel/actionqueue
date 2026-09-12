@@ -143,6 +143,24 @@ pub struct BootstrappedEngine<H: ExecutorHandler + 'static, C: Clock = SystemClo
 
 impl<H: ExecutorHandler + 'static, C: Clock> BootstrappedEngine<H, C> {
     /// Idempotent convenience admission with task/<uuid> key, trace, and correlation.
+    /// Claims remote execution under the embedded loop's coordination gates.
+    #[cfg(feature = "actor")]
+    pub fn claim_remote(
+        &mut self,
+        host: &actionqueue_core::control::HostControlContext,
+        request: actionqueue_actor::protocol::RemoteClaim,
+    ) -> Result<crate::remote::RemoteWork, actionqueue_core::control::ControlError> {
+        self.dispatch.claim_remote(host, request)
+    }
+    /// Commits an authenticated remote result and refreshes runtime coordination.
+    #[cfg(feature = "actor")]
+    pub fn submit_remote_result(
+        &mut self,
+        host: &actionqueue_core::control::HostControlContext,
+        result: actionqueue_actor::protocol::RemoteAttemptResult,
+    ) -> Result<(), actionqueue_core::control::ControlError> {
+        self.dispatch.submit_remote_result(host, result)
+    }
     /// Retain the preallocated task UUID on retry.
     pub fn submit_task(
         &mut self,

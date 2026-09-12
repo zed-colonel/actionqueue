@@ -21,6 +21,7 @@ actionqueue-executor-local = "0.1.2"
 actionqueue-workflow = "0.1.2"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
 tracing = "0.1"
+serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
 tempfile = "3.0"

@@ -29,6 +29,8 @@ pub enum DurabilityPolicy {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[must_use = "mutation commands should be submitted to a MutationAuthority"]
 pub enum MutationCommand {
+    /// Explicit host control; nested envelopes are rejected.
+    Control { host: crate::control::HostControlContext, command: Box<MutationCommand> },
     /// Atomically commit a complete lease-fenced worker disposition.
     AttemptDispositionCommit(AttemptDispositionCommitCommand),
     /// Atomic continuation establishment.
@@ -1606,3 +1608,10 @@ pub use control::*;
 
 pub mod wait;
 pub use wait::*;
+
+impl MutationCommand {
+    /// Attaches trusted host attribution to the same durable mutation frame.
+    pub fn with_control(self, host: &crate::control::HostControlContext) -> Self {
+        Self::Control { host: host.clone(), command: Box::new(self) }
+    }
+}

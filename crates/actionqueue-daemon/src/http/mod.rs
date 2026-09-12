@@ -40,6 +40,7 @@ pub type ControlMutationAuthority =
 /// This state is read-only. Handlers must not mutate any fields or introduce
 /// interior mutability beyond `Arc` cloning.
 pub struct RouterStateInner {
+    pub(crate) host_authenticator: Option<auth::HostAuthenticator>,
     pub(crate) store_session: Option<actionqueue_storage::store::StoreSession>,
     /// Router configuration for routing decisions.
     ///
@@ -114,6 +115,12 @@ pub struct RouterObservability {
 }
 
 impl RouterStateInner {
+    /// Installs the trusted host authentication hook before building the router.
+    pub fn with_host_authenticator(mut self, hook: auth::HostAuthenticator) -> Self {
+        self.host_authenticator = Some(hook);
+        self
+    }
+
     /// Creates a new router state from bootstrap components.
     ///
     /// The `ready_status` field is derived from
@@ -125,6 +132,7 @@ impl RouterStateInner {
         ready_status: ReadyStatus,
     ) -> Self {
         Self {
+            host_authenticator: None,
             store_session: None,
             router_config,
             shared_projection,
@@ -147,6 +155,7 @@ impl RouterStateInner {
         ready_status: ReadyStatus,
     ) -> Self {
         Self {
+            host_authenticator: None,
             store_session: None,
             router_config,
             shared_projection,
@@ -163,6 +172,7 @@ impl RouterStateInner {
 
 #[cfg(feature = "actor")]
 pub mod actors;
+pub mod auth;
 pub mod control;
 pub mod health;
 pub mod metrics;
@@ -235,10 +245,38 @@ pub fn build_router(state: RouterState) -> axum::Router {
     let router = run_get::register_routes(router);
     let router = task_get::register_routes(router);
     let router = metrics::register_routes(router, metrics_enabled);
-    let router = control::register_routes(router, control_enabled);
+    let controls = control::register_routes(axum::Router::new(), control_enabled);
     #[cfg(feature = "actor")]
-    let router = actors::register_routes(router);
+    let controls = if control_enabled { actors::register_routes(controls) } else { controls };
     #[cfg(feature = "platform")]
-    let router = platform::register_routes(router);
-    router.with_state(state)
+    let controls = if control_enabled { platform::register_routes(controls) } else { controls };
+    let controls = if control_enabled {
+        controls
+            .route_layer(axum::middleware::from_fn_with_state(state.clone(), auth::authenticate))
+    } else {
+        controls
+    };
+    router.merge(controls).with_state(state)
+}
+
+#[cfg(feature = "actor")]
+pub(crate) fn sync_projection<W: actionqueue_storage::wal::writer::WalWriter>(
+    state: &RouterState,
+    a: &StorageMutationAuthority<W, ReplayReducer>,
+) -> Result<(), axum::response::Response> {
+    *write_projection(state).map_err(|e| *e)? = a.projection().clone();
+    Ok(())
+}
+#[cfg(feature = "actor")]
+pub(crate) fn execute_host_mutation<W: actionqueue_storage::wal::writer::WalWriter>(
+    state: &RouterState,
+    a: &mut StorageMutationAuthority<W, ReplayReducer>,
+    host: &actionqueue_core::control::HostControlContext,
+    command: actionqueue_core::mutation::MutationCommand,
+) -> Result<actionqueue_core::mutation::MutationOutcome, actionqueue_core::control::ControlError> {
+    let result = actionqueue_runtime::control::execute_mutation(a, host, command)?;
+    sync_projection(state, a).map_err(|_| {
+        actionqueue_core::control::ControlError::Mutation("projection unavailable".into())
+    })?;
+    Ok(result)
 }

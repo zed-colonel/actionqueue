@@ -287,6 +287,8 @@ impl TaskRecord {
 /// A reducer that applies WAL events to reconstruct state.
 #[derive(Debug, Clone)]
 pub struct ReplayReducer {
+    pub(crate) control_history:
+        std::collections::BTreeMap<u64, actionqueue_core::control::ControlAttribution>,
     pub(crate) dispatch_sequences: std::collections::BTreeMap<RunId, u64>,
     pub(crate) checkpoints: std::collections::BTreeMap<
         actionqueue_core::ids::CheckpointId,
@@ -379,6 +381,7 @@ impl ReplayReducer {
             attempt_history: HashMap::new(),
             leases: HashMap::new(),
             lease_metadata: HashMap::new(),
+            control_history: Default::default(),
             latest_sequence: 0,
             task_canceled_at: HashMap::new(),
             engine_paused: false,
@@ -1004,6 +1007,9 @@ impl ReplayReducer {
         }
 
         // Commit bookkeeping only after semantic application succeeds.
+        if let Some(control) = event.control() {
+            self.control_history.insert(event.sequence(), control.clone());
+        }
         self.latest_sequence = event.sequence();
         // Refresh reverse-indexed child candidates after authoritative transitions.
         let changed: Vec<_> = match event.event() {
@@ -1731,6 +1737,12 @@ impl ReplayReducer {
     }
 
     /// Returns an iterator over all actor records.
+    pub fn control_history(
+        &self,
+    ) -> &std::collections::BTreeMap<u64, actionqueue_core::control::ControlAttribution> {
+        &self.control_history
+    }
+
     pub fn actors(&self) -> impl Iterator<Item = (&ActorId, &ActorRecord)> {
         self.actors.iter()
     }
@@ -2198,6 +2210,7 @@ pub(crate) fn capability_key(cap: &Capability) -> String {
         Capability::CanApprove => "CanApprove".to_string(),
         Capability::CanCancel => "CanCancel".to_string(),
         Capability::Custom(s) => format!("Custom:{s}"),
+        Capability::Queue(action) => format!("Queue:{action:?}"),
     }
 }
 

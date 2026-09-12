@@ -148,6 +148,14 @@ pub trait MutationProjection: Clone {
     {
         Err(super::disposition::DispositionRejection::UnsupportedFeature)
     }
+    /// Independently verifies authenticated remote result expectations.
+    fn validate_remote(
+        &self,
+        _command: &actionqueue_core::mutation::AttemptDispositionCommitCommand,
+        _platform: bool,
+    ) -> Result<Option<u64>, actionqueue_core::control::ControlError> {
+        Err(actionqueue_core::control::ControlError::Unauthorized)
+    }
     /// Applies a durable event to the in-memory projection.
     fn apply_event(&mut self, event: &WalEvent) -> Result<(), Self::Error>;
 }
@@ -208,6 +216,13 @@ impl MutationProjection for ReplayReducer {
         Ok(())
     }
 
+    fn validate_remote(
+        &self,
+        command: &actionqueue_core::mutation::AttemptDispositionCommitCommand,
+        platform: bool,
+    ) -> Result<Option<u64>, actionqueue_core::control::ControlError> {
+        super::control::validate_remote_projection(self, platform, command)
+    }
     fn resolve_admission(
         &self,
         tenant: Option<TenantId>,
@@ -452,6 +467,7 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
                 self.validate_sequence(details.sequence())?;
                 Ok(ValidatedCommand::SubscriptionTrigger(*details))
             }
+            MutationCommand::Control { .. } => Err(MutationValidationError::NestedControl),
             MutationCommand::ActorRegister(details) => {
                 self.validate_sequence(details.sequence())?;
                 self.projection.validate_actor_registration(details.registration())?;
@@ -1407,6 +1423,28 @@ impl<W: WalWriter, P: MutationProjection> MutationAuthority for StorageMutationA
         if self.recovery_required {
             return Err(MutationAuthorityError::RecoveryRequired);
         }
+        let (command, control) = match command {
+            MutationCommand::Control { host, command } => {
+                (*command, Some(actionqueue_core::control::ControlAttribution::from(&host)))
+            }
+            command => (command, None),
+        };
+        if let MutationCommand::AttemptDispositionCommit(c) = &command {
+            if c.remote().is_some() {
+                let platform = self
+                    .store_session()
+                    .map(|s| s.manifest().features.iter().any(|f| f == "platform"))
+                    .unwrap_or(false);
+                let prior = self.projection.validate_remote(c, platform).map_err(|_| {
+                    MutationAuthorityError::Disposition(
+                        super::disposition::DispositionRejection::Stale,
+                    )
+                })?;
+                if let Some(sequence) = prior {
+                    return Ok(MutationOutcome::new(sequence, AppliedMutation::NoOp));
+                }
+            }
+        }
         if let MutationCommand::AdmissionCommit(c) = &command {
             if durability != DurabilityPolicy::Immediate {
                 return Err(MutationAuthorityError::Admission(
@@ -1560,6 +1598,7 @@ impl<W: WalWriter, P: MutationProjection> MutationAuthority for StorageMutationA
                 ));
             }
         }
+        let event = if let Some(control) = control { event.with_control(control) } else { event };
         // Prepare the complete affected projection before any durable write.
         let mut prepared = self.projection.clone();
         prepared.apply_event(&event).map_err(|source| {
@@ -1676,6 +1715,8 @@ struct LeaseCloseParams<'a> {
 /// Typed validation failures from the authority validation stage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MutationValidationError {
+    /// Control attribution cannot be nested.
+    NestedControl,
     /// Actor IDs cannot be reassigned to another tenant namespace.
     ActorTenantChange,
     /// Awaiting transitions require compound continuation records (AQ-06).
@@ -1889,6 +1930,7 @@ pub enum MutationValidationError {
 impl std::fmt::Display for MutationValidationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::NestedControl => write!(f, "nested control attribution"),
             Self::ActorTenantChange => write!(f, "actor tenant is immutable"),
             MutationValidationError::SequenceOverflow => {
                 write!(f, "mutation sequence overflow while computing next expected sequence")

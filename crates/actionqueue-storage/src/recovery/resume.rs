@@ -98,7 +98,9 @@ impl ReplayReducer {
                 checkpoint: w
                     .checkpoint_id
                     .map(|c| self.checkpoint(c).expect("retained checkpoint").checkpoint.clone()),
-                wake: WakeReason::AdministrativeResume { control_context: None },
+                wake: WakeReason::AdministrativeResume {
+                    control_context: self.control_history.get(&id.0).map(|c| c.context.clone()),
+                },
                 resumed_at: w.timestamp,
             };
         }

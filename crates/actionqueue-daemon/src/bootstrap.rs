@@ -255,6 +255,13 @@ impl BootstrapState {
 /// let state = bootstrap(config).expect("bootstrap should succeed");
 /// ```
 pub fn bootstrap(config: DaemonConfig) -> Result<BootstrapState, BootstrapError> {
+    bootstrap_with_authenticator(config, None)
+}
+/// Bootstraps a host-integrated daemon with explicit authentication for controls.
+pub fn bootstrap_with_authenticator(
+    config: DaemonConfig,
+    hook: Option<crate::http::auth::HostAuthenticator>,
+) -> Result<BootstrapState, BootstrapError> {
     // Initialize structured logging subscriber.
     // Uses RUST_LOG env var for filtering (e.g. RUST_LOG=actionqueue=debug).
     // init() is a no-op if a subscriber is already set (e.g. in tests).
@@ -324,6 +331,7 @@ pub fn bootstrap(config: DaemonConfig) -> Result<BootstrapState, BootstrapError>
         )
     };
     router_state_inner.store_session = store_session;
+    router_state_inner.host_authenticator = hook;
     let router_state = std::sync::Arc::new(router_state_inner);
 
     // Build the concrete HTTP router using the assembly entry

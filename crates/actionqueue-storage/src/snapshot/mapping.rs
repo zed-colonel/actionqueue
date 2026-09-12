@@ -26,7 +26,8 @@ use crate::snapshot::model::{
 /// - v5: Immutable checkpoints and accepted resume assignments.
 /// - v6: Compound dispositions and separate durable failure accounting.
 /// - v7: Required/detached children, scoped child admission, and terminal child waits.
-pub const SNAPSHOT_SCHEMA_VERSION: u32 = 7;
+/// - v8: Host control attribution in the durable projection.
+pub const SNAPSHOT_SCHEMA_VERSION: u32 = 8;
 
 /// Typed mapping and validation errors for snapshot/core parity enforcement.
 #[derive(Debug, Clone, PartialEq, Eq)]

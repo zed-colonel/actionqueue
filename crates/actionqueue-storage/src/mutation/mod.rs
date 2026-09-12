@@ -18,3 +18,5 @@ mod validate_signal;
 pub mod wait;
 
 pub mod disposition;
+
+pub mod control;

@@ -112,7 +112,7 @@ impl ReplayReducer {
                 if actor_id.as_uuid().is_nil()
                     || identity.is_empty()
                     || *heartbeat_interval_secs == 0
-                    || self.is_actor_active(*actor_id)
+                    || self.get_actor(actor_id).is_some_and(|old| old.tenant_id != *tenant_id)
                 {
                     return Err(invalid());
                 }

@@ -6,8 +6,7 @@
 use actionqueue_core::actor::{ActorRegistration, ExecutorTraits};
 use actionqueue_core::ids::ActorId;
 use actionqueue_core::mutation::{
-    ActorDeregisterCommand, ActorHeartbeatCommand, ActorRegisterCommand, DurabilityPolicy,
-    MutationAuthority, MutationCommand,
+    ActorDeregisterCommand, ActorHeartbeatCommand, ActorRegisterCommand, MutationCommand,
 };
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -20,6 +19,8 @@ use crate::http::RouterState;
 /// Request body for actor registration.
 #[derive(serde::Deserialize)]
 pub struct RegisterActorRequest {
+    pub protocol_version: u32,
+    pub contract_revision: String,
     pub actor_id: ActorId,
     pub identity: String,
     pub executor_traits: Vec<String>,
@@ -43,10 +44,14 @@ pub fn register_routes(router: axum::Router<RouterState>) -> axum::Router<Router
         .route("/api/v2/actors/:actor_id/heartbeat", post(actor_heartbeat))
         .route("/api/v2/actors/:actor_id", delete(deregister_actor))
         .route("/api/v2/actors/:actor_id/claimable", get(claimable_runs))
+        .route("/api/v2/actors/:actor_id/claim", post(claim_run))
+        .route("/api/v2/actors/:actor_id/result", post(submit_result))
+        .route("/api/v2/actors/:actor_id/renew", post(renew_lease))
 }
 
 async fn register_actor(
     State(state): State<RouterState>,
+    axum::Extension(host): axum::Extension<actionqueue_core::control::HostControlContext>,
     Json(body): Json<RegisterActorRequest>,
 ) -> impl IntoResponse {
     let Some(authority) = state.control_authority.as_ref() else {
@@ -57,6 +62,12 @@ async fn register_actor(
             .into_response();
     };
 
+    if !actionqueue_actor::protocol::supported(body.protocol_version, &body.contract_revision)
+        || body.identity.is_empty()
+        || body.heartbeat_interval_secs == 0
+    {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
     let caps = match ExecutorTraits::new(body.executor_traits) {
         Ok(c) => c,
         Err(e) => return (
@@ -91,14 +102,13 @@ async fn register_actor(
     };
 
     let seq = auth.projection().latest_sequence() + 1;
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    let ts = state.clock.now();
 
-    match auth.submit_command(
+    match crate::http::execute_host_mutation(
+        &state,
+        &mut auth,
+        &host,
         MutationCommand::ActorRegister(ActorRegisterCommand::new(seq, reg, ts)),
-        DurabilityPolicy::Immediate,
     ) {
         Ok(_) => (StatusCode::CREATED, Json(serde_json::json!({ "actor_id": body.actor_id })))
             .into_response(),
@@ -112,6 +122,7 @@ async fn register_actor(
 
 async fn actor_heartbeat(
     State(state): State<RouterState>,
+    axum::Extension(host): axum::Extension<actionqueue_core::control::HostControlContext>,
     Path(actor_id): Path<ActorId>,
 ) -> impl IntoResponse {
     let Some(authority) = state.control_authority.as_ref() else {
@@ -124,14 +135,13 @@ async fn actor_heartbeat(
     };
 
     let seq = auth.projection().latest_sequence() + 1;
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    let ts = state.clock.now();
 
-    match auth.submit_command(
+    match crate::http::execute_host_mutation(
+        &state,
+        &mut auth,
+        &host,
         MutationCommand::ActorHeartbeat(ActorHeartbeatCommand::new(seq, actor_id, ts)),
-        DurabilityPolicy::Immediate,
     ) {
         Ok(_) => StatusCode::OK.into_response(),
         Err(_) => StatusCode::NOT_FOUND.into_response(),
@@ -140,6 +150,7 @@ async fn actor_heartbeat(
 
 async fn deregister_actor(
     State(state): State<RouterState>,
+    axum::Extension(host): axum::Extension<actionqueue_core::control::HostControlContext>,
     Path(actor_id): Path<ActorId>,
 ) -> impl IntoResponse {
     let Some(authority) = state.control_authority.as_ref() else {
@@ -152,26 +163,127 @@ async fn deregister_actor(
     };
 
     let seq = auth.projection().latest_sequence() + 1;
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    let ts = state.clock.now();
 
-    match auth.submit_command(
+    match crate::http::execute_host_mutation(
+        &state,
+        &mut auth,
+        &host,
         MutationCommand::ActorDeregister(ActorDeregisterCommand::new(seq, actor_id, ts)),
-        DurabilityPolicy::Immediate,
     ) {
         Ok(_) => StatusCode::OK.into_response(),
         Err(_) => StatusCode::NOT_FOUND.into_response(),
     }
 }
 
-/// Returns claimable runs for an actor (stub — executor trait routing not yet implemented).
+/// Lists eligible work in the authenticated actor's explicit namespace.
 async fn claimable_runs(
-    State(_state): State<RouterState>,
-    Path(_actor_id): Path<ActorId>,
-) -> impl IntoResponse {
-    // Executor-trait-filtered dispatch is implemented in the dispatch loop.
-    // This HTTP endpoint is a placeholder for the actor claiming protocol.
-    (StatusCode::OK, Json(serde_json::json!({ "runs": [] }))).into_response()
+    State(state): State<RouterState>,
+    axum::Extension(host): axum::Extension<actionqueue_core::control::HostControlContext>,
+    Path(actor_id): Path<ActorId>,
+) -> axum::response::Response {
+    if host.actor_id != Some(actor_id) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let Some(a) = state.control_authority.as_ref() else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    let Ok(a) = a.lock() else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+    match actionqueue_runtime::remote::claimable(&a, &host, state.clock.now()) {
+        Ok(runs) => Json(serde_json::json!({"runs":runs})).into_response(),
+        Err(_) => StatusCode::FORBIDDEN.into_response(),
+    }
+}
+async fn claim_run(
+    State(state): State<RouterState>,
+    axum::Extension(host): axum::Extension<actionqueue_core::control::HostControlContext>,
+    Path(actor_id): Path<ActorId>,
+    Json(request): Json<actionqueue_actor::protocol::RemoteClaim>,
+) -> axum::response::Response {
+    if host.actor_id != Some(actor_id) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let Some(a) = state.control_authority.as_ref() else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    let Ok(mut a) = a.lock() else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+    match actionqueue_runtime::remote::claim(&mut a, &host, request, state.clock.now(), 300) {
+        Ok(work) => {
+            if let Err(e) = crate::http::sync_projection(&state, &a) {
+                return e;
+            }
+            Json(work).into_response()
+        }
+        Err(_) => StatusCode::CONFLICT.into_response(),
+    }
+}
+async fn submit_result(
+    State(state): State<RouterState>,
+    axum::Extension(host): axum::Extension<actionqueue_core::control::HostControlContext>,
+    Path(actor_id): Path<ActorId>,
+    Json(request): Json<actionqueue_actor::protocol::RemoteAttemptResult>,
+) -> axum::response::Response {
+    if host.actor_id != Some(actor_id) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let Some(a) = state.control_authority.as_ref() else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    let Ok(mut a) = a.lock() else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+    match actionqueue_runtime::remote::submit_result(&mut a, &host, request, state.clock.now()) {
+        Ok(()) => {
+            if let Err(e) = crate::http::sync_projection(&state, &a) {
+                return e;
+            }
+            StatusCode::OK.into_response()
+        }
+        Err(_) => StatusCode::CONFLICT.into_response(),
+    }
+}
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RenewRequest {
+    run_id: actionqueue_core::ids::RunId,
+    attempt_id: actionqueue_core::ids::AttemptId,
+    lease_fence: actionqueue_core::mutation::LeaseFence,
+    expiry: u64,
+}
+async fn renew_lease(
+    State(state): State<RouterState>,
+    axum::Extension(host): axum::Extension<actionqueue_core::control::HostControlContext>,
+    Path(actor_id): Path<ActorId>,
+    Json(request): Json<RenewRequest>,
+) -> axum::response::Response {
+    if host.actor_id != Some(actor_id) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let Some(a) = state.control_authority.as_ref() else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    let Ok(mut a) = a.lock() else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+    match actionqueue_runtime::remote::renew(
+        &mut a,
+        &host,
+        request.run_id,
+        request.attempt_id,
+        request.lease_fence,
+        state.clock.now(),
+        request.expiry,
+    ) {
+        Ok(()) => {
+            if let Err(e) = crate::http::sync_projection(&state, &a) {
+                return e;
+            }
+            StatusCode::OK.into_response()
+        }
+        Err(_) => StatusCode::CONFLICT.into_response(),
+    }
 }

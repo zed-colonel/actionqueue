@@ -1,4 +1,4 @@
-//! Exact v7 projection image, validated hydration, and canonical SHA-256.
+//! Exact v8 projection image, validated hydration, and canonical SHA-256.
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -15,7 +15,7 @@ pub struct ProjectionDigest {
     pub hex: String,
 }
 #[derive(Debug, Clone)]
-pub(crate) struct ProjectionImageV7(pub Snapshot);
+pub(crate) struct ProjectionImageV8(pub Snapshot);
 fn invalid(e: impl std::fmt::Display) -> StoreError {
     StoreError::InvalidStore(e.to_string())
 }
@@ -35,7 +35,7 @@ fn canonical(value: &serde_json::Value, out: &mut Vec<u8>) -> Result<(), StoreEr
                 out.push(3);
                 out.extend_from_slice(&v.to_le_bytes());
             } else {
-                return Err(invalid("floating point is not permitted in projection v7"));
+                return Err(invalid("floating point is not permitted in projection v8"));
             }
         }
         V::String(v) => {
@@ -71,6 +71,7 @@ fn key<T: Serialize>(v: &T) -> Vec<u8> {
 }
 pub(crate) fn normalize(snapshot: &mut Snapshot) {
     snapshot.timestamp = 0;
+    snapshot.control_history.sort_by_key(|(s, _)| *s);
     snapshot.waits.sort_by_key(|w| w.spec.wait_id());
     snapshot.cancellations.sort_by_key(|c| c.sequence);
     snapshot.dispatch_sequences.sort_by_key(|(r, _)| *r);
@@ -96,11 +97,11 @@ pub(crate) fn normalize(snapshot: &mut Snapshot) {
 pub(crate) fn snapshot_digest(snapshot: &Snapshot) -> Result<ProjectionDigest, StoreError> {
     let mut image = snapshot.clone();
     normalize(&mut image);
-    let mut bytes = b"AQ-CONT-1\0projection\0v7\0".to_vec();
+    let mut bytes = b"AQ-CONT-1\0projection\0v8\0".to_vec();
     canonical(&serde_json::to_value(image).map_err(invalid)?, &mut bytes)?;
     Ok(ProjectionDigest {
         algorithm: "sha256".into(),
-        version: 7,
+        version: 8,
         hex: format!("{:x}", Sha256::digest(bytes)),
     })
 }
@@ -108,20 +109,28 @@ fn convert<S: Serialize, T: serde::de::DeserializeOwned>(v: S) -> Result<T, Stor
     serde_json::from_value(serde_json::to_value(v).map_err(invalid)?).map_err(invalid)
 }
 impl ReplayReducer {
-    pub(crate) fn projection_image(&self) -> Result<ProjectionImageV7, StoreError> {
+    pub(crate) fn projection_image(&self) -> Result<ProjectionImageV8, StoreError> {
         let snapshot =
             crate::snapshot::build::build_snapshot_from_projection(self, 0).map_err(invalid)?;
-        Ok(ProjectionImageV7(snapshot))
+        Ok(ProjectionImageV8(snapshot))
     }
     pub fn projection_digest(&self) -> Result<ProjectionDigest, StoreError> {
         snapshot_digest(&self.projection_image()?.0)
     }
-    pub(crate) fn from_projection_image(image: ProjectionImageV7) -> Result<Self, StoreError> {
+    pub(crate) fn from_projection_image(image: ProjectionImageV8) -> Result<Self, StoreError> {
         let s = image.0;
         validate_snapshot(&s).map_err(invalid)?;
         let original_digest = snapshot_digest(&s)?;
         let mut r = Self::new();
         r.latest_sequence = s.metadata.wal_sequence;
+        for (sequence, context) in s.control_history {
+            if sequence == 0
+                || sequence > r.latest_sequence
+                || r.control_history.insert(sequence, context).is_some()
+            {
+                return Err(invalid("invalid control history"));
+            }
+        }
         for task in s.tasks {
             let id = task.task_spec.id();
             if let Some(t) = task.canceled_at {
