@@ -74,6 +74,14 @@ pub trait MutationProjection: Clone {
         false
     }
 
+    /// Rejects actor re-registration that changes its immutable tenant namespace.
+    fn validate_actor_registration(
+        &self,
+        _registration: &actionqueue_core::actor::ActorRegistration,
+    ) -> Result<(), MutationValidationError> {
+        Ok(())
+    }
+
     /// Resolves a tenant-scoped admission under the exclusive mutation owner.
     fn resolve_admission(
         &self,
@@ -185,6 +193,19 @@ impl MutationProjection for ReplayReducer {
 
     fn is_subscription_canceled(&self, subscription_id: SubscriptionId) -> bool {
         ReplayReducer::is_subscription_canceled(self, subscription_id)
+    }
+
+    fn validate_actor_registration(
+        &self,
+        registration: &actionqueue_core::actor::ActorRegistration,
+    ) -> Result<(), MutationValidationError> {
+        if self
+            .get_actor(&registration.actor_id())
+            .is_some_and(|old| old.tenant_id != registration.tenant_id())
+        {
+            return Err(MutationValidationError::ActorTenantChange);
+        }
+        Ok(())
     }
 
     fn resolve_admission(
@@ -433,6 +454,7 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
             }
             MutationCommand::ActorRegister(details) => {
                 self.validate_sequence(details.sequence())?;
+                self.projection.validate_actor_registration(details.registration())?;
                 Ok(ValidatedCommand::ActorRegister(details.clone()))
             }
             MutationCommand::ActorDeregister(details) => {
@@ -1654,6 +1676,8 @@ struct LeaseCloseParams<'a> {
 /// Typed validation failures from the authority validation stage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MutationValidationError {
+    /// Actor IDs cannot be reassigned to another tenant namespace.
+    ActorTenantChange,
     /// Awaiting transitions require compound continuation records (AQ-06).
     AwaitingTransitionRequiresContinuationRecord,
     /// Projection sequence could not be advanced because it overflowed `u64`.
@@ -1865,6 +1889,7 @@ pub enum MutationValidationError {
 impl std::fmt::Display for MutationValidationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::ActorTenantChange => write!(f, "actor tenant is immutable"),
             MutationValidationError::SequenceOverflow => {
                 write!(f, "mutation sequence overflow while computing next expected sequence")
             }

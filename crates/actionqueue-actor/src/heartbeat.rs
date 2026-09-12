@@ -54,7 +54,7 @@ impl HeartbeatMonitor {
     ///
     /// An actor times out when `now >= last_heartbeat_at + timeout_secs`.
     pub fn check_timeouts(&self, now: u64) -> Vec<ActorId> {
-        let timed_out: Vec<ActorId> = self
+        let mut timed_out: Vec<ActorId> = self
             .heartbeats
             .iter()
             .filter(|(_, state)| {
@@ -63,6 +63,7 @@ impl HeartbeatMonitor {
             })
             .map(|(&id, _)| id)
             .collect();
+        timed_out.sort_unstable_by_key(|id| *id.as_uuid());
         for &actor_id in &timed_out {
             tracing::warn!(%actor_id, now, "actor heartbeat timeout detected");
         }

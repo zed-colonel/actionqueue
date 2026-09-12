@@ -34,6 +34,13 @@ impl ActorRegistry {
     pub fn register(&mut self, registration: ActorRegistration) {
         let actor_id = registration.actor_id();
         tracing::debug!(%actor_id, "actor registered");
+        if let Some(previous) = self.actors.get(&actor_id) {
+            if let Some(tenant) = previous.registration.tenant_id() {
+                if let Some(ids) = self.actors_by_tenant.get_mut(&tenant) {
+                    ids.remove(&actor_id);
+                }
+            }
+        }
         if let Some(tenant_id) = registration.tenant_id() {
             self.actors_by_tenant.entry(tenant_id).or_default().insert(actor_id);
         }

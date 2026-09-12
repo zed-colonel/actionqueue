@@ -7,6 +7,8 @@ use std::time::Duration;
 /// Configuration for the ActionQueue runtime.
 #[derive(Debug, Clone)]
 pub struct RuntimeConfig {
+    /// Labels offered by the local executor; absence satisfies only unconstrained tasks.
+    pub local_executor_traits: Option<actionqueue_core::executor::ExecutorTraits>,
     /// Limits for newly committed continuation data. The disposition quota must
     /// accommodate [`RuntimeConfig::minimum_disposition_bytes`].
     pub continuation_limits: actionqueue_core::limits::ContinuationLimits,
@@ -53,6 +55,7 @@ pub enum BackoffStrategyConfig {
 impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
+            local_executor_traits: None,
             continuation_limits: Default::default(),
             signal_limits: Default::default(),
             signal_retention: Default::default(),

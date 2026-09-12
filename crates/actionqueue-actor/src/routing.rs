@@ -6,7 +6,7 @@ pub struct ExecutorTraitRouter;
 impl ExecutorTraitRouter {
     /// Absent requirements match any actor; otherwise every trait must be present.
     pub fn can_handle(actor_traits: &ExecutorTraits, required: Option<&ExecutorTraits>) -> bool {
-        required.is_none_or(|required| actor_traits.satisfies(required))
+        actionqueue_core::executor::matches_requirements(Some(actor_traits), required)
     }
     /// Selects actors by routing traits only.
     pub fn eligible_actors(

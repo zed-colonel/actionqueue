@@ -132,3 +132,61 @@ fn executor_traits_grant_no_rbac_permission() {
     assert!(!rbac.has_capability(actor, &Capability::CanSubmit, tenant));
     assert!(rbac.role_of(actor, tenant).is_none());
 }
+
+/// Actual dispatch must apply the same exact-subset test as remote routing.
+#[tokio::test]
+async fn local_claim_requires_explicit_matching_traits() {
+    use actionqueue_core::ids::TaskId;
+    use actionqueue_core::task::{
+        constraints::TaskConstraints, metadata::TaskMetadata, run_policy::RunPolicy,
+        task_spec::TaskSpec,
+    };
+    for offered in
+        [None, Some(vec!["compute".into()]), Some(vec!["compute".into(), "review".into()])]
+    {
+        let mut config = make_config(data_dir("local-claims"));
+        config.local_executor_traits = offered.map(|values| ExecutorTraits::new(values).unwrap());
+        let expected =
+            config.local_executor_traits.as_ref().is_some_and(|t| t.as_slice().len() == 2);
+        let mut boot = ActionQueueEngine::new(config, NoopHandler)
+            .bootstrap_with_clock(MockClock::new(1000))
+            .unwrap();
+        let task = TaskSpec::new(
+            TaskId::new(),
+            actionqueue_core::task::task_spec::TaskPayload::new(vec![]),
+            RunPolicy::Once,
+            TaskConstraints::default()
+                .with_required_executor_traits(vec!["compute".into(), "review".into()])
+                .unwrap(),
+            TaskMetadata::default(),
+        )
+        .unwrap();
+        boot.submit_task(task).unwrap();
+        assert_eq!(boot.tick().await.unwrap().dispatched, usize::from(expected));
+    }
+}
+
+#[tokio::test]
+async fn actor_tenant_replacement_is_rejected_without_append() {
+    use actionqueue_core::ids::TenantId;
+    let mut boot = ActionQueueEngine::new(make_config(data_dir("tenant-replacement")), NoopHandler)
+        .bootstrap_with_clock(MockClock::new(1000))
+        .unwrap();
+    let id = ActorId::new();
+    let traits = ExecutorTraits::new(vec!["compute".into()]).unwrap();
+    let tenant = TenantId::new();
+    boot.create_tenant(actionqueue_core::platform::TenantRegistration::new(tenant, "tenant"))
+        .unwrap();
+    boot.register_actor(
+        ActorRegistration::new(id, "first", traits.clone(), 30).with_tenant(tenant),
+    )
+    .unwrap();
+    let sequence = boot.projection().latest_sequence();
+    assert!(boot
+        .register_actor(
+            ActorRegistration::new(id, "second", traits, 30).with_tenant(TenantId::new())
+        )
+        .is_err());
+    assert_eq!(boot.projection().latest_sequence(), sequence);
+    assert_eq!(boot.actor_registry().get(id).unwrap().tenant_id(), Some(tenant));
+}

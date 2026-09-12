@@ -126,7 +126,8 @@ impl<H: ExecutorHandler + 'static> ActionQueueEngine<H> {
                 self.config.lease_timeout_secs,
                 snapshot_path,
                 self.config.snapshot_event_threshold,
-            ),
+            )
+            .with_local_executor_traits(self.config.local_executor_traits.clone()),
         )
         .map_err(BootstrapError::Dispatch)?;
 

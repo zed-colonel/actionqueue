@@ -273,6 +273,7 @@ pub struct DispatchLoop<
     clock: C,
     /// Identity of the executor acquiring leases.
     identity: I,
+    local_executor_traits: Option<actionqueue_core::executor::ExecutorTraits>,
     key_gate: KeyGate,
     backoff: Box<dyn BackoffStrategy + Send + Sync>,
     max_concurrent: usize,
@@ -337,6 +338,7 @@ pub struct DispatchLoop<
 /// Configuration parameters for the dispatch loop that group backoff,
 /// concurrency, lease, and snapshot settings.
 pub struct DispatchConfig {
+    pub(crate) local_executor_traits: Option<actionqueue_core::executor::ExecutorTraits>,
     /// Backoff strategy configuration for retry delay computation.
     pub(crate) backoff_config: BackoffStrategyConfig,
     /// Maximum number of concurrently executing runs.
@@ -350,6 +352,15 @@ pub struct DispatchConfig {
 }
 
 impl DispatchConfig {
+    /// Sets the labels offered by the local executor.
+    pub fn with_local_executor_traits(
+        mut self,
+        traits: Option<actionqueue_core::executor::ExecutorTraits>,
+    ) -> Self {
+        self.local_executor_traits = traits;
+        self
+    }
+
     /// Creates a new dispatch configuration.
     pub fn new(
         backoff_config: BackoffStrategyConfig,
@@ -359,6 +370,7 @@ impl DispatchConfig {
         snapshot_event_threshold: Option<u64>,
     ) -> Self {
         Self {
+            local_executor_traits: None,
             backoff_config,
             max_concurrent,
             lease_timeout_secs,
@@ -567,6 +579,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
             runner: Arc::new(AttemptRunner::new(handler)),
             clock,
             identity: LocalExecutorIdentity,
+            local_executor_traits: config.local_executor_traits,
             key_gate: KeyGate::new(),
             backoff,
             max_concurrent: config.max_concurrent,
@@ -1485,6 +1498,13 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
                     continue;
                 }
             };
+
+            if !actionqueue_core::executor::matches_requirements(
+                self.local_executor_traits.as_ref(),
+                task.constraints().required_executor_traits(),
+            ) {
+                continue;
+            }
 
             // Cache payload and constraints before state transitions
             let payload = task.payload().to_vec();
@@ -2437,6 +2457,10 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
             )
             .map_err(DispatchError::Authority)?;
 
+        self.department_registry.remove(actor_id);
+        if let Some(department) = registration.department() {
+            self.department_registry.assign(actor_id, department.clone());
+        }
         self.actor_registry.register(registration);
         self.heartbeat_monitor.record_registration(actor_id, policy, ts);
         Ok(())
