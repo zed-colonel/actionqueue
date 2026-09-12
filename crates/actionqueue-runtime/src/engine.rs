@@ -293,7 +293,6 @@ impl<H: ExecutorHandler + 'static, C: Clock> BootstrappedEngine<H, C> {
     }
 
     /// Resumes a suspended run (transitions Suspended → Ready).
-    #[cfg(feature = "budget")]
     pub fn resume_run(&mut self, run_id: actionqueue_core::ids::RunId) -> Result<(), EngineError> {
         tracing::debug!(%run_id, "resume_run");
         self.dispatch.resume_run(run_id).map_err(EngineError::Dispatch)
@@ -311,17 +310,6 @@ impl<H: ExecutorHandler + 'static, C: Clock> BootstrappedEngine<H, C> {
     ) -> Result<actionqueue_core::subscription::SubscriptionId, EngineError> {
         tracing::debug!(%task_id, "create_subscription");
         self.dispatch.create_subscription(task_id, filter).map_err(EngineError::Dispatch)
-    }
-
-    /// Fires a custom event, triggering any matching subscriptions.
-    ///
-    /// Subscriptions with a `Custom { key }` filter matching the event key
-    /// are triggered. Triggered subscriptions promote their task's Scheduled
-    /// runs on the next tick.
-    #[cfg(feature = "budget")]
-    pub fn fire_custom_event(&mut self, key: String) -> Result<(), EngineError> {
-        tracing::debug!(key, "fire_custom_event");
-        self.dispatch.fire_custom_event(key).map_err(EngineError::Dispatch)
     }
 
     // ── Actor feature ──────────────────────────────────────────────────────

@@ -70,3 +70,12 @@ endpoints are deferred to their designated work items.
 AQ-06 adds the handler-independent `waits` service and pre-dispatch recovery
 reconciliation. See [continuation semantics](../../docs/aq-06-continuations.md), including
 the pending-input guard until accepted-start delivery lands.
+
+## Budgets and continuation
+
+Suspension resume is a base API. Budget replenishment changes only budget state;
+call `resume_run` explicitly for Suspended runs. Awaiting runs instead require a
+matching durable signal, terminal child evidence, deadline, or authorized wait resolution.
+Satisfied waits become Ready with pending input even if budget prevents leasing. Input is assigned
+only at accepted attempt start. Awaiting time is not execution budget consumption.
+Internal subscriptions, gated by the budget profile, only promote Scheduled runs.

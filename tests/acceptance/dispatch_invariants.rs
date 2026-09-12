@@ -35,8 +35,7 @@ static PROPTEST_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 fn proptest_data_dir(label: &str) -> PathBuf {
     let count = PROPTEST_COUNTER.fetch_add(1, Ordering::SeqCst);
-    let dir = PathBuf::from("target")
-        .join("tmp")
+    let dir = std::env::temp_dir()
         .join(format!("p6-007-proptest-{label}-{}-{count}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("proptest data dir should be creatable");
     dir

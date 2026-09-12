@@ -151,6 +151,28 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             println!();
         }
+        // Structural subscription encodings are identical in independently built profiles.
+        use actionqueue_core::{budget::BudgetDimension, subscription::EventFilter};
+        for filter in [
+            EventFilter::TaskCompleted { task_id: id() },
+            EventFilter::RunStateChanged { task_id: id(), state: RunState::Awaiting },
+            EventFilter::BudgetThreshold {
+                task_id: id(),
+                dimension: BudgetDimension::CostCents,
+                threshold_pct: 80,
+            },
+        ] {
+            let event = E::SubscriptionCreated {
+                subscription_id: "66666666-6666-4666-8666-666666666666".parse()?,
+                task_id: id(),
+                filter,
+                timestamp: 42,
+            };
+            for b in codec::encode(&WalEvent::new(13, event))? {
+                print!("{b:02x}");
+            }
+            println!();
+        }
         return Ok(());
     }
     let path = std::path::Path::new(args.get(2).ok_or("missing path")?);

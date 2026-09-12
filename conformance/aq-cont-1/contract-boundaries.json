@@ -95,8 +95,9 @@
       {"symbol": "HandlerOutput", "replacement": "AttemptDisposition", "removal_pr": "AQ-08", "stage": "forbid"},
       {"symbol": "TaskSubmissionPort", "replacement": "compound child admission", "removal_pr": "AQ-08", "stage": "forbid"},
       {"symbol": "SubmissionChannel", "replacement": "compound child admission", "removal_pr": "AQ-08", "stage": "forbid"},
-      { "symbol": "EventFilter::Custom", "replacement": "durable SignalEnvelope / WaitSpec", "removal_pr": "AQ-10", "stage": "report", "max_files": 6 },
-      { "symbol": "ActionQueueEvent::CustomEvent", "replacement": "durable SignalEnvelope / WaitSpec", "removal_pr": "AQ-10", "stage": "report", "max_files": 3 }
+      { "symbol": "EventFilter::Custom", "replacement": "durable SignalEnvelope / WaitSpec", "removal_pr": "AQ-10", "stage": "forbid", "max_files": 6 },
+      { "symbol": "fire_custom_event", "replacement": "admit_signal", "removal_pr": "AQ-10", "stage": "forbid", "max_files": 0 },
+      { "symbol": "ActionQueueEvent::CustomEvent", "replacement": "durable SignalEnvelope / WaitSpec", "removal_pr": "AQ-10", "stage": "forbid", "max_files": 3 }
     ]
   }
 }

@@ -1,16 +1,17 @@
-//! Subscription source implementation and re-exports for event matching.
+//! Internal subscription source implementation.
 //!
-//! [`ActionQueueEvent`] and [`check_event`] are defined in `actionqueue-core` and
-//! re-exported from `actionqueue-budget` for backward compatibility. This module
-//! implements [`SubscriptionSource`] for [`SubscriptionRegistry`] so that
+//! [`ActionQueueEvent`](actionqueue_core::event::ActionQueueEvent) and
+//! [`check_event`](actionqueue_core::event::check_event) are defined in `actionqueue-core` and
+//! used directly by runtime dispatch. This module
+//! implements [`SubscriptionSource`] for [`InternalSubscriptionRegistry`] so that
 //! `check_event` can iterate active subscriptions.
 
-pub use actionqueue_core::event::{check_event, ActionQueueEvent, SubscriptionSource};
+use actionqueue_core::event::SubscriptionSource;
 use actionqueue_core::subscription::EventFilter;
 
-use crate::subscription::registry::SubscriptionRegistry;
+use crate::reactivity::registry::InternalSubscriptionRegistry;
 
-impl SubscriptionSource for SubscriptionRegistry {
+impl SubscriptionSource for InternalSubscriptionRegistry {
     fn active_subscriptions_iter(
         &self,
     ) -> impl Iterator<Item = (actionqueue_core::subscription::SubscriptionId, &EventFilter)> + '_
@@ -26,12 +27,12 @@ mod tests {
     use actionqueue_core::run::state::RunState;
     use actionqueue_core::subscription::{EventFilter, SubscriptionId};
 
-    use super::{check_event, ActionQueueEvent};
-    use crate::subscription::registry::SubscriptionRegistry;
+    use crate::reactivity::registry::InternalSubscriptionRegistry;
+    use actionqueue_core::event::{check_event, ActionQueueEvent};
 
     #[test]
     fn task_completed_filter_matches_terminal_success_event() {
-        let mut registry = SubscriptionRegistry::new();
+        let mut registry = InternalSubscriptionRegistry::new();
         let task_a = TaskId::new();
         let task_b = TaskId::new();
         let sub = SubscriptionId::new();
@@ -44,7 +45,7 @@ mod tests {
 
     #[test]
     fn task_completed_filter_does_not_match_wrong_task() {
-        let mut registry = SubscriptionRegistry::new();
+        let mut registry = InternalSubscriptionRegistry::new();
         let task_a = TaskId::new();
         let task_b = TaskId::new();
         let sub = SubscriptionId::new();
@@ -56,7 +57,7 @@ mod tests {
 
     #[test]
     fn run_state_changed_filter_matches_correct_state() {
-        let mut registry = SubscriptionRegistry::new();
+        let mut registry = InternalSubscriptionRegistry::new();
         let task_a = TaskId::new();
         let task_b = TaskId::new();
         let sub = SubscriptionId::new();
@@ -77,7 +78,7 @@ mod tests {
 
     #[test]
     fn budget_threshold_filter_matches_at_or_above_threshold() {
-        let mut registry = SubscriptionRegistry::new();
+        let mut registry = InternalSubscriptionRegistry::new();
         let task_a = TaskId::new();
         let task_b = TaskId::new();
         let sub = SubscriptionId::new();
@@ -111,23 +112,5 @@ mod tests {
             pct: 79,
         };
         assert!(check_event(&below_threshold, &registry).is_empty());
-    }
-
-    #[test]
-    fn custom_event_filter_matches_by_key() {
-        let mut registry = SubscriptionRegistry::new();
-        let task = TaskId::new();
-        let sub = SubscriptionId::new();
-        registry.register(
-            sub,
-            task,
-            EventFilter::Custom { key: "caelum.thread.paused".to_string() },
-        );
-
-        let matching = ActionQueueEvent::CustomEvent { key: "caelum.thread.paused".to_string() };
-        assert_eq!(check_event(&matching, &registry), vec![sub]);
-
-        let non_matching = ActionQueueEvent::CustomEvent { key: "caelum.thread.other".to_string() };
-        assert!(check_event(&non_matching, &registry).is_empty());
     }
 }

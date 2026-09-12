@@ -106,7 +106,7 @@ pub struct ConcurrencyGateOutcomeEvidence {
     pub transition_applied: bool,
 }
 
-/// Creates a deterministic, isolated acceptance data directory under the process temporary directory (`TMPDIR`).
+/// Creates a deterministic, isolated acceptance data directory under the configured temporary directory.
 pub fn unique_data_dir(label: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "{label}-{}-{}",

@@ -29,9 +29,9 @@ use actionqueue_storage::wal::InstrumentedWalWriter;
 
 static TEST_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
-/// Creates a unique temporary data directory for each test under the process temporary directory (`TMPDIR`).
+/// Creates a unique temporary data directory for each test under the configured temporary directory.
 ///
-/// Matches the pattern used by acceptance tests for consistent build-directory
+/// Matches the pattern used by acceptance tests for consistent temporary-directory
 /// locality and easier cleanup.
 fn unique_data_dir(label: &str) -> PathBuf {
     let count = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);

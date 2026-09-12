@@ -359,25 +359,18 @@ mod tests {
 
     #[test]
     fn test_bootstrap_with_valid_config() {
-        let config = DaemonConfig::default();
+        let data_dir = std::env::temp_dir()
+            .join(format!("aq-daemon-bootstrap-{}", actionqueue_core::ids::TaskId::new()));
+        let config = DaemonConfig { data_dir: data_dir.clone(), ..Default::default() };
         let control_flag = config.enable_control;
-        let result = bootstrap(config);
-
-        // We expect success if data directory exists or can be created
-        // The exact result may vary based on filesystem permissions
-        if let Ok(state) = result {
-            // Assert router state wiring
-            // RouterState is Arc<RouterStateInner>, and RouterStateInner is public
-            let router_state = state.router_state();
-
-            // Access the inner fields through Arc deref
-            assert!(router_state.ready_status.is_ready());
-            assert_eq!(router_state.router_config.control_enabled, control_flag);
-            assert_eq!(router_state.router_config.metrics_enabled, state.metrics().is_enabled());
-        } else {
-            // Skip assertions if bootstrap fails due to file system issues
-            assert!(matches!(result, Err(BootstrapError::WalInit(_))));
-        }
+        let state = bootstrap(config).expect("bootstrap in isolated test directory");
+        let router_state = state.router_state();
+        assert!(router_state.ready_status.is_ready());
+        assert_eq!(router_state.router_config.control_enabled, control_flag);
+        assert_eq!(router_state.router_config.metrics_enabled, state.metrics().is_enabled());
+        drop(router_state);
+        drop(state);
+        std::fs::remove_dir_all(data_dir).expect("remove bootstrap test directory");
     }
 
     #[test]

@@ -304,7 +304,7 @@ pub struct DispatchLoop<
     /// In-memory subscription state reconstructed from WAL events at bootstrap.
     /// Consulted for subscription-triggered promotion eligibility and event matching.
     #[cfg(feature = "budget")]
-    subscription_registry: actionqueue_budget::SubscriptionRegistry,
+    subscription_registry: actionqueue_engine::reactivity::InternalSubscriptionRegistry,
     /// Per-task cache of parsed cron::Schedule objects (workflow feature only).
     /// Avoids re-parsing cron expressions on every tick for cron-policy tasks.
     #[cfg(feature = "workflow")]
@@ -329,7 +329,7 @@ pub struct DispatchLoop<
     ledger: actionqueue_platform::AppendLedger,
     /// TaskIds that have fully reached terminal state and are pending GC from
     /// in-memory data structures (DependencyGate, HierarchyTracker, BudgetTracker,
-    /// SubscriptionRegistry, CronScheduleCache). Populated when all runs for a
+    /// InternalSubscriptionRegistry, CronScheduleCache). Populated when all runs for a
     /// task are terminal; drained each tick after cascades are complete.
     pending_gc_tasks: std::collections::HashSet<TaskId>,
 }
@@ -412,10 +412,15 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         let budget_tracker = {
             let mut tracker = actionqueue_budget::BudgetTracker::new();
             for ((task_id, dimension), record) in authority.projection().budgets() {
-                tracker.allocate(*task_id, *dimension, record.limit);
-                if record.consumed > 0 {
-                    tracker.consume(*task_id, *dimension, record.consumed);
-                }
+                tracker.restore(
+                    *task_id,
+                    *dimension,
+                    actionqueue_budget::BudgetState {
+                        limit: record.limit,
+                        consumed: record.consumed,
+                        exhausted: record.exhausted,
+                    },
+                );
             }
             tracker
         };
@@ -423,7 +428,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         // Rebuild subscription registry from WAL-sourced projection records.
         #[cfg(feature = "budget")]
         let subscription_registry = {
-            let mut registry = actionqueue_budget::SubscriptionRegistry::new();
+            let mut registry = actionqueue_engine::reactivity::InternalSubscriptionRegistry::new();
             for (sub_id, record) in authority.projection().subscriptions() {
                 if record.canceled_at.is_none() {
                     registry.register(*sub_id, record.task_id, record.filter.clone());
@@ -778,6 +783,9 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         )
         .map_err(DispatchError::Authority)?;
         let target_state = *self.projection().get_run_state(&run_id).expect("committed run");
+        // Refresh before any fallible post-commit notifications. Never replay consumption.
+        #[cfg(feature = "budget")]
+        self.restore_task_budgets(self.projection().get_run_instance(&run_id).unwrap().task_id());
         self.dependency_gate = build_dependency_gate(self.authority.projection());
         self.hierarchy_tracker = build_hierarchy_tracker(self.authority.projection());
         {
@@ -831,9 +839,6 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
                 .and_then(|a| a.disposition.as_ref())
                 .map(|r| r.disposition.consumption().to_vec())
                 .unwrap_or_default();
-            for c in &consumption {
-                self.budget_tracker.consume(task_id, c.dimension, c.amount);
-            }
             if !consumption.is_empty() {
                 self.fire_budget_threshold_events(task_id)?;
             }
@@ -944,7 +949,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
     /// Called each tick (step 0c-gc), after hierarchy cascades complete. For each
     /// task in `pending_gc_tasks` whose cascade has quenched (no non-terminal
     /// descendants), removes it from the DependencyGate, HierarchyTracker,
-    /// BudgetTracker, SubscriptionRegistry, and CronScheduleCache.
+    /// BudgetTracker, InternalSubscriptionRegistry, and CronScheduleCache.
     fn gc_terminal_tasks(&mut self) {
         let candidates: Vec<TaskId> = self.pending_gc_tasks.iter().copied().collect();
 
@@ -2086,6 +2091,26 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         Ok(())
     }
 
+    #[cfg(feature = "budget")]
+    fn restore_task_budgets(&mut self, task_id: TaskId) {
+        use actionqueue_core::budget::BudgetDimension;
+        for dimension in
+            [BudgetDimension::Token, BudgetDimension::CostCents, BudgetDimension::TimeSecs]
+        {
+            if let Some(record) = self.authority.projection().get_budget(&task_id, dimension) {
+                self.budget_tracker.restore(
+                    task_id,
+                    dimension,
+                    actionqueue_budget::BudgetState {
+                        limit: record.limit,
+                        consumed: record.consumed,
+                        exhausted: record.exhausted,
+                    },
+                );
+            }
+        }
+    }
+
     /// Allocates a budget for a task/dimension pair and WAL-appends the event.
     ///
     /// Called by external callers (e.g. acceptance tests or the Caelum runtime)
@@ -2113,7 +2138,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
                 DurabilityPolicy::Immediate,
             )
             .map_err(DispatchError::Authority)?;
-        self.budget_tracker.allocate(task_id, dimension, limit);
+        self.restore_task_budgets(task_id);
         Ok(())
     }
 
@@ -2144,7 +2169,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
                 DurabilityPolicy::Immediate,
             )
             .map_err(DispatchError::Authority)?;
-        self.budget_tracker.replenish(task_id, dimension, new_limit);
+        self.restore_task_budgets(task_id);
         Ok(())
     }
 
@@ -2176,7 +2201,6 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
     ///
     /// Transitions the run from `Suspended → Ready` so it will be dispatched
     /// on the next tick. Returns an error if the run is not currently suspended.
-    #[cfg(feature = "budget")]
     pub fn resume_run(&mut self, run_id: RunId) -> Result<(), DispatchError> {
         use actionqueue_core::mutation::{MutationCommand as MC, RunResumeCommand};
         let current_time = self.clock.now();
@@ -2283,21 +2307,6 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         Ok(sub_id)
     }
 
-    /// Fires a custom event and matches it against active subscriptions.
-    ///
-    /// Any subscriptions with a `Custom { key }` filter matching the event
-    /// key are triggered. Triggered subscriptions cause their associated
-    /// task's Scheduled runs to be promoted on the next tick.
-    #[cfg(feature = "budget")]
-    pub fn fire_custom_event(&mut self, key: String) -> Result<(), DispatchError> {
-        let event = actionqueue_budget::ActionQueueEvent::CustomEvent { key };
-        let matched = actionqueue_budget::check_event(&event, &self.subscription_registry);
-        for sub_id in matched {
-            self.trigger_subscription_durable(sub_id)?;
-        }
-        Ok(())
-    }
-
     /// Fires events for state transitions and matches against subscriptions.
     ///
     /// Called from `process_worker_result` after a terminal state transition.
@@ -2309,7 +2318,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         task_id: TaskId,
         new_state: RunState,
     ) -> Result<(), DispatchError> {
-        use actionqueue_budget::{check_event, ActionQueueEvent};
+        use actionqueue_core::event::{check_event, ActionQueueEvent};
 
         // Fire RunChangedState event.
         let event = ActionQueueEvent::RunChangedState { task_id, new_state };
@@ -2329,7 +2338,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
     /// and at least one is Completed.
     #[cfg(feature = "budget")]
     fn fire_task_terminal_success_event(&mut self, task_id: TaskId) -> Result<(), DispatchError> {
-        use actionqueue_budget::{check_event, ActionQueueEvent};
+        use actionqueue_core::event::{check_event, ActionQueueEvent};
 
         let all_terminal = self.authority.projection().task_terminal_status(task_id).is_some();
         if !all_terminal {
@@ -2357,8 +2366,8 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
     /// the consumption percentage crossed any subscribed threshold.
     #[cfg(feature = "budget")]
     fn fire_budget_threshold_events(&mut self, task_id: TaskId) -> Result<(), DispatchError> {
-        use actionqueue_budget::{check_event, ActionQueueEvent};
         use actionqueue_core::budget::BudgetDimension;
+        use actionqueue_core::event::{check_event, ActionQueueEvent};
 
         for &dim in &[BudgetDimension::Token, BudgetDimension::CostCents, BudgetDimension::TimeSecs]
         {

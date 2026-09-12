@@ -25,19 +25,19 @@ pub struct SubscriptionEntry {
 
 /// In-memory registry of event subscriptions.
 ///
-/// Reconstructed from WAL events at bootstrap via [`SubscriptionRegistry::register`],
-/// [`SubscriptionRegistry::trigger`], and [`SubscriptionRegistry::cancel`] calls.
+/// Reconstructed from WAL events at bootstrap via [`InternalSubscriptionRegistry::register`],
+/// [`InternalSubscriptionRegistry::trigger`], and [`InternalSubscriptionRegistry::cancel`] calls.
 ///
 /// Maintains a secondary `task_subscriptions` index for O(S) per-task lookups
 /// where S is the number of subscriptions for that task (not O(N) total).
 #[derive(Debug, Default)]
-pub struct SubscriptionRegistry {
+pub struct InternalSubscriptionRegistry {
     subscriptions: HashMap<SubscriptionId, SubscriptionEntry>,
     /// Secondary index: task_id → set of subscription_ids for that task.
     task_subscriptions: HashMap<TaskId, HashSet<SubscriptionId>>,
 }
 
-impl SubscriptionRegistry {
+impl InternalSubscriptionRegistry {
     /// Creates an empty registry.
     pub fn new() -> Self {
         Self::default()
@@ -135,11 +135,11 @@ mod tests {
     use actionqueue_core::ids::TaskId;
     use actionqueue_core::subscription::{EventFilter, SubscriptionId};
 
-    use super::SubscriptionRegistry;
+    use super::InternalSubscriptionRegistry;
 
     #[test]
     fn register_and_is_triggered_lifecycle() {
-        let mut registry = SubscriptionRegistry::new();
+        let mut registry = InternalSubscriptionRegistry::new();
         let sub_id = SubscriptionId::new();
         let task_id = TaskId::new();
         let filter = EventFilter::TaskCompleted { task_id };
@@ -156,7 +156,7 @@ mod tests {
 
     #[test]
     fn cancel_removes_from_active() {
-        let mut registry = SubscriptionRegistry::new();
+        let mut registry = InternalSubscriptionRegistry::new();
         let sub_id = SubscriptionId::new();
         let task_id = TaskId::new();
         let filter = EventFilter::TaskCompleted { task_id };
@@ -168,7 +168,7 @@ mod tests {
 
     #[test]
     fn trigger_nonexistent_subscription_is_noop() {
-        let mut registry = SubscriptionRegistry::new();
+        let mut registry = InternalSubscriptionRegistry::new();
         let nonexistent = SubscriptionId::new();
         registry.trigger(nonexistent); // should not panic
         assert!(!registry.is_triggered(TaskId::new()));
@@ -176,7 +176,7 @@ mod tests {
 
     #[test]
     fn cancel_nonexistent_subscription_is_noop() {
-        let mut registry = SubscriptionRegistry::new();
+        let mut registry = InternalSubscriptionRegistry::new();
         let nonexistent = SubscriptionId::new();
         registry.cancel(nonexistent); // should not panic
         assert_eq!(registry.active_subscriptions().count(), 0);
@@ -184,7 +184,7 @@ mod tests {
 
     #[test]
     fn get_returns_entry() {
-        let mut registry = SubscriptionRegistry::new();
+        let mut registry = InternalSubscriptionRegistry::new();
         let sub_id = SubscriptionId::new();
         let task_id = TaskId::new();
         let filter = EventFilter::TaskCompleted { task_id };
@@ -199,13 +199,13 @@ mod tests {
 
     #[test]
     fn get_nonexistent_returns_none() {
-        let registry = SubscriptionRegistry::new();
+        let registry = InternalSubscriptionRegistry::new();
         assert!(registry.get(&SubscriptionId::new()).is_none());
     }
 
     #[test]
     fn duplicate_registration_overwrites() {
-        let mut registry = SubscriptionRegistry::new();
+        let mut registry = InternalSubscriptionRegistry::new();
         let sub_id = SubscriptionId::new();
         let task1 = TaskId::new();
         let task2 = TaskId::new();
@@ -219,7 +219,7 @@ mod tests {
 
     #[test]
     fn is_triggered_uses_secondary_index() {
-        let mut registry = SubscriptionRegistry::new();
+        let mut registry = InternalSubscriptionRegistry::new();
         let task = TaskId::new();
         let sub1 = SubscriptionId::new();
         let sub2 = SubscriptionId::new();
@@ -235,7 +235,7 @@ mod tests {
 
     #[test]
     fn gc_task_removes_subscriptions_and_index() {
-        let mut registry = SubscriptionRegistry::new();
+        let mut registry = InternalSubscriptionRegistry::new();
         let task = TaskId::new();
         let sub_id = SubscriptionId::new();
         registry.register(sub_id, task, EventFilter::TaskCompleted { task_id: task });
@@ -249,7 +249,7 @@ mod tests {
 
     #[test]
     fn gc_task_does_not_affect_other_tasks() {
-        let mut registry = SubscriptionRegistry::new();
+        let mut registry = InternalSubscriptionRegistry::new();
         let task1 = TaskId::new();
         let task2 = TaskId::new();
         let sub1 = SubscriptionId::new();
@@ -266,7 +266,7 @@ mod tests {
 
     #[test]
     fn gc_task_is_idempotent() {
-        let mut registry = SubscriptionRegistry::new();
+        let mut registry = InternalSubscriptionRegistry::new();
         let task = TaskId::new();
         let sub_id = SubscriptionId::new();
         registry.register(sub_id, task, EventFilter::TaskCompleted { task_id: task });
@@ -276,7 +276,7 @@ mod tests {
 
     #[test]
     fn active_subscriptions_excludes_triggered_and_canceled() {
-        let mut registry = SubscriptionRegistry::new();
+        let mut registry = InternalSubscriptionRegistry::new();
         let task = TaskId::new();
 
         let active = SubscriptionId::new();

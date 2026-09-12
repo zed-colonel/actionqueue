@@ -65,10 +65,10 @@ in [`archive/pre-aq-cont-1/characterization-results/`](../../../archive/pre-aq-c
 | `budget_recovery` | Retain | Budget state survives recovery | `AQ-10` |
 | `suspended_concurrency_key` | Retain | Key behaviour under suspension; awaiting policy added separately | `AQ-06` |
 | `budget_threshold_suspension` | Retain | Threshold preemption | `AQ-10` |
-| `subscription_triggered_promotion` | Replace | Internal reactive subscriptions stay; external semantics move to signals | `AQ-10` |
+| `subscription_triggered_promotion` | Retained (AQ-10) | Engine-owned structural subscriptions promote Scheduled only | `AQ-10` |
 | `budget_threshold_subscription` | Retain | Internal structural subscription | `AQ-10` |
 | `cascading_budget` | Retain | Hierarchical cascade of budget effects | `AQ-10` |
-| `custom_event_subscription` | Reject | `EventFilter::Custom` and `CustomEvent` are removed; durable signals replace them | `AQ-10` |
+| `custom_event_subscription` | Deleted (AQ-10) | Replaced by durable signal and budget/awaiting coverage | `AQ-10` |
 
 ## Actor feature tests
 
@@ -116,3 +116,6 @@ separate child-process kill test proves real process lock release. Initializatio
 sequence one, and mutation accounting assertions include that durable record.
 
 `attempt_disposition` adds storage fence, atomic effects, checkpoint, accounting, handler delivery, graph, quota, and crash/replay proofs for AQ-08.
+
+AQ-10 adds `budget_awaiting`: dimension/key-policy/wake-timing matrix, recovery,
+blocked context retention, cancellation, replenishment, and real handler yield.

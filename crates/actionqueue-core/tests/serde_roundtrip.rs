@@ -221,14 +221,6 @@ fn event_filter_budget_threshold_serde_roundtrip() {
 }
 
 #[test]
-fn event_filter_custom_serde_roundtrip() {
-    let filter = EventFilter::Custom { key: "caelum.thread.completed".to_string() };
-    let json = serde_json::to_string(&filter).expect("serialize EventFilter::Custom");
-    let back: EventFilter = serde_json::from_str(&json).expect("deserialize EventFilter");
-    assert_eq!(filter, back);
-}
-
-#[test]
 fn run_instance_serde_roundtrip_preserves_terminal_state_behavior() {
     let mut run =
         RunInstance::new_scheduled(TaskId::new(), 1_700_000_000, 1_699_999_000).expect("valid run");

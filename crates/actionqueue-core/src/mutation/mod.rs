@@ -1236,9 +1236,6 @@ impl SubscriptionCreateCommand {
                 "budget threshold percentage must be 0-100, got {threshold_pct}"
             );
         }
-        if let EventFilter::Custom { key } = &filter {
-            debug_assert!(!key.is_empty(), "custom event key must not be empty");
-        }
         Self { sequence, subscription_id, task_id, filter, timestamp }
     }
 

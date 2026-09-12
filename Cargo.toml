@@ -227,7 +227,6 @@ required-features = ["budget"]
 [[test]]
 name = "acceptance_suspend_resume"
 path = "tests/acceptance/suspend_resume.rs"
-required-features = ["budget"]
 
 [[test]]
 name = "acceptance_budget_recovery"
@@ -237,7 +236,6 @@ required-features = ["budget"]
 [[test]]
 name = "acceptance_suspended_concurrency_key"
 path = "tests/acceptance/suspended_concurrency_key.rs"
-required-features = ["budget"]
 
 [[test]]
 name = "acceptance_budget_threshold_suspension"
@@ -258,11 +256,6 @@ required-features = ["budget"]
 name = "acceptance_cascading_budget"
 path = "tests/acceptance/cascading_budget.rs"
 required-features = ["budget", "workflow"]
-
-[[test]]
-name = "acceptance_custom_event_subscription"
-path = "tests/acceptance/custom_event_subscription.rs"
-required-features = ["budget"]
 
 [[test]]
 name = "acceptance_actor_registration"
@@ -384,3 +377,8 @@ path = "tests/acceptance/transactional_child_admission.rs"
 [[test]]
 name = "acceptance_parent_wait_child_atomicity"
 path = "tests/acceptance/parent_wait_child_atomicity.rs"
+
+[[test]]
+name = "acceptance_budget_awaiting"
+path = "tests/acceptance/budget_awaiting.rs"
+required-features = ["budget"]

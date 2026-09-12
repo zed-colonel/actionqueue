@@ -1,10 +1,11 @@
 //! Frozen v1 record payloads. Kind IDs never depend on enum discriminants.
+use crate::structural_filter::StructuralFilter;
 use actionqueue_core::budget::BudgetDimension;
 use actionqueue_core::ids::{ActorId, AttemptId, LedgerEntryId, RunId, TaskId, TenantId};
 use actionqueue_core::mutation::AttemptResultKind;
 use actionqueue_core::platform::{Capability, Role};
 use actionqueue_core::run::state::RunState;
-use actionqueue_core::subscription::{EventFilter, SubscriptionId};
+use actionqueue_core::subscription::SubscriptionId;
 
 use super::codec::{DecodeError, EncodeError};
 use super::event::WalEventType;
@@ -170,7 +171,7 @@ struct BudgetReplenishedV1 {
 struct SubscriptionCreatedV1 {
     subscription_id: SubscriptionId,
     task_id: TaskId,
-    filter: EventFilter,
+    filter: StructuralFilter,
     timestamp: u64,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -499,7 +500,7 @@ pub fn encode_payload(event: &WalEventType) -> Result<Vec<u8>, EncodeError> {
             bounded(&SubscriptionCreatedV1 {
                 subscription_id: *subscription_id,
                 task_id: *task_id,
-                filter: filter.clone(),
+                filter: filter.into(),
                 timestamp: *timestamp,
             })
         }
@@ -907,7 +908,7 @@ pub fn decode_payload(kind: u16, payload: &[u8]) -> Result<WalEventType, DecodeE
             Ok(WalEventType::SubscriptionCreated {
                 subscription_id: v.subscription_id,
                 task_id: v.task_id,
-                filter: v.filter,
+                filter: v.filter.into(),
                 timestamp: v.timestamp,
             })
         }

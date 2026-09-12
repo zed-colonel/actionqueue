@@ -32,9 +32,8 @@ static MISFIRE_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 fn misfire_data_dir(label: &str) -> PathBuf {
     let count = MISFIRE_COUNTER.fetch_add(1, Ordering::SeqCst);
-    let dir = PathBuf::from("target")
-        .join("tmp")
-        .join(format!("p6-006-misfire-{label}-{}-{count}", std::process::id()));
+    let dir =
+        std::env::temp_dir().join(format!("p6-006-misfire-{label}-{}-{count}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("misfire data dir should be creatable");
     dir
 }
