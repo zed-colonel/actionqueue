@@ -210,8 +210,11 @@ async fn http_requires_control_mode_and_a_host_hook() {
             },
             hook,
         );
-        if enabled && !authenticated { assert!(state.is_err()); continue; }
-        let state=state.unwrap();
+        if enabled && !authenticated {
+            assert!(state.is_err());
+            continue;
+        }
+        let state = state.unwrap();
         let response = state
             .http_router()
             .clone()
@@ -434,7 +437,7 @@ fn authenticated_signal_inspection_and_all_retention_mutations_are_attributed() 
         .unwrap();
     }
     assert!(inspect_signal(&a, &host(ControlScope::Store, None), &s::id(1)).is_err());
-    assert_eq!(inspect_signal(&a, &h, &s::id(1)).unwrap().sequence(), SignalSequence::new(1));
+    assert_eq!(inspect_signal(&a, &h, &s::id(1)).unwrap().sequence, SignalSequence::new(1));
     for add in [true, false] {
         let c = SignalPinCommand {
             expected_sequence: seq(&a),
@@ -788,10 +791,14 @@ fn platform_wait_and_retention_operations_reject_missing_cross_tenant_and_revoke
             "inspect_signal" => QueueAction::InspectSignal,
             _ => QueueAction::RetainSignal,
         };
-        let invoke = |a: &mut s::Authority, h: &HostControlContext| -> Result<(), ControlError> {
+        let invoke = |a: &mut s::Authority,
+                      h: &HostControlContext|
+         -> Result<(), actionqueue_runtime::control::ServiceError> {
             match operation {
-                "inspect_wait" => inspect_wait(a, h, wait).map(|_| ()),
-                "inspect_signal" => inspect_signal(a, h, &s::id(501)).map(|_| ()),
+                "inspect_wait" => inspect_wait(a, h, wait).map(|_| ()).map_err(Into::into),
+                "inspect_signal" => {
+                    inspect_signal(a, h, &s::id(501)).map(|_| ()).map_err(Into::into)
+                }
                 "resolve" => execute_control(
                     a,
                     h,
@@ -818,7 +825,7 @@ fn platform_wait_and_retention_operations_reject_missing_cross_tenant_and_revoke
                             control_context: None,
                         }),
                     };
-                    execute_mutation(a, h, c).map(|_| ())
+                    execute_mutation(a, h, c).map(|_| ()).map_err(Into::into)
                 }
             }
         };

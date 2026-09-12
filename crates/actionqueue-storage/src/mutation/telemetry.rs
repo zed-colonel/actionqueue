@@ -112,3 +112,42 @@ fn signal(o: &mut Observations, r: &crate::mutation::signal::SignalRecord) {
         if o.allowlist.contains(&pair) { pair } else { ("overflow".into(), "overflow".into()) };
     *o.signals.entry(key).or_default() += 1;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn finite_allowlist_and_overflow_bound_cardinality() {
+        let t = QueueTelemetry::default();
+        let too_many = (0..65).map(|n| ("service".into(), format!("event-{n}"))).collect();
+        assert!(t.set_signal_allowlist(too_many).is_err());
+        t.set_signal_allowlist([("service".into(), "known".into())].into()).unwrap();
+        let mut o = t.0.lock().unwrap();
+        for n in 0..200 {
+            let e = SignalEnvelope {
+                signal_id: actionqueue_core::ids::SignalId::new(format!("id-{n}")).unwrap(),
+                tenant_id: None,
+                namespace: SignalNamespace::new("service").unwrap(),
+                kind: SignalKind::new(if n == 0 { "known".into() } else { format!("unknown-{n}") })
+                    .unwrap(),
+                correlation_id: None,
+                causation: None,
+                source_ref: None,
+                payload: None,
+                payload_hash: None,
+                occurred_at: None,
+                received_at: 1,
+                control_context: None,
+            };
+            let record = crate::mutation::signal::SignalRecord::new(
+                e,
+                actionqueue_core::ids::SignalSequence::new(n + 1),
+                n + 1,
+            )
+            .unwrap();
+            signal(&mut o, &record);
+        }
+        assert_eq!(o.signals.len(), 2);
+        assert_eq!(o.signals[&("overflow".into(), "overflow".into())], 199);
+    }
+}

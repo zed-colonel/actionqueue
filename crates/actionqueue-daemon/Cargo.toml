@@ -14,7 +14,7 @@ categories = ["web-programming::http-server"]
 actionqueue-core = "0.1.2"
 actionqueue-storage = "0.1.2"
 actionqueue-runtime = "0.1.2"
-serde = { version = "1.0", features = ["derive"], optional = true }
+serde = { version = "1.0", features = ["derive"] }
 axum = "0.7"
 tokio = { version = "1", features = ["rt", "time"] }
 serde_json = "1.0"
@@ -40,7 +40,7 @@ optional = true
 [features]
 budget = ["actionqueue-runtime/budget", "actionqueue-storage/budget"]
 default = ["serde"]
-serde = ["dep:serde"]
+serde = []
 workflow = ["actionqueue-runtime/workflow", "actionqueue-storage/workflow", "actionqueue-core/workflow"]
 actor = ["actionqueue-runtime/actor", "actionqueue-storage/actor", "dep:actionqueue-actor"]
 platform = ["actionqueue-runtime/platform", "actionqueue-storage/platform", "dep:actionqueue-platform", "actor"]

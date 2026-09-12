@@ -33,7 +33,9 @@ pub fn tick(state: &RouterState) -> Result<(), ControlError> {
     else {
         return Ok(());
     };
-    let Ok(_permit) = state.authority_lane.try_acquire() else { return Ok(()); };
+    let Ok(_permit) = state.authority_lane.try_acquire() else {
+        return Ok(());
+    };
     let mut authority =
         authority.lock().map_err(|_| ControlError::Mutation("authority poisoned".into()))?;
     if state.operational_failed.load(std::sync::atomic::Ordering::Acquire) {
@@ -42,7 +44,10 @@ pub fn tick(state: &RouterState) -> Result<(), ControlError> {
     maintain_locked(state, &mut authority)
 }
 pub(crate) fn start(state: &RouterState) {
-    if !state.background_maintenance || state.control_authority.is_none() {
+    if !state.background_maintenance
+        || state.control_authority.is_none()
+        || state.maintenance_stopping.load(std::sync::atomic::Ordering::Acquire)
+    {
         return;
     }
     let Ok(runtime) = tokio::runtime::Handle::try_current() else {
@@ -52,13 +57,16 @@ pub(crate) fn start(state: &RouterState) {
         return;
     }
     let weak = std::sync::Arc::downgrade(state);
-    runtime.spawn(async move {
+    let task = runtime.spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
         loop {
             interval.tick().await;
             let Some(state) = weak.upgrade() else {
                 break;
             };
+            if state.maintenance_stopping.load(std::sync::atomic::Ordering::Acquire) {
+                break;
+            }
             let _ = tokio::task::spawn_blocking(move || {
                 if tick(&state).is_err() {
                     state.operational_failed.store(true, std::sync::atomic::Ordering::Release);
@@ -68,4 +76,15 @@ pub(crate) fn start(state: &RouterState) {
             .await;
         }
     });
+    *state.maintenance_task.lock().unwrap_or_else(|e| e.into_inner()) = Some(task);
+}
+
+/// Stop scheduling maintenance and await the last blocking pass. Hosts call this
+/// after draining HTTP requests, before expecting the store lock to be released.
+pub async fn shutdown(state: &RouterState) {
+    state.maintenance_stopping.store(true, std::sync::atomic::Ordering::Release);
+    let task = state.maintenance_task.lock().unwrap_or_else(|e| e.into_inner()).take();
+    if let Some(task) = task {
+        let _ = task.await;
+    }
 }

@@ -91,10 +91,16 @@ impl<'a> Inspector<'a> {
         ReferenceView::new(value, self.disclose)
     }
     fn causation(&self, c: &actionqueue_core::causal::CausationLink) -> CausationView {
+        let visible = self.scope(QueueAction::InspectTask).is_ok()
+            && c.parent_task_id()
+                .is_none_or(|id| self.task_scope(id, QueueAction::InspectTask).is_ok())
+            && c.parent_run_id()
+                .is_none_or(|id| self.run_scope(id, QueueAction::InspectTask).is_ok());
         CausationView {
-            task_id: c.parent_task_id(),
-            run_id: c.parent_run_id(),
-            attempt_id: c.parent_attempt_id(),
+            task_links_visible: visible,
+            task_id: c.parent_task_id().filter(|_| visible),
+            run_id: c.parent_run_id().filter(|_| visible),
+            attempt_id: c.parent_attempt_id().filter(|_| visible),
             external_ref: self.reference(c.external_ref().map(|r| r.expose())),
         }
     }
@@ -137,6 +143,48 @@ impl<'a> Inspector<'a> {
             },
         }
     }
+    #[cfg(feature = "serde")]
+    pub fn task_controls(
+        &self,
+        id: TaskId,
+        q: &Query,
+    ) -> Result<ControlHistoryView, InspectionError> {
+        self.task_scope(id, QueueAction::InspectTask)?;
+        self.control_page(
+            actionqueue_storage::recovery::inspection::ControlTarget::Task(id),
+            q,
+            &format!("task-controls/{id}"),
+        )
+    }
+    #[cfg(feature = "serde")]
+    pub fn run_controls(
+        &self,
+        id: RunId,
+        q: &Query,
+    ) -> Result<ControlHistoryView, InspectionError> {
+        self.run_scope(id, QueueAction::InspectTask)?;
+        self.control_page(
+            actionqueue_storage::recovery::inspection::ControlTarget::Run(id),
+            q,
+            &format!("run-controls/{id}"),
+        )
+    }
+    #[cfg(feature = "serde")]
+    fn control_page(
+        &self,
+        target: actionqueue_storage::recovery::inspection::ControlTarget,
+        q: &Query,
+        lane: &str,
+    ) -> Result<ControlHistoryView, InspectionError> {
+        Ok(ControlHistoryView {
+            available: self.p.control_targets_available(),
+            entries: self.page(
+                q,
+                lane,
+                self.p.control_sequences(target).filter_map(|s| self.control(s)).map(Ok),
+            )?,
+        })
+    }
     pub fn get_admission(&self, key: &AdmissionKey) -> Result<AdmissionView, InspectionError> {
         let tenant = self.scope(QueueAction::InspectTask)?;
         self.p
@@ -174,14 +222,53 @@ impl<'a> Inspector<'a> {
             budgets,
         })
     }
+    fn resume_view(&self, c: ResumeContext) -> ResumeView {
+        let wake = match &c.wake {
+            WakeReason::Signal { envelope, .. } => {
+                WakeView::Signal { data: envelope.payload.as_ref().map(DataSummary::from) }
+            }
+            WakeReason::Children { outcomes, .. } => WakeView::Children {
+                outcomes: outcomes
+                    .iter()
+                    .filter(|o| self.task_scope(o.task_id, QueueAction::InspectTask).is_ok())
+                    .cloned()
+                    .collect(),
+            },
+            WakeReason::Deadline { deadline_at, .. } => {
+                WakeView::Deadline { deadline_at: *deadline_at }
+            }
+            WakeReason::ControlResolution { .. } => WakeView::ControlResolution,
+            WakeReason::AdministrativeResume { .. } => WakeView::AdministrativeResume,
+        };
+        ResumeView {
+            context_id: c.context_id,
+            wait_id: c.wait_id(),
+            checkpoint_id: c.checkpoint.as_ref().map(|v| v.checkpoint_id),
+            checkpoint_data: c.checkpoint.as_ref().map(|v| DataSummary::from(&v.data)),
+            signal_sequence: match c.wake {
+                WakeReason::Signal { signal_sequence, .. } => Some(signal_sequence),
+                _ => None,
+            },
+            resumed_at: c.resumed_at,
+            control: self.control(c.context_id.0),
+            wake,
+        }
+    }
     pub fn get_run(&self, id: RunId) -> Result<RunView, InspectionError> {
         self.run_scope(id, QueueAction::InspectTask)?;
-        // Wait identifiers and resume assignments require continuation inspection grants.
-        self.scope(QueueAction::InspectWait)?;
+        let can_wait = self.scope(QueueAction::InspectWait).is_ok();
         let r = self.p.get_run_instance(&id).ok_or(InspectionError::NotFound)?;
         let mut gates = crate::claim::eligibility(self.p, id, None, self.now);
         gates.retain(|r| *r != crate::claim::EligibilityReason::Executor);
+        let can_resume = can_wait && self.scope(QueueAction::InspectSignal).is_ok();
         Ok(RunView {
+            resume_context_visible: can_resume,
+            pending_resume_context: self
+                .p
+                .pending_resume(id)
+                .filter(|_| can_resume)
+                .map(|c| self.resume_view(c)),
+            continuation_visible: can_wait,
             concurrency_key: self
                 .p
                 .get_task(&r.task_id())
@@ -209,6 +296,7 @@ impl<'a> Inspector<'a> {
             failure_attempt_count: r.failure_attempt_count(),
             current_attempt_id: r.current_attempt_id(),
             lease: self.p.get_lease_metadata(&id).map(|l| LeaseView {
+                updated_at: l.updated_at(),
                 owner: self.reference(Some(l.owner())),
                 expiry: l.expiry(),
                 acquired_at: l.acquired_at(),
@@ -216,15 +304,22 @@ impl<'a> Inspector<'a> {
             }),
             gates,
             executor_evaluated: false,
-            active_wait_id: self.p.waits().active(id).map(|w| w.spec.wait_id()),
-            last_wait_id: self
-                .p
-                .waits()
-                .records()
-                .filter(|w| w.run_id == id)
-                .max_by_key(|w| w.sequence)
-                .map(|w| w.spec.wait_id()),
-            pending_resume: self.p.next_resume_assignment(id),
+            active_wait_id: if can_wait {
+                self.p.waits().active(id).map(|w| w.spec.wait_id())
+            } else {
+                None
+            },
+            last_wait_id: if can_wait {
+                self.p
+                    .waits()
+                    .records()
+                    .filter(|w| w.run_id == id)
+                    .max_by_key(|w| w.sequence)
+                    .map(|w| w.spec.wait_id())
+            } else {
+                None
+            },
+            pending_resume: if can_wait { self.p.next_resume_assignment(id) } else { None },
         })
     }
     #[cfg(feature = "serde")]
@@ -249,8 +344,6 @@ impl<'a> Inspector<'a> {
         q: &Query,
     ) -> Result<Page<AttemptView>, InspectionError> {
         self.run_scope(run, QueueAction::InspectTask)?;
-        self.scope(QueueAction::InspectWait)?;
-        self.scope(QueueAction::InspectSignal)?;
         self.page(
             q,
             &format!("attempts/{run}"),
@@ -267,45 +360,61 @@ impl<'a> Inspector<'a> {
         attempt: AttemptId,
     ) -> Result<AttemptView, InspectionError> {
         self.run_scope(run, QueueAction::InspectTask)?;
-        self.scope(QueueAction::InspectWait)?;
-        self.scope(QueueAction::InspectSignal)?;
+        if self.p.attempt_owner(attempt) != Some(run) {
+            return Err(InspectionError::NotFound);
+        }
+        let can_wait = self.scope(QueueAction::InspectWait).is_ok();
+        let can_signal = self.scope(QueueAction::InspectSignal).is_ok();
         let a = self
             .p
             .get_attempt_history(&run)
             .and_then(|items| items.iter().find(|a| a.attempt_id() == attempt))
             .ok_or(InspectionError::NotFound)?;
-        let resume = self.p.attempt_resume(run, attempt).map(|c| ResumeView {
-            context_id: c.context_id,
-            wait_id: c.wait_id(),
-            checkpoint_id: c.checkpoint.as_ref().map(|v| v.checkpoint_id),
-            signal_sequence: match c.wake {
-                WakeReason::Signal { signal_sequence, .. } => Some(signal_sequence),
-                _ => None,
-            },
-            resumed_at: c.resumed_at,
-        });
+        let resume = self
+            .p
+            .attempt_resume(run, attempt)
+            .filter(|_| can_wait && can_signal)
+            .map(|c| self.resume_view(c));
+        let mut admitted_children: Vec<_> = self
+            .p
+            .admissions()
+            .filter(|a| {
+                a.request().causal_context().causation().is_some_and(|c| {
+                    c.parent_run_id() == Some(run) && c.parent_attempt_id() == Some(attempt)
+                })
+            })
+            .map(|a| a.task_id())
+            .filter(|id| self.task_scope(*id, QueueAction::InspectTask).is_ok())
+            .collect();
+        admitted_children.sort();
+        if admitted_children.len() > 1000 {
+            return Err(InspectionError::TooLarge);
+        }
+        let history = self.p.get_attempt_history(&run).unwrap_or_default();
+        let previous_attempt_id = history
+            .iter()
+            .position(|a| a.attempt_id() == attempt)
+            .and_then(|pos| pos.checked_sub(1))
+            .map(|pos| history[pos].attempt_id());
         Ok(AttemptView {
-            admitted_children: self
-                .p
-                .admissions()
-                .filter(|a| {
-                    a.request().causal_context().causation().is_some_and(|c| {
-                        c.parent_run_id() == Some(run) && c.parent_attempt_id() == Some(attempt)
+            previous_attempt_id,
+            continuation_visible: can_wait && can_signal,
+            signal_links_visible: can_signal,
+            admitted_children,
+            emitted_signals: if can_signal {
+                self.p
+                    .signals()
+                    .records()
+                    .filter(|s| {
+                        s.envelope().causation.as_ref().is_some_and(|c| {
+                            c.parent_run_id() == Some(run) && c.parent_attempt_id() == Some(attempt)
+                        })
                     })
-                })
-                .map(|a| a.task_id())
-                .collect(),
-            emitted_signals: self
-                .p
-                .signals()
-                .records()
-                .filter(|s| {
-                    s.envelope().causation.as_ref().is_some_and(|c| {
-                        c.parent_run_id() == Some(run) && c.parent_attempt_id() == Some(attempt)
-                    })
-                })
-                .map(|s| s.sequence())
-                .collect(),
+                    .map(|s| s.sequence())
+                    .collect()
+            } else {
+                Vec::new()
+            },
             run_id: run,
             attempt_id: attempt,
             started_at: a.started_at(),
@@ -313,7 +422,7 @@ impl<'a> Inspector<'a> {
             result: a.result(),
             finish_origin: a.finish_origin(),
             accepted_start_sequence: a.accepted_start().map(|s| s.sequence),
-            assignment: a.accepted_start().and_then(|s| s.assignment),
+            assignment: if can_wait { a.accepted_start().and_then(|s| s.assignment) } else { None },
             error: ReferenceView::new(a.error(), false),
             output: a.output_ref().map(DataSummary::from),
             resume,
@@ -354,16 +463,18 @@ impl<'a> Inspector<'a> {
                 K::Canceled(_) => (ResolutionReason::Canceled, None),
             };
             ResolutionView {
+                signal_visible: self.scope(QueueAction::InspectSignal).is_ok(),
                 control: self.control(r.sequence),
                 sequence: r.sequence,
                 timestamp: r.timestamp,
                 reason,
-                signal_sequence,
+                signal_sequence: if self.scope(QueueAction::InspectSignal).is_ok() {
+                    signal_sequence
+                } else {
+                    None
+                },
             }
         });
-        if resolution.as_ref().is_some_and(|r| r.signal_sequence.is_some()) {
-            self.scope(QueueAction::InspectSignal)?;
-        }
         Ok(WaitView {
             wait_id: id,
             run_id: w.run_id,
@@ -395,7 +506,7 @@ impl<'a> Inspector<'a> {
             received_at: e.received_at,
             occurred_at: e.occurred_at,
             retained: r.is_retained(),
-            pin_count: r.pins().len(),
+            pin_count: self.scope(QueueAction::InspectWait).ok().map(|_| r.pins().len()),
         })
     }
     pub fn get_checkpoint(&self, id: CheckpointId) -> Result<CheckpointView, InspectionError> {
@@ -409,6 +520,49 @@ impl<'a> Inspector<'a> {
             sequence: c.sequence,
             data: DataSummary::from(&c.checkpoint.data),
         })
+    }
+    #[cfg(feature = "serde")]
+    pub fn linked_waits(
+        &self,
+        id: &SignalId,
+        q: &Query,
+    ) -> Result<Page<WaitView>, InspectionError> {
+        let tenant = self.scope(QueueAction::InspectSignal)?;
+        self.scope(QueueAction::InspectWait)?;
+        let signal = self.p.signals().get_signal(tenant, id).ok_or(InspectionError::NotFound)?;
+        let mut waits: Vec<_> = self.p.waits().records().filter(|w| {
+            w.resolution.as_ref().is_some_and(|r| {
+                matches!(r.kind, actionqueue_storage::mutation::wait::WaitResolutionKind::Signal(seq) if seq == signal.sequence())
+            })
+        }).collect();
+        waits.sort_by_key(|w| w.sequence);
+        self.page(
+            q,
+            &format!("signal-waits/{}", signal.sequence().get()),
+            waits.into_iter().map(|w| self.get_wait(w.spec.wait_id())),
+        )
+    }
+    #[cfg(feature = "serde")]
+    pub fn checkpoint_consumers(
+        &self,
+        id: CheckpointId,
+        q: &Query,
+    ) -> Result<Page<AttemptView>, InspectionError> {
+        let c = self.get_checkpoint(id)?;
+        self.page(
+            q,
+            &format!("checkpoint-consumers/{id}"),
+            self.p
+                .get_attempt_history(&c.run_id)
+                .unwrap_or_default()
+                .iter()
+                .filter(|a| {
+                    self.p
+                        .attempt_resume(c.run_id, a.attempt_id())
+                        .is_some_and(|r| r.checkpoint.is_some_and(|c| c.checkpoint_id == id))
+                })
+                .map(|a| self.get_attempt(c.run_id, a.attempt_id())),
+        )
     }
     fn selected_tasks(
         &self,
@@ -521,20 +675,20 @@ impl<'a> Inspector<'a> {
         if q.trace_id.is_some() || q.origin_ref.is_some() {
             return Err(InspectionError::InvalidQuery);
         }
-        self.page(
-            q,
-            "signals",
-            self.p
-                .signals()
-                .records()
-                .filter(|r| {
-                    r.envelope().tenant_id == tenant
-                        && q.correlation_id.as_ref().is_none_or(|id| {
-                            r.envelope().correlation_id.as_ref().is_some_and(|v| v.as_str() == id)
-                        })
-                })
-                .map(|r| self.get_signal(&r.envelope().signal_id)),
-        )
+        let correlation = q
+            .correlation_id
+            .as_ref()
+            .map(CorrelationId::new)
+            .transpose()
+            .map_err(|_| InspectionError::InvalidQuery)?;
+        let records: Box<
+            dyn Iterator<Item = &actionqueue_storage::mutation::signal::SignalRecord> + '_,
+        > = if let Some(id) = &correlation {
+            Box::new(self.p.signals().correlation_records(tenant, id))
+        } else {
+            Box::new(self.p.signals().records().filter(move |r| r.envelope().tenant_id == tenant))
+        };
+        self.page(q, "signals", records.map(|r| self.get_signal(&r.envelope().signal_id)))
     }
     #[cfg(feature = "serde")]
     pub fn trace(&self, q: &Query) -> Result<TraceView, InspectionError> {
@@ -566,7 +720,9 @@ impl<'a> Inspector<'a> {
             for run in runs {
                 nodes.push(TraceNode::Run(self.get_run(run)?));
                 for a in self.p.get_attempt_history(&run).unwrap_or_default() {
-                    nodes.push(TraceNode::Attempt(self.get_attempt(run, a.attempt_id())?));
+                    let view = self.get_attempt(run, a.attempt_id())?;
+                    signals.extend(view.emitted_signals.iter().copied());
+                    nodes.push(TraceNode::Attempt(view));
                     for c in self.p.checkpoints_by_producer(run, a.attempt_id()) {
                         nodes.push(TraceNode::Checkpoint(
                             self.get_checkpoint(c.checkpoint.checkpoint_id)?,
@@ -588,17 +744,18 @@ impl<'a> Inspector<'a> {
                 }
             }
         }
-        for s in self.p.signals().records().filter(|s| s.envelope().tenant_id == tenant) {
-            if signals.contains(&s.sequence())
-                || q.correlation_id.as_ref().is_some_and(|id| {
-                    s.envelope().correlation_id.as_ref().is_some_and(|c| c.as_str() == id)
-                })
-            {
-                nodes.push(TraceNode::Signal(self.get_signal(&s.envelope().signal_id)?));
-            }
-            if nodes.len() > 10000 {
-                return Err(InspectionError::TooLarge);
-            }
+        if let Some(id) = &q.correlation_id {
+            let id = CorrelationId::new(id).map_err(|_| InspectionError::InvalidQuery)?;
+            signals.extend(
+                self.p.signals().correlation_records(tenant, &id).take(10001).map(|r| r.sequence()),
+            );
+        }
+        if nodes.len() + signals.len() > 10000 {
+            return Err(InspectionError::TooLarge);
+        }
+        for seq in signals {
+            let s = self.p.signals().by_sequence(seq).ok_or(InspectionError::NotFound)?;
+            nodes.push(TraceNode::Signal(self.get_signal(&s.envelope().signal_id)?));
         }
         let mut edges = Vec::new();
         for node in &nodes {
@@ -621,7 +778,7 @@ impl<'a> Inspector<'a> {
                 TraceNode::Attempt(a) => {
                     let attempt = N::Attempt { run_id: a.run_id, attempt_id: a.attempt_id };
                     edge(N::Run(a.run_id), attempt.clone(), EdgeKind::PhysicalAttempt);
-                    if let Some(previous) = a.assignment.and_then(|a| a.previous_attempt_id) {
+                    if let Some(previous) = a.previous_attempt_id {
                         edge(
                             N::Attempt { run_id: a.run_id, attempt_id: previous },
                             attempt.clone(),
@@ -682,6 +839,37 @@ impl<'a> Inspector<'a> {
             }
             if tasks.iter().any(|t| t.budgets != first.budgets) {
                 different_fields.push(SchedulingField::Budget);
+            }
+        }
+        if let Some(first) = tasks.first() {
+            let schedule = |task: TaskId| {
+                let mut times: Vec<_> = self
+                    .p
+                    .run_instances()
+                    .filter(|r| r.task_id() == task)
+                    .map(|r| r.scheduled_at())
+                    .collect();
+                times.sort();
+                times
+            };
+            let deadlines = |task: TaskId| {
+                let mut values: Vec<_> = self
+                    .p
+                    .waits()
+                    .records()
+                    .filter(|w| {
+                        self.p.get_run_instance(&w.run_id).is_some_and(|r| r.task_id() == task)
+                    })
+                    .map(|w| serde_json::to_string(&w.spec.deadline()).expect("typed deadline"))
+                    .collect();
+                values.sort();
+                values
+            };
+            if tasks.iter().any(|t| schedule(t.id) != schedule(first.id)) {
+                different_fields.push(SchedulingField::RunSchedule);
+            }
+            if tasks.iter().any(|t| deadlines(t.id) != deadlines(first.id)) {
+                different_fields.push(SchedulingField::WaitDeadline);
             }
         }
         Ok(TraceView { notice: TRACE_NOTICE, nodes, edges, different_fields })

@@ -23,6 +23,7 @@ pub struct SignalStatistics {
 pub struct SignalIndex {
     records: BTreeMap<SignalSequence, SignalRecord>,
     identities: HashMap<Identity, SignalSequence>,
+    correlations: HashMap<(Option<TenantId>, CorrelationId), BTreeSet<SignalSequence>>,
     tenants: HashMap<Option<TenantId>, BTreeSet<SignalSequence>>,
     matching: HashMap<MatchKey, BTreeSet<SignalSequence>>,
     receipts: BTreeSet<(u64, SignalSequence)>,
@@ -45,6 +46,19 @@ fn keys(e: &SignalEnvelope) -> HashSet<MatchKey> {
     keys
 }
 impl SignalIndex {
+    /// Historical equality lookup. Retirement never removes correlation history.
+    pub fn correlation_records(
+        &self,
+        tenant: Option<TenantId>,
+        correlation: &CorrelationId,
+    ) -> impl Iterator<Item = &SignalRecord> {
+        self.correlations
+            .get(&(tenant, correlation.clone()))
+            .into_iter()
+            .flat_map(|ids| ids.iter())
+            .filter_map(|id| self.records.get(id))
+    }
+
     /// Signal high-water mark, including retired records.
     pub fn last_sequence(&self) -> SignalSequence {
         SignalSequence::new(self.last_sequence)
@@ -163,6 +177,12 @@ impl SignalIndex {
         self.last_sequence = r.sequence.get();
         self.identities.insert((r.envelope.tenant_id, r.envelope.signal_id.clone()), r.sequence);
         self.tenants.entry(r.envelope.tenant_id).or_default().insert(r.sequence);
+        if let Some(c) = &r.envelope.correlation_id {
+            self.correlations
+                .entry((r.envelope.tenant_id, c.clone()))
+                .or_default()
+                .insert(r.sequence);
+        }
         self.stats.pins += r.pins.len();
         self.stats.pinned += usize::from(!r.pins.is_empty());
         if r.is_retained() {

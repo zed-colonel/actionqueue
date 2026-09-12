@@ -43,9 +43,8 @@ pub fn parse_args(args: &[String]) -> Result<Command, String> {
     match command.as_str() {
         "store" => parse_storage(&args[1..]),
         "backup" | "restore" => parse_storage(args),
-        "ensure-task" | "admission" | "task" | "signal" | "wait" | "run" | "trace" | "inspect" => {
-            Ok(Command::Api(args.to_vec()))
-        }
+        "ensure-task" | "admission" | "task" | "signal" | "wait" | "run" | "checkpoint"
+        | "attempt" | "trace" | "inspect" => Ok(Command::Api(args.to_vec())),
         "daemon" => parse_daemon(&args[1..]),
 
         _ => Err(format!("Unknown command: {command}. Use a canonical actionqueue command.")),

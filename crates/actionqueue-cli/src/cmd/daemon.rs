@@ -50,12 +50,7 @@ pub fn run(args: DaemonArgs) -> Result<CommandOutput, CliError> {
         ));
     }
     let state = actionqueue_daemon::bootstrap::bootstrap_with_authenticator(config, hook).map_err(
-        |error| {
-            CliError::runtime(
-                "daemon_bootstrap_failed",
-                format!("daemon bootstrap failed: {error}"),
-            )
-        },
+        |_error| CliError::runtime("daemon_bootstrap_failed", "daemon bootstrap failed"),
     )?;
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -69,32 +64,66 @@ pub fn run(args: DaemonArgs) -> Result<CommandOutput, CliError> {
         let address = listener
             .local_addr()
             .map_err(|_| CliError::runtime("bind_failed", "listener unavailable"))?;
+        let metrics_listener =
+            if let Some(bind) = state.config().metrics_bind {
+                Some(tokio::net::TcpListener::bind(bind).await.map_err(|_| {
+                    CliError::runtime("bind_failed", "unable to bind metrics listener")
+                })?)
+            } else {
+                None
+            };
+        let (stop, stopped) = tokio::sync::watch::channel(false);
+        let signal_task = tokio::spawn(async move {
+            #[cfg(unix)]
+            {
+                if let Ok(mut term) =
+                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                {
+                    tokio::select! { _ = tokio::signal::ctrl_c() => {}, _ = term.recv() => {} }
+                } else {
+                    let _ = tokio::signal::ctrl_c().await;
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = tokio::signal::ctrl_c().await;
+            }
+            let _ = stop.send(true);
+        });
         println!(
             "{}",
             json!({"command":"daemon", "bind_address":address.to_string(), "ready":true})
         );
-        // Bootstrap/store ownership is retained until graceful shutdown completes.
+        // Both listeners finish before bootstrap/store ownership is released.
         let router = actionqueue_daemon::http::build_router(state.router_state().clone());
-        axum::serve(listener, router)
-            .with_graceful_shutdown(async {
-                #[cfg(unix)]
-                {
-                    if let Ok(mut term) =
-                        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                    {
-                        tokio::select! { _ = tokio::signal::ctrl_c() => {}, _ = term.recv() => {} }
-                    } else {
-                        let _ = tokio::signal::ctrl_c().await;
-                    }
-                }
-                #[cfg(not(unix))]
-                {
-                    let _ = tokio::signal::ctrl_c().await;
-                }
-            })
-            .await
+        let mut api_stopped = stopped.clone();
+        let api = async {
+            axum::serve(listener, router)
+                .with_graceful_shutdown(async move {
+                    let _ = api_stopped.wait_for(|v| *v).await;
+                })
+                .await
+        };
+        let mut metrics_stopped = stopped;
+        let metrics = async {
+            if let Some(listener) = metrics_listener {
+                let router =
+                    actionqueue_daemon::http::metrics::register_routes(axum::Router::new(), true)
+                        .with_state(state.router_state().clone());
+                axum::serve(listener, router)
+                    .with_graceful_shutdown(async move {
+                        let _ = metrics_stopped.wait_for(|v| *v).await;
+                    })
+                    .await
+            } else {
+                Ok(())
+            }
+        };
+        let result = tokio::try_join!(api, metrics);
+        signal_task.abort();
+        result
             .map_err(|_| CliError::runtime("serve_failed", "HTTP server stopped unexpectedly"))?;
-        drop(state);
+        state.shutdown().await;
         Ok(CommandOutput::Json(json!({"status":"stopped"})))
     })
 }

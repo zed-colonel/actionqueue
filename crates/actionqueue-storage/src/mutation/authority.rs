@@ -2667,7 +2667,14 @@ impl<W: WalWriter, P: MutationProjection> MutationAuthority for StorageMutationA
     ) -> Result<MutationOutcome, Self::Error> {
         let disposition = matches!(&command, MutationCommand::AttemptDispositionCommit(_));
         let result = self.submit_inner(command, durability);
-        if disposition && result.is_err() {
+        if disposition
+            && matches!(
+                &result,
+                Err(MutationAuthorityError::Disposition(_)
+                    | MutationAuthorityError::Control(_)
+                    | MutationAuthorityError::Validation(_))
+            )
+        {
             self.telemetry.disposition_rejected();
         }
         result

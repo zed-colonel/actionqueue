@@ -10,6 +10,8 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
+#[cfg(feature = "actor")]
+use actionqueue_core::mutation::MutationAuthority;
 use actionqueue_storage::mutation::authority::StorageMutationAuthority;
 use actionqueue_storage::recovery::bootstrap::RecoveryObservations;
 use actionqueue_storage::recovery::reducer::ReplayReducer;
@@ -32,8 +34,8 @@ pub type ControlMutationAuthority =
 ///
 /// # Invariant boundaries
 ///
-/// This state is read-only. Handlers must not mutate any fields or introduce
-/// interior mutability beyond `Arc` cloning.
+/// Mutations use the serialized authority lane. Inspection snapshots and current
+/// grant checks share a single authoritative projection revision.
 pub struct RouterStateInner {
     pub(crate) background_maintenance: bool,
     pub(crate) disclosure_policy: actionqueue_runtime::inspection::DisclosurePolicy,
@@ -49,6 +51,8 @@ pub struct RouterStateInner {
     #[cfg(feature = "actor")]
     pub(crate) remote_policy: actionqueue_runtime::remote::RemotePolicy,
     pub(crate) maintenance_started: AtomicBool,
+    pub(crate) maintenance_stopping: AtomicBool,
+    pub(crate) maintenance_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
 
     /// Shared projection state for stats and introspection.
     ///
@@ -150,6 +154,8 @@ impl RouterStateInner {
             #[cfg(feature = "actor")]
             remote_policy: Default::default(),
             maintenance_started: AtomicBool::new(false),
+            maintenance_stopping: AtomicBool::new(false),
+            maintenance_task: Mutex::new(None),
             background_maintenance: true,
             disclosure_policy: Default::default(),
             authority_lane: Arc::new(tokio::sync::Semaphore::new(32)),
@@ -180,6 +186,8 @@ impl RouterStateInner {
             #[cfg(feature = "actor")]
             remote_policy: Default::default(),
             maintenance_started: AtomicBool::new(false),
+            maintenance_stopping: AtomicBool::new(false),
+            maintenance_task: Mutex::new(None),
             background_maintenance: true,
             disclosure_policy: Default::default(),
             authority_lane: Arc::new(tokio::sync::Semaphore::new(32)),
@@ -279,7 +287,13 @@ pub fn build_router(state: RouterState) -> axum::Router {
     let controls = if control_enabled { actors::register_routes(controls) } else { controls };
     #[cfg(feature = "platform")]
     let controls = if control_enabled { platform::register_routes(controls) } else { controls };
-    let controls = if control_enabled { controls.route_layer(axum::middleware::from_fn_with_state(state.clone(),api::blocking_adapter)).merge(api::writes()) } else { controls };
+    let controls = if control_enabled {
+        controls
+            .route_layer(axum::middleware::from_fn_with_state(state.clone(), api::blocking_adapter))
+            .merge(api::writes())
+    } else {
+        controls
+    };
     let controls = if control_enabled {
         controls
             .route_layer(axum::middleware::from_fn_with_state(state.clone(), auth::authenticate))
@@ -297,7 +311,18 @@ pub(crate) fn sync_projection<W: actionqueue_storage::wal::writer::WalWriter>(
     state: &RouterState,
     a: &StorageMutationAuthority<W, ReplayReducer>,
 ) -> Result<(), axum::response::Response> {
-    *write_projection(state).map_err(|e| *e)? = a.projection().clone();
+    let mut published = write_projection(state).map_err(|e| *e)?;
+    // Equal revisions must describe the same authoritative facts. Different
+    // revisions are expected while publishing a newly committed prefix.
+    if published.latest_sequence() == a.projection().latest_sequence()
+        && !matches!((published.projection_digest(), a.projection().projection_digest()), (Ok(left), Ok(right)) if left == right)
+    {
+        if !state.operational_failed.swap(true, Ordering::AcqRel) {
+            a.telemetry().projection_mismatch();
+        }
+        return Err(projection_poison_response());
+    }
+    *published = a.projection().clone();
     Ok(())
 }
 #[cfg(feature = "actor")]
@@ -306,13 +331,23 @@ pub(crate) fn execute_host_mutation<W: actionqueue_storage::wal::writer::WalWrit
     a: &mut StorageMutationAuthority<W, ReplayReducer>,
     host: &actionqueue_core::control::HostControlContext,
     command: actionqueue_core::mutation::MutationCommand,
-) -> Result<actionqueue_core::mutation::MutationOutcome, actionqueue_core::control::ControlError> {
-    let result = actionqueue_runtime::control::execute_mutation(a, host, command);
+) -> Result<actionqueue_core::mutation::MutationOutcome, actionqueue_runtime::control::ServiceError>
+{
+    let result = a
+        .submit_command(
+            command.with_control(host),
+            actionqueue_core::mutation::DurabilityPolicy::Immediate,
+        )
+        .map_err(actionqueue_runtime::control::ServiceError::Storage);
     sync_projection(state, a).map_err(|_| {
         state.operational_failed.store(true, Ordering::Release);
-        actionqueue_core::control::ControlError::Mutation("projection unavailable".into())
+        actionqueue_runtime::control::ServiceError::Storage(
+            actionqueue_storage::mutation::MutationAuthorityError::RecoveryRequired,
+        )
     })?;
-    if a.recovery_required() {state.operational_failed.store(true,Ordering::Release);}
+    if a.recovery_required() {
+        state.operational_failed.store(true, Ordering::Release);
+    }
     result
 }
 

@@ -904,15 +904,19 @@ pub fn bootstrap_http_router(data_dir: &Path, metrics_enabled: bool) -> axum::Ro
         observability,
         actionqueue_daemon::bootstrap::ReadyStatus::ready(),
     );
-    let inner = inner.with_host_authenticator(std::sync::Arc::new(|_, _| {
-        Ok(actionqueue_core::control::HostControlContext {
-            actor_id: None,
-            scope: actionqueue_core::control::ControlScope::SingleTenant,
-            attribution: actionqueue_core::causal::ControlMutationContext::new(
-                actionqueue_core::bounded::OpaqueRef::new("test-reader").unwrap(),
-            ),
+    let inner = inner
+        .with_disclosure_policy(actionqueue_runtime::inspection::DisclosurePolicy {
+            allow_references: true,
         })
-    }));
+        .with_host_authenticator(std::sync::Arc::new(|_, _| {
+            Ok(actionqueue_core::control::HostControlContext {
+                actor_id: None,
+                scope: actionqueue_core::control::ControlScope::SingleTenant,
+                attribution: actionqueue_core::causal::ControlMutationContext::new(
+                    actionqueue_core::bounded::OpaqueRef::new("test-reader").unwrap(),
+                ),
+            })
+        }));
     actionqueue_daemon::http::build_router(std::sync::Arc::new(inner)).with_state(())
 }
 
@@ -1007,7 +1011,7 @@ pub async fn current_lease_from_run_get(
     router: &mut axum::Router<()>,
     run_id: RunId,
 ) -> Option<LeaseSnapshotEvidence> {
-    let run_get_path = format!("/api/v2/runs/{run_id}");
+    let run_get_path = format!("/api/v2/runs/{run_id}?display_references=true");
     let run_get = get_json(router, &run_get_path).await;
     let lease = &run_get["lease"];
     if lease.is_null() {
@@ -1015,7 +1019,7 @@ pub async fn current_lease_from_run_get(
     }
 
     Some(LeaseSnapshotEvidence {
-        owner: lease["owner"]
+        owner: lease["owner"]["value"]
             .as_str()
             .expect("lease owner should be present as string")
             .to_string(),

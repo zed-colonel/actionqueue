@@ -7,9 +7,9 @@
 //!
 //! - When control is disabled, no control routes are registered.
 //! - When control is enabled, task cancel is implemented in P6-011:
-//!   - `POST /api/v2/tasks/:task_id/cancel`
+//!   - `POST /api/v2/tasks/:task_id:cancel`
 //! - When control is enabled, run cancel is implemented in P6-012:
-//!   - `POST /api/v2/runs/:run_id/cancel`
+//!   - `POST /api/v2/runs/:run_id:cancel`
 //! - Engine pause is implemented in P6-013:
 //!   - `POST /api/v2/engine/pause`
 //! - Engine resume is implemented in P6-014:

@@ -1018,6 +1018,7 @@ impl ReplayReducer {
 
         self.record_subscription_matches(observations, event.sequence());
 
+        self.index_inspection_event(event);
         // Commit bookkeeping only after semantic application succeeds.
         if let Some(control) = event.control() {
             self.control_history.insert(event.sequence(), control.clone());

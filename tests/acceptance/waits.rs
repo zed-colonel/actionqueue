@@ -960,7 +960,7 @@ async fn daemon_run_and_task_cancellation_resolve_waits_through_compound_control
             .await
             .unwrap();
         assert_eq!(response.status(), axum::http::StatusCode::OK);
-        drop(state);
+        state.shutdown().await;
         let a = s::reopen(dir.path());
         assert!(matches!(
             a.projection().waits().get(w).unwrap().resolution.as_ref().unwrap().kind,

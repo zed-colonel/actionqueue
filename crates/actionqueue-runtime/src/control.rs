@@ -108,6 +108,16 @@ fn execute_bound_control<W: WalWriter>(
         }
         ControlOperation::CancelWait { run_id, wait_id } => {
             let tenant = authorize(a, host, QueueAction::CancelWait)?;
+            let wait = a.projection().waits().get(wait_id).ok_or(ControlError::NotFound)?;
+            if wait.run_id != run_id {
+                return Err(ControlError::NotFound.into());
+            }
+            let task =
+                a.projection().get_run_instance(&run_id).ok_or(ControlError::NotFound)?.task_id();
+            check_scope(
+                tenant,
+                a.projection().get_task(&task).ok_or(ControlError::NotFound)?.tenant_id(),
+            )?;
             let c = MutationCommand::WaitCancel(
                 WaitCancelCommand::new(
                     a.projection().latest_sequence().saturating_add(1),
@@ -118,12 +128,16 @@ fn execute_bound_control<W: WalWriter>(
                 )
                 .with_tenant(tenant),
             );
-            execute_mutation(a, host, c)
+            a.submit_command(c, DurabilityPolicy::Immediate)
                 .map(ControlOutcome::Mutation)
-                .map_err(ServiceError::Authorization)
+                .map_err(ServiceError::Storage)
         }
         ControlOperation::ResolveWait { run_id, wait_id } => {
             let tenant = authorize(a, host, QueueAction::ResolveWait)?;
+            let wait = a.projection().waits().get(wait_id).ok_or(ControlError::NotFound)?;
+            if wait.run_id != run_id {
+                return Err(ControlError::NotFound.into());
+            }
             let task =
                 a.projection().get_run_instance(&run_id).ok_or(ControlError::NotFound)?.task_id();
             check_scope(
@@ -159,29 +173,37 @@ pub fn execute_mutation<W: WalWriter>(
         .map_err(|e| ControlError::Mutation(e.to_string()))
 }
 
-/// Inspect one wait within the authenticated namespace, using current grants.
+/// Inspect one wait under the current host grants, returning only redacted DTOs.
 pub fn inspect_wait<W: WalWriter>(
     a: &StorageMutationAuthority<W, ReplayReducer>,
     host: &HostControlContext,
     id: actionqueue_core::ids::WaitId,
-) -> Result<actionqueue_storage::mutation::wait::WaitRecord, ControlError> {
-    let tenant = authorize(a, host, QueueAction::InspectWait)?;
-    let wait = a.projection().waits().get(id).ok_or(ControlError::NotFound)?;
-    let run = a.projection().get_run_instance(&wait.run_id).ok_or(ControlError::NotFound)?;
-    check_scope(
-        tenant,
-        a.projection().get_task(&run.task_id()).ok_or(ControlError::NotFound)?.tenant_id(),
-    )?;
-    Ok(wait.clone())
+) -> Result<crate::views::WaitView, ControlError> {
+    inspector(a, host)?.get_wait(id).map_err(inspection_control_error)
 }
-/// Inspect one signal; an absent tenant is never a wildcard.
+/// Inspect one signal under current grants. Raw storage envelopes are not public responses.
 pub fn inspect_signal<W: WalWriter>(
     a: &StorageMutationAuthority<W, ReplayReducer>,
     host: &HostControlContext,
     id: &actionqueue_core::ids::SignalId,
-) -> Result<actionqueue_storage::mutation::signal::SignalRecord, ControlError> {
-    let tenant = authorize(a, host, QueueAction::InspectSignal)?;
-    a.projection().signals().get_signal(tenant, id).cloned().ok_or(ControlError::NotFound)
+) -> Result<crate::views::SignalView, ControlError> {
+    inspector(a, host)?.get_signal(id).map_err(inspection_control_error)
+}
+fn inspector<'a, W: WalWriter>(
+    a: &'a StorageMutationAuthority<W, ReplayReducer>,
+    host: &'a HostControlContext,
+) -> Result<crate::inspection::Inspector<'a>, ControlError> {
+    let platform =
+        a.store_session().is_some_and(|s| s.manifest().features.iter().any(|f| f == "platform"));
+    crate::inspection::Inspector::new(a.projection(), host, platform, Default::default(), false, 0)
+        .map_err(inspection_control_error)
+}
+fn inspection_control_error(e: crate::inspection::InspectionError) -> ControlError {
+    match e {
+        crate::inspection::InspectionError::NotFound => ControlError::NotFound,
+        crate::inspection::InspectionError::Unauthorized => ControlError::Unauthorized,
+        _ => ControlError::Mutation(e.code().into()),
+    }
 }
 
 /// Typed public service failures. Display is deliberately independent of request data.
@@ -222,7 +244,10 @@ impl ServiceError {
             Self::Storage(
                 MutationAuthorityError::Wait(_) | MutationAuthorityError::Validation(_),
             ) => "invalid_request",
-            Self::Authorization(ControlError::Scope | ControlError::NotFound) => "not_found",
+            Self::Authorization(ControlError::Scope | ControlError::NotFound)
+            | Self::Storage(MutationAuthorityError::Control(
+                ControlError::Scope | ControlError::NotFound,
+            )) => "not_found",
             Self::Admission(A::Rejected(
                 actionqueue_core::admission::AdmissionRejection::Conflict { .. },
             ))

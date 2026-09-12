@@ -15,7 +15,7 @@ fn main() {
     if args.len() < 2 {
         emit_error_and_exit(CliError::usage(
             "usage_missing_command",
-            "Usage: actionqueue <command> [options]\nAvailable commands: daemon, submit, stats",
+            "Usage: actionqueue <command> [options]\nAvailable commands: daemon, ensure-task, admission, task, run, signal, wait, trace, inspect, store, backup, restore",
         ));
     }
 
@@ -63,6 +63,8 @@ fn emit_success(output: CommandOutput) {
 
 fn emit_error_and_exit(error: CliError) -> ! {
     let payload = ErrorPayload {
+        committed: error.committed_signal(),
+        recovery_required: error.committed_signal().is_some(),
         error_kind: error.kind(),
         error_code: error.code(),
         message: error.message(),

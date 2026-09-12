@@ -315,3 +315,87 @@ async fn malformed_and_oversized_requests_have_bounded_errors() {
         );
     }
 }
+
+#[tokio::test]
+async fn poisoned_authority_blocks_readiness_and_mutation() {
+    let (r, a, _) = fixture(true, true);
+    let _ = std::panic::catch_unwind(|| {
+        let _guard = a.lock().unwrap();
+        panic!("injected authority poison");
+    });
+    assert_eq!(send(&r, "GET", "/ready", Body::empty(), false).await.0, 503);
+    assert_eq!(
+        send(
+            &r,
+            "POST",
+            "/api/v2/admissions:ensure",
+            serde_json::to_vec(&request(1)).unwrap(),
+            true
+        )
+        .await
+        .0,
+        503
+    );
+}
+
+#[tokio::test]
+async fn query_and_path_rejections_never_echo_sensitive_input() {
+    let (r, _, _) = fixture(true, true);
+    for path in [
+        "/api/v2/tasks/INPUT_CANARY",
+        "/api/v2/tasks?display_references=INPUT_CANARY",
+        "/api/v2/tasks?INPUT_CANARY=1",
+    ] {
+        let (status, _, body) = send(&r, "GET", path, Body::empty(), true).await;
+        assert_eq!(status, 400);
+        assert!(!body.contains("INPUT_CANARY"));
+    }
+}
+
+#[tokio::test]
+async fn same_revision_projection_divergence_fails_closed_and_counts_once() {
+    let (router, a, _) = fixture(true, true);
+    let (_, other, _) = fixture(true, true);
+    let q = request(0);
+    assert_eq!(
+        send(&router, "POST", "/api/v2/admissions:ensure", serde_json::to_vec(&q).unwrap(), true)
+            .await
+            .0,
+        201
+    );
+    execute_control(
+        &mut other.lock().unwrap(),
+        &host(),
+        ControlOperation::AdmitTask(request(1)),
+        &MockClock::new(10),
+    )
+    .unwrap();
+    let state = Arc::new(
+        RouterStateInner::with_control_authority(
+            RouterConfig { control_enabled: true, metrics_enabled: true },
+            Arc::new(RwLock::new(other.lock().unwrap().projection().clone())),
+            RouterObservability {
+                metrics: Arc::new(
+                    actionqueue_daemon::metrics::registry::MetricsRegistry::new(None).unwrap(),
+                ),
+                wal_append_telemetry: WalAppendTelemetry::new(),
+                clock: Arc::new(MockClock::new(10)),
+                recovery_observations: RecoveryObservations::zero(),
+            },
+            a.clone(),
+            ReadyStatus::ready(),
+        )
+        .with_host_authenticator(Arc::new(|_, _| Ok(host())))
+        .without_background_maintenance(),
+    );
+    let router = build_router(state.clone());
+    assert!(maintenance::tick(&state).is_err());
+    assert_eq!(send(&router, "GET", "/ready", Body::empty(), false).await.0, 503);
+    assert_eq!(
+        send(&router, "POST", "/api/v2/admissions:ensure", serde_json::to_vec(&q).unwrap(), true)
+            .await
+            .0,
+        503
+    );
+    assert_eq!(a.lock().unwrap().telemetry().snapshot().projection_mismatches, 1);
+}

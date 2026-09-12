@@ -43,7 +43,7 @@ fn fixture_with_workflow(
             metrics_bind: None,
             ..Default::default()
         },
-        None,
+        Some(Arc::new(|_, _| Err(auth::AuthenticationError))),
     )
     .unwrap();
     // Bootstrap has not started a Tokio timer: this fixture is constructed outside
@@ -184,15 +184,15 @@ fn tenant_inspection_authentication_scope_filtering_and_current_revocation() {
         );
         let (status, body) = get(router.clone(), "/api/v2/tasks", Some("one")).await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["tasks"].as_array().unwrap().len(), 1);
-        let task = body["tasks"][0]["id"].as_str().unwrap();
+        assert_eq!(body["items"].as_array().unwrap().len(), 1);
+        let task = body["items"][0]["id"].as_str().unwrap();
         assert_eq!(
             get(router.clone(), &format!("/api/v2/tasks/{task}"), Some("two")).await.0,
             StatusCode::NOT_FOUND
         );
         let (_, body) = get(router.clone(), "/api/v2/runs", Some("one")).await;
-        assert_eq!(body["runs"].as_array().unwrap().len(), 1);
-        let run = body["runs"][0]["run_id"].as_str().unwrap();
+        assert_eq!(body["items"].as_array().unwrap().len(), 1);
+        let run = body["items"][0]["run_id"].as_str().unwrap();
         assert_eq!(
             get(router.clone(), &format!("/api/v2/runs/{run}"), Some("two")).await.0,
             StatusCode::NOT_FOUND
@@ -223,6 +223,7 @@ fn tenant_inspection_authentication_scope_filtering_and_current_revocation() {
         assert_eq!(get(router, "/api/v2/tasks", Some("two")).await.0, StatusCode::OK);
     });
     drop(two);
+    runtime.block_on(maintenance::shutdown(&state));
     drop(state);
     drop(runtime);
     std::fs::remove_dir_all(root).unwrap();
@@ -272,9 +273,9 @@ fn http_remote_capacity_retry_expiry_and_revocation_before_retransmission() {
     runtime.block_on(async {
         let router = build_router(state.clone());
         let (_, body) = get(router.clone(), "/api/v2/runs", Some("one")).await;
-        let run = body["runs"][0]["run_id"].as_str().unwrap().to_owned();
+        let run = body["items"][0]["run_id"].as_str().unwrap().to_owned();
         let (_, body) = get(router.clone(), "/api/v2/runs", Some("two")).await;
-        let other = body["runs"][0]["run_id"].as_str().unwrap().to_owned();
+        let other = body["items"][0]["run_id"].as_str().unwrap().to_owned();
         let path = format!("/api/v2/actors/{}/claim", one.actor_id.unwrap());
         let other_path = format!("/api/v2/actors/{}/claim", two.actor_id.unwrap());
         let claim = |run: &str| serde_json::json!({"protocol_version":1,"contract_revision":"AQ-CONT-1-r2","run_id":run,"attempt_id":AttemptId::new()});
@@ -309,6 +310,7 @@ fn http_remote_capacity_retry_expiry_and_revocation_before_retransmission() {
         assert_eq!(post(router,&result_path,"one",result).await.0,StatusCode::CONFLICT);
         assert_eq!(before,state.control_authority.as_ref().unwrap().lock().unwrap().projection().projection_digest().unwrap());
     });
+    runtime.block_on(maintenance::shutdown(&state));
     drop(state);
     drop(runtime);
     std::fs::remove_dir_all(root).unwrap();
@@ -339,7 +341,7 @@ fn http_continuation_renewal_and_idle_timer_recovery() {
     runtime.block_on(async {
         let router = build_router(state.clone());
         let (_, body) = get(router.clone(),"/api/v2/runs",Some("one")).await;
-        let run = body["runs"][0]["run_id"].as_str().unwrap().to_owned();
+        let run = body["items"][0]["run_id"].as_str().unwrap().to_owned();
         let path = format!("/api/v2/actors/{}",one.actor_id.unwrap());
         let claim = || serde_json::json!({"protocol_version":1,"contract_revision":"AQ-CONT-1-r2","run_id":run,"attempt_id":AttemptId::new()});
         let (status, work) = post(router.clone(),&format!("{path}/claim"),"one",claim()).await;
@@ -367,6 +369,7 @@ fn http_continuation_renewal_and_idle_timer_recovery() {
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
         assert!(state.control_authority.as_ref().unwrap().lock().unwrap().projection().get_actor(&one.actor_id.unwrap()).unwrap().deregistered_at.is_some());
     });
+    runtime.block_on(maintenance::shutdown(&state));
     drop(state);
     drop(runtime);
     std::fs::remove_dir_all(root).unwrap();
@@ -379,7 +382,7 @@ fn http_compound_result_checks_effect_permissions_before_commit_and_retry() {
     runtime.block_on(async {
         let router = build_router(state.clone());
         let (_,body) = get(router.clone(),"/api/v2/runs",Some("one")).await;
-        let run = body["runs"][0]["run_id"].as_str().unwrap().to_owned();
+        let run = body["items"][0]["run_id"].as_str().unwrap().to_owned();
         let path = format!("/api/v2/actors/{}",one.actor_id.unwrap());
         let (status,work) = post(router.clone(),&format!("{path}/claim"),"one",serde_json::json!({"protocol_version":1,"contract_revision":"AQ-CONT-1-r2","run_id":run,"attempt_id":AttemptId::new()})).await;
         assert_eq!(status,StatusCode::OK);
@@ -412,6 +415,7 @@ fn http_compound_result_checks_effect_permissions_before_commit_and_retry() {
         assert_eq!(post(router,&format!("{path}/result"),"one",result).await.0,StatusCode::CONFLICT);
         assert_eq!(before,state.control_authority.as_ref().unwrap().lock().unwrap().projection().projection_digest().unwrap());
     });
+    runtime.block_on(maintenance::shutdown(&state));
     drop(state);
     drop(runtime);
     std::fs::remove_dir_all(root).unwrap();
@@ -475,6 +479,7 @@ fn http_remote_cron_claims_continue_past_five_occurrences() {
             assert_eq!(a.projection().runs_for_task(task).filter(|r| r.state() == actionqueue_core::run::RunState::Completed).count(), 8);
             assert_eq!(a.projection().runs_for_task(task).filter(|r| !r.state().is_terminal()).count(), if bounded { 0 } else { 5 });
         });
+        runtime.block_on(maintenance::shutdown(&state));
         drop(state);
         drop(runtime);
         std::fs::remove_dir_all(root).unwrap();

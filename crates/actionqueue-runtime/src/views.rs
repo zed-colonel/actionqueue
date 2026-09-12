@@ -123,6 +123,9 @@ pub struct BudgetView {
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct RunView {
+    pub resume_context_visible: bool,
+    pub pending_resume_context: Option<ResumeView>,
+    pub continuation_visible: bool,
     pub concurrency_key: Option<String>,
     pub block_reason: Option<&'static str>,
     #[cfg(feature = "serde")]
@@ -146,6 +149,7 @@ pub struct RunView {
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct LeaseView {
+    pub updated_at: u64,
     pub owner: ReferenceView,
     pub expiry: u64,
     pub acquired_at: u64,
@@ -154,6 +158,9 @@ pub struct LeaseView {
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct AttemptView {
+    pub previous_attempt_id: Option<AttemptId>,
+    pub continuation_visible: bool,
+    pub signal_links_visible: bool,
     pub admitted_children: Vec<TaskId>,
     pub emitted_signals: Vec<SignalSequence>,
     pub run_id: RunId,
@@ -172,11 +179,24 @@ pub struct AttemptView {
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct ResumeView {
+    pub wake: WakeView,
+    pub control: Option<ControlView>,
+    pub checkpoint_data: Option<DataSummary>,
     pub context_id: ResumeContextId,
     pub wait_id: Option<WaitId>,
     pub checkpoint_id: Option<CheckpointId>,
     pub signal_sequence: Option<SignalSequence>,
     pub resumed_at: u64,
+}
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
+#[cfg_attr(feature = "serde", serde(tag = "kind", rename_all = "snake_case"))]
+pub enum WakeView {
+    Signal { data: Option<DataSummary> },
+    Children { outcomes: Vec<ChildOutcome> },
+    Deadline { deadline_at: u64 },
+    ControlResolution,
+    AdministrativeResume,
 }
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
@@ -210,6 +230,7 @@ pub enum WaitTargetView {
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct ResolutionView {
+    pub signal_visible: bool,
     pub control: Option<ControlView>,
     pub sequence: u64,
     pub timestamp: u64,
@@ -242,7 +263,7 @@ pub struct SignalView {
     pub received_at: u64,
     pub occurred_at: Option<u64>,
     pub retained: bool,
-    pub pin_count: usize,
+    pub pin_count: Option<usize>,
 }
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
@@ -287,10 +308,13 @@ pub enum SchedulingField {
     Constraints,
     RunPolicy,
     Budget,
+    RunSchedule,
+    WaitDeadline,
 }
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct CausationView {
+    pub task_links_visible: bool,
     pub task_id: Option<TaskId>,
     pub run_id: Option<RunId>,
     pub attempt_id: Option<AttemptId>,
@@ -346,4 +370,12 @@ pub struct StateTransitionView {
     pub from: Option<RunState>,
     pub to: RunState,
     pub timestamp: u64,
+}
+
+/// History availability is explicit when only a standalone snapshot was supplied.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
+pub struct ControlHistoryView {
+    pub available: bool,
+    pub entries: Page<ControlView>,
 }

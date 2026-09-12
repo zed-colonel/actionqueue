@@ -26,7 +26,7 @@ fn inspection_error(e: InspectionError) -> Response {
     };
     error(status, e.code())
 }
-fn service_response(result: Result<ControlOutcome, ServiceError>) -> Response {
+pub(crate) fn service_response(result: Result<ControlOutcome, ServiceError>) -> Response {
     match result {
         Ok(ControlOutcome::Task(outcome)) => {
             (if outcome.is_created() { StatusCode::CREATED } else { StatusCode::OK }, Json(outcome))
@@ -114,15 +114,17 @@ async fn mutate(
     .unwrap_or_else(|_| error(StatusCode::SERVICE_UNAVAILABLE, "storage_unavailable"))
 }
 fn bad_json(e: JsonRejection) -> Response {
-    error(
-        if e.status() == StatusCode::PAYLOAD_TOO_LARGE {
-            e.status()
-        } else {
-            StatusCode::BAD_REQUEST
-        },
-        "invalid_json",
-    )
+    match e {
+        JsonRejection::JsonDataError(_) => {
+            error(StatusCode::UNPROCESSABLE_ENTITY, "invalid_request")
+        }
+        e if e.status() == StatusCode::PAYLOAD_TOO_LARGE => {
+            error(StatusCode::PAYLOAD_TOO_LARGE, "body_too_large")
+        }
+        _ => error(StatusCode::BAD_REQUEST, "invalid_json"),
+    }
 }
+
 async fn ensure(
     State(s): State<RouterState>,
     Extension(h): Extension<HostControlContext>,
@@ -183,7 +185,11 @@ async fn inspect(
     .unwrap_or_else(|_| error(StatusCode::SERVICE_UNAVAILABLE, "storage_unavailable"))
 }
 fn value(v: impl serde::Serialize) -> Result<serde_json::Value, InspectionError> {
-    serde_json::to_value(v).map_err(|_| InspectionError::TooLarge)
+    let bytes = serde_json::to_vec(&v).map_err(|_| InspectionError::TooLarge)?;
+    if bytes.len() > 2 * 1024 * 1024 {
+        return Err(InspectionError::TooLarge);
+    }
+    serde_json::from_slice(&bytes).map_err(|_| InspectionError::TooLarge)
 }
 macro_rules! get {
     ($name:ident, $id:ty, $method:ident) => {
@@ -220,6 +226,25 @@ async fn attempt(
 ) -> Response {
     inspect(s, h, q, move |i| value(i.get_attempt(run, attempt)?)).await
 }
+async fn signal_waits(
+    State(s): State<RouterState>,
+    Extension(h): Extension<HostControlContext>,
+    Path(id): Path<String>,
+    Params(q): Params<Query>,
+) -> Response {
+    let Ok(id) = SignalId::new(id) else {
+        return error(StatusCode::BAD_REQUEST, "invalid_id");
+    };
+    inspect(s, h, q.clone(), move |i| value(i.linked_waits(&id, &q)?)).await
+}
+async fn checkpoint_consumers(
+    State(s): State<RouterState>,
+    Extension(h): Extension<HostControlContext>,
+    Path(id): Path<CheckpointId>,
+    Params(q): Params<Query>,
+) -> Response {
+    inspect(s, h, q.clone(), move |i| value(i.checkpoint_consumers(id, &q)?)).await
+}
 async fn attempts(
     State(s): State<RouterState>,
     Extension(h): Extension<HostControlContext>,
@@ -227,6 +252,22 @@ async fn attempts(
     Params(q): Params<Query>,
 ) -> Response {
     inspect(s, h, q.clone(), move |i| value(i.list_attempts(run, &q)?)).await
+}
+async fn task_controls(
+    State(s): State<RouterState>,
+    Extension(h): Extension<HostControlContext>,
+    Path(id): Path<TaskId>,
+    Params(q): Params<Query>,
+) -> Response {
+    inspect(s, h, q.clone(), move |i| value(i.task_controls(id, &q)?)).await
+}
+async fn run_controls(
+    State(s): State<RouterState>,
+    Extension(h): Extension<HostControlContext>,
+    Path(id): Path<RunId>,
+    Params(q): Params<Query>,
+) -> Response {
+    inspect(s, h, q.clone(), move |i| value(i.run_controls(id, &q)?)).await
 }
 async fn history(
     State(s): State<RouterState>,
@@ -334,6 +375,8 @@ pub fn reads() -> axum::Router<RouterState> {
     axum::Router::new()
         .route("/api/v2/admissions", get(admission))
         .route("/api/v2/tasks", get(tasks))
+        .route("/api/v2/tasks/:id/controls", get(task_controls))
+        .route("/api/v2/runs/:id/controls", get(run_controls))
         .route("/api/v2/tasks/:id", get(task))
         .route("/api/v2/runs", get(runs))
         .route("/api/v2/runs/:id", get(run))
@@ -346,6 +389,8 @@ pub fn reads() -> axum::Router<RouterState> {
         .route("/api/v2/waits", get(waits))
         .route("/api/v2/waits/:id", get(wait))
         .route("/api/v2/checkpoints/:id", get(checkpoint))
+        .route("/api/v2/checkpoints/:id/consumers", get(checkpoint_consumers))
+        .route("/api/v2/signals/:id/waits", get(signal_waits))
         .route("/api/v2/traces/:id", get(trace))
         .route("/api/v2/inspect", get(trace_query))
 }
@@ -384,19 +429,36 @@ pub async fn sanitize_errors(
 }
 
 /// The feature adapters also execute their synchronous WAL work off runtime threads.
-pub async fn blocking_adapter(State(state):State<RouterState>, request:axum::extract::Request, next:axum::middleware::Next) -> Response {
-    if state.operational_failed.load(std::sync::atomic::Ordering::Acquire) {return error(StatusCode::SERVICE_UNAVAILABLE,"recovery_required");}
-    let permit=match state.authority_lane.clone().try_acquire_owned(){Ok(p)=>p,Err(_)=>return error(StatusCode::SERVICE_UNAVAILABLE,"backpressure")};
-    let runtime=tokio::runtime::Handle::current();
+pub async fn blocking_adapter(
+    State(state): State<RouterState>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if state.operational_failed.load(std::sync::atomic::Ordering::Acquire) {
+        return error(StatusCode::SERVICE_UNAVAILABLE, "recovery_required");
+    }
+    let permit = match state.authority_lane.clone().try_acquire_owned() {
+        Ok(p) => p,
+        Err(_) => return error(StatusCode::SERVICE_UNAVAILABLE, "backpressure"),
+    };
+    let runtime = tokio::runtime::Handle::current();
     tokio::task::spawn_blocking(move || {
-        let _permit=permit;
-        let response=runtime.block_on(next.run(request));
-        if let Some(a)=&state.control_authority {
+        let _permit = permit;
+        let response = runtime.block_on(next.run(request));
+        if let Some(a) = &state.control_authority {
             match a.lock() {
-                Ok(a)=> {if a.recovery_required() || super::sync_projection(&state,&a).is_err() {state.operational_failed.store(true,std::sync::atomic::Ordering::Release);}},
-                Err(_)=>state.operational_failed.store(true,std::sync::atomic::Ordering::Release),
+                Ok(a) => {
+                    if a.recovery_required() || super::sync_projection(&state, &a).is_err() {
+                        state.operational_failed.store(true, std::sync::atomic::Ordering::Release);
+                    }
+                }
+                Err(_) => {
+                    state.operational_failed.store(true, std::sync::atomic::Ordering::Release)
+                }
             }
         }
         response
-    }).await.unwrap_or_else(|_|error(StatusCode::SERVICE_UNAVAILABLE,"storage_unavailable"))
+    })
+    .await
+    .unwrap_or_else(|_| error(StatusCode::SERVICE_UNAVAILABLE, "storage_unavailable"))
 }

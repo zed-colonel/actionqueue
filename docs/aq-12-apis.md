@@ -10,7 +10,7 @@ independent of the HTTP URL version.
 | Operation | Embedded | Authenticated HTTP | CLI |
 |---|---|---|---|
 | Ensure task, admit signal | `control`, typed convenience methods | `/api/v2/admissions:ensure`, `/api/v2/signals` | `ensure-task`, `signal admit` |
-| Admission/task/run/attempt/wait/signal/checkpoint inspection | `Inspector`, engine getters | GET resource routes under `/api/v2` | `admission inspect`, `task inspect`, `run inspect`, `wait inspect`, `signal inspect` |
+| Admission/task/run/attempt/wait/signal/checkpoint inspection | `Inspector`, engine getters | GET resource routes under `/api/v2` | `admission inspect`, `task inspect`, `run inspect`, `attempt inspect --run RUN`, `wait inspect`, `signal inspect`, `checkpoint inspect` |
 | Structural trace | `Inspector::trace` | `/api/v2/traces/{id}`, `/api/v2/inspect` | `trace ID`, `trace --correlation ID`, `inspect --origin-ref REF` |
 | Task/run/wait cancellation and wait resolution | `control`, engine convenience methods | POST resource `{id}:cancel` or `{id}:resolve` | `task cancel`, `run cancel`, `wait cancel`, `wait resolve` |
 | Store inspection | `runtime::store::inspect_store` | Offline only | `store inspect --data-dir PATH` |
@@ -22,7 +22,7 @@ from `--token-file PATH` or `ACTIONQUEUE_TOKEN`; credentials are never rendered.
 Offline mode holds the storage lock, supplies an explicit `SingleTenant` host
 boundary, and cannot manufacture platform scope from JSON. It does not run a
 scheduler or close interrupted attempts. A running daemon owns its store for its
-entire lifetime, including during graceful SIGINT/SIGTERM shutdown.
+entire lifetime, including during graceful SIGINT/SIGTERM shutdown. The daemon serves its configured metrics listener alongside the API listener. Client operations have a 30-second timeout; a timed-out mutation may have committed, so retain admission identities for retry.
 
 Backup and restore remain storage-owned offline operations. They verify target
 formats and digests, enforce exclusive ownership, and reject populated or
@@ -60,12 +60,12 @@ is explicitly unevaluated when no executor traits are supplied. Dispatch and
 inspection share the same gate calculation.
 
 Attempt views preserve accepted-start sequences, finish origin, original resume
-identity, previous physical recipient, checkpoint production and causal child and
+identity, previous physical attempt (also before any wait), checkpoint production and causal child and
 signal links. Waits expose structural filters/child targets, eligibility cursor,
 deadline policy and recorded resolution. Checkpoints and signals expose data
-summaries. Trace nodes and typed edges connect these facts. Control attribution
+summaries. Pending and consumed resume views include typed wake reasons and recursively redacted data summaries. Signal-linked waits and checkpoint consumers have separate pages at `/signals/{id}/waits` and `/checkpoints/{id}/consumers`. Trace nodes and typed edges connect these facts. Control attribution
 is joined by recorded WAL sequences; task cancellation targets come from the
-retained cancellation records, never matching timestamps. Missing control history
+retained WAL records, never matching timestamps. Task/run control histories are paginated at `/tasks/{id}/controls` and `/runs/{id}/controls`. Snapshot hydration restores operation-target and attempt-owner indexes from the retained complete WAL. Standalone snapshot history explicitly reports `available: false`. Missing control history
 is represented by null, not fabricated events or durable retry counters.
 
 A data summary contains representation, content hash, content type and size.
@@ -99,8 +99,8 @@ unbounded inline arrays. Run history and attempt pages can be continued via
 Cursors bind the lane, filter, scope, disclosure settings and projection revision.
 Mutation invalidates an old cursor with `stale_cursor` (409). Trace nodes use
 `cursor`; trace edges use `edge_cursor`. No total count reveals objects outside
-the authorized namespace. `different_fields` reports ordinary unequal scheduling
-fields across tasks on the returned node page; it never chooses a preferred task.
+the authorized namespace. Single-object responses also have a 2 MiB cap. `different_fields` reports ordinary unequal scheduling
+fields (priority, constraints, run policy, budgets, run schedules and wait deadlines) across tasks on the returned node page; it never chooses a preferred task.
 
 ## Readiness and telemetry
 
@@ -108,7 +108,7 @@ Continuation maintenance runs without the actor feature. Actor lease maintenance
 remains feature-gated. Reconciliation failures, poisoned authority/projection
 locks and uncertain writes make readiness return 503. Durable progress is
 published even when later matching fails. A fenced authority must be reopened
-through recovery before further mutation.
+through recovery before further mutation. Embedded daemon hosts drain their HTTP requests and await `BootstrapState::shutdown()` before reopening the store; the CLI does this automatically.
 
 Counters are process-lifetime observations, not durable historical totals. They
 start at zero on reopening; replay does not count old admissions as new ones.
@@ -119,8 +119,10 @@ Scrapes never create latency or record-size observations. Wait latency only
 observes establishments and resolutions seen by that telemetry instance.
 
 Signal namespace/kind labels default to `overflow/overflow`.
-`QueueTelemetry::set_signal_allowlist` accepts at most 64 validated pairs before
+`DaemonConfig::signal_metric_allowlist` and `QueueTelemetry::set_signal_allowlist` accept at most 64 validated pairs before
 observation begins; all other pairs remain in the single overflow bucket. No
 identity, opaque causal/control reference, payload, external locator or arbitrary
 error becomes a metric label. Histogram observations are accumulated once at
 commit, with cumulative count/sum and the positive-infinity bucket.
+
+The storage crate requires its `serde` feature for the target persistence format. A minimal storage build uses `--no-default-features --features serde`; runtime and daemon can be checked with `--no-default-features`.

@@ -216,6 +216,7 @@ impl ReplayReducer {
                 return Err(invalid("invalid dispatch sequence"));
             }
         }
+        r.hydrate_inspection_ownership();
         let produced: Vec<_> = r
             .attempt_history
             .values()

@@ -29,7 +29,11 @@ pub fn run(args: Vec<String>) -> Result<CommandOutput, CliError> {
         .enable_all()
         .build()
         .map_err(|_| unavailable())?;
-    runtime.block_on(execute(args))
+    runtime.block_on(async {
+        tokio::time::timeout(std::time::Duration::from_secs(30), execute(args))
+            .await
+            .map_err(|_| unavailable())?
+    })
 }
 async fn execute(args: Vec<String>) -> Result<CommandOutput, CliError> {
     let mut words = Vec::new();
@@ -42,7 +46,7 @@ async fn execute(args: Vec<String>) -> Result<CommandOutput, CliError> {
             "--offline" if !offline => offline = true,
             "--json" if !json => json = true,
             "--daemon" | "--data-dir" | "--token-file" | "--file" | "--key" | "--run"
-            | "--correlation" | "--origin-ref" | "--limit" | "--cursor" => {
+            | "--correlation" | "--origin-ref" | "--limit" | "--cursor" | "--edge-cursor" => {
                 let value = iter.next().ok_or_else(invalid)?;
                 if options.insert(arg.as_str(), value.as_str()).is_some() {
                     return Err(invalid());
@@ -65,7 +69,7 @@ async fn execute(args: Vec<String>) -> Result<CommandOutput, CliError> {
             "/api/v2/signals".into()
         }
         ["admission", "inspect"] => format!("/api/v2/admissions?key={}", encode(opt("--key")?)),
-        [kind @ ("task" | "run" | "signal" | "wait"), "inspect", id] => {
+        [kind @ ("task" | "run" | "signal" | "wait" | "checkpoint"), "inspect", id] => {
             format!("/api/v2/{kind}s/{}", encode(id))
         }
         ["wait", verb @ ("cancel" | "resolve"), id] => {
@@ -78,6 +82,10 @@ async fn execute(args: Vec<String>) -> Result<CommandOutput, CliError> {
             method = "POST";
             format!("/api/v2/{kind}s/{}:cancel", encode(id))
         }
+        ["attempt", "inspect", id] => {
+            format!("/api/v2/runs/{}/attempts/{}", encode(opt("--run")?), encode(id))
+        }
+        ["run", "continuation", id] => format!("/api/v2/runs/{}/continuation", encode(id)),
         ["trace", id] => format!("/api/v2/traces/{}", encode(id)),
         ["trace"] => format!("/api/v2/inspect?correlation_id={}", encode(opt("--correlation")?)),
         ["inspect"] => format!("/api/v2/inspect?origin_ref={}", encode(opt("--origin-ref")?)),
@@ -99,7 +107,9 @@ async fn execute(args: Vec<String>) -> Result<CommandOutput, CliError> {
                 serde_json::from_slice(&body).map_err(|_| invalid())?;
         }
     }
-    for (flag, name) in [("--limit", "limit"), ("--cursor", "cursor")] {
+    for (flag, name) in
+        [("--limit", "limit"), ("--cursor", "cursor"), ("--edge-cursor", "edge_cursor")]
+    {
         if let Some(v) = options.get(flag) {
             path.push(if path.contains('?') { '&' } else { '?' });
             path.push_str(&format!("{name}={}", encode(v)));
@@ -214,16 +224,30 @@ async fn execute(args: Vec<String>) -> Result<CommandOutput, CliError> {
             Some("stale_cursor") => "stale_cursor",
             Some("not_found") => "not_found",
             Some("forbidden") => "forbidden",
+            Some("unauthenticated") => "unauthenticated",
+            Some("storage_unavailable") => "storage_unavailable",
+            Some("backpressure") => "backpressure",
+            Some("recovery_required") => "recovery_required",
+            Some("invalid_query") => "invalid_query",
+            Some("invalid_json") => "invalid_json",
+            Some("response_too_large") => "response_too_large",
+            Some("body_too_large") => "body_too_large",
             Some("signal_committed_recovery_required") => "signal_committed_recovery_required",
             _ => "invalid_request",
         };
-        return Err(if status.as_u16() == 503 {
+        let mut error = if status.as_u16() == 503 {
             CliError::connectivity(code, "service requires recovery or retry")
         } else if status.as_u16() == 409 {
             CliError::runtime(code, "conflicting request")
         } else {
             CliError::validation(code, "request rejected")
-        });
+        };
+        if code == "signal_committed_recovery_required" {
+            let outcome =
+                serde_json::from_value(value["committed"].clone()).map_err(|_| unavailable())?;
+            error = error.with_committed_signal(outcome);
+        }
+        return Err(error);
     }
     if json {
         Ok(CommandOutput::Json(value))

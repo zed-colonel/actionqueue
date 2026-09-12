@@ -285,11 +285,21 @@ fn daemon_serves_authenticated_cli_requests_and_releases_store_on_sigterm() {
     std::fs::write(&auth,serde_json::to_vec(&serde_json::json!([{"token":secret,"actor_id":null,"scope":"SingleTenant","attribution":attribution}])).unwrap()).unwrap();
     let reservation = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = reservation.local_addr().unwrap().to_string();
+    let metrics_reservation = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let metrics_address = metrics_reservation.local_addr().unwrap().to_string();
     drop(reservation);
+    drop(metrics_reservation);
     let mut child = cli()
         .args(["daemon", "--data-dir"])
         .arg(&store)
-        .args(["--bind", &address, "--enable-control", "--auth-file"])
+        .args([
+            "--bind",
+            &address,
+            "--metrics-bind",
+            &metrics_address,
+            "--enable-control",
+            "--auth-file",
+        ])
         .arg(&auth)
         .arg("--json")
         .stdout(Stdio::piped())
@@ -318,6 +328,15 @@ fn daemon_serves_authenticated_cli_requests_and_releases_store_on_sigterm() {
             panic!("startup failed {e}: {}", String::from_utf8_lossy(&output.stderr))
         }
     };
+    let mut metrics = std::net::TcpStream::connect(&metrics_address).unwrap();
+    metrics.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    use std::io::{Read, Write};
+    metrics
+        .write_all(b"GET /metrics HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .unwrap();
+    let mut metrics_text = String::new();
+    metrics.read_to_string(&mut metrics_text).unwrap();
+    assert!(metrics_text.contains("actionqueue_admission_total"));
     let url = format!("http://{}", startup["bind_address"].as_str().unwrap());
     let out = cli()
         .args(["ensure-task", "--daemon", &url, "--token-file"])

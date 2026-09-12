@@ -1858,22 +1858,21 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
             EnsureTaskRequest::for_task(spec, vec![]).map_err(AdmissionError::Rejected)?,
         )
     }
-    /// Inspect a signal in its tenant namespace, including retired records.
+    /// Inspect a signal through the configured host and default redaction policy.
     pub fn get_signal(
         &self,
-        tenant: Option<actionqueue_core::ids::TenantId>,
         id: &actionqueue_core::ids::SignalId,
-    ) -> Option<&actionqueue_storage::mutation::signal::SignalRecord> {
-        self.projection().signals().get_signal(tenant, id)
+    ) -> Result<crate::views::SignalView, crate::inspection::InspectionError> {
+        self.inspector(Default::default(), false)?.get_signal(id)
     }
-    /// Bounded sequence-paginated inspection with an exclusive cursor.
+    /// Bounded, authorized structural signal inspection.
+    #[cfg(feature = "serde")]
     pub fn list_signals(
         &self,
-        tenant: Option<actionqueue_core::ids::TenantId>,
-        after: actionqueue_core::ids::SignalSequence,
-        limit: usize,
-    ) -> Vec<&actionqueue_storage::mutation::signal::SignalRecord> {
-        self.projection().signals().list_signals(tenant, after, limit)
+        query: &crate::inspection::Query,
+    ) -> Result<crate::views::Page<crate::views::SignalView>, crate::inspection::InspectionError>
+    {
+        self.inspector(Default::default(), false)?.list_signals(query)
     }
     /// Resident signal and live capacity-rejection counters.
     pub fn signal_statistics(&self) -> actionqueue_storage::recovery::signals::SignalStatistics {
