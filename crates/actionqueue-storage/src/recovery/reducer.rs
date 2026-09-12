@@ -67,6 +67,7 @@ impl RunStateHistoryEntry {
 /// A deterministic attempt lineage record for a run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AttemptHistoryEntry {
+    pub disposition: Option<Box<crate::mutation::disposition::DispositionRecord>>,
     pub(crate) accepted_start: Option<super::resume::AcceptedStart>,
     pub(crate) finish_origin: actionqueue_core::continuation::AttemptFinishOrigin,
     /// The attempt identifier.
@@ -124,8 +125,15 @@ impl AttemptHistoryEntry {
         self.error.as_deref()
     }
 
-    /// Returns the optional opaque output bytes produced by the handler.
+    /// Returns the complete inline or external output reference.
+    pub fn output_ref(&self) -> Option<&actionqueue_core::data_ref::DataRef> {
+        self.disposition.as_ref().and_then(|d| d.disposition.output())
+    }
+    /// Returns inline output bytes, when the disposition carries inline data.
     pub fn output(&self) -> Option<&[u8]> {
+        if let Some(actionqueue_core::data_ref::DataRef::Inline(v)) = self.output_ref() {
+            return Some(v.bytes());
+        }
         self.output.as_deref()
     }
 }
@@ -692,6 +700,12 @@ impl ReplayReducer {
                 }
                 self.signals.apply_retirement(record).map_err(ReplayReducerError::Signal)?;
             }
+            WalEventType::AttemptDispositionCommitted { record } => {
+                if record.sequence != event.sequence() {
+                    return Err(ReplayReducerError::CorruptedData);
+                }
+                self.apply_disposition(record)?;
+            }
             WalEventType::AdmissionCommitted { record, runs } => {
                 if record.sequence() != event.sequence() {
                     return Err(ReplayReducerError::CorruptedData);
@@ -993,7 +1007,7 @@ impl ReplayReducer {
         Ok(())
     }
 
-    fn apply_task_created(
+    pub(crate) fn apply_task_created(
         &mut self,
         task_spec: &actionqueue_core::task::task_spec::TaskSpec,
         timestamp: u64,
@@ -1048,7 +1062,7 @@ impl ReplayReducer {
         Ok(())
     }
 
-    fn apply_run_created(
+    pub(crate) fn apply_run_created(
         &mut self,
         run_instance: &actionqueue_core::run::run_instance::RunInstance,
     ) -> Result<(), ReplayReducerError> {
@@ -1202,6 +1216,7 @@ impl ReplayReducer {
 
         let attempts = self.attempt_history.entry(*run_id).or_default();
         attempts.push(AttemptHistoryEntry {
+            disposition: None,
             accepted_start: None,
             finish_origin: Default::default(),
             attempt_id: *attempt_id,
@@ -1235,6 +1250,16 @@ impl ReplayReducer {
             return Err(ReplayReducerError::CorruptedData);
         }
 
+        if matches!(outcome.result(), AttemptResultKind::Failure | AttemptResultKind::Timeout) {
+            run_instance
+                .account_disposition(
+                    &actionqueue_core::disposition::DispositionOutcome::RetryableFailure {
+                        error: actionqueue_core::bounded::BoundedError::new("").unwrap(),
+                    },
+                    1,
+                )
+                .map_err(|_| ReplayReducerError::CorruptedData)?;
+        }
         run_instance.finish_attempt(*attempt_id).map_err(Self::map_run_instance_error)?;
 
         let attempts =
@@ -1527,7 +1552,7 @@ impl ReplayReducer {
         Ok(())
     }
 
-    fn apply_dependency_declared(&mut self, task_id: TaskId, depends_on: &[TaskId]) {
+    pub(crate) fn apply_dependency_declared(&mut self, task_id: TaskId, depends_on: &[TaskId]) {
         if !self.tasks.contains_key(&task_id) {
             tracing::warn!(
                 %task_id,
@@ -1742,7 +1767,7 @@ impl ReplayReducer {
         );
     }
 
-    fn apply_budget_consumed(
+    pub(crate) fn apply_budget_consumed(
         &mut self,
         task_id: actionqueue_core::ids::TaskId,
         dimension: BudgetDimension,

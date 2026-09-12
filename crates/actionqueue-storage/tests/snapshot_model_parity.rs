@@ -41,6 +41,7 @@ fn test_attempt_entry_in_progress(
     started_at: u64,
 ) -> SnapshotAttemptHistoryEntry {
     SnapshotAttemptHistoryEntry {
+        disposition: None,
         accepted_start: None,
         finish_origin: Default::default(),
         attempt_id,
@@ -212,7 +213,7 @@ fn snapshot_state_history_for_run(run: &RunInstance) -> Vec<SnapshotRunStateHist
 
 fn write_framed_snapshot(path: &std::path::Path, _version: u32, snapshot: &Snapshot) {
     let envelope = serde_json::json!({
-        "store_id": uuid::Uuid::nil(), "snapshot_schema": 5, "projection_version": 5,
+        "store_id": uuid::Uuid::nil(), "snapshot_schema": 6, "projection_version": 6,
         "wal_sequence": snapshot.metadata.wal_sequence,
         "digest": {"algorithm":"sha256", "version":5,"hex":"unused for invalid schema"},
         "reserved": {"waits":[],"checkpoints":[],"resume_assignments":[],"causal_control":[]},
@@ -281,7 +282,7 @@ fn d06_t_n1_mapping_boundary_rejects_duplicate_run_ids() {
         signals: vec![],
         last_signal_sequence: 0,
         admissions: vec![],
-        version: 5,
+        version: 6,
         timestamp: 1,
         metadata: SnapshotMetadata {
             schema_version: SNAPSHOT_SCHEMA_VERSION,
@@ -360,7 +361,7 @@ fn d06_t_n2_loader_rejects_snapshot_payload_that_fails_mapping_invariants() {
     let error = serde_json::from_value::<RunInstance>(run_json.clone()).unwrap_err();
     assert!(error.to_string().contains("active attempt_id is only valid in Running state"));
     let envelope = serde_json::json!({
-        "store_id": uuid::Uuid::nil(), "snapshot_schema": 5, "projection_version": 5,
+        "store_id": uuid::Uuid::nil(), "snapshot_schema": 6, "projection_version": 6,
         "wal_sequence": 2,
         "digest": {"algorithm":"sha256", "version":5,"hex":"domain validation must fail first"},
         "reserved": {"waits":[],"checkpoints":[],"resume_assignments":[],"causal_control":[]},
@@ -400,7 +401,7 @@ fn d06_t_n3_schema_migration_guard_rejects_unknown_schema_version() {
         signals: vec![],
         last_signal_sequence: 0,
         admissions: vec![],
-        version: 5,
+        version: 6,
         timestamp: 3,
         metadata: SnapshotMetadata {
             schema_version: SNAPSHOT_SCHEMA_VERSION + 1,
@@ -536,7 +537,7 @@ fn p6_011_t_n3_mapping_rejects_task_canceled_at_before_created_at() {
         signals: vec![],
         last_signal_sequence: 0,
         admissions: vec![],
-        version: 5,
+        version: 6,
         timestamp: 7,
         metadata: SnapshotMetadata {
             schema_version: SNAPSHOT_SCHEMA_VERSION,
@@ -586,7 +587,7 @@ fn p6_013_t_n5_mapping_rejects_engine_paused_without_paused_at() {
         signals: vec![],
         last_signal_sequence: 0,
         admissions: vec![],
-        version: 5,
+        version: 6,
         timestamp: 8,
         metadata: SnapshotMetadata {
             schema_version: SNAPSHOT_SCHEMA_VERSION,
@@ -625,7 +626,7 @@ fn p6_013_t_n6_mapping_rejects_engine_pause_resume_ordering() {
         signals: vec![],
         last_signal_sequence: 0,
         admissions: vec![],
-        version: 5,
+        version: 6,
         timestamp: 9,
         metadata: SnapshotMetadata {
             schema_version: SNAPSHOT_SCHEMA_VERSION,
@@ -678,6 +679,7 @@ fn p6_017_t_p3_snapshot_mapping_preserves_timeout_attempt_result_and_error() {
     let mut snapshot_run = map_core_run_to_snapshot(run);
     snapshot_run.state_history = snapshot_state_history_for_run(&snapshot_run.run_instance);
     snapshot_run.attempts = vec![SnapshotAttemptHistoryEntry {
+        disposition: None,
         accepted_start: None,
         finish_origin: Default::default(),
         attempt_id,
@@ -721,7 +723,7 @@ fn dependency_declarations_survive_snapshot_roundtrip() {
         signals: vec![],
         last_signal_sequence: 0,
         admissions: vec![],
-        version: 5,
+        version: 6,
         timestamp: 100,
         metadata: SnapshotMetadata {
             schema_version: SNAPSHOT_SCHEMA_VERSION,
@@ -792,7 +794,7 @@ fn budget_entries_roundtrip_through_snapshot() {
         signals: vec![],
         last_signal_sequence: 0,
         admissions: vec![],
-        version: 5,
+        version: 6,
         timestamp: 100,
         metadata: SnapshotMetadata {
             schema_version: SNAPSHOT_SCHEMA_VERSION,
@@ -859,7 +861,7 @@ fn subscription_entries_roundtrip_through_snapshot() {
         signals: vec![],
         last_signal_sequence: 0,
         admissions: vec![],
-        version: 5,
+        version: 6,
         timestamp: 100,
         metadata: SnapshotMetadata {
             schema_version: SNAPSHOT_SCHEMA_VERSION,
@@ -955,7 +957,7 @@ fn suspended_run_state_in_snapshot_history() {
         signals: vec![],
         last_signal_sequence: 0,
         admissions: vec![],
-        version: 5,
+        version: 6,
         timestamp: 100,
         metadata: SnapshotMetadata {
             schema_version: SNAPSHOT_SCHEMA_VERSION,

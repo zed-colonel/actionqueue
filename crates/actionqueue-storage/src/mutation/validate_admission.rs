@@ -98,6 +98,7 @@ impl ReplayReducer {
             if run.id().as_uuid().is_nil()
                 || run.state() != RunState::Scheduled
                 || run.attempt_count() != 0
+                || run.failure_attempt_count() != 0
                 || run.current_attempt_id().is_some()
                 || run.created_at() != record.timestamp()
                 || run.last_state_change_at() != record.timestamp()

@@ -8,7 +8,7 @@ This crate extends ActionQueue with workflow capabilities:
 
 - **DependencyGate** -- DAG task dependencies with cycle detection and failure propagation
 - **HierarchyTracker** -- Parent-child cascade cancellation and completion gating
-- **SubmissionChannel** -- Dynamic child task submission from coordinator handlers
+- **Compound child admission** -- Coordinator handlers return child proposals with an awaiting disposition
 - **ChildrenSnapshot** -- Child state visibility for coordinator handlers
 
 Requires the `workflow` feature flag at the workspace level.

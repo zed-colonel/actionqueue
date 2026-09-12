@@ -23,7 +23,7 @@ use actionqueue_core::task::metadata::TaskMetadata;
 use actionqueue_core::task::run_policy::RunPolicy;
 use actionqueue_core::task::task_spec::{TaskPayload, TaskSpec};
 use actionqueue_engine::time::clock::MockClock;
-use actionqueue_executor_local::handler::{ExecutorContext, ExecutorHandler, HandlerOutput};
+use actionqueue_executor_local::handler::{AttemptDisposition, ExecutorContext, ExecutorHandler};
 use actionqueue_runtime::config::{BackoffStrategyConfig, RuntimeConfig};
 use actionqueue_runtime::engine::ActionQueueEngine;
 
@@ -43,15 +43,14 @@ fn data_dir(label: &str) -> PathBuf {
 struct ThresholdHandler;
 
 impl ExecutorHandler for ThresholdHandler {
-    fn execute(&self, ctx: ExecutorContext) -> HandlerOutput {
+    fn execute(&self, ctx: ExecutorContext) -> AttemptDisposition {
         // Look up the task_id from the run's payload to decide behavior.
         if ctx.input.payload == b"task-b" {
-            HandlerOutput::Success {
-                output: None,
-                consumption: vec![BudgetConsumption::new(BudgetDimension::Token, 400)],
-            }
+            actionqueue_core::disposition::AttemptDisposition::complete(None)
+                .with_consumption(vec![BudgetConsumption::new(BudgetDimension::Token, 400)])
+                .unwrap()
         } else {
-            HandlerOutput::Success { output: None, consumption: vec![] }
+            actionqueue_core::disposition::AttemptDisposition::complete(None)
         }
     }
 }

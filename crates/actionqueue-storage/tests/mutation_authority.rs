@@ -16,11 +16,11 @@ use actionqueue_core::task::metadata::TaskMetadata;
 use actionqueue_core::task::run_policy::RunPolicy;
 use actionqueue_core::task::task_spec::{TaskPayload, TaskSpec};
 use actionqueue_engine::index::scheduled::ScheduledIndex;
-use actionqueue_engine::scheduler::attempt_finish::submit_attempt_finish_via_authority;
+#[path = "../../../tests/acceptance/legacy_attempt_finish.rs"]
+mod legacy_attempt_finish;
 use actionqueue_engine::scheduler::promotion::{
     promote_scheduled_to_ready, promote_scheduled_to_ready_via_authority, PromotionParams,
 };
-use actionqueue_executor_local::ExecutorResponse;
 use actionqueue_storage::mutation::authority::{
     MutationAuthorityError, MutationProjection, MutationValidationError, StorageMutationAuthority,
 };
@@ -30,6 +30,7 @@ use actionqueue_storage::wal::event::{WalEvent, WalEventType};
 use actionqueue_storage::wal::fs_reader::WalFsReader;
 use actionqueue_storage::wal::fs_writer::WalFsWriter;
 use actionqueue_storage::wal::writer::{WalWriter, WalWriterError};
+use legacy_attempt_finish::submit_attempt_finish_via_authority;
 
 #[derive(Debug, Default, Clone)]
 struct InMemoryProjection {
@@ -951,14 +952,19 @@ fn p6_017_t_p1_authority_attempt_finish_timeout_persists_in_projection_and_repla
         .expect("attempt start should succeed");
 
     let timeout_finish = {
-        let __finish_cmd =
-            actionqueue_engine::scheduler::attempt_finish::build_attempt_finish_command(
-                8,
-                run.id(),
-                attempt_id,
-                &ExecutorResponse::Timeout { timeout_secs: 9 },
-                1_200,
-            );
+        let __finish_cmd = legacy_attempt_finish::build_attempt_finish_command(
+            8,
+            run.id(),
+            attempt_id,
+            &actionqueue_core::disposition::AttemptDisposition::complete(None).timed_out(
+                actionqueue_core::bounded::BoundedError::new(format!(
+                    "attempt timed out after {}s",
+                    9
+                ))
+                .unwrap(),
+            ),
+            1_200,
+        );
         submit_attempt_finish_via_authority(
             __finish_cmd,
             DurabilityPolicy::Immediate,

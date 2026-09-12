@@ -651,7 +651,9 @@ async fn concurrency_key_e2e_serialized_execution_via_engine() {
     use actionqueue_core::task::run_policy::RunPolicy;
     use actionqueue_core::task::task_spec::{TaskPayload, TaskSpec};
     use actionqueue_engine::time::clock::MockClock;
-    use actionqueue_executor_local::handler::{ExecutorContext, ExecutorHandler, HandlerOutput};
+    use actionqueue_executor_local::handler::{
+        AttemptDisposition, ExecutorContext, ExecutorHandler,
+    };
     use actionqueue_runtime::config::{BackoffStrategyConfig, RuntimeConfig};
     use actionqueue_runtime::engine::ActionQueueEngine;
 
@@ -669,7 +671,7 @@ async fn concurrency_key_e2e_serialized_execution_via_engine() {
     }
 
     impl ExecutorHandler for ConcurrencyTracker {
-        fn execute(&self, ctx: ExecutorContext) -> HandlerOutput {
+        fn execute(&self, ctx: ExecutorContext) -> AttemptDisposition {
             let _input = ctx.input;
             let prev = self.concurrent.fetch_add(1, Ordering::SeqCst);
             let current = prev + 1;
@@ -687,7 +689,7 @@ async fn concurrency_key_e2e_serialized_execution_via_engine() {
             }
             std::thread::sleep(Duration::from_millis(5));
             self.concurrent.fetch_sub(1, Ordering::SeqCst);
-            HandlerOutput::Success { output: None, consumption: vec![] }
+            actionqueue_core::disposition::AttemptDisposition::complete(None)
         }
     }
 

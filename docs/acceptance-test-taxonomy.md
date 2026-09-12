@@ -160,10 +160,10 @@ invariants verified, run policy/scenario exercised, and key assertions.
 - **Key assertions:** Cascade cancellation propagates, parent gated on child completion
 
 ### `dynamic_submission`
-- **Invariant:** Coordinator handlers can submit child tasks via SubmissionChannel
+- **Invariant:** Coordinator handlers can admit children atomically with an awaiting disposition
 - **Run policy:** `Once` with coordinator handler
-- **Scenario:** Parent handler submits child tasks dynamically during execution
-- **Key assertions:** Child tasks created, executed, and parent completes after children
+- **Scenario:** Parent handler returns child proposals and a durable wait
+- **Key assertions:** Child tasks and parent wait commit together; resumed parent and children complete
 
 ### `coordinator_multi_attempt`
 - **Invariant:** ChildrenSnapshot accurately reflects child state for coordinator handlers
@@ -209,3 +209,7 @@ invariants verified, run policy/scenario exercised, and key assertions.
 - **Run policy:** `Once`
 - **Scenario:** Write WAL events via mutation authority, simulate kill -9 via `std::mem::forget` (skipping Drop/close), recover from storage
 - **Key assertions:** WAL recovery succeeds, all committed events present, new operations succeed after recovery
+
+### `attempt_disposition`
+- **Invariant:** One lease-fenced, immediately synced disposition publishes all effects or none.
+- **Coverage:** stale ownership, child graphs and retries, signal quotas, checkpoint replacement, failure accounting, handler wake delivery, WAL/snapshot parity, and killed-writer boundaries.

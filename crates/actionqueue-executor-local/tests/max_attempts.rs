@@ -8,8 +8,8 @@ use std::time::Duration;
 use actionqueue_core::ids::{AttemptId, RunId};
 use actionqueue_core::task::constraints::TaskConstraints;
 use actionqueue_executor_local::{
-    can_retry, decide_retry_transition, AttemptOutcomeKind, AttemptRunner, AttemptTimer,
-    ExecutorContext, ExecutorHandler, ExecutorRequest, HandlerOutput, RetryDecision,
+    can_retry, decide_retry_transition, AttemptDisposition, AttemptOutcomeKind, AttemptRunner,
+    AttemptTimer, ExecutorContext, ExecutorHandler, ExecutorRequest, RetryDecision,
     RetryDecisionError, RetryDecisionInput,
 };
 
@@ -31,33 +31,37 @@ impl AttemptTimer for FixedTimer {
 struct RetryableFailureHandler;
 
 impl ExecutorHandler for RetryableFailureHandler {
-    fn execute(&self, ctx: ExecutorContext) -> HandlerOutput {
+    fn execute(&self, ctx: ExecutorContext) -> AttemptDisposition {
         let _input = ctx.input;
-        HandlerOutput::RetryableFailure {
-            error: "deterministic retryable failure for cap boundary tests".to_string(),
-            consumption: vec![],
-        }
+        actionqueue_core::disposition::AttemptDisposition::retryable_failure(
+            actionqueue_core::bounded::BoundedError::new(
+                "deterministic retryable failure for cap boundary tests".to_string(),
+            )
+            .unwrap(),
+        )
     }
 }
 
 struct TerminalFailureHandler;
 
 impl ExecutorHandler for TerminalFailureHandler {
-    fn execute(&self, ctx: ExecutorContext) -> HandlerOutput {
+    fn execute(&self, ctx: ExecutorContext) -> AttemptDisposition {
         let _input = ctx.input;
-        HandlerOutput::TerminalFailure {
-            error: "deterministic terminal failure for cap boundary tests".to_string(),
-            consumption: vec![],
-        }
+        actionqueue_core::disposition::AttemptDisposition::terminal_failure(
+            actionqueue_core::bounded::BoundedError::new(
+                "deterministic terminal failure for cap boundary tests".to_string(),
+            )
+            .unwrap(),
+        )
     }
 }
 
 struct SuccessHandler;
 
 impl ExecutorHandler for SuccessHandler {
-    fn execute(&self, ctx: ExecutorContext) -> HandlerOutput {
+    fn execute(&self, ctx: ExecutorContext) -> AttemptDisposition {
         let _input = ctx.input;
-        HandlerOutput::Success { output: None, consumption: vec![] }
+        actionqueue_core::disposition::AttemptDisposition::complete(None)
     }
 }
 
@@ -68,6 +72,8 @@ fn make_request(
     max_attempts: u32,
 ) -> ExecutorRequest {
     ExecutorRequest {
+        lease_fence: actionqueue_core::mutation::LeaseFence::new("test".into(), 1),
+        failure_attempt_count: attempt_number.saturating_sub(1),
         resume_context: None,
         causal_context: None,
         run_id,
@@ -76,7 +82,7 @@ fn make_request(
         constraints: TaskConstraints::new(max_attempts, Some(60), None)
             .expect("test constraints should be valid"),
         attempt_number,
-        submission: None,
+
         children: None,
         cancellation_context: None,
     }
@@ -416,7 +422,7 @@ fn cap_boundary_consistency_across_various_outcomes() {
                 assert_eq!(can_retry(&at_cap), Ok(false));
             }
             // Suspended bypasses cap validation — tested separately.
-            AttemptOutcomeKind::Suspended => {}
+            AttemptOutcomeKind::Suspended | AttemptOutcomeKind::Awaiting => {}
         }
     }
 }

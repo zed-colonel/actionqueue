@@ -110,15 +110,16 @@ cargo test --workspace --features workflow,budget,actor,platform    # All (939 t
 ### As an embedded library
 
 ```rust
-use actionqueue_executor_local::{ExecutorHandler, HandlerInput, HandlerOutput};
+use actionqueue_executor_local::{ExecutorHandler, ExecutorContext, AttemptDisposition};
 
 struct MyHandler;
 
 impl ExecutorHandler for MyHandler {
-    fn execute(&self, input: HandlerInput) -> HandlerOutput {
+    fn execute(&self, ctx: ExecutorContext) -> AttemptDisposition {
+        let input = ctx.input;
         let payload = String::from_utf8_lossy(&input.payload);
         println!("[run={}] executing: {payload}", input.run_id);
-        HandlerOutput::Success { output: None }
+        AttemptDisposition::complete(None)
     }
 }
 

@@ -64,6 +64,8 @@ pub enum RetryDecision {
     Fail,
     /// Transition to `Suspended`. Does not count toward the max_attempts cap.
     Suspend,
+    /// Transition to Awaiting without spending failure allowance.
+    Await,
 }
 
 impl RetryDecision {
@@ -74,6 +76,7 @@ impl RetryDecision {
             Self::Retry => RunState::RetryWait,
             Self::Fail => RunState::Failed,
             Self::Suspend => RunState::Suspended,
+            Self::Await => RunState::Awaiting,
         }
     }
 }
@@ -84,18 +87,21 @@ impl RetryDecision {
 ///
 /// - `max_attempts` must be at least 1.
 /// - `attempt_number` must be at least 1.
-/// - `attempt_number` must not exceed `max_attempts` (except for Suspended outcomes,
-///   which bypass cap validation and always return `Suspend`).
+/// - `attempt_number` must not exceed `max_attempts` (except for Suspended and Awaiting outcomes,
+///   which bypass cap validation).
 /// - Retryable outcomes only produce `Retry` when `attempt_number < max_attempts`.
 pub fn decide_retry_transition(
     input: &RetryDecisionInput,
 ) -> Result<RetryDecision, RetryDecisionError> {
     // Suspended bypasses cap validation. Suspended attempts do not count toward
-    // max_attempts. The dispatch loop tracks effective attempt count separately.
+    // max_attempts. The caller supplies the durable failure ordinal separately from physical starts.
     if input.outcome_kind == AttemptOutcomeKind::Suspended {
         return Ok(RetryDecision::Suspend);
     }
 
+    if input.outcome_kind == AttemptOutcomeKind::Awaiting {
+        return Ok(RetryDecision::Await);
+    }
     validate_retry_input(input)?;
 
     let decision = match input.outcome_kind {
@@ -110,6 +116,7 @@ pub fn decide_retry_transition(
         }
         // Handled above — unreachable here but exhaustive match required.
         AttemptOutcomeKind::Suspended => RetryDecision::Suspend,
+        AttemptOutcomeKind::Awaiting => RetryDecision::Await,
     };
 
     Ok(decision)

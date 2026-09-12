@@ -158,20 +158,7 @@ pub fn recover_execution<W: WalWriter>(
             } else if last == Some(AttemptResultKind::Suspended) {
                 RunState::Suspended
             } else {
-                let failures = a
-                    .projection()
-                    .get_attempt_history(&id)
-                    .map(|h| {
-                        h.iter()
-                            .filter(|a| {
-                                matches!(
-                                    a.result(),
-                                    Some(AttemptResultKind::Failure | AttemptResultKind::Timeout)
-                                )
-                            })
-                            .count()
-                    })
-                    .unwrap_or(0);
+                let failures = r.failure_attempt_count() as usize;
                 if failures
                     < a.projection().get_task(&r.task_id()).unwrap().constraints().max_attempts()
                         as usize

@@ -96,12 +96,9 @@ impl actionqueue_executor_local::handler::ExecutorHandler for Recording {
     fn execute(
         &self,
         c: actionqueue_executor_local::handler::ExecutorContext,
-    ) -> actionqueue_executor_local::handler::HandlerOutput {
+    ) -> actionqueue_executor_local::handler::AttemptDisposition {
         self.0.lock().unwrap().push(c.input);
-        actionqueue_executor_local::handler::HandlerOutput::Success {
-            output: None,
-            consumption: vec![],
-        }
+        actionqueue_core::disposition::AttemptDisposition::complete(None)
     }
 }
 fn observe(
@@ -115,6 +112,8 @@ fn observe(
     let run = p.get_run_instance(&r).unwrap();
     let task = p.get_task(&run.task_id()).unwrap();
     let _ = runner.run_attempt(actionqueue_executor_local::types::ExecutorRequest {
+            lease_fence: actionqueue_core::mutation::LeaseFence::new("test".into(), 1),
+            failure_attempt_count: run.failure_attempt_count(),
         run_id: r,
         attempt_id: id,
         payload: task.task_payload().bytes().to_vec(),
@@ -124,7 +123,7 @@ fn observe(
         causal_context: p
             .task_admission(run.task_id())
             .map(|a| a.request().causal_context().clone()),
-        submission: None,
+
         children: None,
         cancellation_context: None,
     });
@@ -132,4 +131,4 @@ fn observe(
     input
 }
 
-fn resume_dir() -> tempfile::TempDir { std::fs::create_dir_all(".aq-checks").unwrap(); tempfile::tempdir_in(".aq-checks").unwrap() }
+fn resume_dir() -> tempfile::TempDir { tempfile::tempdir().unwrap() }

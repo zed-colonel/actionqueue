@@ -10,7 +10,7 @@ use crate::snapshot::model::{
 };
 
 /// The snapshot format version written by this implementation.
-const SNAPSHOT_FORMAT_VERSION: u32 = 5;
+const SNAPSHOT_FORMAT_VERSION: u32 = 6;
 
 /// Builds a validated [`Snapshot`] from the current state of a [`ReplayReducer`].
 ///
@@ -56,6 +56,7 @@ pub fn build_snapshot_from_projection(
                 .map(|a| {
                     a.iter()
                         .map(|entry| SnapshotAttemptHistoryEntry {
+                            disposition: entry.disposition.clone(),
                             accepted_start: entry.accepted_start.clone(),
                             finish_origin: entry.finish_origin,
                             attempt_id: entry.attempt_id(),
@@ -63,7 +64,7 @@ pub fn build_snapshot_from_projection(
                             finished_at: entry.finished_at(),
                             result: entry.result(),
                             error: entry.error().map(|s| s.to_string()),
-                            output: entry.output().map(|b| b.to_vec()),
+                            output: entry.output.clone(),
                         })
                         .collect()
                 })

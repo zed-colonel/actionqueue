@@ -11,7 +11,7 @@ use actionqueue_actor::ExecutorTraitRouter;
 use actionqueue_core::actor::{ActorRegistration, ExecutorTraits};
 use actionqueue_core::ids::ActorId;
 use actionqueue_engine::time::clock::MockClock;
-use actionqueue_executor_local::handler::{ExecutorContext, ExecutorHandler, HandlerOutput};
+use actionqueue_executor_local::handler::{AttemptDisposition, ExecutorContext, ExecutorHandler};
 use actionqueue_runtime::config::{BackoffStrategyConfig, RuntimeConfig};
 use actionqueue_runtime::engine::ActionQueueEngine;
 
@@ -29,8 +29,8 @@ fn data_dir(label: &str) -> PathBuf {
 struct NoopHandler;
 
 impl ExecutorHandler for NoopHandler {
-    fn execute(&self, _ctx: ExecutorContext) -> HandlerOutput {
-        HandlerOutput::success()
+    fn execute(&self, _ctx: ExecutorContext) -> AttemptDisposition {
+        AttemptDisposition::complete(None)
     }
 }
 

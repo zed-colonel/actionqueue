@@ -17,3 +17,5 @@ pub mod waits;
 
 pub mod checkpoints;
 pub mod resume;
+
+mod dispositions;

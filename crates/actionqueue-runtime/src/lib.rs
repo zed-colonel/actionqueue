@@ -15,3 +15,5 @@ pub mod admission;
 pub mod signals;
 
 pub mod waits;
+
+pub mod disposition;

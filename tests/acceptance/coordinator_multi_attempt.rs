@@ -1,22 +1,4 @@
-//! Coordinator pattern: ChildrenSnapshot provides task children state at dispatch time.
-//!
-//! Validates ChildrenSnapshot population on a single coordinator execution. Proves two
-//! complementary aspects of the Coordinator pattern:
-//!
-//! 1. **Spawn + complete**: A coordinator submits child tasks via SubmissionChannel on its
-//!    first execution and returns Success. All children complete on subsequent ticks. This
-//!    proves the canonical coordinator lifecycle end-to-end.
-//!
-//! 2. **ChildrenSnapshot populated**: When a task is dispatched that already has children
-//!    in the projection, `ExecutorContext.children` contains an accurate snapshot of those
-//!    child states (including `all_children_terminal`). Coordinator handlers can read this
-//!    to detect which children are terminal.
-//!
-//! Note: The multi-attempt retry cycle (coordinator returns RetryableFailure while waiting
-//! for children) is architecturally sound but requires explicit lease management between
-//! attempts. That variant is deferred. The canonical implementation uses Success +
-//! re-submission or an external trigger rather than RetryableFailure. This test covers the
-//! observable contract without the retry cycle.
+//! Coordinator fan-out commits with Awaiting; resumed handlers receive child snapshots.
 
 mod support;
 
@@ -36,7 +18,9 @@ mod wf {
     use actionqueue_core::task::run_policy::RunPolicy;
     use actionqueue_core::task::task_spec::{TaskPayload, TaskSpec};
     use actionqueue_engine::time::clock::MockClock;
-    use actionqueue_executor_local::handler::{ExecutorContext, ExecutorHandler, HandlerOutput};
+    use actionqueue_executor_local::handler::{
+        AttemptDisposition, ExecutorContext, ExecutorHandler,
+    };
     use actionqueue_runtime::config::RuntimeConfig;
     use actionqueue_runtime::engine::ActionQueueEngine;
     use actionqueue_storage::mutation::authority::StorageMutationAuthority;
@@ -75,24 +59,18 @@ mod wf {
     }
 
     impl ExecutorHandler for SpawnAndSucceedHandler {
-        fn execute(&self, ctx: ExecutorContext) -> HandlerOutput {
+        fn execute(&self, ctx: ExecutorContext) -> AttemptDisposition {
             if ctx.input.payload == b"child" {
-                return HandlerOutput::Success { output: None, consumption: vec![] };
+                return actionqueue_core::disposition::AttemptDisposition::complete(None);
             }
-            // Coordinator: submit children via SubmissionChannel, then succeed.
+            // Coordinator: submit children via compound child admission, then succeed.
             if !self.spawned.swap(true, Ordering::SeqCst) {
-                if let Some(ref sub) = ctx.submission {
-                    sub.submit(
-                        make_spec(self.child_a_id, b"child").with_parent(self.coordinator_id),
-                        vec![],
-                    );
-                    sub.submit(
-                        make_spec(self.child_b_id, b"child").with_parent(self.coordinator_id),
-                        vec![],
-                    );
-                }
+                return super::support::admit_children(vec![
+                    make_spec(self.child_a_id, b"child").with_parent(self.coordinator_id),
+                    make_spec(self.child_b_id, b"child").with_parent(self.coordinator_id),
+                ]);
             }
-            HandlerOutput::Success { output: None, consumption: vec![] }
+            actionqueue_core::disposition::AttemptDisposition::complete(None)
         }
     }
 
@@ -117,7 +95,10 @@ mod wf {
             engine.bootstrap_with_clock(MockClock::new(1000)).expect("bootstrap must succeed");
 
         eng.submit_task(make_spec(coordinator_id, b"coordinator")).expect("submit coordinator");
-        let _ = eng.run_until_idle().await.expect("run must complete");
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(10), eng.run_until_idle())
+            .await
+            .expect("handler must return a valid disposition")
+            .expect("run must complete");
 
         // All three tasks must be Completed.
         let coord_runs = eng.projection().run_ids_for_task(coordinator_id);
@@ -170,7 +151,7 @@ mod wf {
     }
 
     impl ExecutorHandler for SnapshotCapturingHandler {
-        fn execute(&self, ctx: ExecutorContext) -> HandlerOutput {
+        fn execute(&self, ctx: ExecutorContext) -> AttemptDisposition {
             // Only the coordinator task has this specific payload.
             if ctx.input.payload == b"coordinator" {
                 if let Some(ref snap) = ctx.children {
@@ -181,7 +162,7 @@ mod wf {
                     captured.all_terminal = snap.all_children_terminal();
                 }
             }
-            HandlerOutput::Success { output: None, consumption: vec![] }
+            actionqueue_core::disposition::AttemptDisposition::complete(None)
         }
     }
 
@@ -276,7 +257,10 @@ mod wf {
             // are immediately eligible.
             let mut eng =
                 engine.bootstrap_with_clock(MockClock::new(1100)).expect("bootstrap must succeed");
-            let _ = eng.run_until_idle().await.expect("run must complete");
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(10), eng.run_until_idle())
+                .await
+                .expect("handler must return a valid disposition")
+                .expect("run must complete");
 
             // All tasks must have completed.
             let child1_runs = eng.projection().run_ids_for_task(child1_id);

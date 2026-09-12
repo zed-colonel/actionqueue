@@ -17,8 +17,8 @@ use actionqueue_core::ids::{AttemptId, RunId, TaskId};
 use actionqueue_core::mutation::RunCreateCommand;
 use actionqueue_core::mutation::{
     AttemptStartCommand, DependencyDeclareCommand, DurabilityPolicy, LeaseAcquireCommand,
-    LeaseHeartbeatCommand, LeaseReleaseCommand, MutationAuthority, MutationCommand,
-    RunStateTransitionCommand, TaskCancelCommand,
+    LeaseHeartbeatCommand, MutationAuthority, MutationCommand, RunStateTransitionCommand,
+    TaskCancelCommand,
 };
 use actionqueue_core::run::run_instance::{RunInstance, RunInstanceError};
 use actionqueue_core::run::state::RunState;
@@ -51,7 +51,7 @@ use actionqueue_storage::wal::writer::WalWriter;
 use actionqueue_workflow::children::build_children_snapshot;
 use actionqueue_workflow::dag::DependencyGate;
 use actionqueue_workflow::hierarchy::HierarchyTracker;
-use actionqueue_workflow::submission::{submission_channel, SubmissionChannel, SubmissionReceiver};
+
 use tokio::sync::mpsc;
 
 use crate::admission::AdmissionError;
@@ -296,10 +296,7 @@ pub struct DispatchLoop<
     snapshot_path: Option<PathBuf>,
     snapshot_event_threshold: Option<u64>,
     events_since_last_snapshot: u64,
-    /// Sender side of the workflow submission channel (Arc'd, given to handlers).
-    submission_tx: std::sync::Arc<SubmissionChannel>,
-    /// Receiver side of the workflow submission channel (drained each tick).
-    submission_rx: SubmissionReceiver,
+
     /// DAG dependency gate — gates Scheduled → Ready promotion.
     /// Built from the projection at bootstrap and kept in sync as runs complete.
     dependency_gate: DependencyGate,
@@ -415,7 +412,6 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         };
 
         let (result_tx, result_rx) = mpsc::unbounded_channel();
-        let (submission_tx, submission_rx) = submission_channel();
 
         // Rebuild the dependency gate from projection state (WAL events already applied).
         let dependency_gate = build_dependency_gate(authority.projection());
@@ -589,8 +585,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
             snapshot_path: config.snapshot_path,
             snapshot_event_threshold: config.snapshot_event_threshold,
             events_since_last_snapshot: 0,
-            submission_tx,
-            submission_rx,
+
             dependency_gate,
             hierarchy_tracker,
             pending_hierarchy_cascade,
@@ -711,59 +706,6 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
             .ok_or(DispatchError::SequenceOverflow)
     }
 
-    /// Drains all pending task submissions proposed by handlers via
-    /// `ExecutorContext.submission` and processes them through the mutation authority.
-    ///
-    /// Each consumed submission commits as one atomic, synced admission.
-    /// Channel enqueue itself is not a durable acknowledgement. Invalid submissions (e.g., nil task ID, terminal parent)
-    /// are logged and dropped — handlers have no error path for submission failures.
-    fn drain_submissions(&mut self, current_time: u64) -> Result<(), DispatchError> {
-        while let Some(submission) = self.submission_rx.try_recv() {
-            match self.process_submission(submission, current_time) {
-                Ok(()) => {}
-                Err(DispatchError::SubmissionRejected { ref task_id, ref context }) => {
-                    tracing::error!(
-                        %task_id,
-                        %context,
-                        "workflow submission rejected; submission dropped"
-                    );
-                }
-                Err(DispatchError::DependencyCycle(ref err)) => {
-                    tracing::error!(
-                        error = %err,
-                        "workflow submission rejected (dependency cycle); submission dropped"
-                    );
-                }
-                Err(fatal) => return Err(fatal),
-            }
-        }
-        Ok(())
-    }
-
-    /// Validates and commits a single handler-proposed task submission.
-    fn process_submission(
-        &mut self,
-        submission: actionqueue_workflow::submission::TaskSubmission,
-        current_time: u64,
-    ) -> Result<(), DispatchError> {
-        let (task_spec, dependencies) = submission.into_parts();
-        let task_id = task_spec.id();
-        let request = EnsureTaskRequest::for_task(task_spec, dependencies)
-            .map_err(|e| DispatchError::SubmissionRejected { task_id, context: e.to_string() })?;
-        let _ = current_time; // The service captures one timestamp after duplicate resolution.
-        self.ensure_task(request).map_err(|e| match e {
-            AdmissionError::Rejected(e) => {
-                DispatchError::SubmissionRejected { task_id, context: e.to_string() }
-            }
-            AdmissionError::Derivation(e) => {
-                DispatchError::SubmissionRejected { task_id, context: e.to_string() }
-            }
-            e => DispatchError::Admission(e),
-        })?;
-        tracing::debug!(task_id = %task_id, "workflow submission committed");
-        Ok(())
-    }
-
     /// Drains completed worker results from the channel and applies
     /// state transitions via the WAL mutation authority.
     fn drain_completed_results(
@@ -784,7 +726,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
 
     fn process_worker_result(
         &mut self,
-        mut worker_result: WorkerResult,
+        worker_result: WorkerResult,
         result: &mut TickResult,
         current_time: u64,
     ) -> Result<(), DispatchError> {
@@ -832,151 +774,24 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
             return Ok(());
         }
 
-        // Record attempt finish via authority
-        let seq = self.next_sequence()?;
-        let finish_cmd =
-            actionqueue_engine::scheduler::attempt_finish::build_attempt_finish_command(
-                seq,
-                run_id,
-                attempt_id,
-                &worker_result.response,
-                current_time,
-            );
-        let finish =
-            actionqueue_engine::scheduler::attempt_finish::submit_attempt_finish_via_authority(
-                finish_cmd,
-                DurabilityPolicy::Immediate,
-                &mut self.authority,
-            )
-            .map_err(|e| e.into_source());
-        match finish {
-            Ok(_) => {}
-            Err(MutationAuthorityError::Wait(
-                actionqueue_core::mutation::WaitRejection::TooLarge,
-            )) => {
-                // Size validation rejects before append. The worker has already
-                // returned, so durably close its attempt with a bounded failure
-                // and use that same outcome for retry and ownership cleanup.
-                // Never substitute a result after an ambiguous persistence error.
-                worker_result.response =
-                    actionqueue_executor_local::ExecutorResponse::RetryableFailure {
-                        error: crate::config::RESULT_TOO_LARGE.into(),
-                    };
-                let failure =
-                    actionqueue_engine::scheduler::attempt_finish::build_attempt_finish_command(
-                        seq,
-                        run_id,
-                        attempt_id,
-                        &worker_result.response,
-                        current_time,
-                    );
-                let _ = self
-                    .authority
-                    .submit_command(
-                        MutationCommand::AttemptFinish(failure),
-                        DurabilityPolicy::Immediate,
-                    )
-                    .map_err(DispatchError::Authority)?;
-            }
-            Err(error) => return Err(DispatchError::Authority(error)),
-        }
-
-        // Compute the effective attempt number for retry cap purposes.
-        // Suspended and Awaiting attempts do not count against max_attempts: they are
-        // capacity pauses or continuation waits rather than failures.
-        let non_failure_count = self
-            .authority
-            .projection()
-            .get_attempt_history(&run_id)
-            .map(|history| {
-                history
-                    .iter()
-                    .filter(|a| {
-                        matches!(
-                            a.result(),
-                            Some(
-                                actionqueue_core::mutation::AttemptResultKind::Suspended
-                                    | actionqueue_core::mutation::AttemptResultKind::Awaiting
-                            )
-                        )
-                    })
-                    .count() as u32
-            })
-            .unwrap_or(0);
-        let effective_attempt = worker_result.attempt_number.saturating_sub(non_failure_count);
-
-        // Determine target state by delegating to the canonical retry decision
-        // function. This gets us defensive validation (rejects N+1 paths, validates
-        // max_attempts >= 1, validates attempt_number >= 1) for free.
-        let outcome_kind =
-            actionqueue_executor_local::AttemptOutcomeKind::from_response(&worker_result.response);
-        let retry_input = actionqueue_executor_local::RetryDecisionInput {
+        let expected = actionqueue_core::mutation::AttemptCommitExpectation::new(
+            self.next_sequence()?,
             run_id,
             attempt_id,
-            attempt_number: effective_attempt,
-            max_attempts: worker_result.max_attempts,
-            outcome_kind,
-        };
-        let decision = actionqueue_executor_local::retry::decide_retry_transition(&retry_input)
-            .map_err(DispatchError::RetryDecision)?;
-        let new_state = Some(decision.target_state());
-
-        if let Some(target_state) = new_state {
-            tracing::info!(%run_id, ?target_state, "run state transition applied");
-
-            // Release the lease while the run is still in Running state.
-            if let Some(inf) = self.in_flight.get(&run_id) {
-                let seq = self.next_sequence()?;
-                let _ = self
-                    .authority
-                    .submit_command(
-                        MutationCommand::LeaseRelease(LeaseReleaseCommand::new(
-                            seq,
-                            run_id,
-                            self.identity.identity(),
-                            inf.lease_expiry,
-                            current_time,
-                        )),
-                        DurabilityPolicy::Immediate,
-                    )
-                    .map_err(DispatchError::Authority)?;
-            }
-
-            // Apply the state transition. Suspended uses the dedicated RunSuspend
-            // command (which emits a RunSuspended WAL event); all other transitions
-            // use the generic RunStateTransition command.
-            let seq = self.next_sequence()?;
-            if target_state == RunState::Suspended {
-                let _ = self
-                    .authority
-                    .submit_command(
-                        MutationCommand::RunSuspend(
-                            actionqueue_core::mutation::RunSuspendCommand::new(
-                                seq,
-                                run_id,
-                                None,
-                                current_time,
-                            ),
-                        ),
-                        DurabilityPolicy::Immediate,
-                    )
-                    .map_err(DispatchError::Authority)?;
-            } else {
-                let _ = self
-                    .authority
-                    .submit_command(
-                        MutationCommand::RunStateTransition(RunStateTransitionCommand::new(
-                            seq,
-                            run_id,
-                            RunState::Running,
-                            target_state,
-                            current_time,
-                        )),
-                        DurabilityPolicy::Immediate,
-                    )
-                    .map_err(DispatchError::Authority)?;
-            }
-
+            RunState::Running,
+            worker_result.lease_fence.clone(),
+        );
+        crate::disposition::commit(
+            &mut self.authority,
+            expected,
+            worker_result.disposition,
+            current_time,
+        )
+        .map_err(DispatchError::Authority)?;
+        let target_state = *self.projection().get_run_state(&run_id).expect("committed run");
+        self.dependency_gate = build_dependency_gate(self.authority.projection());
+        self.hierarchy_tracker = build_hierarchy_tracker(self.authority.projection());
+        {
             // Capture task_id before the in_flight borrow for use in the gate notification.
             let task_id = self.in_flight.get(&run_id).map(|inf| inf.task_id);
 
@@ -1017,40 +832,26 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
             }
         }
 
-        // Record budget consumption reported by the handler, if any.
-        // Budget consumption uses Deferred durability for performance.
-        // If a crash occurs after the run's state transition (Immediate)
-        // but before this write flushes, at most one extra dispatch beyond
-        // the budget cap may occur on recovery. Accepted trade-off.
         #[cfg(feature = "budget")]
-        {
-            use actionqueue_core::mutation::{BudgetConsumeCommand, MutationCommand as MC};
-            if let Some(inf) = self.in_flight.get(&run_id) {
-                let task_id = inf.task_id;
-                for c in &worker_result.consumption {
-                    let seq = self.next_sequence()?;
-                    let _ = self
-                        .authority
-                        .submit_command(
-                            MC::BudgetConsume(BudgetConsumeCommand::new(
-                                seq,
-                                task_id,
-                                c.dimension,
-                                c.amount,
-                                current_time,
-                            )),
-                            DurabilityPolicy::Deferred,
-                        )
-                        .map_err(DispatchError::Authority)?;
-                    self.budget_tracker.consume(task_id, c.dimension, c.amount);
-                }
-                // Fire budget threshold events after consumption.
-                if !worker_result.consumption.is_empty() {
-                    self.fire_budget_threshold_events(task_id)?;
-                }
+        if let Some(inf) = self.in_flight.get(&run_id) {
+            let task_id = inf.task_id;
+            let consumption = self
+                .projection()
+                .get_attempt_history(&run_id)
+                .and_then(|h| h.last())
+                .and_then(|a| a.disposition.as_ref())
+                .map(|r| r.disposition.consumption().to_vec())
+                .unwrap_or_default();
+            for c in &consumption {
+                self.budget_tracker.consume(task_id, c.dimension, c.amount);
+            }
+            if !consumption.is_empty() {
+                self.fire_budget_threshold_events(task_id)?;
             }
         }
-
+        crate::waits::reconcile(&mut self.authority, current_time)
+            .map_err(DispatchError::Authority)?;
+        self.rebuild_key_gate()?;
         // Remove from in-flight tracking
         self.in_flight.remove(&run_id);
         Ok(())
@@ -1552,9 +1353,6 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         let current_time = self.clock.now();
         let seq_before_tick = self.authority.projection().latest_sequence();
 
-        // Step 0a: Drain workflow submissions proposed by handlers
-        self.drain_submissions(current_time)?;
-
         // Step 0b: Drain completed worker results
         self.drain_completed_results(&mut result, current_time)?;
 
@@ -1791,12 +1589,6 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
                         },
                     );
 
-                    // Build workflow context: submission channel and children snapshot.
-                    // The submission channel allows handlers to propose child tasks;
-                    // the children snapshot gives Coordinator handlers a point-in-time
-                    // view of their children's states (both are None for non-workflow tasks).
-                    let submission = Some(std::sync::Arc::clone(&self.submission_tx)
-                        as std::sync::Arc<dyn actionqueue_executor_local::TaskSubmissionPort>);
                     let children = build_children_snapshot(self.authority.projection(), task_id);
 
                     // Spawn worker via spawn_blocking with timeout enforcement.
@@ -1823,8 +1615,15 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
                         .expect("dispatch accepted this attempt start")
                         .fence
                         .clone();
+                    let failure_attempt_count = self
+                        .projection()
+                        .get_run_instance(&run_id)
+                        .unwrap()
+                        .failure_attempt_count();
                     tokio::task::spawn_blocking(move || {
                         let request = ExecutorRequest {
+                            failure_attempt_count,
+                            lease_fence,
                             resume_context,
                             causal_context,
                             run_id,
@@ -1832,20 +1631,17 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
                             payload,
                             constraints,
                             attempt_number,
-                            submission,
+
                             children,
                             cancellation_context: cancellation_ctx,
                         };
                         let outcome = runner.run_attempt(request);
 
                         let worker_result = WorkerResult {
-                            lease_fence,
+                            lease_fence: outcome.lease_fence,
                             run_id,
                             attempt_id,
-                            response: outcome.response,
-                            max_attempts,
-                            attempt_number,
-                            consumption: outcome.consumption,
+                            disposition: outcome.disposition,
                         };
 
                         if result_tx.send(worker_result).is_err() {
@@ -2907,7 +2703,7 @@ mod tests {
     use actionqueue_core::task::run_policy::RunPolicy;
     use actionqueue_core::task::task_spec::TaskPayload;
     use actionqueue_engine::time::clock::MockClock;
-    use actionqueue_executor_local::handler::{ExecutorContext, HandlerOutput};
+    use actionqueue_executor_local::handler::{AttemptDisposition, ExecutorContext};
     use actionqueue_storage::recovery::bootstrap::load_projection_from_storage;
 
     use super::*;
@@ -2915,14 +2711,15 @@ mod tests {
     struct DependencyHandler;
 
     impl ExecutorHandler for DependencyHandler {
-        fn execute(&self, ctx: ExecutorContext) -> HandlerOutput {
+        fn execute(&self, ctx: ExecutorContext) -> AttemptDisposition {
             match ctx.input.payload.as_slice() {
-                b"suspend" => HandlerOutput::Suspended { output: None, consumption: vec![] },
-                b"fail" => HandlerOutput::TerminalFailure {
-                    error: "prerequisite failed".into(),
-                    consumption: vec![],
-                },
-                _ => HandlerOutput::Success { output: None, consumption: vec![] },
+                b"suspend" => {
+                    actionqueue_core::disposition::AttemptDisposition::suspended(None, None)
+                }
+                b"fail" => actionqueue_core::disposition::AttemptDisposition::terminal_failure(
+                    actionqueue_core::bounded::BoundedError::new("prerequisite failed").unwrap(),
+                ),
+                _ => actionqueue_core::disposition::AttemptDisposition::complete(None),
             }
         }
     }
@@ -3151,8 +2948,8 @@ mod tests {
                 attempt_id,
                 task_id,
                 lease_expiry,
-                attempt_number,
                 max_attempts,
+                attempt_number,
                 #[cfg(feature = "budget")]
                 cancellation_context: None,
             },
@@ -3165,12 +2962,10 @@ mod tests {
             ),
             run_id,
             attempt_id,
-            max_attempts,
-            attempt_number,
-            response: actionqueue_executor_local::ExecutorResponse::Success {
-                output: Some(vec![42]),
-            },
-            consumption: vec![],
+            disposition: actionqueue_core::disposition::AttemptDisposition::complete(
+                (Some(vec![42]))
+                    .map(|v| actionqueue_core::data_ref::DataRef::from_bytes(v).unwrap()),
+            ),
         }
     }
 
@@ -3341,9 +3136,9 @@ mod tests {
     }
 
     impl ExecutorHandler for BlockingHandler {
-        fn execute(&self, _ctx: ExecutorContext) -> HandlerOutput {
+        fn execute(&self, _ctx: ExecutorContext) -> AttemptDisposition {
             let _ = self.release.lock().unwrap().recv();
-            HandlerOutput::Success { output: None, consumption: vec![] }
+            actionqueue_core::disposition::AttemptDisposition::complete(None)
         }
     }
 

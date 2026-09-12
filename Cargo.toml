@@ -372,3 +372,7 @@ path = "tests/acceptance/checkpoint_resume.rs"
 [[test]]
 name = "acceptance_resume_context_crash"
 path = "tests/acceptance/resume_context_crash.rs"
+
+[[test]]
+name = "acceptance_attempt_disposition"
+path = "tests/acceptance/attempt_disposition.rs"

@@ -507,14 +507,14 @@ impl actionqueue_executor_local::ExecutorHandler for Handler {
     fn execute(
         &self,
         ctx: actionqueue_executor_local::ExecutorContext,
-    ) -> actionqueue_executor_local::HandlerOutput {
+    ) -> actionqueue_executor_local::AttemptDisposition {
         if ctx.input.run_id == self.forbidden {
             assert!(ctx.input.resume_context.is_some(), "resumed handler requires durable input");
         }
         if self.sleep {
             std::thread::sleep(std::time::Duration::from_millis(600));
         }
-        actionqueue_executor_local::HandlerOutput::success()
+        actionqueue_executor_local::AttemptDisposition::complete(None)
     }
 }
 fn dispatch(

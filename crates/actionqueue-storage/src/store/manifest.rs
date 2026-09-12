@@ -47,8 +47,8 @@ impl StoreManifest {
             manifest_schema: 1,
             contract: "AQ-CONT-1".into(),
             wal_format: 1,
-            snapshot_schema: 5,
-            projection_version: 5,
+            snapshot_schema: 6,
+            projection_version: 6,
             store_id: uuid::Uuid::new_v4(),
             created_at: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -77,8 +77,8 @@ impl StoreManifest {
         for (component, found, supported) in [
             ("manifest_schema", self.manifest_schema, 1),
             ("wal_format", self.wal_format, 1),
-            ("snapshot_schema", self.snapshot_schema, 5),
-            ("projection_version", self.projection_version, 5),
+            ("snapshot_schema", self.snapshot_schema, 6),
+            ("projection_version", self.projection_version, 6),
         ] {
             if found != supported {
                 return Err(StoreError::UnsupportedStoreFormat {

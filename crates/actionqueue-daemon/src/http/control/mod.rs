@@ -58,6 +58,9 @@ pub(crate) fn internal_authority_error(
     >,
 ) -> axum::response::Response {
     let message = match error {
+        actionqueue_storage::mutation::MutationAuthorityError::Disposition(_) => {
+            "disposition rejected"
+        }
         actionqueue_storage::mutation::MutationAuthorityError::Wait(_) => {
             "continuation control rejected"
         }

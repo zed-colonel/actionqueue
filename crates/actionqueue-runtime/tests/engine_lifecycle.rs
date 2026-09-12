@@ -10,7 +10,7 @@ use actionqueue_core::task::metadata::TaskMetadata;
 use actionqueue_core::task::run_policy::RunPolicy;
 use actionqueue_core::task::task_spec::{TaskPayload, TaskSpec};
 use actionqueue_engine::time::clock::MockClock;
-use actionqueue_executor_local::handler::{ExecutorContext, ExecutorHandler, HandlerOutput};
+use actionqueue_executor_local::handler::{AttemptDisposition, ExecutorContext, ExecutorHandler};
 use actionqueue_runtime::config::RuntimeConfig;
 use actionqueue_runtime::engine::ActionQueueEngine;
 
@@ -28,9 +28,12 @@ fn temp_data_dir() -> PathBuf {
 struct SuccessHandler;
 
 impl ExecutorHandler for SuccessHandler {
-    fn execute(&self, ctx: ExecutorContext) -> HandlerOutput {
+    fn execute(&self, ctx: ExecutorContext) -> AttemptDisposition {
         let _input = ctx.input;
-        HandlerOutput::Success { output: Some(b"done".to_vec()), consumption: vec![] }
+        actionqueue_core::disposition::AttemptDisposition::complete(
+            (Some(b"done".to_vec()))
+                .map(|v| actionqueue_core::data_ref::DataRef::from_bytes(v).unwrap()),
+        )
     }
 }
 

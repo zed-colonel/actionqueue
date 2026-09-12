@@ -124,7 +124,7 @@ impl std::fmt::Display for ConfigError {
 
 impl std::error::Error for ConfigError {}
 
-pub(crate) const RESULT_TOO_LARGE: &str = "handler result exceeds configured size limit";
+pub(crate) const RESULT_TOO_LARGE: &str = "invalid handler disposition";
 pub(crate) const EXECUTOR_INTERRUPTED: &str = "executor interrupted before durable disposition";
 
 impl RuntimeConfig {
@@ -133,35 +133,34 @@ impl RuntimeConfig {
     /// the largest timestamp; UUIDs have fixed width and resume data is referenced
     /// by the accepted start, not copied into the closure.
     pub fn minimum_disposition_bytes() -> usize {
-        use actionqueue_core::{continuation::AttemptFinishOrigin, mutation::AttemptResultKind};
+        use actionqueue_core::{
+            bounded::BoundedError, disposition::AttemptDisposition, mutation::LeaseFence,
+            run::RunState,
+        };
         use actionqueue_storage::{
-            recovery::resume::AttemptClosure,
+            mutation::disposition::DispositionRecord,
             wal::{
                 codec::encode,
                 event::{WalEvent, WalEventType},
             },
         };
-        [
-            (RESULT_TOO_LARGE, AttemptFinishOrigin::Executor),
-            (EXECUTOR_INTERRUPTED, AttemptFinishOrigin::Recovery),
-        ]
-        .into_iter()
-        .map(|(error, origin)| {
-            let record = AttemptClosure {
-                run_id: "ffffffff-ffff-ffff-ffff-ffffffffffff".parse().expect("fixed UUID"),
-                attempt_id: "ffffffff-ffff-ffff-ffff-ffffffffffff".parse().expect("fixed UUID"),
-                timestamp: u64::MAX,
-                result: AttemptResultKind::Failure,
-                error: Some(error.into()),
-                output: None,
-                origin,
-            };
-            encode(&WalEvent::new(u64::MAX, WalEventType::AttemptClosed { record }))
-                .expect("bounded runtime closure must encode")
-                .len()
-        })
-        .max()
-        .expect("runtime closures exist")
+        let record = DispositionRecord {
+            sequence: u64::MAX,
+            run_id: "ffffffff-ffff-ffff-ffff-ffffffffffff".parse().unwrap(),
+            attempt_id: "ffffffff-ffff-ffff-ffff-ffffffffffff".parse().unwrap(),
+            fence: LeaseFence::new("\\".repeat(256).into(), u64::MAX),
+            timestamp: u64::MAX,
+            disposition: AttemptDisposition::terminal_failure(
+                BoundedError::new(RESULT_TOO_LARGE).unwrap(),
+            ),
+            children: vec![],
+            signals: vec![],
+            target_state: RunState::Failed,
+            failure_attempt_count: u32::MAX,
+        };
+        encode(&WalEvent::new(u64::MAX, WalEventType::AttemptDispositionCommitted { record }))
+            .expect("minimal disposition encodes")
+            .len()
     }
 
     pub(crate) fn validate_continuation_limits(

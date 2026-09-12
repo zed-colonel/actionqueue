@@ -1,0 +1,670 @@
+#![allow(dead_code, unused_imports)]
+include!("resume_support.rs");
+use actionqueue_core::disposition::*;
+use actionqueue_storage::mutation::disposition::DispositionRejection;
+
+fn expected(a: &s::Authority, r: RunId) -> AttemptCommitExpectation {
+    command(a, r, spec(WaitId::new(), None)).expected
+}
+fn proposed(a: &s::Authority, r: RunId, d: AttemptDisposition) -> AttemptDispositionCommitCommand {
+    let e = expected(a, r);
+    let plans = d
+        .child_admissions()
+        .iter()
+        .map(|child| {
+            let q = a.projection().disposition_child_request(r, e.attempt_id(), child).unwrap();
+            let digest = q.digest().unwrap();
+            actionqueue_engine::admission::plan_admission(q, digest, 20).unwrap()
+        })
+        .collect();
+    AttemptDispositionCommitCommand::new(e, d, 20).with_children(plans)
+}
+fn compound(a: &s::Authority, r: RunId) -> AttemptDisposition {
+    let child = admission_support::request(2).task_spec().clone();
+    let envelope = s::envelope(1, 20);
+    AttemptDisposition::new(
+        DispositionOutcome::Awaiting,
+        DispositionParts {
+            checkpoint: Some(checkpoint(a, r, b"checkpoint")),
+            wait: Some(spec(WaitId::new(), None)),
+            child_admissions: vec![ChildAdmission::new(
+                AdmissionKey::new("child/2").unwrap(),
+                child,
+                vec![],
+                Default::default(),
+            )
+            .unwrap()],
+            emitted_signals: vec![SignalProposal {
+                signal_id: envelope.signal_id,
+                namespace: envelope.namespace,
+                kind: envelope.kind,
+                correlation_id: envelope.correlation_id.unwrap(),
+                payload: envelope.payload,
+                payload_hash: envelope.payload_hash,
+                occurred_at: None,
+            }],
+            consumption: vec![actionqueue_core::budget::BudgetConsumption::new(
+                actionqueue_core::budget::BudgetDimension::Token,
+                7,
+            )],
+            ..Default::default()
+        },
+    )
+    .unwrap()
+}
+fn submit_disposition(
+    a: &mut s::Authority,
+    c: AttemptDispositionCommitCommand,
+) -> Result<
+    MutationOutcome,
+    MutationAuthorityError<actionqueue_storage::recovery::reducer::ReplayReducerError>,
+> {
+    a.submit_command(MutationCommand::AttemptDispositionCommit(c), DurabilityPolicy::Immediate)
+}
+#[test]
+fn all_effects_share_one_sequence_and_survive_wal_snapshot_tail() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = s::open(dir.path());
+    let r = running(&mut a, 1, None, false);
+    let before = seq(&a);
+    let d = compound(&a, r);
+    let cp = d.checkpoint().unwrap().clone();
+    let c = proposed(&a, r, d);
+    let _ = submit_disposition(&mut a, c).unwrap();
+    assert_eq!(seq(&a), before + 1);
+    assert_eq!(a.projection().get_run_state(&r), Some(&RunState::Awaiting));
+    assert!(a.projection().get_lease(&r).is_none());
+    let record = a.projection().get_attempt_history(&r).unwrap()[0].disposition.as_ref().unwrap();
+    assert_eq!(record.children[0].admission.sequence(), before);
+    assert_eq!(record.signals[0].wal_sequence(), before);
+    assert_eq!(record.disposition.consumption()[0].amount, 7);
+    assert_eq!(a.projection().checkpoint(cp.checkpoint_id).unwrap().sequence, before);
+    assert_eq!(a.projection().get_run_instance(&r).unwrap().failure_attempt_count(), 0);
+    parity(&a);
+    assert_eq!(reconcile(&mut a, 30).unwrap(), 1);
+    assert_eq!(reconcile(&mut a, 30).unwrap(), 0);
+    lease(&mut a, r, 31);
+    let id = start(&mut a, r, 31);
+    assert_eq!(a.projection().attempt_resume(r, id).unwrap().checkpoint, Some(cp));
+    let e = expected(&a, r);
+    actionqueue_runtime::disposition::commit(
+        &mut a,
+        e,
+        AttemptDisposition::complete(Some(DataRef::from_bytes(b"done".to_vec()).unwrap())),
+        32,
+    )
+    .unwrap();
+    assert_eq!(a.projection().get_run_state(&r), Some(&RunState::Completed));
+    parity(&a);
+}
+#[test]
+fn storage_rejects_every_stale_fence_without_subordinate_effects() {
+    for case in 0..7 {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = s::open(dir.path());
+        let r = running(&mut a, 1, None, false);
+        let d = compound(&a, r);
+        let original = proposed(&a, r, d.clone());
+        let e = expected(&a, r);
+        let e = AttemptCommitExpectation::new(
+            if case == 0 { e.expected_sequence() - 1 } else { e.expected_sequence() },
+            r,
+            if case == 1 { AttemptId::new() } else { e.attempt_id() },
+            if case == 2 { RunState::Leased } else { RunState::Running },
+            if case == 3 {
+                LeaseFence::new("other".into(), e.expected_lease().granted_at_sequence())
+            } else if case == 4 {
+                LeaseFence::new("worker".into(), 1)
+            } else {
+                e.expected_lease().clone()
+            },
+        );
+        if case == 6 {
+            cancel(&mut a, r);
+        }
+        let c = AttemptDispositionCommitCommand::new(e, d, if case == 5 { 1000 } else { 20 })
+            .with_children(original.children().to_vec());
+        let before = a.projection().projection_digest().unwrap();
+        let sequence = seq(&a);
+        assert!(matches!(
+            submit_disposition(&mut a, c),
+            Err(MutationAuthorityError::Disposition(DispositionRejection::Stale))
+        ));
+        assert_eq!(seq(&a), sequence);
+        assert_eq!(a.projection().projection_digest().unwrap(), before);
+    }
+}
+#[test]
+fn invalid_checkpoint_child_signal_and_quota_reject_all_effects_then_terminal_fallback() {
+    for case in 0..5 {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = s::open(dir.path());
+        let r = running(&mut a, 1, None, false);
+        let base = compound(&a, r);
+        let mut parts = DispositionParts {
+            checkpoint: base.checkpoint().cloned(),
+            wait: base.wait().cloned(),
+            child_admissions: base.child_admissions().to_vec(),
+            emitted_signals: base.emitted_signals().to_vec(),
+            consumption: base.consumption().to_vec(),
+            ..Default::default()
+        };
+        if case == 0 {
+            parts.checkpoint.as_mut().unwrap().created_by_attempt = AttemptId::new();
+        }
+        if case == 1 {
+            let child = parts.child_admissions[0].clone();
+            parts.child_admissions[0] = ChildAdmission::new(
+                child.admission_key().clone(),
+                child.task_spec().clone(),
+                vec![TaskId::new()],
+                Default::default(),
+            )
+            .unwrap();
+        }
+        if case == 2 {
+            let mut other = parts.emitted_signals[0].clone();
+            other.kind = SignalKind::new("conflict").unwrap();
+            parts.emitted_signals.push(other);
+        }
+        if case == 3 {
+            a.set_signal_limits(actionqueue_core::limits::SignalLimits {
+                identities: 0,
+                ..Default::default()
+            });
+        }
+        if case == 4 {
+            a.set_continuation_limits(actionqueue_core::limits::ContinuationLimits {
+                checkpoint_bytes: 0,
+                ..Default::default()
+            });
+        }
+        let d = AttemptDisposition::new(DispositionOutcome::Awaiting, parts).unwrap();
+        let c = proposed(&a, r, d.clone());
+        let before = a.projection().projection_digest().unwrap();
+        let sequence = seq(&a);
+        assert!(matches!(
+            submit_disposition(&mut a, c),
+            Err(MutationAuthorityError::Disposition(_))
+        ));
+        assert_eq!(a.projection().projection_digest().unwrap(), before);
+        assert_eq!(seq(&a), sequence);
+        let e = expected(&a, r);
+        actionqueue_runtime::disposition::commit(&mut a, e, d, 20).unwrap();
+        assert_eq!(seq(&a), sequence + 1);
+        assert_eq!(a.projection().get_run_state(&r), Some(&RunState::Failed));
+        assert_eq!(a.projection().task_count(), 1);
+        assert_eq!(a.projection().signals().statistics().retained, 0);
+        assert_eq!(a.projection().waits().records().count(), 0);
+        parity(&a);
+    }
+}
+#[test]
+fn suspended_checkpoint_replaces_assigned_checkpoint_and_remains_immutable() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = s::open(dir.path());
+    let (r, old) = wake(&mut a);
+    lease(&mut a, r, 31);
+    let id = start(&mut a, r, 31);
+    let cp = checkpoint(&a, r, b"replacement");
+    let e = expected(&a, r);
+    actionqueue_runtime::disposition::commit(
+        &mut a,
+        e,
+        AttemptDisposition::suspended(Some(cp.clone()), None),
+        32,
+    )
+    .unwrap();
+    parity(&a);
+    transition(&mut a, r, RunState::Ready, 33);
+    assert_eq!(a.projection().pending_resume(r).unwrap().checkpoint, Some(cp.clone()));
+    assert_eq!(a.projection().attempt_resume(r, id).unwrap(), old);
+    parity(&a);
+    lease(&mut a, r, 34);
+    start(&mut a, r, 34);
+    let e = expected(&a, r);
+    actionqueue_runtime::disposition::commit(
+        &mut a,
+        e,
+        AttemptDisposition::suspended(None, None),
+        35,
+    )
+    .unwrap();
+    transition(&mut a, r, RunState::Ready, 36);
+    assert_eq!(a.projection().pending_resume(r).unwrap().checkpoint, Some(cp));
+    parity(&a);
+}
+#[test]
+fn yields_do_not_increase_failure_backoff_and_interruption_counts_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = s::open(dir.path());
+    let r = running(&mut a, 1, None, false);
+    for now in [20, 40, 60] {
+        let e = expected(&a, r);
+        let d = AttemptDisposition::awaiting(
+            spec(
+                WaitId::new(),
+                Some(WaitDeadline { at: now, policy: WaitTimeoutPolicy::ResumeWithTimeout }),
+            ),
+            None,
+        );
+        actionqueue_runtime::disposition::commit(&mut a, e, d, now).unwrap();
+        reconcile(&mut a, now).unwrap();
+        lease(&mut a, r, now + 1);
+        start(&mut a, r, now + 1);
+    }
+    let e = expected(&a, r);
+    actionqueue_runtime::disposition::commit(
+        &mut a,
+        e,
+        AttemptDisposition::retryable_failure(BoundedError::new("failure").unwrap()),
+        70,
+    )
+    .unwrap();
+    let run = a.projection().get_run_instance(&r).unwrap();
+    assert_eq!(run.attempt_count(), 4);
+    assert_eq!(run.failure_attempt_count(), 1);
+    let backoff = actionqueue_executor_local::ExponentialBackoff::new(
+        std::time::Duration::from_secs(10),
+        std::time::Duration::from_secs(1000),
+    )
+    .unwrap();
+    assert_eq!(
+        actionqueue_engine::scheduler::retry_promotion::promote_retry_wait_to_ready(
+            &[run.clone()],
+            80,
+            &backoff
+        )
+        .unwrap()
+        .promoted()
+        .len(),
+        1
+    );
+    parity(&a);
+    transition(&mut a, r, RunState::Ready, 80);
+    lease(&mut a, r, 81);
+    start(&mut a, r, 81);
+    recover_execution(&mut a, 90).unwrap();
+    assert_eq!(a.projection().get_run_instance(&r).unwrap().failure_attempt_count(), 2);
+    recover_execution(&mut a, 91).unwrap();
+    assert_eq!(a.projection().get_run_instance(&r).unwrap().failure_attempt_count(), 2);
+    parity(&a);
+}
+
+#[derive(Clone)]
+struct YieldingHandler {
+    deadline: bool,
+}
+impl actionqueue_executor_local::ExecutorHandler for YieldingHandler {
+    fn execute(&self, ctx: actionqueue_executor_local::ExecutorContext) -> AttemptDisposition {
+        if let Some(resume) = ctx.input.resume_context {
+            assert!(ctx.input.causal_context.is_some());
+            assert!(resume.checkpoint.is_some());
+            assert_eq!(matches!(resume.wake, WakeReason::Deadline { .. }), self.deadline);
+            return AttemptDisposition::complete(Some(DataRef::External(
+                actionqueue_core::data_ref::ExternalDataRef {
+                    scheme: DataScheme::new("blob").unwrap(),
+                    locator: OpaqueRef::new("opaque/result").unwrap(),
+                    hash: ContentHash::new(HashAlgorithm::Sha256, vec![7; 32]).unwrap(),
+                    size_bytes: Some(9),
+                    content_type: None,
+                },
+            )));
+        }
+        let envelope = s::envelope(1, 1000);
+        let signals = if self.deadline {
+            vec![]
+        } else {
+            vec![SignalProposal {
+                signal_id: envelope.signal_id,
+                namespace: envelope.namespace,
+                kind: envelope.kind,
+                correlation_id: envelope.correlation_id.unwrap(),
+                payload: None,
+                payload_hash: None,
+                occurred_at: None,
+            }]
+        };
+        AttemptDisposition::new(
+            DispositionOutcome::Awaiting,
+            DispositionParts {
+                wait: Some(spec(
+                    WaitId::new(),
+                    self.deadline.then_some(WaitDeadline {
+                        at: 1000,
+                        policy: WaitTimeoutPolicy::ResumeWithTimeout,
+                    }),
+                )),
+                checkpoint: Some(CheckpointRef {
+                    checkpoint_id: CheckpointId::new(),
+                    created_by_attempt: ctx.input.attempt_id,
+                    data: DataRef::from_bytes(vec![1]).unwrap(),
+                }),
+                emitted_signals: signals,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+    }
+}
+#[tokio::test]
+async fn normal_handler_awaits_then_receives_signal_or_deadline_and_completes_with_external_output()
+{
+    use actionqueue_runtime::{config::RuntimeConfig, engine::ActionQueueEngine};
+    for deadline in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut boot = ActionQueueEngine::new(
+            RuntimeConfig { data_dir: dir.path().into(), ..Default::default() },
+            YieldingHandler { deadline },
+        )
+        .bootstrap_with_clock(MockClock::new(1000))
+        .unwrap();
+        let q = admission_support::request(1);
+        let mut task = q.task_spec().clone();
+        task.set_constraints(TaskConstraints::new(1, None, None).unwrap()).unwrap();
+        let id = task.id();
+        boot.submit_task(task).unwrap();
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(10), boot.run_until_idle())
+            .await
+            .unwrap()
+            .unwrap();
+        let run = boot.projection().runs_for_task(id).next().unwrap();
+        assert_eq!(run.state(), RunState::Completed);
+        assert_eq!(run.attempt_count(), 2);
+        assert_eq!(run.failure_attempt_count(), 0);
+        let output = boot.projection().get_attempt_history(&run.id()).unwrap()[1]
+            .output_ref()
+            .unwrap()
+            .clone();
+        assert!(matches!(output, DataRef::External(_)));
+        let digest = boot.projection().projection_digest().unwrap();
+        boot.shutdown().unwrap();
+        let a = s::reopen(dir.path());
+        assert_eq!(a.projection().projection_digest().unwrap(), digest);
+        parity(&a);
+    }
+}
+
+#[test]
+#[ignore = "subprocess crash helper"]
+fn disposition_crash_child() {
+    let path = std::path::PathBuf::from(std::env::var("AQ_DISPOSITION_CRASH_ROOT").unwrap());
+    let point = std::env::var("AQ_DISPOSITION_CRASH_POINT").unwrap();
+    let mut a = s::open(&path);
+    let r = running(&mut a, 1, None, false);
+    let c = proposed(&a, r, compound(&a, r));
+    actionqueue_storage::store::fault::pause_once(&point);
+    let _ = submit_disposition(&mut a, c);
+    panic!("missed crash boundary");
+}
+#[test]
+fn killed_compound_commit_recovers_every_effect_or_none_at_each_boundary() {
+    use std::{
+        io::{BufRead, BufReader},
+        process::{Command, Stdio},
+    };
+    for point in [
+        "wal_before_append",
+        "wal_partial_frame",
+        "wal_before_sync",
+        "authority_before_publish",
+        "authority_after_publish",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store");
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "disposition_crash_child", "--ignored", "--nocapture"])
+            .env("AQ_DISPOSITION_CRASH_ROOT", &path)
+            .env("AQ_DISPOSITION_CRASH_POINT", point)
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let output = child.stdout.take().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            for line in BufReader::new(output).lines() {
+                if line.unwrap().contains("AQ_CRASH_BOUNDARY") {
+                    let _ = tx.send(());
+                    break;
+                }
+            }
+        });
+        let ready = rx.recv_timeout(std::time::Duration::from_secs(15));
+        child.kill().unwrap();
+        child.wait().unwrap();
+        reader.join().unwrap();
+        ready.unwrap();
+        let a = s::reopen(&path);
+        let run = a
+            .projection()
+            .runs_for_task(admission_support::request(1).task_spec().id())
+            .next()
+            .unwrap();
+        let committed = run.state() == RunState::Awaiting;
+        if matches!(point, "wal_before_append" | "wal_partial_frame") {
+            assert!(!committed);
+        } else if point != "wal_before_sync" {
+            assert!(committed);
+        }
+        assert_eq!(a.projection().task_count(), if committed { 2 } else { 1 });
+        assert_eq!(a.projection().signals().statistics().retained, usize::from(committed));
+        assert_eq!(a.projection().waits().records().count(), usize::from(committed));
+        let attempt = &a.projection().get_attempt_history(&run.id()).unwrap()[0];
+        assert_eq!(attempt.disposition.is_some(), committed);
+        if committed {
+            assert_eq!(
+                attempt.disposition.as_ref().unwrap().disposition.consumption()[0].amount,
+                7
+            );
+            assert_eq!(
+                a.projection().checkpoints_by_producer(run.id(), attempt.attempt_id()).count(),
+                1
+            );
+        }
+        parity(&a);
+    }
+}
+#[test]
+fn append_sync_and_publication_failures_fence_without_fallback() {
+    for point in [
+        "wal_before_append",
+        "wal_partial_frame",
+        "wal_before_sync",
+        "authority_before_publish",
+        "authority_after_publish",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = s::open(dir.path());
+        let r = running(&mut a, 1, None, false);
+        let e = expected(&a, r);
+        let d = compound(&a, r);
+        actionqueue_storage::store::fault::fail_once(point);
+        assert!(actionqueue_runtime::disposition::commit(&mut a, e.clone(), d.clone(), 20).is_err());
+        assert!(a.recovery_required());
+        assert!(matches!(
+            actionqueue_runtime::disposition::commit(&mut a, e, d, 20),
+            Err(MutationAuthorityError::RecoveryRequired)
+        ));
+        drop(a);
+        let a = s::reopen(dir.path());
+        let history = a.projection().get_attempt_history(&r).unwrap();
+        assert_eq!(history.len(), 1);
+        assert_ne!(history[0].result(), Some(AttemptResultKind::Failure));
+        parity(&a);
+    }
+}
+#[test]
+fn child_retry_preserves_first_producer_and_conflicting_intent_is_atomic() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = s::open(dir.path());
+    let r = running(&mut a, 1, None, false);
+    let d = compound(&a, r);
+    let child = d.child_admissions()[0].clone();
+    let c = proposed(&a, r, d);
+    let _ = submit_disposition(&mut a, c).unwrap();
+    let old = a.projection().task_admission(child.task_spec().id()).unwrap().clone();
+    reconcile(&mut a, 30).unwrap();
+    lease(&mut a, r, 31);
+    start(&mut a, r, 31);
+    let d = AttemptDisposition::new(
+        DispositionOutcome::Awaiting,
+        DispositionParts {
+            wait: Some(spec(
+                WaitId::new(),
+                Some(WaitDeadline { at: 32, policy: WaitTimeoutPolicy::ResumeWithTimeout }),
+            )),
+            child_admissions: vec![child.clone()],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let e = expected(&a, r);
+    actionqueue_runtime::disposition::commit(&mut a, e, d, 32).unwrap();
+    assert_eq!(a.projection().task_admission(child.task_spec().id()).unwrap(), &old);
+    assert_eq!(a.projection().task_count(), 2);
+    parity(&a);
+    reconcile(&mut a, 33).unwrap();
+    lease(&mut a, r, 34);
+    start(&mut a, r, 34);
+    let mut spec_changed = child.task_spec().clone();
+    spec_changed.set_constraints(TaskConstraints::new(5, None, None).unwrap()).unwrap();
+    let child = ChildAdmission::new(
+        child.admission_key().clone(),
+        spec_changed,
+        vec![],
+        Default::default(),
+    )
+    .unwrap();
+    let d = AttemptDisposition::new(
+        DispositionOutcome::Awaiting,
+        DispositionParts {
+            wait: Some(spec(WaitId::new(), None)),
+            child_admissions: vec![child],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let e = expected(&a, r);
+    actionqueue_runtime::disposition::commit(&mut a, e, d, 35).unwrap();
+    assert_eq!(a.projection().get_run_state(&r), Some(&RunState::Failed));
+    assert_eq!(a.projection().task_admission(old.task_id()).unwrap(), &old);
+    parity(&a);
+}
+#[test]
+fn sibling_forward_references_are_validated_as_one_graph() {
+    for cycle in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = s::open(dir.path());
+        let r = running(&mut a, 1, None, false);
+        let a_spec = admission_support::request(2).task_spec().clone();
+        let b_spec = admission_support::request(3).task_spec().clone();
+        let a_id = a_spec.id();
+        let b_id = b_spec.id();
+        let children = vec![
+            ChildAdmission::new(
+                AdmissionKey::new("a").unwrap(),
+                a_spec,
+                vec![b_id],
+                Default::default(),
+            )
+            .unwrap(),
+            ChildAdmission::new(
+                AdmissionKey::new("b").unwrap(),
+                b_spec,
+                if cycle { vec![a_id] } else { vec![] },
+                Default::default(),
+            )
+            .unwrap(),
+        ];
+        let d = AttemptDisposition::new(
+            DispositionOutcome::Awaiting,
+            DispositionParts {
+                wait: Some(spec(WaitId::new(), None)),
+                child_admissions: children,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let c = proposed(&a, r, d);
+        let sequence = seq(&a);
+        let result = submit_disposition(&mut a, c);
+        assert_eq!(result.is_err(), cycle, "{result:?}");
+        assert_eq!(a.projection().task_count(), if cycle { 1 } else { 3 });
+        assert_eq!(seq(&a), sequence + u64::from(!cycle));
+        parity(&a);
+    }
+}
+#[test]
+fn exact_encoded_record_limit_and_cumulative_signal_quota_are_enforced() {
+    #[derive(Default)]
+    struct MemoryWriter;
+    impl actionqueue_storage::wal::writer::WalWriter for MemoryWriter {
+        fn append(
+            &mut self,
+            _: &actionqueue_storage::wal::event::WalEvent,
+        ) -> Result<(), actionqueue_storage::wal::writer::WalWriterError> {
+            Ok(())
+        }
+        fn flush(&mut self) -> Result<(), actionqueue_storage::wal::writer::WalWriterError> {
+            Ok(())
+        }
+        fn close(self) -> Result<(), actionqueue_storage::wal::writer::WalWriterError> {
+            Ok(())
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = s::open(dir.path());
+    let r = running(&mut a, 1, None, false);
+    let c = proposed(&a, r, compound(&a, r));
+    let original = a.projection().clone();
+    let sequence = seq(&a);
+    let _ = submit_disposition(&mut a, c.clone()).unwrap();
+    let record =
+        (**a.projection().get_attempt_history(&r).unwrap()[0].disposition.as_ref().unwrap())
+            .clone();
+    let size =
+        actionqueue_storage::wal::codec::encode(&actionqueue_storage::wal::event::WalEvent::new(
+            sequence,
+            actionqueue_storage::wal::event::WalEventType::AttemptDispositionCommitted { record },
+        ))
+        .unwrap()
+        .len();
+    for limit in [size, size - 1] {
+        let mut probe = actionqueue_storage::mutation::StorageMutationAuthority::new(
+            MemoryWriter,
+            original.clone(),
+        );
+        probe.set_continuation_limits(actionqueue_core::limits::ContinuationLimits {
+            disposition_bytes: limit,
+            ..Default::default()
+        });
+        let result = probe.submit_command(
+            MutationCommand::AttemptDispositionCommit(c.clone()),
+            DurabilityPolicy::Immediate,
+        );
+        assert_eq!(result.is_ok(), limit == size);
+        assert_eq!(probe.projection().latest_sequence(), sequence - u64::from(limit < size));
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = s::open(dir.path());
+    let r = running(&mut a, 1, None, false);
+    let base = compound(&a, r);
+    let mut signals = base.emitted_signals().to_vec();
+    let mut second = signals[0].clone();
+    second.signal_id = SignalId::new("second").unwrap();
+    signals.push(second);
+    let d = AttemptDisposition::new(
+        DispositionOutcome::Complete,
+        DispositionParts { emitted_signals: signals, ..Default::default() },
+    )
+    .unwrap();
+    a.set_signal_limits(actionqueue_core::limits::SignalLimits {
+        identities: 1,
+        ..Default::default()
+    });
+    let c = proposed(&a, r, d);
+    let before = seq(&a);
+    assert!(submit_disposition(&mut a, c).is_err());
+    assert_eq!(seq(&a), before);
+    assert_eq!(a.projection().signals().statistics().retained, 0);
+}

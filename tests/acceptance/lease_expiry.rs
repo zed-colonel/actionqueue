@@ -19,7 +19,7 @@ use actionqueue_core::run::state::RunState;
 use actionqueue_engine::lease::expiry::{evaluate_expires_at, ExpiryResult};
 use actionqueue_engine::lease::model::LeaseExpiry;
 use actionqueue_engine::time::clock::{Clock, MockClock};
-use actionqueue_executor_local::ExecutorResponse;
+use actionqueue_executor_local::AttemptDisposition;
 use support::{MetricsTruth, StatsTruth};
 
 // ---------------------------------------------------------------------------
@@ -68,7 +68,7 @@ fn submit_attempt_finish_response_via_authority(
     data_dir: &Path,
     run_id: RunId,
     attempt_id: AttemptId,
-    response: &ExecutorResponse,
+    response: &AttemptDisposition,
 ) -> u64 {
     support::submit_attempt_finish_response_via_authority(data_dir, run_id, attempt_id, response)
 }
@@ -400,7 +400,7 @@ async fn lease_expiry_triggers_reeligibility_and_run_completes_after_redispatch(
         &data_dir,
         run_id,
         attempt_id_1,
-        &ExecutorResponse::Success { output: None },
+        &actionqueue_core::disposition::AttemptDisposition::complete(None),
     );
     submit_run_state_transition_via_authority(
         &data_dir,
@@ -559,9 +559,12 @@ async fn lease_expiry_preserves_attempt_lineage_across_reeligibility_and_retry()
         &data_dir,
         run_id,
         attempt_id_1,
-        &ExecutorResponse::RetryableFailure {
-            error: "p6-004-le-c retryable failure attempt 1".to_string(),
-        },
+        &actionqueue_core::disposition::AttemptDisposition::retryable_failure(
+            actionqueue_core::bounded::BoundedError::new(
+                "p6-004-le-c retryable failure attempt 1".to_string(),
+            )
+            .unwrap(),
+        ),
     );
     submit_run_state_transition_via_authority(
         &data_dir,
@@ -638,7 +641,7 @@ async fn lease_expiry_preserves_attempt_lineage_across_reeligibility_and_retry()
         &data_dir,
         run_id,
         attempt_id_2,
-        &ExecutorResponse::Success { output: None },
+        &actionqueue_core::disposition::AttemptDisposition::complete(None),
     );
     submit_run_state_transition_via_authority(
         &data_dir,

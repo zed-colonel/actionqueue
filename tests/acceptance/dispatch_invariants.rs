@@ -26,7 +26,7 @@ use actionqueue_core::task::metadata::TaskMetadata;
 use actionqueue_core::task::run_policy::RunPolicy;
 use actionqueue_core::task::task_spec::{TaskPayload, TaskSpec};
 use actionqueue_engine::time::clock::MockClock;
-use actionqueue_executor_local::handler::{ExecutorContext, ExecutorHandler, HandlerOutput};
+use actionqueue_executor_local::handler::{AttemptDisposition, ExecutorContext, ExecutorHandler};
 use actionqueue_runtime::config::{BackoffStrategyConfig, RuntimeConfig};
 use actionqueue_runtime::engine::ActionQueueEngine;
 use proptest::prelude::*;
@@ -47,9 +47,9 @@ fn proptest_data_dir(label: &str) -> PathBuf {
 struct AlwaysSuccessHandler;
 
 impl ExecutorHandler for AlwaysSuccessHandler {
-    fn execute(&self, ctx: ExecutorContext) -> HandlerOutput {
+    fn execute(&self, ctx: ExecutorContext) -> AttemptDisposition {
         let _input = ctx.input;
-        HandlerOutput::Success { output: None, consumption: vec![] }
+        actionqueue_core::disposition::AttemptDisposition::complete(None)
     }
 }
 
@@ -58,9 +58,11 @@ impl ExecutorHandler for AlwaysSuccessHandler {
 struct AlwaysRetryHandler;
 
 impl ExecutorHandler for AlwaysRetryHandler {
-    fn execute(&self, ctx: ExecutorContext) -> HandlerOutput {
+    fn execute(&self, ctx: ExecutorContext) -> AttemptDisposition {
         let _input = ctx.input;
-        HandlerOutput::RetryableFailure { error: "always-retry".to_string(), consumption: vec![] }
+        actionqueue_core::disposition::AttemptDisposition::retryable_failure(
+            actionqueue_core::bounded::BoundedError::new("always-retry".to_string()).unwrap(),
+        )
     }
 }
 

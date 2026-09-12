@@ -170,6 +170,16 @@ pub struct BoundedError {
     pub message: BoundedMessage,
 }
 
+impl BoundedError {
+    /// Constructs a bounded execution error with the standard handler classification.
+    pub fn new(message: impl Into<String>) -> Result<Self, BoundedValueError> {
+        Ok(Self {
+            code: BoundedCode::new("execution_failed")?,
+            message: BoundedMessage::new(message)?,
+        })
+    }
+}
+
 /// Supported digest algorithms. Core validates structure, not content.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

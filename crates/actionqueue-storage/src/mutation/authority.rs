@@ -111,7 +111,8 @@ pub trait MutationProjection: Clone {
     {
         if matches!(
             command,
-            MutationCommand::WaitEstablish(_)
+            MutationCommand::AttemptDispositionCommit(_)
+                | MutationCommand::WaitEstablish(_)
                 | MutationCommand::WaitSatisfy(_)
                 | MutationCommand::WaitTimeout(_)
                 | MutationCommand::WaitResolve(_)
@@ -128,6 +129,16 @@ pub trait MutationProjection: Clone {
         self.signal_index()
             .and_then(|i| i.by_sequence(sequence))
             .is_some_and(|r| !r.pins().is_empty())
+    }
+    fn prepare_disposition(
+        &self,
+        _c: &actionqueue_core::mutation::AttemptDispositionCommitCommand,
+        _a: AdmissionLimits,
+        _c_limits: actionqueue_core::limits::ContinuationLimits,
+        _s: actionqueue_core::limits::SignalLimits,
+    ) -> Result<super::disposition::DispositionRecord, super::disposition::DispositionRejection>
+    {
+        Err(super::disposition::DispositionRejection::UnsupportedFeature)
     }
     /// Applies a durable event to the in-memory projection.
     fn apply_event(&mut self, event: &WalEvent) -> Result<(), Self::Error>;
@@ -210,6 +221,16 @@ impl MutationProjection for ReplayReducer {
     }
     fn signal_is_protected(&self, sequence: actionqueue_core::ids::SignalSequence) -> bool {
         ReplayReducer::signal_is_protected(self, sequence)
+    }
+    fn prepare_disposition(
+        &self,
+        c: &actionqueue_core::mutation::AttemptDispositionCommitCommand,
+        a: AdmissionLimits,
+        cl: actionqueue_core::limits::ContinuationLimits,
+        s: actionqueue_core::limits::SignalLimits,
+    ) -> Result<super::disposition::DispositionRecord, super::disposition::DispositionRejection>
+    {
+        ReplayReducer::prepare_disposition(self, c, a, cl, s)
     }
     fn apply_event(&mut self, event: &WalEvent) -> Result<(), Self::Error> {
         self.apply(event)
@@ -309,7 +330,8 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
         command: &MutationCommand,
     ) -> Result<ValidatedCommand, MutationValidationError> {
         match command {
-            MutationCommand::WaitEstablish(_)
+            MutationCommand::AttemptDispositionCommit(_)
+            | MutationCommand::WaitEstablish(_)
             | MutationCommand::WaitSatisfy(_)
             | MutationCommand::WaitTimeout(_)
             | MutationCommand::WaitResolve(_)
@@ -1389,6 +1411,41 @@ impl<W: WalWriter, P: MutationProjection> MutationAuthority for StorageMutationA
                 .validate_admission(&record, c.plan().runs())
                 .map_err(MutationAuthorityError::Admission)?;
         }
+        let disposition_event = if let MutationCommand::AttemptDispositionCommit(c) = &command {
+            use super::disposition::DispositionRejection as R;
+            if durability != DurabilityPolicy::Immediate {
+                return Err(MutationAuthorityError::Disposition(R::ImmediateDurabilityRequired));
+            }
+            let record = self
+                .projection
+                .prepare_disposition(
+                    c,
+                    self.admission_limits,
+                    self.continuation_limits,
+                    self.signal_limits,
+                )
+                .map_err(MutationAuthorityError::Disposition)?;
+            let event = WalEvent::new(
+                c.expected_sequence(),
+                WalEventType::AttemptDispositionCommitted { record },
+            );
+            let profile = self
+                .store_session()
+                .map(|s| s.manifest().features.clone())
+                .unwrap_or_else(crate::store::capabilities);
+            crate::store::check_event_profile(event.event(), &profile)
+                .map_err(|_| MutationAuthorityError::Disposition(R::UnsupportedFeature))?;
+            self.continuation_limits
+                .validate_record(
+                    crate::wal::codec::encode(&event)
+                        .map_err(|_| MutationAuthorityError::Disposition(R::TooLarge))?
+                        .len(),
+                )
+                .map_err(|_| MutationAuthorityError::Disposition(R::TooLarge))?;
+            Some(event)
+        } else {
+            None
+        };
         let signal_preparation = self.prepare_signal(&command, durability).map_err(|e| {
             if e == actionqueue_core::continuation::SignalRejection::Capacity {
                 self.signal_capacity_rejections = self.signal_capacity_rejections.saturating_add(1);
@@ -1406,9 +1463,9 @@ impl<W: WalWriter, P: MutationProjection> MutationAuthority for StorageMutationA
         if let Some(super::wait::WaitPreparation::Noop(outcome)) = wait_preparation {
             return Ok(outcome);
         }
-        let (event, applied) = if let Some(super::wait::WaitPreparation::Event(event, applied)) =
-            wait_preparation
-        {
+        let (event, applied) = if let Some(event) = disposition_event {
+            (event, AppliedMutation::NoOp)
+        } else if let Some(super::wait::WaitPreparation::Event(event, applied)) = wait_preparation {
             let bytes = crate::wal::codec::encode(&event).map_err(|_| {
                 MutationAuthorityError::Wait(actionqueue_core::mutation::WaitRejection::TooLarge)
             })?;
@@ -1483,9 +1540,12 @@ impl<W: WalWriter, P: MutationProjection> MutationAuthority for StorageMutationA
         }
         // Prepare the complete affected projection before any durable write.
         let mut prepared = self.projection.clone();
-        prepared.apply_event(&event).map_err(|source| MutationAuthorityError::Apply {
-            sequence: event.sequence(),
-            source,
+        prepared.apply_event(&event).map_err(|source| {
+            if matches!(event.event(), WalEventType::AttemptDispositionCommitted { .. }) {
+                self.recovery_required = true;
+                self.wal_writer.fence();
+            }
+            MutationAuthorityError::Apply { sequence: event.sequence(), source }
         })?;
 
         // Stage 3: append WAL event.
@@ -2000,6 +2060,8 @@ impl std::error::Error for MutationValidationError {}
 /// Typed stage-aware authority failures.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MutationAuthorityError<ProjectionError> {
+    /// Complete disposition rejected before append.
+    Disposition(super::disposition::DispositionRejection),
     /// Definitive continuation rejection.
     Wait(actionqueue_core::mutation::WaitRejection),
     /// Complete admission was rejected before append.
@@ -2046,6 +2108,7 @@ impl<ProjectionError: std::fmt::Display> std::fmt::Display
             Self::Admission(e) => write!(f, "{e}"),
             Self::Signal(e) => write!(f, "{e}"),
             Self::Wait(e) => write!(f, "{e}"),
+            Self::Disposition(e) => write!(f, "{e}"),
             Self::RecoveryRequired => {
                 write!(f, "mutation authority requires recovery after an uncertain write")
             }

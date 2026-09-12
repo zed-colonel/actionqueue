@@ -43,12 +43,12 @@ in [`archive/pre-aq-cont-1/characterization-results/`](../../../archive/pre-aq-c
 
 | Test | Classification | Reason | Re-proved / removed in |
 |---|---|---|---|
-| `handler_output_roundtrip` | Reject | `HandlerOutput` is removed outright; output becomes part of the compound disposition | `AQ-08` |
+| `handler_output_roundtrip` | Rewrite | Compound disposition output references and recovery | `AQ-08` |
 | `dag_ordering` | Retain | DAG dependencies remain first-class gates | `AQ-09` |
 | `dag_failure_propagation` | Retain | Failed prerequisite cascades | `AQ-09` |
 | `dag_cycle_rejection` | Retain | Cycle rejection at declaration | `AQ-09` |
 | `hierarchy_lifecycle` | Retain (policy explicit) | Completion gating and cascade retained per `AQ-ADR-013` | `AQ-09` |
-| `dynamic_submission` | Reject | Fire-and-forget `SubmissionChannel` is deleted; children are admitted with the parent disposition | `AQ-09` |
+| `dynamic_submission` | Rewrite | Child admissions commit with Awaiting; parent resumes through a durable deadline | `AQ-08` |
 | `coordinator_multi_attempt` | Replace | `ChildrenSnapshot` delivery moves to resume context / handler input | `AQ-08`, `AQ-09` |
 | `cron_scheduling` | Retain | Cron derivation | `AQ-04` |
 | `workflow_crash_recovery` | Retain | Workflow state survives recovery | `AQ-09` |
@@ -114,3 +114,5 @@ helpers now capture detached checkpoint projections; production daemons retain o
 Crash simulations drop unbuffered WAL handles to release OS locks without syncing; a
 separate child-process kill test proves real process lock release. Initialization adds
 sequence one, and mutation accounting assertions include that durable record.
+
+`attempt_disposition` adds storage fence, atomic effects, checkpoint, accounting, handler delivery, graph, quota, and crash/replay proofs for AQ-08.

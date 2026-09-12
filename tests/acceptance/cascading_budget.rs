@@ -1,7 +1,7 @@
 //! 7H Cascading budget acceptance proof (workflow + budget features).
 //!
 //! Verifies that a coordinator task's budget governs its lifecycle:
-//! 1. Coordinator submits child tasks on first dispatch.
+//! 1. Coordinator and child tasks are admitted before dispatch.
 //! 2. Coordinator reports token consumption that exhausts its budget.
 //! 3. After suspension, the coordinator cannot be re-dispatched because
 //!    the budget gate blocks it — even though children may still be pending.
@@ -21,7 +21,7 @@ use actionqueue_core::task::metadata::TaskMetadata;
 use actionqueue_core::task::run_policy::RunPolicy;
 use actionqueue_core::task::task_spec::{TaskPayload, TaskSpec};
 use actionqueue_engine::time::clock::MockClock;
-use actionqueue_executor_local::handler::{ExecutorContext, ExecutorHandler, HandlerOutput};
+use actionqueue_executor_local::handler::{AttemptDisposition, ExecutorContext, ExecutorHandler};
 use actionqueue_runtime::config::{BackoffStrategyConfig, RuntimeConfig};
 use actionqueue_runtime::engine::ActionQueueEngine;
 
@@ -29,52 +29,35 @@ static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 fn data_dir(label: &str) -> PathBuf {
     let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let dir = PathBuf::from("target")
-        .join("tmp")
-        .join(format!("7h-cascade-{label}-{}-{n}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("7h-cascade-{label}-{}-{n}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("data dir");
     dir
 }
 
 /// Coordinator handler:
-/// - Call 0: submits a child task and returns Suspended (reporting 500 tokens).
-/// - Call 1+: returns Success (coordinator completes).
+/// - Coordinator call 0: returns Suspended (reporting 500 tokens).
+/// - Later coordinator calls: return Complete.
 ///
 /// Child handler always succeeds.
 #[derive(Debug)]
 struct CascadeHandler {
-    parent_id: TaskId,
     call_count: Arc<AtomicUsize>,
 }
 
 impl ExecutorHandler for CascadeHandler {
-    fn execute(&self, ctx: ExecutorContext) -> HandlerOutput {
+    fn execute(&self, ctx: ExecutorContext) -> AttemptDisposition {
+        if ctx.input.payload == b"child" {
+            return AttemptDisposition::complete(None);
+        }
         let n = self.call_count.fetch_add(1, Ordering::SeqCst);
-
-        if ctx.input.payload == b"coordinator" && n == 0 {
-            // First coordinator dispatch: submit a child task.
-            if let Some(ref sub) = ctx.submission {
-                let child = TaskSpec::new(
-                    TaskId::new(),
-                    TaskPayload::new(b"child".to_vec()),
-                    RunPolicy::Once,
-                    TaskConstraints::new(1, None, None).expect("valid"),
-                    TaskMetadata::default(),
-                )
-                .expect("valid spec")
-                .with_parent(self.parent_id);
-                sub.submit(child, vec![]);
-            }
+        if n == 0 {
             // Coordinator suspends after consuming 500 tokens (exhausting budget).
-            HandlerOutput::Suspended {
-                output: None,
-                consumption: vec![BudgetConsumption::new(BudgetDimension::Token, 500)],
-            }
-        } else if ctx.input.payload == b"child" {
-            HandlerOutput::Success { output: None, consumption: vec![] }
+            actionqueue_core::disposition::AttemptDisposition::suspended(None, None)
+                .with_consumption(vec![BudgetConsumption::new(BudgetDimension::Token, 500)])
+                .unwrap()
         } else {
             // Coordinator resumed: succeed.
-            HandlerOutput::Success { output: None, consumption: vec![] }
+            actionqueue_core::disposition::AttemptDisposition::complete(None)
         }
     }
 }
@@ -97,7 +80,7 @@ async fn coordinator_budget_exhaustion_blocks_resume_dispatch() {
     let clock = MockClock::new(1000);
     let parent_id = TaskId::new();
     let call_count = Arc::new(AtomicUsize::new(0));
-    let handler = CascadeHandler { parent_id, call_count: Arc::clone(&call_count) };
+    let handler = CascadeHandler { call_count: Arc::clone(&call_count) };
     let engine = ActionQueueEngine::new(make_config(dir.clone()), handler);
     let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap");
 
@@ -111,9 +94,21 @@ async fn coordinator_budget_exhaustion_blocks_resume_dispatch() {
     )
     .expect("valid spec");
     boot.submit_task(spec).expect("submit");
+    boot.submit_task(
+        TaskSpec::new(
+            TaskId::new(),
+            TaskPayload::new(b"child".to_vec()),
+            RunPolicy::Once,
+            TaskConstraints::default(),
+            TaskMetadata::default(),
+        )
+        .unwrap()
+        .with_parent(parent_id),
+    )
+    .unwrap();
     boot.allocate_budget(parent_id, BudgetDimension::Token, 500).expect("allocate");
 
-    // Phase 1: coordinator dispatches → submits child → suspends (500 tokens).
+    // Phase 1: coordinator dispatches → suspends (500 tokens).
     // Child dispatches → completes. Budget exhausted.
     let _s1 = boot.run_until_idle().await.expect("idle 1");
 
