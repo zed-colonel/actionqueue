@@ -131,7 +131,15 @@ async fn plan_completes_then_execution_eligible() {
     let dir = data_dir("workflow");
     let clock = AdvancableClock::new(1000);
     let engine = ActionQueueEngine::new(make_config(dir), SucceedHandler);
-    let mut boot = engine.bootstrap_with_clock(clock.clone()).expect("bootstrap");
+    let mut boot = engine.bootstrap_with_clock(clock.clone()).expect("bootstrap").with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     let plan_id = TaskId::new();
     let execution_id = TaskId::new();

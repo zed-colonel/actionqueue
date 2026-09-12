@@ -116,7 +116,10 @@ pub fn recover_execution<W: WalWriter>(
     let mut ids: Vec<_> = a
         .projection()
         .run_instances()
-        .filter(|r| matches!(r.state(), RunState::Running | RunState::Leased))
+        .filter(|r| {
+            matches!(r.state(), RunState::Running | RunState::Leased)
+                || a.projection().get_lease(&r.id()).is_some()
+        })
         .map(|r| r.id())
         .collect();
     ids.sort();
@@ -188,6 +191,9 @@ fn recover_run<W: WalWriter>(
             DurabilityPolicy::Immediate,
         )?;
     }
+    if state == RunState::Ready {
+        return Ok(());
+    }
     let target = if state == RunState::Leased {
         RunState::Ready
     } else if !a.projection().dispatch_has_started(id) {
@@ -216,16 +222,19 @@ fn recover_run<W: WalWriter>(
     if state == target {
         return Ok(());
     }
-    let _ = a.submit_command(
-        MutationCommand::RunStateTransition(RunStateTransitionCommand::new(
-            next(a)?,
-            id,
-            state,
-            target,
-            now,
-        )),
-        DurabilityPolicy::Immediate,
-    )?;
+    let command = MutationCommand::RunStateTransition(RunStateTransitionCommand::new(
+        next(a)?,
+        id,
+        state,
+        target,
+        now,
+    ));
+    let command = if target == RunState::Suspended {
+        MutationCommand::RecoveryControl(Box::new(command))
+    } else {
+        command
+    };
+    let _ = a.submit_command(command, DurabilityPolicy::Immediate)?;
     Ok(())
 }
 /// Complete legacy partial task controls and descendant/dependency cascades before matching.
@@ -274,13 +283,15 @@ pub fn recover_cancellations<W: WalWriter>(
         for task in targets {
             let tenant_id = a.projection().get_task(&task).expect("indexed task").tenant_id();
             let _ = a.submit_command(
-                MutationCommand::Cancel(CancelCommand {
-                    expected_sequence: next(a)?,
-                    target: CancelTarget::Task(task),
-                    tenant_id,
-                    control_context: None,
-                    timestamp: now,
-                }),
+                MutationCommand::RecoveryControl(Box::new(MutationCommand::Cancel(
+                    CancelCommand {
+                        expected_sequence: next(a)?,
+                        target: CancelTarget::Task(task),
+                        tenant_id,
+                        control_context: None,
+                        timestamp: now,
+                    },
+                ))),
                 DurabilityPolicy::Immediate,
             )?;
         }

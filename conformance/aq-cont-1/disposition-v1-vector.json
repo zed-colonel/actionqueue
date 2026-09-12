@@ -1,0 +1,411 @@
+{
+  "generator": "generate-remote-disposition-vectors.py; Python hashlib, struct, uuid",
+  "canonical_hex": "41512d434f4e542d3100646973706f736974696f6e00010000000100020003000400050000000000000000060000000000000000070000000000000000",
+  "sha256": "f49eb26cdf120c1c3c89ae6958271dc205e7afadab2016ada2a46f7b3cfc33a7",
+  "compound": {
+    "disposition": {
+      "outcome": "Awaiting",
+      "output": null,
+      "checkpoint": {
+        "checkpoint_id": "00000000-0000-0000-0000-000000000066",
+        "created_by_attempt": "00000000-0000-0000-0000-000000000067",
+        "data": {
+          "Inline": {
+            "content_type": null,
+            "bytes": [
+              99,
+              104,
+              101,
+              99,
+              107,
+              112,
+              111,
+              105,
+              110,
+              116
+            ],
+            "hash": {
+              "algorithm": "Sha256",
+              "bytes": [
+                71,
+                50,
+                9,
+                135,
+                249,
+                164,
+                157,
+                91,
+                0,
+                17,
+                155,
+                150,
+                15,
+                36,
+                122,
+                149,
+                103,
+                115,
+                245,
+                117,
+                67,
+                152,
+                43,
+                139,
+                252,
+                182,
+                218,
+                91,
+                179,
+                175,
+                217,
+                239
+              ]
+            }
+          }
+        }
+      },
+      "wait": {
+        "wait_id": "00000000-0000-0000-0000-000000000065",
+        "target": {
+          "Signal": {
+            "filter": {
+              "tenant_id": null,
+              "namespace": "remote",
+              "kind": "complete",
+              "correlation_id": "corr",
+              "source_ref": "source"
+            },
+            "match_policy": "FirstMatch",
+            "eligible_from": {
+              "After": 7
+            }
+          }
+        },
+        "deadline": {
+          "at": 1000,
+          "policy": "ResumeWithTimeout"
+        }
+      },
+      "child_admissions": [
+        {
+          "admission_key": "child",
+          "task_spec": {
+            "id": "00000000-0000-0000-0000-000000000064",
+            "payload": {
+              "bytes": [
+                1
+              ],
+              "content_type": null
+            },
+            "run_policy": "Once",
+            "constraints": {
+              "max_attempts": 1,
+              "timeout_secs": null,
+              "concurrency_key": null,
+              "concurrency_key_hold_policy": "HoldDuringRetry",
+              "concurrency_key_wait_policy": "ReleaseWhileAwaiting",
+              "safety_level": "Pure",
+              "required_executor_traits": null
+            },
+            "metadata": {
+              "priority": 0,
+              "tags": [],
+              "description": null
+            },
+            "parent_task_id": null,
+            "tenant_id": null,
+            "child_lifecycle_policy": "Required"
+          },
+          "dependencies": [],
+          "causal_override": {
+            "correlation_id": "child-corr",
+            "requesting_actor_ref": "actor-ref",
+            "origin_ref": "origin"
+          }
+        }
+      ],
+      "emitted_signals": [
+        {
+          "signal_id": "emitted",
+          "namespace": "remote",
+          "kind": "complete",
+          "correlation_id": "corr",
+          "payload": {
+            "Inline": {
+              "content_type": null,
+              "bytes": [
+                115,
+                105,
+                103,
+                110,
+                97,
+                108
+              ],
+              "hash": {
+                "algorithm": "Sha256",
+                "bytes": [
+                  208,
+                  65,
+                  146,
+                  76,
+                  21,
+                  136,
+                  90,
+                  246,
+                  208,
+                  101,
+                  48,
+                  164,
+                  37,
+                  198,
+                  219,
+                  255,
+                  200,
+                  5,
+                  32,
+                  21,
+                  12,
+                  77,
+                  210,
+                  100,
+                  244,
+                  11,
+                  67,
+                  100,
+                  177,
+                  36,
+                  33,
+                  168
+                ]
+              }
+            }
+          },
+          "payload_hash": {
+            "algorithm": "Sha256",
+            "bytes": [
+              208,
+              65,
+              146,
+              76,
+              21,
+              136,
+              90,
+              246,
+              208,
+              101,
+              48,
+              164,
+              37,
+              198,
+              219,
+              255,
+              200,
+              5,
+              32,
+              21,
+              12,
+              77,
+              210,
+              100,
+              244,
+              11,
+              67,
+              100,
+              177,
+              36,
+              33,
+              168
+            ]
+          },
+          "occurred_at": 99
+        }
+      ],
+      "consumption": [
+        {
+          "dimension": "Token",
+          "amount": 2
+        },
+        {
+          "dimension": "CostCents",
+          "amount": 3
+        },
+        {
+          "dimension": "TimeSecs",
+          "amount": 4
+        }
+      ]
+    },
+    "canonical_hex": "41512d434f4e542d3100646973706f736974696f6e00010000000105020003010000000000000000000000000000006600000a00000000000000636865636b706f696e7401200000000000000047320987f9a49d5b00119b960f247a956773f57543982b8bfcb6da5bb3afd9ef000000000000000000000000000000670401000000000000000000000000000000650000060000000000000072656d6f74650800000000000000636f6d706c657465010400000000000000636f7272010600000000000000736f757263650001070000000000000001e8030000000000000005010000000000000005000000000000006368696c643c0000000000000000000000000000000000000000000064010000000000000001000001000000000000000000000000000000000000000000000000000000000000000000010a000000000000006368696c642d636f72720109000000000000006163746f722d7265660106000000000000006f726967696e0601000000000000000700000000000000656d6974746564060000000000000072656d6f74650800000000000000636f6d706c6574650400000000000000636f727201000006000000000000007369676e616c012000000000000000d041924c15885af6d06530a425c6dbffc80520150c4dd264f40b4364b12421a801012000000000000000d041924c15885af6d06530a425c6dbffc80520150c4dd264f40b4364b12421a8016300000000000000070300000000000000000200000000000000010300000000000000020400000000000000",
+    "sha256": "15279a24c0353deddab2d64050556b9501b91ae0a93b608e7479c0a6a996159b"
+  },
+  "output": {
+    "disposition": {
+      "outcome": "Complete",
+      "output": {
+        "Inline": {
+          "content_type": null,
+          "bytes": [
+            111,
+            117,
+            116,
+            112,
+            117,
+            116
+          ],
+          "hash": {
+            "algorithm": "Sha256",
+            "bytes": [
+              224,
+              238,
+              139,
+              181,
+              6,
+              133,
+              224,
+              95,
+              160,
+              244,
+              126,
+              208,
+              66,
+              3,
+              174,
+              149,
+              63,
+              223,
+              208,
+              85,
+              245,
+              189,
+              40,
+              146,
+              234,
+              24,
+              101,
+              4,
+              37,
+              79,
+              140,
+              58
+            ]
+          }
+        }
+      },
+      "checkpoint": null,
+      "wait": null,
+      "child_admissions": [],
+      "emitted_signals": [
+        {
+          "signal_id": "emitted",
+          "namespace": "remote",
+          "kind": "complete",
+          "correlation_id": "corr",
+          "payload": {
+            "Inline": {
+              "content_type": null,
+              "bytes": [
+                115,
+                105,
+                103,
+                110,
+                97,
+                108
+              ],
+              "hash": {
+                "algorithm": "Sha256",
+                "bytes": [
+                  208,
+                  65,
+                  146,
+                  76,
+                  21,
+                  136,
+                  90,
+                  246,
+                  208,
+                  101,
+                  48,
+                  164,
+                  37,
+                  198,
+                  219,
+                  255,
+                  200,
+                  5,
+                  32,
+                  21,
+                  12,
+                  77,
+                  210,
+                  100,
+                  244,
+                  11,
+                  67,
+                  100,
+                  177,
+                  36,
+                  33,
+                  168
+                ]
+              }
+            }
+          },
+          "payload_hash": {
+            "algorithm": "Sha256",
+            "bytes": [
+              208,
+              65,
+              146,
+              76,
+              21,
+              136,
+              90,
+              246,
+              208,
+              101,
+              48,
+              164,
+              37,
+              198,
+              219,
+              255,
+              200,
+              5,
+              32,
+              21,
+              12,
+              77,
+              210,
+              100,
+              244,
+              11,
+              67,
+              100,
+              177,
+              36,
+              33,
+              168
+            ]
+          },
+          "occurred_at": 99
+        }
+      ],
+      "consumption": [
+        {
+          "dimension": "Token",
+          "amount": 2
+        },
+        {
+          "dimension": "CostCents",
+          "amount": 3
+        },
+        {
+          "dimension": "TimeSecs",
+          "amount": 4
+        }
+      ]
+    },
+    "canonical_hex": "41512d434f4e542d3100646973706f736974696f6e000100000001000201000006000000000000006f7574707574012000000000000000e0ee8bb50685e05fa0f47ed04203ae953fdfd055f5bd2892ea186504254f8c3a030004000500000000000000000601000000000000000700000000000000656d6974746564060000000000000072656d6f74650800000000000000636f6d706c6574650400000000000000636f727201000006000000000000007369676e616c012000000000000000d041924c15885af6d06530a425c6dbffc80520150c4dd264f40b4364b12421a801012000000000000000d041924c15885af6d06530a425c6dbffc80520150c4dd264f40b4364b12421a8016300000000000000070300000000000000000200000000000000010300000000000000020400000000000000",
+    "sha256": "ff1bc30ca5086d1970dabd05c0e8ddf3d81f510c9db22110d1ba36c7237a18d8"
+  }
+}

@@ -40,12 +40,17 @@ pub type ControlMutationAuthority =
 /// This state is read-only. Handlers must not mutate any fields or introduce
 /// interior mutability beyond `Arc` cloning.
 pub struct RouterStateInner {
+    pub(crate) host_authenticator: Option<auth::HostAuthenticator>,
     pub(crate) store_session: Option<actionqueue_storage::store::StoreSession>,
     /// Router configuration for routing decisions.
     ///
     /// Used by [`build_router`] to determine which optional route sets
     /// (control endpoints, metrics) are registered.
     pub(crate) router_config: RouterConfig,
+    #[cfg(feature = "actor")]
+    pub(crate) remote_policy: actionqueue_runtime::remote::RemotePolicy,
+    #[cfg(feature = "actor")]
+    pub(crate) maintenance_started: AtomicBool,
 
     /// Shared projection state for stats and introspection.
     ///
@@ -114,6 +119,12 @@ pub struct RouterObservability {
 }
 
 impl RouterStateInner {
+    /// Installs the trusted host authentication hook before building the router.
+    pub fn with_host_authenticator(mut self, hook: auth::HostAuthenticator) -> Self {
+        self.host_authenticator = Some(hook);
+        self
+    }
+
     /// Creates a new router state from bootstrap components.
     ///
     /// The `ready_status` field is derived from
@@ -125,6 +136,11 @@ impl RouterStateInner {
         ready_status: ReadyStatus,
     ) -> Self {
         Self {
+            #[cfg(feature = "actor")]
+            remote_policy: Default::default(),
+            #[cfg(feature = "actor")]
+            maintenance_started: AtomicBool::new(false),
+            host_authenticator: None,
             store_session: None,
             router_config,
             shared_projection,
@@ -147,7 +163,12 @@ impl RouterStateInner {
         ready_status: ReadyStatus,
     ) -> Self {
         Self {
-            store_session: None,
+            #[cfg(feature = "actor")]
+            remote_policy: Default::default(),
+            #[cfg(feature = "actor")]
+            maintenance_started: AtomicBool::new(false),
+            host_authenticator: None,
+            store_session: control_authority.lock().ok().and_then(|a| a.store_session().cloned()),
             router_config,
             shared_projection,
             control_authority: Some(control_authority),
@@ -163,8 +184,11 @@ impl RouterStateInner {
 
 #[cfg(feature = "actor")]
 pub mod actors;
+pub mod auth;
 pub mod control;
 pub mod health;
+#[cfg(feature = "actor")]
+pub mod maintenance;
 pub mod metrics;
 pub mod pagination;
 #[cfg(feature = "platform")]
@@ -224,21 +248,70 @@ fn projection_poison_response() -> axum::response::Response {
 ///
 /// An axum Router configured with all registered routes and the shared state.
 pub fn build_router(state: RouterState) -> axum::Router {
+    #[cfg(feature = "actor")]
+    maintenance::start(&state);
     let control_enabled = state.router_config.control_enabled;
     let metrics_enabled = state.router_config.metrics_enabled;
     let router: axum::Router<RouterState> = axum::Router::new();
     let router = health::register_routes(router);
     let router = ready::register_routes(router);
     let router = stats::register_routes(router);
-    let router = tasks_list::register_routes(router);
-    let router = runs_list::register_routes(router);
-    let router = run_get::register_routes(router);
-    let router = task_get::register_routes(router);
+    let inspection = tasks_list::register_routes(axum::Router::new());
+    let inspection = runs_list::register_routes(inspection);
+    let inspection = run_get::register_routes(inspection);
+    let inspection = task_get::register_routes(inspection).route_layer(
+        axum::middleware::from_fn_with_state(state.clone(), auth::authenticate_inspection),
+    );
+    let router = router.merge(inspection);
     let router = metrics::register_routes(router, metrics_enabled);
-    let router = control::register_routes(router, control_enabled);
+    let controls = control::register_routes(axum::Router::new(), control_enabled);
     #[cfg(feature = "actor")]
-    let router = actors::register_routes(router);
+    let controls = if control_enabled { actors::register_routes(controls) } else { controls };
     #[cfg(feature = "platform")]
-    let router = platform::register_routes(router);
-    router.with_state(state)
+    let controls = if control_enabled { platform::register_routes(controls) } else { controls };
+    let controls = if control_enabled {
+        controls
+            .route_layer(axum::middleware::from_fn_with_state(state.clone(), auth::authenticate))
+    } else {
+        controls
+    };
+    router.merge(controls).with_state(state)
 }
+
+#[cfg(feature = "actor")]
+pub(crate) fn sync_projection<W: actionqueue_storage::wal::writer::WalWriter>(
+    state: &RouterState,
+    a: &StorageMutationAuthority<W, ReplayReducer>,
+) -> Result<(), axum::response::Response> {
+    *write_projection(state).map_err(|e| *e)? = a.projection().clone();
+    Ok(())
+}
+#[cfg(feature = "actor")]
+pub(crate) fn execute_host_mutation<W: actionqueue_storage::wal::writer::WalWriter>(
+    state: &RouterState,
+    a: &mut StorageMutationAuthority<W, ReplayReducer>,
+    host: &actionqueue_core::control::HostControlContext,
+    command: actionqueue_core::mutation::MutationCommand,
+) -> Result<actionqueue_core::mutation::MutationOutcome, actionqueue_core::control::ControlError> {
+    let result = actionqueue_runtime::control::execute_mutation(a, host, command)?;
+    sync_projection(state, a).map_err(|_| {
+        actionqueue_core::control::ControlError::Mutation("projection unavailable".into())
+    })?;
+    Ok(result)
+}
+
+/// Inspection snapshots and grant checks use the same authoritative revision.
+pub(crate) fn read_inspection_projection(
+    state: &RouterState,
+) -> Result<ReplayReducer, Box<axum::response::Response>> {
+    if let Some(authority) = &state.control_authority {
+        return authority
+            .lock()
+            .map(|a| a.projection().clone())
+            .map_err(|_| Box::new(projection_poison_response()));
+    }
+    read_projection(state).map(|p| p.clone())
+}
+
+#[cfg(all(test, feature = "platform"))]
+mod tenant_tests;

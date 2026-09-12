@@ -21,3 +21,5 @@ pub use department::DepartmentRegistry;
 pub use heartbeat::HeartbeatMonitor;
 pub use registry::ActorRegistry;
 pub use routing::ExecutorTraitRouter;
+
+pub mod protocol;

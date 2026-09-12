@@ -6,9 +6,7 @@
 use actionqueue_core::task::task_spec::TaskSpec;
 use actionqueue_engine::time::clock::{Clock, SystemClock};
 use actionqueue_executor_local::handler::ExecutorHandler;
-use actionqueue_storage::recovery::bootstrap::{
-    load_projection_from_storage, RecoveryBootstrapError,
-};
+use actionqueue_storage::recovery::bootstrap::RecoveryBootstrapError;
 use actionqueue_storage::recovery::reducer::ReplayReducer;
 use actionqueue_storage::wal::fs_writer::WalFsWriter;
 use actionqueue_storage::wal::writer::InstrumentedWalWriter;
@@ -95,8 +93,11 @@ impl<H: ExecutorHandler + 'static> ActionQueueEngine<H> {
         tracing::info!(data_dir, "bootstrapping engine");
 
         // Recover from storage
-        let recovery = load_projection_from_storage(&self.config.data_dir)
-            .map_err(BootstrapError::Recovery)?;
+        let recovery = actionqueue_storage::recovery::bootstrap::load_projection_with_features(
+            &self.config.data_dir,
+            self.config.store_features.clone(),
+        )
+        .map_err(BootstrapError::Recovery)?;
 
         // Build mutation authority
         let mut authority = actionqueue_storage::mutation::authority::StorageMutationAuthority::new(
@@ -126,7 +127,8 @@ impl<H: ExecutorHandler + 'static> ActionQueueEngine<H> {
                 self.config.lease_timeout_secs,
                 snapshot_path,
                 self.config.snapshot_event_threshold,
-            ),
+            )
+            .with_local_executor_traits(self.config.local_executor_traits.clone()),
         )
         .map_err(BootstrapError::Dispatch)?;
 
@@ -142,6 +144,57 @@ pub struct BootstrappedEngine<H: ExecutorHandler + 'static, C: Clock = SystemClo
 
 impl<H: ExecutorHandler + 'static, C: Clock> BootstrappedEngine<H, C> {
     /// Idempotent convenience admission with task/<uuid> key, trace, and correlation.
+    /// Constructs an explicitly host-bound embedded control surface.
+    pub fn with_host(mut self, host: actionqueue_core::control::HostControlContext) -> Self {
+        self.set_control_context(Some(host));
+        self
+    }
+    /// Binds a trusted host identity/scope for embedded control convenience methods.
+    /// Execution and recovery do not inherit control permissions from this binding.
+    pub fn set_control_context(
+        &mut self,
+        host: Option<actionqueue_core::control::HostControlContext>,
+    ) {
+        self.dispatch.set_control_context(host);
+    }
+    /// Inspects eligible remote work under current grants.
+    #[cfg(feature = "actor")]
+    pub fn claimable_remote(
+        &self,
+        host: &actionqueue_core::control::HostControlContext,
+    ) -> Result<Vec<actionqueue_core::ids::RunId>, actionqueue_core::control::ControlError> {
+        self.dispatch.claimable_remote(host)
+    }
+    /// Renews the named remote attempt and fence.
+    #[cfg(feature = "actor")]
+    pub fn renew_remote(
+        &mut self,
+        host: &actionqueue_core::control::HostControlContext,
+        run_id: actionqueue_core::ids::RunId,
+        attempt_id: actionqueue_core::ids::AttemptId,
+        fence: actionqueue_core::mutation::LeaseFence,
+        expiry: u64,
+    ) -> Result<(), actionqueue_core::control::ControlError> {
+        self.dispatch.renew_remote(host, run_id, attempt_id, fence, expiry)
+    }
+    /// Claims remote execution under the embedded loop's coordination gates.
+    #[cfg(feature = "actor")]
+    pub fn claim_remote(
+        &mut self,
+        host: &actionqueue_core::control::HostControlContext,
+        request: actionqueue_actor::protocol::RemoteClaim,
+    ) -> Result<crate::remote::RemoteWork, actionqueue_core::control::ControlError> {
+        self.dispatch.claim_remote(host, request)
+    }
+    /// Commits an authenticated remote result and refreshes runtime coordination.
+    #[cfg(feature = "actor")]
+    pub fn submit_remote_result(
+        &mut self,
+        host: &actionqueue_core::control::HostControlContext,
+        result: actionqueue_actor::protocol::RemoteAttemptResult,
+    ) -> Result<(), actionqueue_core::control::ControlError> {
+        self.dispatch.submit_remote_result(host, result)
+    }
     /// Retain the preallocated task UUID on retry.
     pub fn submit_task(
         &mut self,

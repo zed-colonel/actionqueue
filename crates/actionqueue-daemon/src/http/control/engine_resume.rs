@@ -24,7 +24,10 @@ pub struct EngineResumeResponse {
 
 /// Handles engine resume control requests.
 #[tracing::instrument(skip_all)]
-pub async fn handle(state: State<crate::http::RouterState>) -> impl IntoResponse {
+pub async fn handle(
+    state: State<crate::http::RouterState>,
+    axum::Extension(host): axum::Extension<actionqueue_core::control::HostControlContext>,
+) -> impl IntoResponse {
     let authority_handle = match &state.control_authority {
         Some(authority) => authority.clone(),
         None => {
@@ -42,6 +45,14 @@ pub async fn handle(state: State<crate::http::RouterState>) -> impl IntoResponse
         }
     };
 
+    let _scope = match actionqueue_runtime::control::authorize(
+        &authority,
+        &host,
+        actionqueue_core::control::QueueAction::ResumeEngine,
+    ) {
+        Ok(scope) => scope,
+        Err(_) => return StatusCode::FORBIDDEN.into_response(),
+    };
     if !authority.projection().is_engine_paused() {
         return (StatusCode::OK, Json(EngineResumeResponse { status: "already_resumed" }))
             .into_response();
@@ -53,7 +64,7 @@ pub async fn handle(state: State<crate::http::RouterState>) -> impl IntoResponse
     };
     let command = MutationCommand::EngineResume(EngineResumeCommand::new(sequence, sequence));
 
-    match authority.submit_command(command, DurabilityPolicy::Immediate) {
+    match authority.submit_command(command.with_control(&host), DurabilityPolicy::Immediate) {
         Ok(_) => {
             match crate::http::write_projection(&state) {
                 Ok(mut guard) => *guard = authority.projection().clone(),

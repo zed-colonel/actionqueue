@@ -13,11 +13,9 @@ use std::sync::Arc;
 
 use actionqueue_core::admission::{EnsureTaskOutcome, EnsureTaskRequest};
 use actionqueue_core::ids::{AttemptId, RunId, TaskId};
-#[cfg(feature = "workflow")]
-use actionqueue_core::mutation::RunCreateCommand;
 use actionqueue_core::mutation::{
-    AttemptStartCommand, DependencyDeclareCommand, DurabilityPolicy, LeaseAcquireCommand,
-    LeaseHeartbeatCommand, MutationAuthority, MutationCommand, RunStateTransitionCommand,
+    DependencyDeclareCommand, DurabilityPolicy, LeaseHeartbeatCommand, MutationAuthority,
+    MutationCommand, RunStateTransitionCommand,
 };
 use actionqueue_core::run::run_instance::{RunInstance, RunInstanceError};
 use actionqueue_core::run::state::RunState;
@@ -273,6 +271,7 @@ pub struct DispatchLoop<
     clock: C,
     /// Identity of the executor acquiring leases.
     identity: I,
+    local_executor_traits: Option<actionqueue_core::executor::ExecutorTraits>,
     key_gate: KeyGate,
     backoff: Box<dyn BackoffStrategy + Send + Sync>,
     max_concurrent: usize,
@@ -337,6 +336,7 @@ pub struct DispatchLoop<
 /// Configuration parameters for the dispatch loop that group backoff,
 /// concurrency, lease, and snapshot settings.
 pub struct DispatchConfig {
+    pub(crate) local_executor_traits: Option<actionqueue_core::executor::ExecutorTraits>,
     /// Backoff strategy configuration for retry delay computation.
     pub(crate) backoff_config: BackoffStrategyConfig,
     /// Maximum number of concurrently executing runs.
@@ -350,6 +350,15 @@ pub struct DispatchConfig {
 }
 
 impl DispatchConfig {
+    /// Sets the labels offered by the local executor.
+    pub fn with_local_executor_traits(
+        mut self,
+        traits: Option<actionqueue_core::executor::ExecutorTraits>,
+    ) -> Self {
+        self.local_executor_traits = traits;
+        self
+    }
+
     /// Creates a new dispatch configuration.
     pub fn new(
         backoff_config: BackoffStrategyConfig,
@@ -359,6 +368,7 @@ impl DispatchConfig {
         snapshot_event_threshold: Option<u64>,
     ) -> Self {
         Self {
+            local_executor_traits: None,
             backoff_config,
             max_concurrent,
             lease_timeout_secs,
@@ -567,6 +577,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
             runner: Arc::new(AttemptRunner::new(handler)),
             clock,
             identity: LocalExecutorIdentity,
+            local_executor_traits: config.local_executor_traits,
             key_gate: KeyGate::new(),
             backoff,
             max_concurrent: config.max_concurrent,
@@ -990,104 +1001,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
     /// Self-quenching: tasks with no derivable occurrences remaining are skipped.
     #[cfg(feature = "workflow")]
     fn derive_cron_runs(&mut self, current_time: u64) -> Result<(), DispatchError> {
-        use actionqueue_core::task::run_policy::RunPolicy;
-        use actionqueue_engine::derive::cron::{derive_cron_cached, CRON_WINDOW_SIZE};
-
-        // Collect cron task IDs and their policies without holding the projection borrow.
-        let cron_tasks: Vec<(TaskId, actionqueue_core::task::run_policy::CronPolicy)> = self
-            .authority
-            .projection()
-            .task_records()
-            .filter_map(|tr| {
-                if let RunPolicy::Cron(ref policy) = *tr.task_spec().run_policy() {
-                    Some((tr.task_spec().id(), policy.clone()))
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        for (task_id, policy) in cron_tasks {
-            // Skip canceled tasks.
-            if self.authority.projection().is_task_canceled(task_id) {
-                continue;
-            }
-
-            // Clone run instances so we don't hold a borrow from self.authority
-            // while calling self.cron_schedule_cache (different field, but method
-            // calls take &self and Rust can't always split-borrow through them).
-            let all_runs: Vec<RunInstance> =
-                self.authority.projection().runs_for_task(task_id).cloned().collect();
-
-            let total_derived = u32::try_from(all_runs.len()).unwrap_or(u32::MAX);
-            let non_terminal_count =
-                u32::try_from(all_runs.iter().filter(|r| !r.state().is_terminal()).count())
-                    .unwrap_or(u32::MAX);
-
-            // Check max_occurrences cap.
-            if let Some(max) = policy.max_occurrences() {
-                if total_derived >= max {
-                    continue; // All allowed occurrences already derived.
-                }
-            }
-
-            let to_derive = CRON_WINDOW_SIZE.saturating_sub(non_terminal_count);
-            if to_derive == 0 {
-                continue;
-            }
-
-            // Cap to_derive by remaining max_occurrences budget.
-            let to_derive = if let Some(max) = policy.max_occurrences() {
-                to_derive.min(max.saturating_sub(total_derived))
-            } else {
-                to_derive
-            };
-            if to_derive == 0 {
-                continue;
-            }
-
-            // Find the latest scheduled_at among all existing runs for this task.
-            // New occurrences are derived strictly after this timestamp, preventing
-            // duplicate runs for already-scheduled time slots.
-            let last_scheduled_at = all_runs
-                .iter()
-                .map(|r| r.scheduled_at())
-                .max()
-                .unwrap_or_else(|| current_time.saturating_sub(1));
-
-            // Two-phase cache access to avoid borrow-checker conflicts:
-            // Phase 1: ensure schedule is cached (mutable borrow ends after this call).
-            self.cron_schedule_cache.ensure(task_id, &policy);
-            // Phase 2: immutable borrow of cache during derive only.
-            let schedule =
-                self.cron_schedule_cache.get(task_id).expect("schedule was just ensured");
-            let new_runs =
-                derive_cron_cached(task_id, schedule, last_scheduled_at, current_time, to_derive)
-                    .map_err(DispatchError::Derivation)?;
-
-            if new_runs.is_empty() {
-                continue; // No upcoming occurrences (finite schedule exhausted).
-            }
-
-            tracing::debug!(
-                %task_id,
-                count = new_runs.len(),
-                "cron: deriving rolling window runs"
-            );
-
-            for run in new_runs {
-                let seq = self.next_sequence()?;
-                let _ = self
-                    .authority
-                    .submit_command(
-                        MutationCommand::RunCreate(RunCreateCommand::new(seq, run)),
-                        DurabilityPolicy::Immediate,
-                    )
-                    .map_err(DispatchError::Authority)?;
-            }
-        }
-
-        Ok(())
+        crate::cron::replenish(&mut self.authority, &mut self.cron_schedule_cache, current_time)
     }
 
     /// Recover elapsed ownership before accepting results or renewing leases. A late
@@ -1358,6 +1272,14 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         self.heartbeat_in_flight_leases(current_time)?;
 
         self.reconcile_waits().map_err(DispatchError::Authority)?;
+        crate::reactivity::reconcile(&mut self.authority, current_time)
+            .map_err(DispatchError::Authority)?;
+        #[cfg(feature = "budget")]
+        for (id, record) in self.authority.projection().subscriptions() {
+            if record.triggered_at.is_some() {
+                self.subscription_registry.trigger(*id);
+            }
+        }
         self.rebuild_key_gate()?;
         // Step 2: Check engine paused state or draining mode — skip promotion and dispatch.
         if self.authority.projection().is_engine_paused() {
@@ -1466,7 +1388,16 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         let selection = select_ready_runs(&inputs);
 
         // Step 6: For each selected, check concurrency gate → lease → dispatch
-        let available_slots = self.max_concurrent.saturating_sub(self.in_flight.len());
+        let remote_slots = self
+            .projection()
+            .run_instances()
+            .filter(|r| {
+                matches!(r.state(), RunState::Leased | RunState::Running)
+                    && !self.in_flight.contains_key(&r.id())
+            })
+            .count();
+        let available_slots =
+            self.max_concurrent.saturating_sub(self.in_flight.len() + remote_slots);
         let mut dispatched = 0usize;
         for run in selection.into_selected() {
             if dispatched >= available_slots {
@@ -1485,6 +1416,15 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
                     continue;
                 }
             };
+
+            if !crate::claim::eligible(
+                self.authority.projection(),
+                run.id(),
+                self.local_executor_traits.as_ref(),
+                current_time,
+            ) {
+                continue;
+            }
 
             // Cache payload and constraints before state transitions
             let payload = task.payload().to_vec();
@@ -1671,92 +1611,17 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         constraints: &actionqueue_core::task::constraints::TaskConstraints,
         current_time: u64,
     ) -> Result<(AttemptId, u64, u32, u32), DispatchError> {
-        // Transition Ready → Leased
-        let seq = self.next_sequence()?;
-        let _ = self
-            .authority
-            .submit_command(
-                MutationCommand::RunStateTransition(RunStateTransitionCommand::new(
-                    seq,
-                    run.id(),
-                    RunState::Ready,
-                    RunState::Leased,
-                    current_time,
-                )),
-                DurabilityPolicy::Immediate,
-            )
-            .map_err(DispatchError::Authority)?;
-
-        // Acquire lease
-        let lease_expiry = current_time.saturating_add(self.lease_timeout_secs);
-        let seq = self.next_sequence()?;
-        let _ = self
-            .authority
-            .submit_command(
-                MutationCommand::LeaseAcquire(LeaseAcquireCommand::new(
-                    seq,
-                    run.id(),
-                    self.identity.identity(),
-                    lease_expiry,
-                    current_time,
-                )),
-                DurabilityPolicy::Immediate,
-            )
-            .map_err(DispatchError::Authority)?;
-
-        // Transition Leased → Running
-        let seq = self.next_sequence()?;
-        let _ = self
-            .authority
-            .submit_command(
-                MutationCommand::RunStateTransition(RunStateTransitionCommand::new(
-                    seq,
-                    run.id(),
-                    RunState::Leased,
-                    RunState::Running,
-                    current_time,
-                )),
-                DurabilityPolicy::Immediate,
-            )
-            .map_err(DispatchError::Authority)?;
-
-        // Record attempt start
         let attempt_id = AttemptId::new();
-        let seq = self.next_sequence()?;
-        let started = self
-            .authority
-            .submit_command(
-                MutationCommand::AttemptStart(AttemptStartCommand::new(
-                    seq,
-                    run.id(),
-                    attempt_id,
-                    current_time,
-                    {
-                        let l = self
-                            .authority
-                            .projection()
-                            .get_lease_metadata(&run.id())
-                            .expect("acquired lease");
-                        actionqueue_core::mutation::LeaseFence::new(
-                            l.owner().into(),
-                            l.granted_at_sequence(),
-                        )
-                    },
-                    self.authority.projection().pending_resume(run.id()).map(|c| c.context_id),
-                )),
-                DurabilityPolicy::Immediate,
-            )
-            .map_err(DispatchError::Authority)?;
-
-        if !matches!(
-            started.applied(),
-            actionqueue_core::mutation::AppliedMutation::AttemptStart { .. }
-        ) {
-            return Err(DispatchError::StateInconsistency {
-                run_id: run.id(),
-                context: "attempt start was already accepted; worker was not spawned".into(),
-            });
-        }
+        let lease_expiry = current_time.saturating_add(self.lease_timeout_secs);
+        crate::claim::accept(
+            &mut self.authority,
+            run.id(),
+            attempt_id,
+            self.identity.identity(),
+            current_time,
+            lease_expiry,
+        )
+        .map_err(DispatchError::Authority)?;
         let max_attempts = constraints.max_attempts();
         let attempt_number =
             run.attempt_count().checked_add(1).ok_or(DispatchError::SequenceOverflow)?;
@@ -2392,6 +2257,12 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         subscription_id: actionqueue_core::subscription::SubscriptionId,
     ) -> Result<(), DispatchError> {
         use actionqueue_core::mutation::SubscriptionTriggerCommand;
+        // The durable reducer is authoritative about event order in both hosts.
+        if self.authority.projection().get_subscription(&subscription_id).is_none_or(|s| {
+            s.matched_sequence.is_none() || s.triggered_at.is_some() || s.canceled_at.is_some()
+        }) {
+            return Ok(());
+        }
         let current_time = self.clock.now();
         let seq = self.next_sequence()?;
         let _ = self
@@ -2409,6 +2280,140 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         Ok(())
     }
 
+    /// Constructs an explicitly host-bound embedded control surface.
+    pub fn with_host(mut self, host: actionqueue_core::control::HostControlContext) -> Self {
+        self.set_control_context(Some(host));
+        self
+    }
+    /// Binds a trusted host identity/scope for embedded control convenience methods.
+    /// Execution and recovery do not inherit control permissions from this binding.
+    pub fn set_control_context(
+        &mut self,
+        host: Option<actionqueue_core::control::HostControlContext>,
+    ) {
+        self.authority.set_control_context(host);
+    }
+    /// Inspects eligible remote work under current grants.
+    #[cfg(feature = "actor")]
+    pub fn claimable_remote(
+        &self,
+        host: &actionqueue_core::control::HostControlContext,
+    ) -> Result<Vec<actionqueue_core::ids::RunId>, actionqueue_core::control::ControlError> {
+        crate::remote::claimable(&self.authority, host, self.clock.now())
+    }
+    /// Renews the named remote attempt and fence.
+    #[cfg(feature = "actor")]
+    pub fn renew_remote(
+        &mut self,
+        host: &actionqueue_core::control::HostControlContext,
+        run_id: actionqueue_core::ids::RunId,
+        attempt_id: actionqueue_core::ids::AttemptId,
+        fence: actionqueue_core::mutation::LeaseFence,
+        expiry: u64,
+    ) -> Result<(), actionqueue_core::control::ControlError> {
+        crate::remote::renew(
+            &mut self.authority,
+            host,
+            run_id,
+            attempt_id,
+            fence,
+            self.clock.now(),
+            expiry,
+        )
+    }
+    /// Authenticated remote claim sharing this loop's worker slots and key gate.
+    #[cfg(feature = "actor")]
+    pub fn claim_remote(
+        &mut self,
+        host: &actionqueue_core::control::HostControlContext,
+        request: actionqueue_actor::protocol::RemoteClaim,
+    ) -> Result<crate::remote::RemoteWork, actionqueue_core::control::ControlError> {
+        use actionqueue_core::control::{ControlError, QueueAction};
+        crate::control::authorize(&self.authority, host, QueueAction::ClaimRun)?;
+        let retry = self
+            .projection()
+            .get_run_instance(&request.run_id)
+            .is_some_and(|r| r.current_attempt_id() == Some(request.attempt_id));
+        if !retry {
+            let occupied = self
+                .projection()
+                .run_instances()
+                .filter(|r| matches!(r.state(), RunState::Leased | RunState::Running))
+                .count()
+                + self
+                    .in_flight
+                    .keys()
+                    .filter(|id| {
+                        self.projection().get_run_instance(id).is_some_and(|r| {
+                            !matches!(r.state(), RunState::Leased | RunState::Running)
+                        })
+                    })
+                    .count();
+            if occupied >= self.max_concurrent || self.draining {
+                return Err(ControlError::Mutation("dispatch capacity unavailable".into()));
+            }
+            self.rebuild_key_gate().map_err(|e| ControlError::Mutation(e.to_string()))?;
+            if let Some(key) = self
+                .projection()
+                .get_run_instance(&request.run_id)
+                .and_then(|r| self.projection().get_task(&r.task_id()))
+                .and_then(|t| t.constraints().concurrency_key())
+            {
+                if self
+                    .key_gate
+                    .key_holder(&ConcurrencyKey::new(key))
+                    .is_some_and(|holder| holder != request.run_id)
+                {
+                    return Err(ControlError::Mutation("concurrency key occupied".into()));
+                }
+            }
+        }
+        let result = crate::remote::claim(
+            &mut self.authority,
+            host,
+            request,
+            self.clock.now(),
+            self.lease_timeout_secs,
+        )?;
+        self.rebuild_key_gate().map_err(|e| ControlError::Mutation(e.to_string()))?;
+        Ok(result)
+    }
+    /// Applies a remote disposition then refreshes derived runtime coordination.
+    #[cfg(feature = "actor")]
+    pub fn submit_remote_result(
+        &mut self,
+        host: &actionqueue_core::control::HostControlContext,
+        result: actionqueue_actor::protocol::RemoteAttemptResult,
+    ) -> Result<(), actionqueue_core::control::ControlError> {
+        let run_id = result.run_id;
+        let before = self.projection().latest_sequence();
+        crate::remote::submit_result(&mut self.authority, host, result, self.clock.now())?;
+        #[cfg(feature = "budget")]
+        self.restore_task_budgets(
+            self.projection().get_run_instance(&run_id).expect("accepted remote run").task_id(),
+        );
+        if self.projection().latest_sequence() != before {
+            let task_id =
+                self.projection().get_run_instance(&run_id).expect("accepted remote run").task_id();
+            self.notify_dependency_gate_terminal(task_id, self.clock.now())
+                .map_err(|e| actionqueue_core::control::ControlError::Mutation(e.to_string()))?;
+            #[cfg(feature = "budget")]
+            {
+                let state = *self.projection().get_run_state(&run_id).expect("accepted remote run");
+                self.fire_events_for_transition(task_id, state).map_err(|e| {
+                    actionqueue_core::control::ControlError::Mutation(e.to_string())
+                })?;
+                self.fire_budget_threshold_events(task_id).map_err(|e| {
+                    actionqueue_core::control::ControlError::Mutation(e.to_string())
+                })?;
+            }
+        }
+        self.refresh_coordination();
+        self.reconcile_waits()
+            .map_err(|e| actionqueue_core::control::ControlError::Mutation(e.to_string()))?;
+        self.rebuild_key_gate()
+            .map_err(|e| actionqueue_core::control::ControlError::Mutation(e.to_string()))
+    }
     // ── Actor feature methods ──────────────────────────────────────────────
 
     /// Registers a remote actor with the hub.
@@ -2437,6 +2442,10 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
             )
             .map_err(DispatchError::Authority)?;
 
+        self.department_registry.remove(actor_id);
+        if let Some(department) = registration.department() {
+            self.department_registry.assign(actor_id, department.clone());
+        }
         self.actor_registry.register(registration);
         self.heartbeat_monitor.record_registration(actor_id, policy, ts);
         Ok(())
@@ -2498,7 +2507,21 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         let timed_out = self.heartbeat_monitor.check_timeouts(now);
         for actor_id in timed_out {
             tracing::warn!(%actor_id, "actor heartbeat timeout — deregistering");
-            self.deregister_actor(actor_id)?;
+            let _ = self
+                .authority
+                .submit_command(
+                    MutationCommand::RecoveryControl(Box::new(MutationCommand::ActorDeregister(
+                        actionqueue_core::mutation::ActorDeregisterCommand::new(
+                            self.next_sequence()?,
+                            actor_id,
+                            now,
+                        ),
+                    ))),
+                    DurabilityPolicy::Immediate,
+                )
+                .map_err(DispatchError::Authority)?;
+            self.actor_registry.deregister(actor_id);
+            self.heartbeat_monitor.remove(actor_id);
         }
         Ok(())
     }
@@ -2833,7 +2856,14 @@ mod tests {
     fn direct_dispatch_rejects_unsafe_continuation_limits() {
         let dir = tempfile::tempdir().unwrap();
         let recovery = load_projection_from_storage(dir.path()).unwrap();
-        let mut authority = StorageMutationAuthority::new(recovery.wal_writer, recovery.projection);
+        let mut authority = StorageMutationAuthority::new(recovery.wal_writer, recovery.projection)
+            .with_host(actionqueue_core::control::HostControlContext {
+                actor_id: None,
+                scope: actionqueue_core::control::ControlScope::SingleTenant,
+                attribution: actionqueue_core::causal::ControlMutationContext::new(
+                    actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                ),
+            });
         let digest = authority.projection().projection_digest().unwrap();
         authority.set_continuation_limits(actionqueue_core::limits::ContinuationLimits {
             disposition_bytes: 99,
@@ -2874,7 +2904,14 @@ mod tests {
         MockClock,
     > {
         let recovery = load_projection_from_storage(dir).unwrap();
-        let authority = StorageMutationAuthority::new(recovery.wal_writer, recovery.projection);
+        let authority = StorageMutationAuthority::new(recovery.wal_writer, recovery.projection)
+            .with_host(actionqueue_core::control::HostControlContext {
+                actor_id: None,
+                scope: actionqueue_core::control::ControlScope::SingleTenant,
+                attribution: actionqueue_core::causal::ControlMutationContext::new(
+                    actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                ),
+            });
         DispatchLoop::new(
             authority,
             handler,

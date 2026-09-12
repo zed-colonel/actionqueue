@@ -37,6 +37,19 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
         if self.recovery_required() {
             return Err(MutationAuthorityError::RecoveryRequired);
         }
+        self.authorize_control(
+            actionqueue_core::control::QueueAction::AdmitSignal,
+            envelope.tenant_id,
+        )?;
+        if envelope
+            .control_context
+            .as_ref()
+            .is_some_and(|c| Some(c) != self.control_context().map(|h| &h.attribution))
+        {
+            return Err(MutationAuthorityError::Control(
+                actionqueue_core::control::ControlError::Unauthorized,
+            ));
+        }
         let digest =
             CanonicalSignalV1::new(envelope).map_err(MutationAuthorityError::Signal)?.digest();
         self.projection()

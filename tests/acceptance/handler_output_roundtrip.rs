@@ -50,7 +50,14 @@ mod wf {
             let engine = ActionQueueEngine::new(engine_config(&data_dir), OutputHandler);
             let mut eng = engine
                 .bootstrap_with_clock(MockClock::new(1000))
-                .expect("bootstrap should succeed");
+                .expect("bootstrap should succeed")
+                .with_host(actionqueue_core::control::HostControlContext {
+                    actor_id: None,
+                    scope: actionqueue_core::control::ControlScope::SingleTenant,
+                    attribution: actionqueue_core::causal::ControlMutationContext::new(
+                        actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                    ),
+                });
 
             let spec = TaskSpec::new(
                 task_id,
@@ -92,7 +99,14 @@ mod wf {
             let engine = ActionQueueEngine::new(engine_config(&data_dir), OutputHandler);
             let eng = engine
                 .bootstrap_with_clock(MockClock::new(2000))
-                .expect("bootstrap after restart should succeed");
+                .expect("bootstrap after restart should succeed")
+                .with_host(actionqueue_core::control::HostControlContext {
+                    actor_id: None,
+                    scope: actionqueue_core::control::ControlScope::SingleTenant,
+                    attribution: actionqueue_core::causal::ControlMutationContext::new(
+                        actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                    ),
+                });
 
             let run_ids = eng.projection().run_ids_for_task(task_id);
             assert_eq!(run_ids.len(), 1, "run count must be stable across restart");

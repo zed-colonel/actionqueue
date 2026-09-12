@@ -170,9 +170,9 @@ fn manifest_pins_contract_baseline_and_normative_documents() {
         }
     }
     assert_eq!(
-        checked, 17,
+        checked, 19,
         "manifest should pin four normative documents, one matrix, four admission fixtures, and \
-         two signal fixtures, one wait fixture, one resume fixture, one disposition fixture, and three child coordination fixtures"
+         two signal fixtures, one wait fixture, one resume fixture, one disposition fixture, three child coordination fixtures, and two remote/control fixtures"
     );
 }
 

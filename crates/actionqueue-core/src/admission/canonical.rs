@@ -47,61 +47,7 @@ impl CanonicalAdmissionV1 {
         crate::limits::AdmissionLimits::default().validate_spec(s, r.dependencies().len())?;
         let mut e = Encoder(b"AQ-CONT-1\0admission\0".to_vec());
         e.u32(1);
-        e.uuid(s.id().as_uuid());
-        e.bytes(s.task_payload().bytes());
-        e.option(s.task_payload().content_type(), Encoder::text);
-        match s.run_policy() {
-            RunPolicy::Once => e.byte(0),
-            RunPolicy::Repeat(p) => {
-                e.byte(1);
-                e.u32(p.count());
-                e.u64(p.interval_secs());
-            }
-            #[cfg(feature = "workflow")]
-            RunPolicy::Cron(p) => {
-                e.byte(2);
-                e.text(p.expression());
-                e.option(p.max_occurrences(), Encoder::u32);
-            }
-        }
-        let c = s.constraints();
-        e.u32(c.max_attempts());
-        e.option(c.timeout_secs(), Encoder::u64);
-        e.option(c.concurrency_key(), Encoder::text);
-        e.byte(match c.concurrency_key_hold_policy() {
-            ConcurrencyKeyHoldPolicy::HoldDuringRetry => 0,
-            ConcurrencyKeyHoldPolicy::ReleaseOnRetry => 1,
-        });
-        e.byte(match c.concurrency_key_wait_policy() {
-            ConcurrencyKeyWaitPolicy::ReleaseWhileAwaiting => 0,
-            ConcurrencyKeyWaitPolicy::HoldWhileAwaiting => 1,
-        });
-        e.byte(match c.safety_level() {
-            SafetyLevel::Pure => 0,
-            SafetyLevel::Idempotent => 1,
-            SafetyLevel::Transactional => 2,
-        });
-        e.option(c.required_executor_traits(), |e, traits| {
-            e.u64(traits.as_slice().len() as u64);
-            for value in traits.as_slice() {
-                e.text(value.as_str());
-            }
-        });
-        e.0.extend(s.metadata().priority().to_le_bytes());
-        e.option(s.metadata().description(), Encoder::text);
-        let mut tags: Vec<_> = s.metadata().tags().iter().map(String::as_str).collect();
-        tags.sort_unstable();
-        tags.dedup();
-        e.u64(tags.len() as u64);
-        for tag in tags {
-            e.text(tag);
-        }
-        e.option(s.parent_task_id(), |e, id| e.uuid(id.as_uuid()));
-        e.u64(r.dependencies().len() as u64);
-        for id in r.dependencies() {
-            e.uuid(id.as_uuid());
-        }
-        e.option(s.tenant_id(), |e, id| e.uuid(id.as_uuid()));
+        e.0.extend(task_bytes(s, r.dependencies()));
         let c = r.causal_context();
         e.text(c.trace_id().as_str());
         e.text(c.correlation_id().as_str());
@@ -181,4 +127,68 @@ pub fn scoped_child_key(
     e.text(local.as_str());
     crate::ids::AdmissionKey::new(format!("child/v1/{:x}", Sha256::digest(&e.0)))
         .expect("bounded hash key")
+}
+
+/// Canonical task proposal fields shared with the disposition protocol.
+pub(crate) fn task_bytes(
+    s: &crate::task::task_spec::TaskSpec,
+    dependencies: &[crate::ids::TaskId],
+) -> Vec<u8> {
+    let mut e = Encoder(Vec::new());
+    e.uuid(s.id().as_uuid());
+    e.bytes(s.task_payload().bytes());
+    e.option(s.task_payload().content_type(), Encoder::text);
+    match s.run_policy() {
+        RunPolicy::Once => e.byte(0),
+        RunPolicy::Repeat(p) => {
+            e.byte(1);
+            e.u32(p.count());
+            e.u64(p.interval_secs());
+        }
+        #[cfg(feature = "workflow")]
+        RunPolicy::Cron(p) => {
+            e.byte(2);
+            e.text(p.expression());
+            e.option(p.max_occurrences(), Encoder::u32);
+        }
+    }
+    let c = s.constraints();
+    e.u32(c.max_attempts());
+    e.option(c.timeout_secs(), Encoder::u64);
+    e.option(c.concurrency_key(), Encoder::text);
+    e.byte(match c.concurrency_key_hold_policy() {
+        ConcurrencyKeyHoldPolicy::HoldDuringRetry => 0,
+        ConcurrencyKeyHoldPolicy::ReleaseOnRetry => 1,
+    });
+    e.byte(match c.concurrency_key_wait_policy() {
+        ConcurrencyKeyWaitPolicy::ReleaseWhileAwaiting => 0,
+        ConcurrencyKeyWaitPolicy::HoldWhileAwaiting => 1,
+    });
+    e.byte(match c.safety_level() {
+        SafetyLevel::Pure => 0,
+        SafetyLevel::Idempotent => 1,
+        SafetyLevel::Transactional => 2,
+    });
+    e.option(c.required_executor_traits(), |e, traits| {
+        e.u64(traits.as_slice().len() as u64);
+        for value in traits.as_slice() {
+            e.text(value.as_str());
+        }
+    });
+    e.0.extend(s.metadata().priority().to_le_bytes());
+    e.option(s.metadata().description(), Encoder::text);
+    let mut tags: Vec<_> = s.metadata().tags().iter().map(String::as_str).collect();
+    tags.sort_unstable();
+    tags.dedup();
+    e.u64(tags.len() as u64);
+    for tag in tags {
+        e.text(tag);
+    }
+    e.option(s.parent_task_id(), |e, id| e.uuid(id.as_uuid()));
+    e.u64(dependencies.len() as u64);
+    for id in dependencies {
+        e.uuid(id.as_uuid());
+    }
+    e.option(s.tenant_id(), |e, id| e.uuid(id.as_uuid()));
+    e.0
 }

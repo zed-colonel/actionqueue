@@ -11,5 +11,6 @@ keywords = ["actor", "heartbeat", "executor-trait", "task-queue", "routing"]
 categories = ["concurrency"]
 
 [dependencies]
-actionqueue-core = "0.1.2"
+actionqueue-core = { version = "0.1.2", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
 tracing = "0.1"

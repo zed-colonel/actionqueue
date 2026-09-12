@@ -293,7 +293,7 @@ fn tenant_keys_are_independent_and_cross_tenant_references_or_uuid_collisions_le
         ids::TenantId, mutation::TenantCreateCommand, platform::TenantRegistration,
     };
     let dir = tempfile::tempdir().unwrap();
-    let mut a = open(dir.path());
+    let mut a = open_platform(dir.path());
     let tenants: Vec<TenantId> = (10..=11).map(|n| id(n).to_string().parse().unwrap()).collect();
     for (n, t) in tenants.iter().enumerate() {
         let _ = a
@@ -302,7 +302,14 @@ fn tenant_keys_are_independent_and_cross_tenant_references_or_uuid_collisions_le
                     n as u64 + 2,
                     TenantRegistration::new(*t, format!("tenant/{n}")),
                     40,
-                )),
+                ))
+                .with_control(&actionqueue_core::control::HostControlContext {
+                    actor_id: None,
+                    scope: actionqueue_core::control::ControlScope::Store,
+                    attribution: actionqueue_core::causal::ControlMutationContext::new(
+                        actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                    ),
+                }),
                 DurabilityPolicy::Immediate,
             )
             .unwrap();
@@ -373,7 +380,14 @@ fn cron_initial_window_and_text_are_preserved_and_unsupported_profiles_reject() 
     .unwrap()
     .projection;
     let mut a =
-        Authority::new(actionqueue_storage::wal::fs_writer::WalFsWriter::new(session).unwrap(), p);
+        Authority::new(actionqueue_storage::wal::fs_writer::WalFsWriter::new(session).unwrap(), p)
+            .with_host(actionqueue_core::control::HostControlContext {
+                actor_id: None,
+                scope: actionqueue_core::control::ControlScope::SingleTenant,
+                attribution: actionqueue_core::causal::ControlMutationContext::new(
+                    actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                ),
+            });
     assert!(matches!(ensure(&mut a, q, 120), Err(AdmissionError::Rejected(R::UnsupportedFeature))));
     assert_eq!(a.projection().latest_sequence(), 1);
 }

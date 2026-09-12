@@ -218,7 +218,15 @@ fn build_router_with_feature_settings(
         let wal_writer =
             WalFsWriter::new_raw_for_test(wal_path).expect("test wal writer should initialize");
         let wal_writer = InstrumentedWalWriter::new(wal_writer, wal_append_telemetry.clone());
-        let authority = StorageMutationAuthority::new(wal_writer, projection);
+        let authority = StorageMutationAuthority::new(wal_writer, projection).with_host(
+            actionqueue_core::control::HostControlContext {
+                actor_id: None,
+                scope: actionqueue_core::control::ControlScope::SingleTenant,
+                attribution: actionqueue_core::causal::ControlMutationContext::new(
+                    actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                ),
+            },
+        );
         actionqueue_daemon::http::RouterStateInner::with_control_authority(
             actionqueue_daemon::bootstrap::RouterConfig { control_enabled, metrics_enabled },
             shared_projection,
@@ -231,6 +239,19 @@ fn build_router_with_feature_settings(
             std::sync::Arc::new(std::sync::Mutex::new(authority)),
             actionqueue_daemon::bootstrap::ReadyStatus::ready(),
         )
+        .with_host_authenticator(std::sync::Arc::new(|_, uri| {
+            Ok(actionqueue_core::control::HostControlContext {
+                actor_id: None,
+                scope: if uri.path().starts_with("/api/v1/engine/") {
+                    actionqueue_core::control::ControlScope::Store
+                } else {
+                    actionqueue_core::control::ControlScope::SingleTenant
+                },
+                attribution: actionqueue_core::causal::ControlMutationContext::new(
+                    actionqueue_core::bounded::OpaqueRef::new("http-test-host").unwrap(),
+                ),
+            })
+        }))
     } else {
         actionqueue_daemon::http::RouterStateInner::new(
             actionqueue_daemon::bootstrap::RouterConfig { control_enabled, metrics_enabled },

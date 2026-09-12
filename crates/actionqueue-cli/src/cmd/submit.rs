@@ -41,8 +41,12 @@ pub fn run(args: SubmitArgs) -> Result<CommandOutput, CliError> {
             )
         })?;
 
-    let recovery = actionqueue_storage::recovery::bootstrap::load_projection_from_storage(
+    let recovery = actionqueue_storage::recovery::bootstrap::load_projection_with_features(
         &data_dir,
+        actionqueue_storage::store::capabilities()
+            .into_iter()
+            .filter(|f| f != "platform")
+            .collect(),
     )
     .map_err(|error| {
         CliError::runtime(
@@ -58,6 +62,16 @@ pub fn run(args: SubmitArgs) -> Result<CommandOutput, CliError> {
 
     let request = actionqueue_core::admission::EnsureTaskRequest::for_task(task_spec, vec![])
         .map_err(|e| CliError::validation("admission_rejected", e.to_string()))?;
+    // Direct CLI storage access is the local host authentication boundary. It
+    // attests only the explicit non-platform namespace; tenant submission needs
+    // a configured platform host service and cannot inherit a wildcard scope.
+    authority.set_control_context(Some(actionqueue_core::control::HostControlContext {
+        actor_id: None,
+        scope: actionqueue_core::control::ControlScope::SingleTenant,
+        attribution: actionqueue_core::causal::ControlMutationContext::new(
+            actionqueue_core::bounded::OpaqueRef::new("local-cli").expect("static bounded caller"),
+        ),
+    }));
     let outcome = actionqueue_runtime::admission::ensure_task(
         &mut authority,
         request,

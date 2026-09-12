@@ -248,6 +248,9 @@ pub struct BudgetRecord {
 /// Subscription state record.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SubscriptionRecord {
+    /// First matching WAL event observed after registration. Retained through snapshots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matched_sequence: Option<u64>,
     /// The subscription identifier.
     pub subscription_id: SubscriptionId,
     /// The subscribing task identifier.
@@ -287,6 +290,8 @@ impl TaskRecord {
 /// A reducer that applies WAL events to reconstruct state.
 #[derive(Debug, Clone)]
 pub struct ReplayReducer {
+    pub(crate) control_history:
+        std::collections::BTreeMap<u64, actionqueue_core::control::ControlAttribution>,
     pub(crate) dispatch_sequences: std::collections::BTreeMap<RunId, u64>,
     pub(crate) checkpoints: std::collections::BTreeMap<
         actionqueue_core::ids::CheckpointId,
@@ -379,6 +384,7 @@ impl ReplayReducer {
             attempt_history: HashMap::new(),
             leases: HashMap::new(),
             lease_metadata: HashMap::new(),
+            control_history: Default::default(),
             latest_sequence: 0,
             task_canceled_at: HashMap::new(),
             engine_paused: false,
@@ -590,6 +596,7 @@ impl ReplayReducer {
             return Err(ReplayReducerError::InvalidTransition);
         }
 
+        let observations = self.subscription_observations();
         match event.event() {
             WalEventType::RunStateChanged { run_id, previous_state, new_state, .. }
                 if *previous_state == RunState::Awaiting
@@ -681,6 +688,9 @@ impl ReplayReducer {
                 self.validate_signal_references(record.envelope())
                     .map_err(ReplayReducerError::Signal)?;
                 self.signals.insert(record.clone()).map_err(ReplayReducerError::Signal)?;
+                self.signals
+                    .account_control(record, event.control())
+                    .map_err(ReplayReducerError::Signal)?;
                 self.signal_arrived(record.envelope());
             }
             WalEventType::SignalPinned { record } | WalEventType::SignalUnpinned { record } => {
@@ -1003,7 +1013,12 @@ impl ReplayReducer {
             }
         }
 
+        self.record_subscription_matches(observations, event.sequence());
+
         // Commit bookkeeping only after semantic application succeeds.
+        if let Some(control) = event.control() {
+            self.control_history.insert(event.sequence(), control.clone());
+        }
         self.latest_sequence = event.sequence();
         // Refresh reverse-indexed child candidates after authoritative transitions.
         let changed: Vec<_> = match event.event() {
@@ -1731,6 +1746,12 @@ impl ReplayReducer {
     }
 
     /// Returns an iterator over all actor records.
+    pub fn control_history(
+        &self,
+    ) -> &std::collections::BTreeMap<u64, actionqueue_core::control::ControlAttribution> {
+        &self.control_history
+    }
+
     pub fn actors(&self) -> impl Iterator<Item = (&ActorId, &ActorRecord)> {
         self.actors.iter()
     }
@@ -1859,6 +1880,7 @@ impl ReplayReducer {
         self.subscriptions.insert(
             subscription_id,
             SubscriptionRecord {
+                matched_sequence: None,
                 subscription_id,
                 task_id,
                 filter,
@@ -2198,6 +2220,7 @@ pub(crate) fn capability_key(cap: &Capability) -> String {
         Capability::CanApprove => "CanApprove".to_string(),
         Capability::CanCancel => "CanCancel".to_string(),
         Capability::Custom(s) => format!("Custom:{s}"),
+        Capability::Queue(action) => format!("Queue:{action:?}"),
     }
 }
 

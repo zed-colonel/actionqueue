@@ -383,7 +383,14 @@ async fn aq_dd_005_bounded_multibatch_fanout_uses_checkpoints_and_ordinary_dag_e
         BatchedCoordinator { parent: p },
     )
     .bootstrap_with_clock(MockClock::new(1000))
-    .unwrap();
+    .unwrap()
+    .with_host(actionqueue_core::control::HostControlContext {
+        actor_id: None,
+        scope: actionqueue_core::control::ControlScope::SingleTenant,
+        attribution: actionqueue_core::causal::ControlMutationContext::new(
+            actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+        ),
+    });
     let mut task = admission_support::request(1).task_spec().clone();
     task.set_run_policy(RunPolicy::Once).unwrap();
     let q = admission_support::with_spec(&admission_support::request(1), task);
@@ -428,8 +435,17 @@ async fn aq_dd_005_bounded_multibatch_fanout_uses_checkpoints_and_ordinary_dag_e
 fn cross_tenant_final_child_rejects_the_entire_batch() {
     use actionqueue_core::platform::TenantRegistration;
     let dir = tempfile::tempdir().unwrap();
-    let mut a = s::open(dir.path());
-    let r = running(&mut a, 1, None, false);
+    let mut a = s::open_platform(dir.path());
+    let own = TenantId::new();
+    commit!(
+        &mut a,
+        MutationCommand::TenantCreate(TenantCreateCommand::new(
+            seq(&a),
+            TenantRegistration::new(own, "own"),
+            1
+        ))
+    );
+    let r = running_scoped(&mut a, 1, None, false, Some(own));
     let p = parent(&a, r);
     let tenant = TenantId::new();
     commit!(
@@ -440,7 +456,14 @@ fn cross_tenant_final_child_rejects_the_entire_batch() {
             15
         ))
     );
-    let x = child(2, vec![], ChildLifecyclePolicy::Required, p);
+    let base = child(2, vec![], ChildLifecyclePolicy::Required, p);
+    let x = ChildAdmission::new(
+        base.admission_key().clone(),
+        base.task_spec().clone().with_tenant(own),
+        vec![],
+        Default::default(),
+    )
+    .unwrap();
     let mut y = child(3, vec![], ChildLifecyclePolicy::Required, p);
     let xid = x.task_spec().id();
     let yid = y.task_spec().id();

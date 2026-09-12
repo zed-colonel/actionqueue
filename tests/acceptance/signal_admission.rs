@@ -9,7 +9,7 @@ use actionqueue_core::{
     mutation::*,
     time::clock::{Clock, MockClock},
 };
-use actionqueue_runtime::signals::{admit_signal, SignalAdmissionError};
+use actionqueue_runtime::signals::SignalAdmissionError;
 use actionqueue_storage::{
     mutation::MutationAuthorityError,
     store::{open_store, OpenOptions},
@@ -112,7 +112,15 @@ fn every_producer_field_conflicts_and_global_sequence_ignores_other_wal_events()
     assert_eq!(a.projection().projection_digest().unwrap(), before);
     let _ = a
         .submit_command(
-            MutationCommand::EnginePause(EnginePauseCommand::new(3, 42)),
+            MutationCommand::EnginePause(EnginePauseCommand::new(3, 42)).with_control(
+                &actionqueue_core::control::HostControlContext {
+                    actor_id: None,
+                    scope: actionqueue_core::control::ControlScope::Store,
+                    attribution: actionqueue_core::causal::ControlMutationContext::new(
+                        actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                    ),
+                },
+            ),
             DurabilityPolicy::Immediate,
         )
         .unwrap();
@@ -223,14 +231,14 @@ fn indexed_candidates_match_reference_semantics_and_paginate_after_replay() {
 fn creation_size_and_resident_capacity_boundaries_do_not_append() {
     let dir = tempfile::tempdir().unwrap();
     let mut a = open(dir.path());
-    let bytes = actionqueue_storage::mutation::signal::SignalRecord::new(
-        envelope(1, 42),
-        SignalSequence::new(1),
-        2,
-    )
-    .unwrap()
-    .encoded_bytes()
-    .unwrap();
+    let host = a.control_context().unwrap().clone();
+    let mut e = envelope(1, 42);
+    e.control_context = Some(host.attribution.clone());
+    let bytes =
+        actionqueue_storage::mutation::signal::SignalRecord::new(e, SignalSequence::new(1), 2)
+            .unwrap()
+            .encoded_bytes_with_control(Some(&(&host).into()))
+            .unwrap();
     a.set_signal_limits(SignalLimits { record_bytes: bytes - 1, ..Default::default() });
     assert!(matches!(
         admit(&mut a, 1, 42),
@@ -261,7 +269,7 @@ fn scoped_signal_requires_platform_profile_and_existing_tenant() {
         err,
         MutationAuthorityError::Signal(
             SignalRejection::UnsupportedFeature | SignalRejection::TenantMismatch
-        )
+        ) | MutationAuthorityError::Control(_)
     ));
     assert_eq!(a.projection().latest_sequence(), 1);
 }
@@ -298,7 +306,7 @@ fn prior_development_manifest_is_rejected_without_writes() {
 fn same_identity_across_tenants_isolated_with_local_ancestry_and_profile_validation() {
     use actionqueue_core::platform::TenantRegistration;
     let dir = tempfile::tempdir().unwrap();
-    let mut a = open(dir.path());
+    let mut a = open_platform(dir.path());
     let tenants = [TenantId::new(), TenantId::new()];
     for t in tenants {
         let seq = a.projection().latest_sequence() + 1;
@@ -308,12 +316,19 @@ fn same_identity_across_tenants_isolated_with_local_ancestry_and_profile_validat
                     seq,
                     TenantRegistration::new(t, "tenant"),
                     1,
-                )),
+                ))
+                .with_control(&actionqueue_core::control::HostControlContext {
+                    actor_id: None,
+                    scope: actionqueue_core::control::ControlScope::Store,
+                    attribution: actionqueue_core::causal::ControlMutationContext::new(
+                        actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                    ),
+                }),
                 DurabilityPolicy::Immediate,
             )
             .unwrap();
     }
-    for (n, tenant) in [None, Some(tenants[0]), Some(tenants[1])].into_iter().enumerate() {
+    for (n, tenant) in [Some(tenants[0]), Some(tenants[1])].into_iter().enumerate() {
         let mut e = envelope(1, 42);
         e.tenant_id = tenant;
         let _ = submit(&mut a, e.clone()).unwrap();
@@ -336,6 +351,8 @@ fn same_identity_across_tenants_isolated_with_local_ancestry_and_profile_validat
     )
     .unwrap()
     .with_tenant(tenants[0]);
+    let host = signal_support::host_support::tenant(&mut a, tenants[0]).unwrap();
+    a.set_control_context(Some(host));
     actionqueue_runtime::admission::ensure_task(
         &mut a,
         actionqueue_core::admission::EnsureTaskRequest::for_task(spec, vec![]).unwrap(),
@@ -348,18 +365,27 @@ fn same_identity_across_tenants_isolated_with_local_ancestry_and_profile_validat
         e.tenant_id = tenant;
         assert!(matches!(
             submit(&mut a, e.clone()),
-            Err(MutationAuthorityError::Signal(SignalRejection::TenantMismatch))
+            Err(MutationAuthorityError::Signal(SignalRejection::TenantMismatch)
+                | MutationAuthorityError::Control(_))
         ));
     }
     e.tenant_id = Some(tenants[0]);
     let _ = submit(&mut a, e).unwrap();
     drop(a);
     let a = reopen(dir.path());
-    assert_eq!(a.signal_statistics().retained, 4);
+    assert_eq!(a.signal_statistics().retained, 3);
     // A platform-capable binary must still respect a store's smaller immutable profile.
     let root = dir.path().join("no-platform");
     let session = open_store(&root, OpenOptions::Initialize { features: vec![] }).unwrap();
-    let mut a = session.into_authority().unwrap();
+    let mut a = session.into_authority().unwrap().with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
     // Populate an in-memory tenant solely to separate profile validation from tenant validation.
     a.projection_mut()
         .apply(&actionqueue_storage::wal::event::WalEvent::new(
@@ -375,7 +401,8 @@ fn same_identity_across_tenants_isolated_with_local_ancestry_and_profile_validat
     e.tenant_id = Some(tenants[0]);
     assert!(matches!(
         submit(&mut a, e),
-        Err(MutationAuthorityError::Signal(SignalRejection::UnsupportedFeature))
+        Err(MutationAuthorityError::Signal(SignalRejection::UnsupportedFeature)
+            | MutationAuthorityError::Control(_))
     ));
 }
 

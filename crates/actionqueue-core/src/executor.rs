@@ -100,3 +100,12 @@ impl<'de> serde::Deserialize<'de> for ExecutorTraits {
             .map_err(serde::de::Error::custom)
     }
 }
+
+/// Exact subset routing shared by local and remote execution. Missing offers
+/// cannot satisfy explicit requirements. Labels never confer permissions.
+pub fn matches_requirements(
+    offered: Option<&ExecutorTraits>,
+    required: Option<&ExecutorTraits>,
+) -> bool {
+    required.is_none_or(|required| offered.is_some_and(|offered| offered.satisfies(required)))
+}

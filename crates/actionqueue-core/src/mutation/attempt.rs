@@ -120,6 +120,7 @@ impl AttemptCommitExpectation {
 /// Complete disposition and engine-prepared child plans, validated by storage.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AttemptDispositionCommitCommand {
+    remote: Option<RemoteResultExpectation>,
     expected_sequence: u64,
     run_id: RunId,
     attempt_id: AttemptId,
@@ -137,6 +138,7 @@ impl AttemptDispositionCommitCommand {
         timestamp: u64,
     ) -> Self {
         Self {
+            remote: None,
             expected_sequence: expected.expected_sequence,
             run_id: expected.run_id,
             attempt_id: expected.attempt_id,
@@ -146,6 +148,15 @@ impl AttemptDispositionCommitCommand {
             children: Vec::new(),
             timestamp,
         }
+    }
+    /// Bind transport expectations for independent storage validation.
+    pub fn with_remote(mut self, remote: RemoteResultExpectation) -> Self {
+        self.remote = Some(remote);
+        self
+    }
+    /// Authenticated remote boundary expectations, if this is a remote commit.
+    pub fn remote(&self) -> Option<&RemoteResultExpectation> {
+        self.remote.as_ref()
     }
     /// Supplies bounded engine-derived initial child runs; storage revalidates all intent.
     pub fn with_children(mut self, children: Vec<crate::admission::AdmissionPlan>) -> Self {
@@ -184,4 +195,17 @@ impl AttemptDispositionCommitCommand {
     pub fn timestamp(&self) -> u64 {
         self.timestamp
     }
+}
+
+/// Trusted remote boundary expectations. Never deserialized from a request body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteResultExpectation {
+    /// Authenticated host principal/scope.
+    pub host: crate::control::HostControlContext,
+    /// Transport protocol version.
+    pub protocol_version: u32,
+    /// Target contract revision.
+    pub contract_revision: String,
+    /// Proposed canonical digest.
+    pub digest: crate::disposition_digest::DispositionDigest,
 }

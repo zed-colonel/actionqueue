@@ -36,7 +36,14 @@ fn try_transition(
     let mut authority = actionqueue_storage::mutation::authority::StorageMutationAuthority::new(
         recovery.wal_writer,
         recovery.projection,
-    );
+    )
+    .with_host(actionqueue_core::control::HostControlContext {
+        actor_id: None,
+        scope: actionqueue_core::control::ControlScope::SingleTenant,
+        attribution: actionqueue_core::causal::ControlMutationContext::new(
+            actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+        ),
+    });
 
     let sequence = authority
         .projection()
@@ -208,7 +215,14 @@ fn duplicate_attempt_finished_is_rejected() {
     let mut authority = actionqueue_storage::mutation::authority::StorageMutationAuthority::new(
         recovery.wal_writer,
         recovery.projection,
-    );
+    )
+    .with_host(actionqueue_core::control::HostControlContext {
+        actor_id: None,
+        scope: actionqueue_core::control::ControlScope::SingleTenant,
+        attribution: actionqueue_core::causal::ControlMutationContext::new(
+            actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+        ),
+    });
 
     // Ready -> Leased.
     let leased_seq = next_seq(&authority);

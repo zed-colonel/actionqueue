@@ -15,6 +15,7 @@ use actionqueue_core::task::task_spec::TaskSpec;
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct WalEvent {
+    control: Option<actionqueue_core::control::ControlAttribution>,
     /// Monotonically increasing sequence number for the event.
     sequence: u64,
     /// The type and payload of this event.
@@ -24,9 +25,18 @@ pub struct WalEvent {
 impl WalEvent {
     /// Creates a new WAL event.
     pub fn new(sequence: u64, event: WalEventType) -> Self {
-        Self { sequence, event }
+        Self { sequence, event, control: None }
     }
 
+    /// Attaches host attribution in the mutation's own durable frame.
+    pub fn with_control(mut self, control: actionqueue_core::control::ControlAttribution) -> Self {
+        self.control = Some(control);
+        self
+    }
+    /// Durable host context, never inferred during replay.
+    pub fn control(&self) -> Option<&actionqueue_core::control::ControlAttribution> {
+        self.control.as_ref()
+    }
     /// Returns the monotonically increasing sequence number.
     pub fn sequence(&self) -> u64 {
         self.sequence

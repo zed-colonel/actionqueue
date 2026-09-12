@@ -68,9 +68,13 @@ pub(crate) fn header(bytes: &[u8]) -> Result<Header, DecodeError> {
         return Err(DecodeError::HeaderIntegrity);
     }
     let kind = u16::from_le_bytes(bytes[12..14].try_into().unwrap());
-    wire_v1::check_kind(kind)?;
+    if kind != 352 {
+        wire_v1::check_kind(kind)?;
+    }
     let schema = u16::from_le_bytes(bytes[14..16].try_into().unwrap());
-    if schema != 1 && schema != wire_v1::schema(kind) && !(schema == 2 && matches!(kind, 16 | 256))
+    if schema != 1
+        && schema != wire_v1::schema(kind)
+        && !(schema == 2 && matches!(kind, 16 | 256 | 352))
     {
         return Err(DecodeError::UnsupportedRecordSchema { kind, found: schema });
     }
@@ -104,7 +108,19 @@ pub fn encode(event: &WalEvent) -> Result<Vec<u8>, EncodeError> {
     encode_for_store(event, uuid::Uuid::nil())
 }
 pub fn encode_for_store(event: &WalEvent, store_id: uuid::Uuid) -> Result<Vec<u8>, EncodeError> {
-    let payload = wire_v1::encode_payload(event.event())?;
+    let payload = if let Some(control) = event.control() {
+        let attribution =
+            serde_json::to_vec(control).map_err(|e| EncodeError::Serialization(e.to_string()))?;
+        let inner =
+            encode_for_store(&WalEvent::new(event.sequence(), event.event().clone()), store_id)?;
+        let mut payload = (attribution.len() as u32).to_le_bytes().to_vec();
+        payload.extend(attribution);
+        payload.extend(inner);
+        payload
+    } else {
+        wire_v1::encode_payload(event.event())?
+    };
+
     if matches!(wire_v1::kind(event.event()), 288..=291)
         && payload.len() + HEADER_LEN > actionqueue_core::limits::MAX_SIGNAL_RECORD_BYTES
     {
@@ -121,8 +137,11 @@ pub fn encode_for_store(event: &WalEvent, store_id: uuid::Uuid) -> Result<Vec<u8
     let mut bytes = Vec::with_capacity(HEADER_LEN + payload.len());
     bytes.extend_from_slice(MAGIC);
     bytes.extend_from_slice(&VERSION.to_le_bytes());
-    bytes.extend_from_slice(&wire_v1::kind(event.event()).to_le_bytes());
-    let schema = if matches!(
+    let kind = if event.control().is_some() { 352 } else { wire_v1::kind(event.event()) };
+    bytes.extend_from_slice(&kind.to_le_bytes());
+    let schema = if kind == 352 {
+        2
+    } else if matches!(
         event.event(),
         super::event::WalEventType::AttemptStarted { .. }
             | super::event::WalEventType::AttemptFinished { .. }
@@ -149,6 +168,43 @@ pub fn decode(bytes: &[u8]) -> Result<WalEvent, DecodeError> {
     let actual = crc32fast::hash(payload);
     if h.crc != actual {
         return Err(DecodeError::CrcMismatch { expected: h.crc, actual });
+    }
+    if h.kind == 352 {
+        let event: WalEvent = if h.schema == 1 {
+            serde_json::from_slice(payload).map_err(|e| DecodeError::Decode(e.to_string()))?
+        } else {
+            let prefix = payload
+                .get(..4)
+                .ok_or_else(|| DecodeError::Decode("truncated control envelope".into()))?;
+            let length = u32::from_le_bytes(prefix.try_into().unwrap()) as usize;
+            let split = 4usize
+                .checked_add(length)
+                .filter(|n| *n <= payload.len())
+                .ok_or_else(|| DecodeError::Decode("invalid control length".into()))?;
+            let control = serde_json::from_slice(&payload[4..split])
+                .map_err(|e| DecodeError::Decode(e.to_string()))?;
+            let inner_header = header(&payload[split..])?;
+            // Reject recursive envelopes before decoding; depth is always one.
+            if inner_header.kind == 352
+                || inner_header.store_id != h.store_id
+                || inner_header.sequence != h.sequence
+            {
+                return Err(DecodeError::Decode("invalid inner control identity".into()));
+            }
+            decode(&payload[split..])?.with_control(control)
+        };
+        let kind = wire_v1::kind(event.event());
+        if (matches!(kind, 288..=291)
+            && bytes.len() > actionqueue_core::limits::MAX_SIGNAL_RECORD_BYTES)
+            || (matches!(kind,304..=307 | 320..=321)
+                && bytes.len() > actionqueue_core::limits::MAX_WAIT_RECORD_BYTES)
+        {
+            return Err(DecodeError::InvalidLength("attributed frame exceeds hard ceiling".into()));
+        }
+        if event.sequence() != h.sequence || event.control().is_none() {
+            return Err(DecodeError::Decode("invalid attributed frame".into()));
+        }
+        return Ok(event);
     }
     Ok(WalEvent::new(h.sequence, wire_v1::decode_schema(h.kind, h.schema, payload)?))
 }

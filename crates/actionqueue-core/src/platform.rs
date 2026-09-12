@@ -54,6 +54,8 @@ pub enum Capability {
     CanCancel,
     /// Extension capability. The inner string must be non-empty.
     Custom(String),
+    /// Explicit queue-control permission; custom strings and role names cannot grant it.
+    Queue(crate::control::QueueAction),
 }
 
 impl Capability {

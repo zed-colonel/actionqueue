@@ -72,7 +72,15 @@ fn open_authority(
 ) -> StorageMutationAuthority<InstrumentedWalWriter<WalFsWriter>, ReplayReducer> {
     let recovery =
         load_projection_from_storage(data_dir).expect("storage bootstrap should succeed");
-    StorageMutationAuthority::new(recovery.wal_writer, recovery.projection)
+    StorageMutationAuthority::new(recovery.wal_writer, recovery.projection).with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    )
 }
 
 /// Computes the next WAL sequence from the projection's latest.

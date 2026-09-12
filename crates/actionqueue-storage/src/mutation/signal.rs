@@ -105,15 +105,23 @@ impl SignalRecord {
     }
     /// Encoded immutable admission bytes, independent of current pin/retirement state.
     pub fn encoded_bytes(&self) -> Result<usize, SignalRejection> {
+        self.encoded_bytes_with_control(None)
+    }
+    /// Complete immutable admission frame size, including host attribution.
+    pub fn encoded_bytes_with_control(
+        &self,
+        control: Option<&actionqueue_core::control::ControlAttribution>,
+    ) -> Result<usize, SignalRejection> {
         let mut record = self.clone();
         record.retirement = None;
         record.pins.clear();
-        crate::wal::codec::encode(&crate::wal::event::WalEvent::new(
+        let event = crate::wal::event::WalEvent::new(
             self.wal_sequence,
             crate::wal::event::WalEventType::SignalAdmitted { record },
-        ))
-        .map(|v| v.len())
-        .map_err(|_| SignalRejection::TooLarge)
+        );
+        let event =
+            if let Some(control) = control { event.with_control(control.clone()) } else { event };
+        crate::wal::codec::encode(&event).map(|v| v.len()).map_err(|_| SignalRejection::TooLarge)
     }
 }
 /// Durable pin transition. The two WAL kinds distinguish acquisition and release.

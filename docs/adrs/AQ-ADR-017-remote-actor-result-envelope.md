@@ -1,7 +1,6 @@
 # AQ-ADR-017 — Remote actor result envelope
 
-- **Status:** Proposed. The recommended default below is the working implementation choice
-  until code review produces a concrete counterexample (implementation plan, Section 3).
+- **Status:** Accepted.
 - **Decide before:** `AQ-11`
 - **Contract:** `AQ-CONT-1`
 - **Invariants:** AQ-H9, AQ-H16
@@ -36,6 +35,16 @@ envelopes.
 
 | Field | Value |
 |---|---|
-| Accepted in PR | _pending_ |
-| Accepted on | _pending_ |
+| Accepted in PR | `AQ-11` |
+| Accepted on | 2026-09-12 |
 | Superseded by | — |
+
+## Implementation evidence
+
+`acceptance_remote_protocol` exercises version/digest/fence rejection, exact
+claim and result retransmission, WAL and snapshot replay, and checkpoint/resume
+assignment after response loss. CanonicalDispositionV1 uses explicit tags and a
+separate SHA-256 domain; its known-answer fixture is generated independently in
+Python. Accepted disposition history contains the original producer proposal and
+fence, so result identity is reconstructed from that immutable record without a
+separate durability transaction. Storage independently checks remote expectations.

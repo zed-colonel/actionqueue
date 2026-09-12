@@ -99,7 +99,14 @@ async fn wake_budget_recovery_matrix() {
                 let seen = std::sync::Arc::new(Mutex::new(Vec::new()));
                 let mut boot = ActionQueueEngine::new(config(dir.path()), Recording(seen.clone()))
                     .bootstrap_with_clock(MockClock::new(40))
-                    .unwrap();
+                    .unwrap()
+                    .with_host(actionqueue_core::control::HostControlContext {
+                        actor_id: None,
+                        scope: actionqueue_core::control::ControlScope::SingleTenant,
+                        attribution: actionqueue_core::causal::ControlMutationContext::new(
+                            actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                        ),
+                    });
                 let digest = boot.projection().projection_digest().unwrap();
                 for _ in 0..4 {
                     assert_eq!(boot.tick().await.unwrap().dispatched, 0);
@@ -123,7 +130,14 @@ async fn wake_budget_recovery_matrix() {
                 drop(a);
                 let mut boot = ActionQueueEngine::new(config(dir.path()), Recording(seen.clone()))
                     .bootstrap_with_clock(MockClock::new(50))
-                    .unwrap();
+                    .unwrap()
+                    .with_host(actionqueue_core::control::HostControlContext {
+                        actor_id: None,
+                        scope: actionqueue_core::control::ControlScope::SingleTenant,
+                        attribution: actionqueue_core::causal::ControlMutationContext::new(
+                            actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                        ),
+                    });
                 let _ = boot.run_until_idle().await.unwrap();
                 assert_eq!(boot.projection().get_run_state(&r), Some(&RunState::Completed));
                 let inputs = seen.lock().unwrap();
@@ -147,7 +161,14 @@ async fn replenish_awaiting_never_wakes_and_cancel_cleans_both_states() {
         let seen = std::sync::Arc::new(Mutex::new(Vec::new()));
         let mut boot = ActionQueueEngine::new(config(dir.path()), Recording(seen.clone()))
             .bootstrap_with_clock(MockClock::new(10000))
-            .unwrap();
+            .unwrap()
+            .with_host(actionqueue_core::control::HostControlContext {
+                actor_id: None,
+                scope: actionqueue_core::control::ControlScope::SingleTenant,
+                attribution: actionqueue_core::causal::ControlMutationContext::new(
+                    actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                ),
+            });
         assert!(boot.resume_run(r).is_err());
         for _ in 0..3 {
             assert_eq!(boot.tick().await.unwrap().dispatched, 0);
@@ -172,7 +193,14 @@ async fn replenish_awaiting_never_wakes_and_cancel_cleans_both_states() {
         drop(a);
         let mut boot = ActionQueueEngine::new(config(dir.path()), Recording(seen.clone()))
             .bootstrap_with_clock(MockClock::new(10001))
-            .unwrap();
+            .unwrap()
+            .with_host(actionqueue_core::control::HostControlContext {
+                actor_id: None,
+                scope: actionqueue_core::control::ControlScope::SingleTenant,
+                attribution: actionqueue_core::causal::ControlMutationContext::new(
+                    actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                ),
+            });
         boot.replenish_budget(task, DIMS[2], 100).unwrap();
         let _ = boot.run_until_idle().await.unwrap();
         assert!(seen.lock().unwrap().is_empty());
@@ -201,7 +229,14 @@ async fn real_handler_yield_exhausts_and_preserves_input() {
     let seen = std::sync::Arc::new(Mutex::new(Vec::new()));
     let mut boot = ActionQueueEngine::new(config(dir.path()), YieldOnce(Recording(seen.clone())))
         .bootstrap_with_clock(MockClock::new(20))
-        .unwrap();
+        .unwrap()
+        .with_host(actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        });
     let task = once_task(false, None);
     let task_id = task.id();
     boot.submit_task(task).unwrap();
@@ -221,7 +256,14 @@ async fn real_handler_yield_exhausts_and_preserves_input() {
     drop(a);
     let mut boot = ActionQueueEngine::new(config(dir.path()), YieldOnce(Recording(seen.clone())))
         .bootstrap_with_clock(MockClock::new(30))
-        .unwrap();
+        .unwrap()
+        .with_host(actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        });
     assert_eq!(boot.tick().await.unwrap().dispatched, 0);
     let context = boot.projection().pending_resume(r).unwrap();
     for dim in DIMS {
@@ -254,14 +296,15 @@ async fn structural_triggers_cannot_wake_awaiting_or_suspended() {
         let seen = std::sync::Arc::new(Mutex::new(Vec::new()));
         let mut boot = ActionQueueEngine::new(config(dir.path()), Recording(seen.clone()))
             .bootstrap_with_clock(MockClock::new(30))
-            .unwrap();
+            .unwrap()
+            .with_host(actionqueue_core::control::HostControlContext {
+                actor_id: None,
+                scope: actionqueue_core::control::ControlScope::SingleTenant,
+                attribution: actionqueue_core::causal::ControlMutationContext::new(
+                    actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                ),
+            });
         let source = TaskId::new();
-        let sub = boot
-            .create_subscription(
-                admission_support::id(1),
-                EventFilter::TaskCompleted { task_id: source },
-            )
-            .unwrap();
         boot.submit_task(
             TaskSpec::new(
                 source,
@@ -273,6 +316,12 @@ async fn structural_triggers_cannot_wake_awaiting_or_suspended() {
             .unwrap(),
         )
         .unwrap();
+        let sub = boot
+            .create_subscription(
+                admission_support::id(1),
+                EventFilter::TaskCompleted { task_id: source },
+            )
+            .unwrap();
         let _ = boot.run_until_idle().await.unwrap();
         assert!(boot
             .projection()
@@ -329,7 +378,14 @@ async fn failed_resumed_attempt_is_charged_once_and_keeps_its_input() {
     };
     let mut boot = ActionQueueEngine::new(cfg, FailOnce(Recording(seen.clone())))
         .bootstrap_with_clock(MockClock::new(40))
-        .unwrap();
+        .unwrap()
+        .with_host(actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        });
     let _ = boot.run_until_idle().await.unwrap();
     let run = boot.projection().get_run_instance(&r).unwrap();
     assert_eq!(run.attempt_count(), 2);
@@ -412,7 +468,14 @@ async fn atomic_child_wake_survives_budget_block_and_restart() {
         AdmitChildAndExhaust { parent, child, recording: Recording(seen.clone()) },
     )
     .bootstrap_with_clock(MockClock::new(20))
-    .unwrap();
+    .unwrap()
+    .with_host(actionqueue_core::control::HostControlContext {
+        actor_id: None,
+        scope: actionqueue_core::control::ControlScope::SingleTenant,
+        attribution: actionqueue_core::causal::ControlMutationContext::new(
+            actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+        ),
+    });
     boot.submit_task(task).unwrap();
     boot.allocate_budget(parent, DIMS[0], 1).unwrap();
     let _ = boot.run_until_idle().await.unwrap();
@@ -434,7 +497,14 @@ async fn atomic_child_wake_survives_budget_block_and_restart() {
     drop(a);
     let mut boot = ActionQueueEngine::new(config(dir.path()), Recording(seen.clone()))
         .bootstrap_with_clock(MockClock::new(30))
-        .unwrap();
+        .unwrap()
+        .with_host(actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        });
     for _ in 0..3 {
         assert_eq!(boot.tick().await.unwrap().dispatched, 0);
         assert_eq!(boot.projection().pending_resume(r), Some(context.clone()));
@@ -493,7 +563,14 @@ async fn explicit_suspension_resume_still_obeys_budget_gate() {
     let seen = std::sync::Arc::new(Mutex::new(Vec::new()));
     let mut boot = ActionQueueEngine::new(config(dir.path()), Recording(seen.clone()))
         .bootstrap_with_clock(MockClock::new(30))
-        .unwrap();
+        .unwrap()
+        .with_host(actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        });
     boot.resume_run(r).unwrap();
     assert_eq!(boot.projection().get_run_state(&r), Some(&RunState::Ready));
     let context = boot.projection().pending_resume(r);

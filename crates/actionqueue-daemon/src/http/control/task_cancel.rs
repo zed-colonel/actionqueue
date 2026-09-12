@@ -72,6 +72,7 @@ fn classify_run_cancel_eligibility(state: RunState) -> RunCancelEligibility {
 #[tracing::instrument(skip(state))]
 pub async fn handle(
     state: State<crate::http::RouterState>,
+    axum::Extension(host): axum::Extension<actionqueue_core::control::HostControlContext>,
     Path(task_id_str): Path<String>,
 ) -> impl IntoResponse {
     let task_id = match parse_task_id(&task_id_str) {
@@ -110,6 +111,17 @@ pub async fn handle(
         }
     };
 
+    let scope = match actionqueue_runtime::control::authorize(
+        &authority,
+        &host,
+        actionqueue_core::control::QueueAction::CancelTask,
+    ) {
+        Ok(scope) => scope,
+        Err(_) => return StatusCode::FORBIDDEN.into_response(),
+    };
+    if authority.projection().get_task(&task_id).is_some_and(|t| t.tenant_id() != scope) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
     if authority.projection().get_task(&task_id).is_none() {
         return task_not_found_response(&task_id_str);
     }
@@ -153,17 +165,11 @@ pub async fn handle(
         let command = MutationCommand::Cancel(CancelCommand {
             expected_sequence: sequence,
             target: CancelTarget::Task(task_id),
-            tenant_id: authority
-                .projection()
-                .get_task(&task_id)
-                .expect("validated task")
-                .tenant_id(),
-            control_context: Some(actionqueue_core::causal::ControlMutationContext::new(
-                actionqueue_core::bounded::OpaqueRef::new("daemon-control").expect("bounded"),
-            )),
+            tenant_id: scope,
+            control_context: Some(host.attribution.clone()),
             timestamp,
         });
-        match authority.submit_command(command, DurabilityPolicy::Immediate) {
+        match authority.submit_command(command.with_control(&host), DurabilityPolicy::Immediate) {
             Ok(_) => "canceled",
             Err(MutationAuthorityError::Validation(
                 MutationValidationError::TaskAlreadyCanceled { .. },

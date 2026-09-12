@@ -35,6 +35,7 @@ name = "actionqueue-actor"
 version = "0.1.2"
 dependencies = [
  "actionqueue-core",
+ "serde",
  "tracing",
 ]
 
@@ -137,6 +138,7 @@ dependencies = [
  "actionqueue-platform",
  "actionqueue-storage",
  "actionqueue-workflow",
+ "serde",
  "tempfile",
  "tokio",
  "tracing",

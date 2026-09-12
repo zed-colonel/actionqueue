@@ -28,9 +28,35 @@ pub fn run(args: DaemonArgs) -> Result<CommandOutput, CliError> {
         )
     })?;
 
-    let state = actionqueue_daemon::bootstrap::bootstrap(config).map_err(|error| {
-        CliError::runtime("daemon_bootstrap_failed", format!("daemon bootstrap failed: {error}"))
-    })?;
+    let hook = args
+        .auth_file
+        .as_ref()
+        .map(|path| {
+            let bytes = std::fs::read(path).map_err(|_| {
+                CliError::validation("host_auth_invalid", "unable to read host authentication file")
+            })?;
+            actionqueue_daemon::http::auth::bearer_authenticator(&bytes).map_err(|_| {
+                CliError::validation(
+                    "host_auth_invalid",
+                    "invalid host authentication configuration",
+                )
+            })
+        })
+        .transpose()?;
+    if config.enable_control && hook.is_none() {
+        return Err(CliError::validation(
+            "host_auth_required",
+            "--enable-control requires --auth-file",
+        ));
+    }
+    let state = actionqueue_daemon::bootstrap::bootstrap_with_authenticator(config, hook).map_err(
+        |error| {
+            CliError::runtime(
+                "daemon_bootstrap_failed",
+                format!("daemon bootstrap failed: {error}"),
+            )
+        },
+    )?;
 
     let ready = state.ready_status();
     let metrics_bind = state.config().metrics_bind.map(|addr| addr.to_string());
@@ -63,4 +89,35 @@ fn parse_socket_addr(raw: &str, field: &str) -> Result<SocketAddr, CliError> {
     raw.parse::<SocketAddr>().map_err(|error| {
         CliError::validation("invalid_socket_address", format!("invalid {field} '{raw}': {error}"))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn control_bootstrap_requires_valid_trusted_host_configuration() {
+        let root = std::env::temp_dir()
+            .join(format!("aq-cli-auth-{}", actionqueue_core::ids::TaskId::new()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut args = DaemonArgs {
+            auth_file: None,
+            data_dir: Some(root.join("store")),
+            bind: None,
+            metrics_bind: None,
+            enable_control: true,
+            json: true,
+        };
+        assert!(run(args.clone()).is_err());
+        let path = root.join("host.json");
+        args.auth_file = Some(path.clone());
+        assert!(run(args.clone()).is_err());
+        std::fs::write(&path, b"invalid").unwrap();
+        assert!(run(args.clone()).is_err());
+        let h = actionqueue_core::causal::ControlMutationContext::new(
+            actionqueue_core::bounded::OpaqueRef::new("trusted-cli-host").unwrap(),
+        );
+        std::fs::write(&path, serde_json::to_vec(&json!([{"token":"0123456789abcdef0123456789abcdef", "actor_id":null,"scope":"SingleTenant","attribution":h}])).unwrap()).unwrap();
+        assert!(run(args).is_ok());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

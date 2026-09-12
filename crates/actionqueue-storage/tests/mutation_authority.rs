@@ -47,6 +47,17 @@ struct InMemoryProjection {
 }
 
 impl MutationProjection for InMemoryProjection {
+    // This test double isolates WAL/mutation mechanics. Authorization is
+    // exercised with the real ReplayReducer in the control acceptance suite.
+    fn prepare_control(
+        &self,
+        _platform: bool,
+        _host: &actionqueue_core::control::HostControlContext,
+        command: MutationCommand,
+    ) -> Result<MutationCommand, actionqueue_core::control::ControlError> {
+        Ok(command)
+    }
+
     type Error = &'static str;
 
     fn latest_sequence(&self) -> u64 {
@@ -214,7 +225,15 @@ fn d04_t_p1_valid_command_flows_through_authority() {
 
     let writer = RecordingWriter::default();
     let projection = InMemoryProjection::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     let _ = authority
         .submit_command(
@@ -265,7 +284,15 @@ fn d04_t_n1_validation_failure_does_not_append_or_apply() {
     projection.latest_sequence = 2;
 
     let writer = RecordingWriter::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     let result = authority.submit_command(
         MutationCommand::RunStateTransition(RunStateTransitionCommand::new(
@@ -302,7 +329,15 @@ fn d04_t_n2_append_failure_does_not_apply() {
     projection.latest_sequence = 2;
 
     let writer = RecordingWriter { fail_append: true, ..RecordingWriter::default() };
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     let result = authority.submit_command(
         MutationCommand::RunStateTransition(RunStateTransitionCommand::new(
@@ -333,7 +368,15 @@ fn d04_t_n3_flush_failure_reports_durability_stage() {
     projection.latest_sequence = 2;
 
     let writer = RecordingWriter { fail_flush: true, ..RecordingWriter::default() };
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     let result = authority.submit_command(
         MutationCommand::RunStateTransition(RunStateTransitionCommand::new(
@@ -365,7 +408,15 @@ fn d04_t_n4_prepare_failure_rejects_before_durable_append() {
     projection.fail_apply = true;
 
     let writer = RecordingWriter::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     let result = authority.submit_command(
         MutationCommand::RunStateTransition(RunStateTransitionCommand::new(
@@ -397,7 +448,15 @@ fn d04_t_n5_non_monotonic_sequence_rejected() {
     projection.latest_sequence = 4;
 
     let writer = RecordingWriter::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     let result = authority.submit_command(
         MutationCommand::RunStateTransition(RunStateTransitionCommand::new(
@@ -431,7 +490,15 @@ fn p6_011_t_p1_task_cancel_success_appends_canonical_event_and_applies_projectio
     projection.latest_sequence = 3;
 
     let writer = RecordingWriter::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     let outcome = authority
         .submit_command(
@@ -463,7 +530,15 @@ fn p6_011_t_n1_task_cancel_unknown_task_is_rejected_pre_append() {
 
     let writer = RecordingWriter::default();
     let projection = InMemoryProjection::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     let result = authority.submit_command(
         MutationCommand::TaskCancel(TaskCancelCommand::new(1, missing_task_id, 1_000)),
@@ -491,7 +566,15 @@ fn p6_011_t_n2_task_cancel_already_canceled_is_rejected_pre_append() {
     projection.latest_sequence = 7;
 
     let writer = RecordingWriter::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     let result = authority.submit_command(
         MutationCommand::TaskCancel(TaskCancelCommand::new(8, task_id, 2_000)),
@@ -517,7 +600,15 @@ fn d04_t_p2_replay_driver_converges_with_authority_written_wal() {
 
     let writer = WalFsWriter::new_raw_for_test(wal_path.clone()).expect("wal writer should open");
     let projection = ReplayReducer::new();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     let task_id = TaskId::new();
     let run = scheduled_run(task_id, 1_000, 1_000);
@@ -567,7 +658,15 @@ fn d04_t_p3_engine_scheduler_path_uses_storage_authority_end_to_end() {
 
     let writer = WalFsWriter::new_raw_for_test(wal_path.clone()).expect("wal writer should open");
     let projection = ReplayReducer::new();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     let task_id = TaskId::new();
     let run_due = scheduled_run(task_id, 1_000, 1_000);
@@ -626,7 +725,15 @@ fn d04_t_n6_non_authority_scheduler_path_does_not_persist_mutation() {
 
     let writer = WalFsWriter::new_raw_for_test(wal_path.clone()).expect("wal writer should open");
     let projection = ReplayReducer::new();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     let task_id = TaskId::new();
     let run = scheduled_run(task_id, 1_000, 1_000);
@@ -677,7 +784,15 @@ fn f002_t_p1_authority_accepts_attempt_start_and_appends_canonical_event() {
     projection.latest_sequence = 3;
 
     let writer = RecordingWriter::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     let outcome = authority
         .submit_command(
@@ -720,7 +835,15 @@ fn f002_t_p2_authority_attempt_finish_converges_with_replay_attempt_lineage() {
 
     let writer = WalFsWriter::new_raw_for_test(wal_path.clone()).expect("wal writer should open");
     let projection = ReplayReducer::new();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     let task_id = TaskId::new();
     let run = scheduled_run(task_id, 1_000, 1_000);
@@ -860,7 +983,15 @@ fn p6_017_t_p1_authority_attempt_finish_timeout_persists_in_projection_and_repla
 
     let writer = WalFsWriter::new_raw_for_test(wal_path.clone()).expect("wal writer should open");
     let projection = ReplayReducer::new();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     let task_id = TaskId::new();
     let run = scheduled_run(task_id, 1_000, 1_000);
@@ -1015,7 +1146,15 @@ fn f002_t_p3_authority_lease_lifecycle_chain_converges_with_replay() {
 
     let writer = WalFsWriter::new_raw_for_test(wal_path.clone()).expect("wal writer should open");
     let projection = ReplayReducer::new();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     let task_id = TaskId::new();
     let run = scheduled_run(task_id, 1_000, 1_000);
@@ -1115,7 +1254,15 @@ fn f002_t_n1_unknown_run_attempt_command_is_rejected_pre_append() {
 
     let writer = RecordingWriter::default();
     let projection = InMemoryProjection::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     let result = authority.submit_command(
         MutationCommand::AttemptStart(AttemptStartCommand::new(
@@ -1155,7 +1302,15 @@ fn f002_t_n2_mismatched_attempt_finish_is_rejected_pre_append() {
     projection.latest_sequence = 5;
 
     let writer = RecordingWriter::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     let result = authority.submit_command(
         MutationCommand::AttemptFinish(AttemptFinishCommand::new(
@@ -1199,7 +1354,15 @@ fn f002_t_n3_lease_heartbeat_owner_mismatch_is_rejected_pre_append() {
     projection.latest_sequence = 8;
 
     let writer = RecordingWriter::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     let result = authority.submit_command(
         MutationCommand::LeaseHeartbeat(LeaseHeartbeatCommand::new(
@@ -1238,7 +1401,15 @@ fn f002_t_n4_lease_close_without_active_lease_is_rejected_pre_append() {
     projection.latest_sequence = 2;
 
     let writer = RecordingWriter::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     let release = authority.submit_command(
         MutationCommand::LeaseRelease(LeaseReleaseCommand::new(
@@ -1290,7 +1461,15 @@ fn f002_t_n5_non_authority_projection_apply_cannot_persist_attempt_or_lease_muta
 
     let writer = WalFsWriter::new_raw_for_test(wal_path.clone()).expect("wal writer should open");
     let projection = ReplayReducer::new();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     let task_id = TaskId::new();
     let run = scheduled_run(task_id, 1_000, 1_000);
@@ -1423,7 +1602,15 @@ fn p6_013_t_p1_engine_pause_and_resume_map_to_canonical_events() {
     let projection = InMemoryProjection { latest_sequence: 0, ..InMemoryProjection::default() };
 
     let writer = RecordingWriter::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     let pause = authority
         .submit_command(
@@ -1459,7 +1646,15 @@ fn p6_013_t_n1_engine_pause_rejected_when_already_paused() {
     };
 
     let writer = RecordingWriter::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     let result = authority.submit_command(
         MutationCommand::EnginePause(EnginePauseCommand::new(10, 1_000)),
@@ -1486,7 +1681,15 @@ fn p6_013_t_n2_engine_resume_rejected_when_not_paused() {
     };
 
     let writer = RecordingWriter::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     let result = authority.submit_command(
         MutationCommand::EngineResume(EngineResumeCommand::new(5, 1_000)),
@@ -1517,7 +1720,15 @@ fn d04_sprint3_p1_budget_allocate_valid_flow() {
     projection.latest_sequence = 1;
 
     let writer = RecordingWriter::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     let outcome = authority
         .submit_command(
@@ -1565,7 +1776,15 @@ fn d04_sprint3_p2_budget_consume_valid_flow() {
     projection.latest_sequence = 2;
 
     let writer = RecordingWriter::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     let outcome = authority
         .submit_command(
@@ -1612,7 +1831,15 @@ fn d04_sprint3_p3_budget_replenish_valid_flow() {
     projection.latest_sequence = 3;
 
     let writer = RecordingWriter::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     let outcome = authority
         .submit_command(
@@ -1660,7 +1887,15 @@ fn d04_sprint3_p4_run_suspend_valid_flow() {
     projection.latest_sequence = 5;
 
     let writer = RecordingWriter::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     let outcome = authority
         .submit_command(
@@ -1704,7 +1939,15 @@ fn d04_sprint3_p5_run_resume_valid_flow() {
     projection.latest_sequence = 6;
 
     let writer = RecordingWriter::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     let outcome = authority
         .submit_command(
@@ -1740,7 +1983,15 @@ fn d04_sprint3_p6_subscription_create_valid_flow() {
     projection.latest_sequence = 1;
 
     let writer = RecordingWriter::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     let outcome = authority
         .submit_command(
@@ -1785,7 +2036,15 @@ fn d04_sprint3_p7_subscription_cancel_valid_flow() {
     projection.latest_sequence = 3;
 
     let writer = RecordingWriter::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     let outcome = authority
         .submit_command(
@@ -1822,7 +2081,15 @@ fn d04_sprint3_n1_budget_allocate_unknown_task_rejected() {
 
     let writer = RecordingWriter::default();
     let projection = InMemoryProjection::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     let result = authority.submit_command(
         MutationCommand::BudgetAllocate(BudgetAllocateCommand::new(
@@ -1852,7 +2119,15 @@ fn d04_sprint3_n2_budget_consume_unknown_task_rejected() {
 
     let writer = RecordingWriter::default();
     let projection = InMemoryProjection::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     let result = authority.submit_command(
         MutationCommand::BudgetConsume(BudgetConsumeCommand::new(
@@ -1885,7 +2160,15 @@ fn d04_sprint3_n3_budget_replenish_not_allocated_rejected() {
     projection.latest_sequence = 1;
 
     let writer = RecordingWriter::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     let result = authority.submit_command(
         MutationCommand::BudgetReplenish(BudgetReplenishCommand::new(
@@ -1921,7 +2204,15 @@ fn d04_sprint3_n4_run_suspend_wrong_state_rejected() {
     projection.latest_sequence = 3;
 
     let writer = RecordingWriter::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     let result = authority.submit_command(
         MutationCommand::RunSuspend(RunSuspendCommand::new(4, run.id(), None, 4_000)),
@@ -1952,7 +2243,15 @@ fn d04_sprint3_n5_run_resume_wrong_state_rejected() {
     projection.latest_sequence = 3;
 
     let writer = RecordingWriter::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     let result = authority.submit_command(
         MutationCommand::RunResume(RunResumeCommand::new(4, run.id(), 5_000)),
@@ -1983,7 +2282,15 @@ fn d04_sprint3_n6_subscription_create_duplicate_rejected() {
     projection.latest_sequence = 2;
 
     let writer = RecordingWriter::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     let result = authority.submit_command(
         MutationCommand::SubscriptionCreate(SubscriptionCreateCommand::new(

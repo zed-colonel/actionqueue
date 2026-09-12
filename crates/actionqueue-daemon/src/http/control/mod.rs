@@ -58,6 +58,9 @@ pub(crate) fn internal_authority_error(
     >,
 ) -> axum::response::Response {
     let message = match error {
+        actionqueue_storage::mutation::MutationAuthorityError::Control(_) => {
+            return axum::response::IntoResponse::into_response(axum::http::StatusCode::FORBIDDEN)
+        }
         actionqueue_storage::mutation::MutationAuthorityError::Disposition(_) => {
             "disposition rejected"
         }
@@ -190,7 +193,29 @@ mod tests {
             ))
         };
 
-        register_routes(axum::Router::new(), control_enabled).with_state(state).with_state(())
+        register_routes(axum::Router::new(), control_enabled)
+            .with_state(state)
+            .layer(axum::middleware::from_fn(
+                |mut request: axum::extract::Request, next: axum::middleware::Next| async move {
+                    let scope = if request.uri().path().starts_with("/api/v1/engine/") {
+                        actionqueue_core::control::ControlScope::Store
+                    } else {
+                        actionqueue_core::control::ControlScope::SingleTenant
+                    };
+                    request.extensions_mut().insert(
+                        actionqueue_core::control::HostControlContext {
+                            actor_id: None,
+                            scope,
+                            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                                actionqueue_core::bounded::OpaqueRef::new("route-test-host")
+                                    .unwrap(),
+                            ),
+                        },
+                    );
+                    next.run(request).await
+                },
+            ))
+            .with_state(())
     }
 
     async fn send_post(router: &mut axum::Router<()>, path: &str) -> axum::response::Response {

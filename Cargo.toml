@@ -382,3 +382,12 @@ path = "tests/acceptance/parent_wait_child_atomicity.rs"
 name = "acceptance_budget_awaiting"
 path = "tests/acceptance/budget_awaiting.rs"
 required-features = ["budget"]
+
+[[test]]
+name = "acceptance_remote_protocol"
+path = "tests/acceptance/remote_protocol.rs"
+required-features = ["actor"]
+
+[[test]]
+name = "acceptance_control_mutation_attribution"
+path = "tests/acceptance/control_mutation_attribution.rs"

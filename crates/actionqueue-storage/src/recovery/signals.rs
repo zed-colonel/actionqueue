@@ -138,6 +138,16 @@ impl SignalIndex {
     pub(crate) fn records(&self) -> impl Iterator<Item = &SignalRecord> {
         self.records.values()
     }
+    pub(crate) fn account_control(
+        &mut self,
+        record: &SignalRecord,
+        control: Option<&actionqueue_core::control::ControlAttribution>,
+    ) -> Result<(), SignalRejection> {
+        let extra =
+            record.encoded_bytes_with_control(control)?.saturating_sub(record.encoded_bytes()?);
+        self.stats.bytes = self.stats.bytes.checked_add(extra).ok_or(SignalRejection::Capacity)?;
+        Ok(())
+    }
     pub(crate) fn insert(&mut self, r: SignalRecord) -> Result<(), SignalRejection> {
         if r.sequence.get()
             != self.last_sequence.checked_add(1).ok_or(SignalRejection::SequenceExhausted)?
@@ -329,7 +339,15 @@ mod tests {
                 .unwrap();
             p.signals.last_sequence = last_signal;
             p.latest_sequence = latest_wal;
-            let mut a = StorageMutationAuthority::new(NoWrites, p);
+            let mut a = StorageMutationAuthority::new(NoWrites, p).with_host(
+                actionqueue_core::control::HostControlContext {
+                    actor_id: None,
+                    scope: actionqueue_core::control::ControlScope::SingleTenant,
+                    attribution: actionqueue_core::causal::ControlMutationContext::new(
+                        actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                    ),
+                },
+            );
             let c = SignalAdmitCommand::new(0, e.clone());
             assert!(matches!(
                 a.submit_command(MutationCommand::SignalAdmit(c), DurabilityPolicy::Immediate)

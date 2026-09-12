@@ -66,7 +66,15 @@ async fn budget_threshold_triggers_subscription_promotion() {
     let task_b_id = TaskId::new();
     let handler = ThresholdHandler;
     let engine = ActionQueueEngine::new(make_config(dir.path().to_path_buf()), handler);
-    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap");
+    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap").with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     // Task B: Once, budget 500 tokens.
     let spec_b = TaskSpec::new(

@@ -84,8 +84,16 @@ mod wf {
             .expect("valid spec");
 
             let engine = ActionQueueEngine::new(engine_config(&data_dir), handler);
-            let mut eng =
-                engine.bootstrap_with_clock(MockClock::new(1000)).expect("bootstrap must succeed");
+            let mut eng = engine
+                .bootstrap_with_clock(MockClock::new(1000))
+                .expect("bootstrap must succeed")
+                .with_host(actionqueue_core::control::HostControlContext {
+                    actor_id: None,
+                    scope: actionqueue_core::control::ControlScope::SingleTenant,
+                    attribution: actionqueue_core::causal::ControlMutationContext::new(
+                        actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                    ),
+                });
             eng.submit_task(spec).expect("submit task");
             let _summary = eng.run_until_idle().await.expect("run must complete");
 

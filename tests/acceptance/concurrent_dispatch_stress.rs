@@ -93,7 +93,15 @@ async fn stress_100_tasks_4_workers_random_sleep() {
 
     let clock = MockClock::new(1_000_000);
     let engine = ActionQueueEngine::new(config, RandomSleepHandler::new());
-    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap should succeed");
+    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap should succeed").with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     // Submit 100 tasks.
     let mut task_ids = Vec::with_capacity(num_tasks);
@@ -179,7 +187,15 @@ async fn stress_200_tasks_4_workers_instant() {
 
     let clock = MockClock::new(1_000_000);
     let engine = ActionQueueEngine::new(config, InstantHandler);
-    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap should succeed");
+    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap should succeed").with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     for _ in 0..num_tasks {
         let spec = TaskSpec::new(
@@ -221,7 +237,15 @@ async fn stress_100_tasks_1_worker_serialized() {
 
     let clock = MockClock::new(1_000_000);
     let engine = ActionQueueEngine::new(config, RandomSleepHandler::new());
-    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap should succeed");
+    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap should succeed").with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     for _ in 0..num_tasks {
         let spec = TaskSpec::new(
@@ -262,7 +286,15 @@ async fn stress_150_tasks_8_workers() {
 
     let clock = MockClock::new(1_000_000);
     let engine = ActionQueueEngine::new(config, RandomSleepHandler::new());
-    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap should succeed");
+    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap should succeed").with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     for _ in 0..num_tasks {
         let spec = TaskSpec::new(
@@ -338,7 +370,15 @@ async fn stress_100_tasks_mixed_outcomes() {
 
     let handler = MixedOutcomeHandler { counter: AtomicUsize::new(0) };
     let engine = ActionQueueEngine::new(config, handler);
-    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap should succeed");
+    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap should succeed").with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     for _ in 0..num_tasks {
         let spec = TaskSpec::new(

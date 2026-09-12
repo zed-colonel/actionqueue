@@ -209,9 +209,10 @@ struct RunNotFoundDetails {
 /// This handler responds to `GET /api/v1/runs/:run_id` with a deterministic,
 /// side-effect-free payload containing the run details derived from
 /// authoritative projection state.
-#[tracing::instrument(skip(state))]
+#[tracing::instrument(skip_all)]
 pub async fn handle(
     state: axum::extract::State<crate::http::RouterState>,
+    host: Option<axum::Extension<actionqueue_core::control::HostControlContext>>,
     Path(run_id_str): Path<String>,
 ) -> impl IntoResponse {
     let run_id = match RunId::from_str(&run_id_str) {
@@ -225,11 +226,19 @@ pub async fn handle(
         return invalid_run_id_response(&run_id_str).into_response();
     }
 
-    let projection = match super::read_projection(&state) {
+    let projection = match super::read_inspection_projection(&state) {
         Ok(guard) => guard,
         Err(response) => return (*response).into_response(),
     };
-    let run_instance = match projection.get_run_instance(&run_id) {
+    let tenant =
+        match super::auth::inspection_scope(&state, &projection, host.as_ref().map(|h| &h.0)) {
+            Ok(tenant) => tenant,
+            Err(response) => return response,
+        };
+    let run_instance = match projection
+        .get_run_instance(&run_id)
+        .filter(|r| projection.get_task(&r.task_id()).is_some_and(|t| t.tenant_id() == tenant))
+    {
         Some(instance) => instance,
         None => return run_not_found_response(&run_id_str).into_response(),
     };
@@ -629,7 +638,7 @@ mod tests {
     async fn test_run_get_handle_invalid_id_returns_400() {
         let state = build_state(ReplayReducer::new());
         let response =
-            super::handle(State(state), Path("not-a-uuid".to_string())).await.into_response();
+            super::handle(State(state), None, Path("not-a-uuid".to_string())).await.into_response();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert_eq!(
             response_body_string(response).await,
@@ -640,10 +649,13 @@ mod tests {
     #[tokio::test]
     async fn test_run_get_handle_nil_id_returns_400() {
         let state = build_state(ReplayReducer::new());
-        let response =
-            super::handle(State(state), Path("00000000-0000-0000-0000-000000000000".to_string()))
-                .await
-                .into_response();
+        let response = super::handle(
+            State(state),
+            None,
+            Path("00000000-0000-0000-0000-000000000000".to_string()),
+        )
+        .await
+        .into_response();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert_eq!(
             response_body_string(response).await,
@@ -654,10 +666,13 @@ mod tests {
     #[tokio::test]
     async fn test_run_get_handle_not_found_returns_404() {
         let state = build_state(ReplayReducer::new());
-        let response =
-            super::handle(State(state), Path("11111111-1111-1111-1111-111111111111".to_string()))
-                .await
-                .into_response();
+        let response = super::handle(
+            State(state),
+            None,
+            Path("11111111-1111-1111-1111-111111111111".to_string()),
+        )
+        .await
+        .into_response();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         assert_eq!(
             response_body_string(response).await,

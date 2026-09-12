@@ -74,6 +74,14 @@ pub trait MutationProjection: Clone {
         false
     }
 
+    /// Rejects actor re-registration that changes its immutable tenant namespace.
+    fn validate_actor_registration(
+        &self,
+        _registration: &actionqueue_core::actor::ActorRegistration,
+    ) -> Result<(), MutationValidationError> {
+        Ok(())
+    }
+
     /// Resolves a tenant-scoped admission under the exclusive mutation owner.
     fn resolve_admission(
         &self,
@@ -140,11 +148,71 @@ pub trait MutationProjection: Clone {
     {
         Err(super::disposition::DispositionRejection::UnsupportedFeature)
     }
+    /// Checks current permissions and an explicit ingress scope before lookup.
+    fn authorize_scope(
+        &self,
+        _platform: bool,
+        _host: &actionqueue_core::control::HostControlContext,
+        _action: actionqueue_core::control::QueueAction,
+        _tenant: Option<TenantId>,
+    ) -> Result<(), actionqueue_core::control::ControlError> {
+        Err(actionqueue_core::control::ControlError::Unauthorized)
+    }
+    /// Prepares a host control against this authoritative projection.
+    fn prepare_control(
+        &self,
+        _platform: bool,
+        _host: &actionqueue_core::control::HostControlContext,
+        _command: MutationCommand,
+    ) -> Result<MutationCommand, actionqueue_core::control::ControlError> {
+        Err(actionqueue_core::control::ControlError::Unauthorized)
+    }
+    /// Verifies recovery controls against durable antecedents.
+    fn validate_recovery(
+        &self,
+        _command: &MutationCommand,
+    ) -> Result<(), actionqueue_core::control::ControlError> {
+        Err(actionqueue_core::control::ControlError::Unauthorized)
+    }
+    /// Independently verifies authenticated remote result expectations.
+    fn validate_remote(
+        &self,
+        _command: &actionqueue_core::mutation::AttemptDispositionCommitCommand,
+        _platform: bool,
+    ) -> Result<Option<u64>, actionqueue_core::control::ControlError> {
+        Err(actionqueue_core::control::ControlError::Unauthorized)
+    }
     /// Applies a durable event to the in-memory projection.
     fn apply_event(&mut self, event: &WalEvent) -> Result<(), Self::Error>;
 }
 
 impl MutationProjection for ReplayReducer {
+    fn authorize_scope(
+        &self,
+        platform: bool,
+        host: &actionqueue_core::control::HostControlContext,
+        action: actionqueue_core::control::QueueAction,
+        tenant: Option<TenantId>,
+    ) -> Result<(), actionqueue_core::control::ControlError> {
+        super::control::check_scope(
+            super::control::authorize_projection(self, platform, host, action)?,
+            tenant,
+        )
+    }
+    fn prepare_control(
+        &self,
+        platform: bool,
+        host: &actionqueue_core::control::HostControlContext,
+        command: MutationCommand,
+    ) -> Result<MutationCommand, actionqueue_core::control::ControlError> {
+        super::control::prepare_control(self, platform, host, command)
+    }
+    fn validate_recovery(
+        &self,
+        command: &MutationCommand,
+    ) -> Result<(), actionqueue_core::control::ControlError> {
+        super::control::validate_recovery(self, command)
+    }
     type Error = ReplayReducerError;
 
     fn latest_sequence(&self) -> u64 {
@@ -187,6 +255,26 @@ impl MutationProjection for ReplayReducer {
         ReplayReducer::is_subscription_canceled(self, subscription_id)
     }
 
+    fn validate_actor_registration(
+        &self,
+        registration: &actionqueue_core::actor::ActorRegistration,
+    ) -> Result<(), MutationValidationError> {
+        if self
+            .get_actor(&registration.actor_id())
+            .is_some_and(|old| old.tenant_id != registration.tenant_id())
+        {
+            return Err(MutationValidationError::ActorTenantChange);
+        }
+        Ok(())
+    }
+
+    fn validate_remote(
+        &self,
+        command: &actionqueue_core::mutation::AttemptDispositionCommitCommand,
+        platform: bool,
+    ) -> Result<Option<u64>, actionqueue_core::control::ControlError> {
+        super::control::validate_remote_projection(self, platform, command)
+    }
     fn resolve_admission(
         &self,
         tenant: Option<TenantId>,
@@ -242,6 +330,7 @@ impl MutationProjection for ReplayReducer {
 pub struct StorageMutationAuthority<W: WalWriter, P: MutationProjection> {
     wal_writer: W,
     projection: P,
+    host_context: Option<actionqueue_core::control::HostControlContext>,
     recovery_required: bool,
     admission_limits: AdmissionLimits,
     continuation_limits: actionqueue_core::limits::ContinuationLimits,
@@ -251,6 +340,40 @@ pub struct StorageMutationAuthority<W: WalWriter, P: MutationProjection> {
 }
 
 impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
+    /// Constructs an explicitly host-bound authority for embedded controls.
+    pub fn with_host(mut self, host: actionqueue_core::control::HostControlContext) -> Self {
+        self.host_context = Some(host);
+        self
+    }
+    /// Installs the trusted embedded host context for legacy convenience calls.
+    /// No default identity or scope is inferred by storage.
+    pub fn set_control_context(
+        &mut self,
+        host: Option<actionqueue_core::control::HostControlContext>,
+    ) {
+        self.host_context = host;
+    }
+    /// Current host binding, when explicitly configured by the embedding host.
+    pub fn control_context(&self) -> Option<&actionqueue_core::control::HostControlContext> {
+        self.host_context.as_ref()
+    }
+    /// Runs one host operation with a temporary binding, restoring even on unwind.
+    pub fn with_control_context<T>(
+        &mut self,
+        host: &actionqueue_core::control::HostControlContext,
+        f: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let previous = self.host_context.replace(host.clone());
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(self)));
+        self.host_context = previous;
+        match result {
+            Ok(value) => value,
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
+    }
+    fn platform_profile(&self) -> bool {
+        self.store_session().is_some_and(|s| s.manifest().features.iter().any(|f| f == "platform"))
+    }
     /// Current continuation creation limits (hard ceilings still apply).
     pub fn continuation_limits(&self) -> actionqueue_core::limits::ContinuationLimits {
         self.continuation_limits
@@ -269,6 +392,7 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
         Self {
             wal_writer,
             projection,
+            host_context: None,
             recovery_required,
             admission_limits: AdmissionLimits::default(),
             continuation_limits: Default::default(),
@@ -290,6 +414,19 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
     pub fn recovery_required(&self) -> bool {
         self.recovery_required
     }
+    /// Checks a bound host before any duplicate lookup or mutation planning.
+    pub fn authorize_control(
+        &self,
+        action: actionqueue_core::control::QueueAction,
+        tenant: Option<TenantId>,
+    ) -> Result<(), MutationAuthorityError<P::Error>> {
+        let host = self.host_context.as_ref().ok_or(MutationAuthorityError::Control(
+            actionqueue_core::control::ControlError::Unauthorized,
+        ))?;
+        self.projection
+            .authorize_scope(self.platform_profile(), host, action, tenant)
+            .map_err(MutationAuthorityError::Control)
+    }
     /// Resolves retries before planning or applying lowered creation limits.
     /// A fenced authority never answers even cached duplicate requests.
     pub fn lookup_admission(
@@ -298,6 +435,18 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
     ) -> Result<Option<EnsureTaskOutcome>, MutationAuthorityError<P::Error>> {
         if self.recovery_required {
             return Err(MutationAuthorityError::RecoveryRequired);
+        }
+        self.authorize_control(
+            actionqueue_core::control::QueueAction::AdmitTask,
+            request.task_spec().tenant_id(),
+        )?;
+        if request
+            .control_context()
+            .is_some_and(|c| Some(c) != self.host_context.as_ref().map(|h| &h.attribution))
+        {
+            return Err(MutationAuthorityError::Control(
+                actionqueue_core::control::ControlError::Unauthorized,
+            ));
         }
         let digest = request.digest().map_err(MutationAuthorityError::Admission)?;
         self.projection
@@ -431,8 +580,12 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
                 self.validate_sequence(details.sequence())?;
                 Ok(ValidatedCommand::SubscriptionTrigger(*details))
             }
+            MutationCommand::Control { .. } | MutationCommand::RecoveryControl(_) => {
+                Err(MutationValidationError::NestedControl)
+            }
             MutationCommand::ActorRegister(details) => {
                 self.validate_sequence(details.sequence())?;
+                self.projection.validate_actor_registration(details.registration())?;
                 Ok(ValidatedCommand::ActorRegister(details.clone()))
             }
             MutationCommand::ActorDeregister(details) => {
@@ -1385,6 +1538,49 @@ impl<W: WalWriter, P: MutationProjection> MutationAuthority for StorageMutationA
         if self.recovery_required {
             return Err(MutationAuthorityError::RecoveryRequired);
         }
+        let platform = self.platform_profile();
+        let (command, control) = match command {
+            MutationCommand::Control { host, command } => {
+                let command = self
+                    .projection
+                    .prepare_control(platform, &host, *command)
+                    .map_err(MutationAuthorityError::Control)?;
+                (command, Some(actionqueue_core::control::ControlAttribution::from(&host)))
+            }
+            MutationCommand::RecoveryControl(command) => {
+                self.projection
+                    .validate_recovery(&command)
+                    .map_err(MutationAuthorityError::Control)?;
+                (*command, None)
+            }
+            command if super::control::action(&command).is_some() => {
+                let host = self.host_context.as_ref().ok_or(MutationAuthorityError::Control(
+                    actionqueue_core::control::ControlError::Unauthorized,
+                ))?;
+                let command = self
+                    .projection
+                    .prepare_control(platform, host, command)
+                    .map_err(MutationAuthorityError::Control)?;
+                (command, Some(actionqueue_core::control::ControlAttribution::from(host)))
+            }
+            command => (command, None),
+        };
+        if let MutationCommand::AttemptDispositionCommit(c) = &command {
+            if c.remote().is_some() {
+                let platform = self
+                    .store_session()
+                    .map(|s| s.manifest().features.iter().any(|f| f == "platform"))
+                    .unwrap_or(false);
+                let prior = self.projection.validate_remote(c, platform).map_err(|_| {
+                    MutationAuthorityError::Disposition(
+                        super::disposition::DispositionRejection::Stale,
+                    )
+                })?;
+                if let Some(sequence) = prior {
+                    return Ok(MutationOutcome::new(sequence, AppliedMutation::NoOp));
+                }
+            }
+        }
         if let MutationCommand::AdmissionCommit(c) = &command {
             if durability != DurabilityPolicy::Immediate {
                 return Err(MutationAuthorityError::Admission(
@@ -1538,6 +1734,70 @@ impl<W: WalWriter, P: MutationProjection> MutationAuthority for StorageMutationA
                 ));
             }
         }
+        let event = if let Some(control) = control { event.with_control(control) } else { event };
+        // Validate the actual frame, including host attribution, before the writer
+        // can observe it. Encoding errors here are definitive rejections, not IO
+        // uncertainty and must never fence an otherwise healthy authority.
+        let too_large = || match event.event() {
+            WalEventType::AdmissionCommitted { .. } => {
+                MutationAuthorityError::Admission(AdmissionRejection::TooLarge)
+            }
+            WalEventType::SignalAdmitted { .. }
+            | WalEventType::SignalPinned { .. }
+            | WalEventType::SignalUnpinned { .. }
+            | WalEventType::SignalsRetired { .. } => MutationAuthorityError::Signal(
+                actionqueue_core::continuation::SignalRejection::TooLarge,
+            ),
+            WalEventType::AttemptDispositionCommitted { .. } => {
+                MutationAuthorityError::Disposition(
+                    super::disposition::DispositionRejection::TooLarge,
+                )
+            }
+            _ => MutationAuthorityError::Wait(actionqueue_core::mutation::WaitRejection::TooLarge),
+        };
+        let frame_bytes = crate::wal::codec::encode(&event).map_err(|_| too_large())?.len();
+        let limit = match event.event() {
+            WalEventType::AdmissionCommitted { .. } => self
+                .admission_limits
+                .record_bytes
+                .min(actionqueue_core::limits::MAX_ADMISSION_RECORD_BYTES),
+            WalEventType::SignalAdmitted { .. }
+            | WalEventType::SignalPinned { .. }
+            | WalEventType::SignalUnpinned { .. }
+            | WalEventType::SignalsRetired { .. } => self
+                .signal_limits
+                .record_bytes
+                .min(actionqueue_core::limits::MAX_SIGNAL_RECORD_BYTES),
+            WalEventType::AttemptDispositionCommitted { .. } => self
+                .continuation_limits
+                .disposition_bytes
+                .min(actionqueue_core::limits::MAX_ADMISSION_RECORD_BYTES),
+            WalEventType::WaitEstablished { .. }
+            | WalEventType::WaitSatisfied { .. }
+            | WalEventType::WaitTimedOut { .. }
+            | WalEventType::WaitCanceled { .. }
+            | WalEventType::AttemptClosed { .. } => self
+                .continuation_limits
+                .disposition_bytes
+                .min(actionqueue_core::limits::MAX_WAIT_RECORD_BYTES),
+            _ => usize::MAX,
+        };
+        if frame_bytes > limit {
+            return Err(too_large());
+        }
+        if matches!(event.event(), WalEventType::SignalAdmitted { .. })
+            && self.projection.signal_index().is_some_and(|i| {
+                i.statistics()
+                    .bytes
+                    .checked_add(frame_bytes)
+                    .is_none_or(|n| n > self.signal_limits.bytes)
+            })
+        {
+            self.signal_capacity_rejections = self.signal_capacity_rejections.saturating_add(1);
+            return Err(MutationAuthorityError::Signal(
+                actionqueue_core::continuation::SignalRejection::Capacity,
+            ));
+        }
         // Prepare the complete affected projection before any durable write.
         let mut prepared = self.projection.clone();
         prepared.apply_event(&event).map_err(|source| {
@@ -1654,6 +1914,10 @@ struct LeaseCloseParams<'a> {
 /// Typed validation failures from the authority validation stage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MutationValidationError {
+    /// Control attribution cannot be nested.
+    NestedControl,
+    /// Actor IDs cannot be reassigned to another tenant namespace.
+    ActorTenantChange,
     /// Awaiting transitions require compound continuation records (AQ-06).
     AwaitingTransitionRequiresContinuationRecord,
     /// Projection sequence could not be advanced because it overflowed `u64`.
@@ -1865,6 +2129,8 @@ pub enum MutationValidationError {
 impl std::fmt::Display for MutationValidationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::NestedControl => write!(f, "nested control attribution"),
+            Self::ActorTenantChange => write!(f, "actor tenant is immutable"),
             MutationValidationError::SequenceOverflow => {
                 write!(f, "mutation sequence overflow while computing next expected sequence")
             }
@@ -2060,6 +2326,8 @@ impl std::error::Error for MutationValidationError {}
 /// Typed stage-aware authority failures.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MutationAuthorityError<ProjectionError> {
+    /// Missing or invalid trusted host control context.
+    Control(actionqueue_core::control::ControlError),
     /// Complete disposition rejected before append.
     Disposition(super::disposition::DispositionRejection),
     /// Definitive continuation rejection.
@@ -2105,6 +2373,7 @@ impl<ProjectionError: std::fmt::Display> std::fmt::Display
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Control(e) => write!(f, "{e}"),
             Self::Admission(e) => write!(f, "{e}"),
             Self::Signal(e) => write!(f, "{e}"),
             Self::Wait(e) => write!(f, "{e}"),
@@ -2163,6 +2432,17 @@ mod tests {
     }
 
     impl MutationProjection for ProjectionStub {
+        // This test double isolates WAL/mutation mechanics. Authorization is
+        // exercised with the real ReplayReducer in the control acceptance suite.
+        fn prepare_control(
+            &self,
+            _platform: bool,
+            _host: &actionqueue_core::control::HostControlContext,
+            command: MutationCommand,
+        ) -> Result<MutationCommand, actionqueue_core::control::ControlError> {
+            Ok(command)
+        }
+
         type Error = &'static str;
 
         fn latest_sequence(&self) -> u64 {
@@ -2291,7 +2571,15 @@ mod tests {
 
         let writer = WriterStub::default();
         let projection = ProjectionStub::default();
-        let mut authority = StorageMutationAuthority::new(writer, projection);
+        let mut authority = StorageMutationAuthority::new(writer, projection).with_host(
+            actionqueue_core::control::HostControlContext {
+                actor_id: None,
+                scope: actionqueue_core::control::ControlScope::SingleTenant,
+                attribution: actionqueue_core::causal::ControlMutationContext::new(
+                    actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                ),
+            },
+        );
 
         let task_outcome = authority
             .submit_command(
@@ -2333,7 +2621,15 @@ mod tests {
         let task_id = TaskId::new();
         let writer = WriterStub { fail_flush: true, ..Default::default() };
         let projection = ProjectionStub::default();
-        let mut authority = StorageMutationAuthority::new(writer, projection);
+        let mut authority = StorageMutationAuthority::new(writer, projection).with_host(
+            actionqueue_core::control::HostControlContext {
+                actor_id: None,
+                scope: actionqueue_core::control::ControlScope::SingleTenant,
+                attribution: actionqueue_core::causal::ControlMutationContext::new(
+                    actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                ),
+            },
+        );
 
         let result = authority.submit_command(
             MutationCommand::TaskCreate(TaskCreateCommand::new(1, test_task_spec(task_id), 10)),

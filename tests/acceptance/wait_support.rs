@@ -25,8 +25,24 @@ static FAULTS: Mutex<()> = Mutex::new(());
 fn seq(a: &s::Authority) -> u64 {
     a.projection().latest_sequence() + 1
 }
+fn fixture_control(c: MutationCommand) -> MutationCommand {
+    let context = match &c {
+        MutationCommand::WaitResolve(c) => Some(c.control_context.clone()),
+        MutationCommand::WaitCancel(c) => Some(c.control_context().clone()),
+        MutationCommand::Cancel(c) => c.control_context.clone(),
+        _ => None,
+    };
+    if actionqueue_storage::mutation::control::action(&c).is_some() {
+        let h = actionqueue_core::control::HostControlContext {
+            actor_id: match &c { MutationCommand::ActorHeartbeat(c) => Some(c.actor_id()), _ => None },
+            scope: if actionqueue_storage::mutation::control::action(&c).unwrap().requires_store() { actionqueue_core::control::ControlScope::Store } else { actionqueue_core::control::ControlScope::SingleTenant },
+            attribution: context.unwrap_or_else(|| ControlMutationContext::new(OpaqueRef::new("fixture-host").unwrap())),
+        };
+        c.with_control(&h)
+    } else { c }
+}
 fn apply(a: &mut s::Authority, c: MutationCommand) -> MutationOutcome {
-    a.submit_command(c, DurabilityPolicy::Immediate).unwrap()
+    a.submit_command(fixture_control(c), DurabilityPolicy::Immediate).unwrap()
 }
 macro_rules! commit {
     ($a:expr,$c:expr) => {{

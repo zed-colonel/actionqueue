@@ -121,7 +121,16 @@ fn concurrent_initializers_publish_one_identity() {
 }
 #[test]
 fn malformed_future_and_unsupported_manifests_never_write() {
-    for mutation in ["schema", "feature", "extra", "malformed", "snapshot-v4", "projection-v4"] {
+    for mutation in [
+        "schema",
+        "feature",
+        "extra",
+        "malformed",
+        "snapshot-v4",
+        "projection-v4",
+        "snapshot-v8",
+        "projection-v8",
+    ] {
         let dir = tempfile::tempdir().unwrap();
         drop(init(dir.path()));
         let path = dir.path().join("manifest.json");
@@ -130,6 +139,8 @@ fn malformed_future_and_unsupported_manifests_never_write() {
         match mutation {
             "schema" => value["wal_format"] = 99.into(),
             "snapshot-v4" => value["snapshot_schema"] = 4.into(),
+            "snapshot-v8" => value["snapshot_schema"] = 8.into(),
+            "projection-v8" => value["projection_version"] = 8.into(),
             "projection-v4" => value["projection_version"] = 4.into(),
             "feature" => value["features"] = serde_json::json!(["unknown"]),
             "extra" => value["metadata"] = serde_json::json!({}),
@@ -433,7 +444,15 @@ fn cancellation_before_creation_is_rejected_before_append_and_projection_publica
     let dir = tempfile::tempdir().unwrap();
     let source = dir.path().join("source");
     let t = TaskId::new();
-    let mut authority = init(&source).into_authority().unwrap();
+    let mut authority = init(&source).into_authority().unwrap().with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
     let _ = authority
         .submit_command(
             MutationCommand::TaskCreate(TaskCreateCommand::new(2, task(t), 100)),
@@ -472,7 +491,15 @@ fn cancellation_before_creation_is_rejected_before_append_and_projection_publica
     drop(w);
     // Equality is valid, and a rejected attempt must leave sequence 3 available.
     let mut authority =
-        open_store(&source, OpenOptions::ReadWrite).unwrap().into_authority().unwrap();
+        open_store(&source, OpenOptions::ReadWrite).unwrap().into_authority().unwrap().with_host(
+            actionqueue_core::control::HostControlContext {
+                actor_id: None,
+                scope: actionqueue_core::control::ControlScope::SingleTenant,
+                attribution: actionqueue_core::causal::ControlMutationContext::new(
+                    actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                ),
+            },
+        );
     let _ = authority
         .submit_command(
             MutationCommand::TaskCancel(TaskCancelCommand::new(3, t, 100)),
@@ -1094,7 +1121,7 @@ fn malformed_backup_descriptors_refuse_before_destination_creation() {
 #[test]
 fn canonical_projection_matches_independent_sha256_vector() {
     let vector: serde_json::Value =
-        serde_json::from_str(include_str!("../../conformance/aq-cont-1/projection-v7-vector.json"))
+        serde_json::from_str(include_str!("../../conformance/aq-cont-1/projection-v9-vector.json"))
             .unwrap();
     let dir = tempfile::tempdir().unwrap();
     let session = init(dir.path());
@@ -1116,11 +1143,27 @@ fn durable_append_recovers_after_failure_before_projection_publication() {
         DurabilityPolicy, EnginePauseCommand, MutationAuthority, MutationCommand,
     };
     let dir = tempfile::tempdir().unwrap();
-    let mut authority = init(dir.path()).into_authority().unwrap();
+    let mut authority = init(dir.path()).into_authority().unwrap().with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
     actionqueue_storage::store::fault::fail_once("authority_before_publish");
     assert!(authority
         .submit_command(
-            MutationCommand::EnginePause(EnginePauseCommand::new(2, 42)),
+            MutationCommand::EnginePause(EnginePauseCommand::new(2, 42)).with_control(
+                &actionqueue_core::control::HostControlContext {
+                    actor_id: None,
+                    scope: actionqueue_core::control::ControlScope::Store,
+                    attribution: actionqueue_core::causal::ControlMutationContext::new(
+                        actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap()
+                    )
+                }
+            ),
             DurabilityPolicy::Immediate
         )
         .is_err());

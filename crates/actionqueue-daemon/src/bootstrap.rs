@@ -255,6 +255,13 @@ impl BootstrapState {
 /// let state = bootstrap(config).expect("bootstrap should succeed");
 /// ```
 pub fn bootstrap(config: DaemonConfig) -> Result<BootstrapState, BootstrapError> {
+    bootstrap_with_authenticator(config, None)
+}
+/// Bootstraps a host-integrated daemon with explicit authentication for controls.
+pub fn bootstrap_with_authenticator(
+    config: DaemonConfig,
+    hook: Option<crate::http::auth::HostAuthenticator>,
+) -> Result<BootstrapState, BootstrapError> {
     // Initialize structured logging subscriber.
     // Uses RUST_LOG env var for filtering (e.g. RUST_LOG=actionqueue=debug).
     // init() is a no-op if a subscriber is already set (e.g. in tests).
@@ -274,6 +281,10 @@ pub fn bootstrap(config: DaemonConfig) -> Result<BootstrapState, BootstrapError>
 
     let store_session = recovery.wal_writer.inner().session().cloned();
     let mut authority = StorageMutationAuthority::new(recovery.wal_writer, recovery.projection);
+    if config.enable_control {
+        actionqueue_runtime::waits::recover_execution(&mut authority, SystemClock.now())
+            .map_err(|e| BootstrapError::Dependency(format!("execution_recovery: {e}")))?;
+    }
     actionqueue_runtime::waits::recover_cancellations(&mut authority, SystemClock.now())
         .map_err(|e| BootstrapError::Dependency(format!("control_reconciliation: {e}")))?;
     actionqueue_runtime::waits::reconcile(&mut authority, SystemClock.now())
@@ -323,7 +334,12 @@ pub fn bootstrap(config: DaemonConfig) -> Result<BootstrapState, BootstrapError>
             ready_status,
         )
     };
+    #[cfg(feature = "actor")]
+    {
+        router_state_inner.remote_policy = config.remote_policy;
+    }
     router_state_inner.store_session = store_session;
+    router_state_inner.host_authenticator = hook;
     let router_state = std::sync::Arc::new(router_state_inner);
 
     // Build the concrete HTTP router using the assembly entry
@@ -368,7 +384,6 @@ mod tests {
         assert!(router_state.ready_status.is_ready());
         assert_eq!(router_state.router_config.control_enabled, control_flag);
         assert_eq!(router_state.router_config.metrics_enabled, state.metrics().is_enabled());
-        drop(router_state);
         drop(state);
         std::fs::remove_dir_all(data_dir).expect("remove bootstrap test directory");
     }

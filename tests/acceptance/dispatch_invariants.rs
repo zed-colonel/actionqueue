@@ -88,7 +88,15 @@ fn submit_tasks_at_time<H: ExecutorHandler + 'static>(
     let config = proptest_config(data_dir);
     let clock = MockClock::new(clock_time);
     let engine = ActionQueueEngine::new(config, handler);
-    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap");
+    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap").with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     for spec in specs {
         boot.submit_task(spec).expect("submit");
@@ -105,7 +113,15 @@ async fn run_until_idle_at_time<H: ExecutorHandler + 'static>(
     let config = proptest_config(data_dir);
     let clock = MockClock::new(clock_time);
     let engine = ActionQueueEngine::new(config, handler);
-    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap");
+    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap").with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
     boot.run_until_idle().await.expect("run_until_idle")
 }
 
@@ -123,7 +139,15 @@ async fn once_tasks_dispatch_count_bounded_by_task_count() {
 
         let clock = MockClock::new(1_000_000);
         let engine = ActionQueueEngine::new(config, AlwaysSuccessHandler);
-        let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap");
+        let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap").with_host(
+            actionqueue_core::control::HostControlContext {
+                actor_id: None,
+                scope: actionqueue_core::control::ControlScope::SingleTenant,
+                attribution: actionqueue_core::causal::ControlMutationContext::new(
+                    actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                ),
+            },
+        );
 
         for _ in 0..num_tasks {
             let spec = TaskSpec::new(
@@ -165,7 +189,15 @@ async fn once_tasks_retry_dispatch_count_bounded() {
 
         let clock = MockClock::new(1_000_000);
         let engine = ActionQueueEngine::new(config, AlwaysRetryHandler);
-        let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap");
+        let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap").with_host(
+            actionqueue_core::control::HostControlContext {
+                actor_id: None,
+                scope: actionqueue_core::control::ControlScope::SingleTenant,
+                attribution: actionqueue_core::causal::ControlMutationContext::new(
+                    actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                ),
+            },
+        );
 
         for _ in 0..num_tasks {
             let constraints =
@@ -311,7 +343,7 @@ proptest! {
 
             let clock = MockClock::new(1_000_000);
             let engine = ActionQueueEngine::new(config, AlwaysRetryHandler);
-            let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap");
+            let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap").with_host(actionqueue_core::control::HostControlContext { actor_id: None, scope: actionqueue_core::control::ControlScope::SingleTenant, attribution: actionqueue_core::causal::ControlMutationContext::new(actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap()) });
 
             for _ in 0..num_tasks {
                 let constraints = TaskConstraints::new(max_attempts, None, None)
@@ -438,7 +470,15 @@ async fn all_runs_terminal_after_idle() {
     let config = proptest_config(&data_dir);
     let clock = MockClock::new(1_000_000);
     let engine = ActionQueueEngine::new(config, AlwaysSuccessHandler);
-    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap");
+    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap").with_host(
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        },
+    );
 
     let _summary = boot.run_until_idle().await.expect("run_until_idle");
 
@@ -515,6 +555,13 @@ mod admission_dependencies {
         ActionQueueEngine::new(config.clone(), SuccessHandler)
             .bootstrap_with_clock(clock.clone())
             .unwrap()
+            .with_host(actionqueue_core::control::HostControlContext {
+                actor_id: None,
+                scope: actionqueue_core::control::ControlScope::SingleTenant,
+                attribution: actionqueue_core::causal::ControlMutationContext::new(
+                    actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+                ),
+            })
     }
 
     fn recover(
