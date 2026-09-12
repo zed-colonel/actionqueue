@@ -29,10 +29,13 @@ canonical digest, admission key, and WAL sequence. `submit_task(spec)` derives s
 the UUID on retries. Outbox callers should persist their own stable key, task UUID,
 and causal context. Changed digest-bearing meaning returns a typed rejection conflict.
 
-All ordinary submissions, including CLI requests and transactional child proposals, use
-the handler-independent admission service. The workflow channel itself still gives no
-durable enqueue acknowledgement; atomic disposition/child admission belongs to later
-work items. Attribution is opaque and confers no scheduling priority or authority.
+Ordinary submissions, including CLI requests, use the handler-independent admission
+service. Handlers propose child admissions in an `AttemptDisposition` with an `Awaiting`
+outcome. The runtime validates the full proposal and commits the child admissions,
+dependencies, checkpoint, and parent wait together in one durable `AttemptDispositionCommitted`
+record. An invalid child admission rejects all proposed effects, so the parent cannot
+enter `Awaiting` with a partially admitted batch. Attribution is opaque and confers no
+scheduling priority or authority.
 
 RuntimeConfig.admission_limits can lower creation bounds. A retry uses the original
 admission even after limits are lowered or tasks/parents finish. Storage failures may
