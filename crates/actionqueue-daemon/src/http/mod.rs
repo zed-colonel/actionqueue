@@ -38,6 +38,7 @@ pub type ControlMutationAuthority =
 /// Mutations use the serialized authority lane. Inspection snapshots and current
 /// grant checks share a single authoritative projection revision.
 pub struct RouterStateInner {
+    pub(crate) admission_throttle: Mutex<admission_throttle::AdmissionThrottle>,
     pub(crate) background_maintenance: bool,
     pub(crate) disclosure_policy: actionqueue_runtime::inspection::DisclosurePolicy,
     pub(crate) authority_lane: Arc<tokio::sync::Semaphore>,
@@ -159,6 +160,7 @@ impl RouterStateInner {
             maintenance_task: Mutex::new(None),
             background_maintenance: true,
             disclosure_policy: Default::default(),
+            admission_throttle: Mutex::new(Default::default()),
             authority_lane: Arc::new(tokio::sync::Semaphore::new(32)),
             operational_failed: AtomicBool::new(false),
             host_authenticator: None,
@@ -191,6 +193,7 @@ impl RouterStateInner {
             maintenance_task: Mutex::new(None),
             background_maintenance: true,
             disclosure_policy: Default::default(),
+            admission_throttle: Mutex::new(Default::default()),
             authority_lane: Arc::new(tokio::sync::Semaphore::new(32)),
             operational_failed: AtomicBool::new(false),
             host_authenticator: None,
@@ -210,6 +213,7 @@ impl RouterStateInner {
 
 #[cfg(feature = "actor")]
 pub mod actors;
+mod admission_throttle;
 pub mod api;
 pub mod auth;
 pub mod control;

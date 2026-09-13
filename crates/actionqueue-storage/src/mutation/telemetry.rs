@@ -14,6 +14,9 @@ pub struct Observations {
     pub admissions_created: u64,
     pub admission_duplicates: u64,
     pub admission_conflicts: u64,
+    pub broad_waits_established: u64,
+    pub match_wait_candidates: u64,
+    pub match_signal_candidates: u64,
     pub signal_duplicates: u64,
     pub signals: BTreeMap<(String, String), u64>,
     pub waits_satisfied: BTreeMap<&'static str, u64>,
@@ -55,6 +58,11 @@ impl QueueTelemetry {
         o.admission_duplicates += u64::from(duplicate);
         o.admission_conflicts += u64::from(conflict);
     }
+    pub(crate) fn matching_work(&self, work: crate::recovery::work::MatchingWork) {
+        let mut o = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        o.match_wait_candidates += work.waits;
+        o.match_signal_candidates += work.signals;
+    }
     pub fn signal_duplicate(&self) {
         self.0.lock().unwrap_or_else(|e| e.into_inner()).signal_duplicates += 1;
     }
@@ -80,13 +88,13 @@ impl QueueTelemetry {
                     signal(&mut o, s);
                 }
                 if let Some(w) = record.wait_record() {
-                    o.waits.insert(w.spec.wait_id(), w.timestamp);
+                    established(&mut o, &w);
                 }
                 o.compound_bytes_count += 1;
                 o.compound_bytes_sum += bytes as u64;
             }
             E::WaitEstablished { record } => {
-                o.waits.insert(record.spec.wait_id(), record.timestamp);
+                established(&mut o, record);
             }
             E::WaitSatisfied { record }
             | E::WaitTimedOut { record }
@@ -109,6 +117,12 @@ impl QueueTelemetry {
             }
             _ => {}
         }
+    }
+}
+fn established(o: &mut Observations, w: &crate::mutation::wait::WaitRecord) {
+    o.waits.insert(w.spec.wait_id(), w.timestamp);
+    if w.spec.filter().is_some_and(|f| f.correlation_id.is_none() && f.source_ref.is_none()) {
+        o.broad_waits_established += 1;
     }
 }
 fn resolved(o: &mut Observations, record: &crate::mutation::wait::WaitResolution) {

@@ -1888,7 +1888,9 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
         }
         // Prepare the complete affected projection before any durable write.
         let mut prepared = self.projection.clone();
-        prepared.apply_event(&event).map_err(|source| {
+        let (preparation, work) = crate::recovery::work::measure(|| prepared.apply_event(&event));
+        self.telemetry.matching_work(work);
+        preparation.map_err(|source| {
             if matches!(event.event(), WalEventType::AttemptDispositionCommitted { .. }) {
                 self.recovery_required = true;
                 self.wal_writer.fence();

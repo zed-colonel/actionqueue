@@ -400,3 +400,47 @@ async fn same_revision_projection_divergence_fails_closed_and_counts_once() {
     );
     assert_eq!(a.lock().unwrap().telemetry().snapshot().projection_mismatches, 1);
 }
+
+#[tokio::test]
+async fn repeated_conflicts_are_throttled_without_blocking_exact_retries_or_new_keys() {
+    let (router, a, state) = fixture(true, true);
+    maintenance::shutdown(&state).await;
+    let q = request(2);
+    let endpoint = "/api/v2/admissions:ensure";
+    let original = serde_json::to_vec(&q).unwrap();
+    assert_eq!(send(&router, "POST", endpoint, original.clone(), true).await.0, 201);
+    let before = a.lock().unwrap().projection().projection_digest().unwrap();
+    for n in 0..12 {
+        // Rotating the rejected content cannot reset the authenticated scope's budget.
+        let mut task = q.task_spec().clone();
+        task.set_payload(TaskPayload::new(format!("REJECTED_SECRET_{n}").into_bytes()));
+        let changed = EnsureTaskRequest::new(
+            q.admission_key().clone(),
+            task,
+            vec![],
+            q.causal_context().clone(),
+            None,
+        )
+        .unwrap();
+        let (status, body, _) =
+            send(&router, "POST", endpoint, serde_json::to_vec(&changed).unwrap(), true).await;
+        assert_eq!(status, if n < 8 { 409 } else { 429 });
+        assert_eq!(
+            body,
+            serde_json::json!({"error_code": if n < 8 {"conflict"} else {"admission_conflict_throttled"}})
+        );
+    }
+    assert_eq!(a.lock().unwrap().projection().projection_digest().unwrap(), before);
+    assert_eq!(a.lock().unwrap().telemetry().snapshot().admission_conflicts, 8);
+    assert_eq!(send(&router, "POST", endpoint, original, true).await.0, 200);
+    assert_eq!(
+        send(&router, "POST", endpoint, serde_json::to_vec(&request(1)).unwrap(), true).await.0,
+        201
+    );
+    // Authentication remains mandatory even after the conflict budget is exhausted.
+    assert_eq!(
+        send(&router, "POST", endpoint, serde_json::to_vec(&q).unwrap(), false).await.0,
+        401
+    );
+    maintenance::shutdown(&state).await;
+}

@@ -56,6 +56,18 @@ impl WaitIndex {
     pub fn active_count(&self) -> usize {
         self.active.len()
     }
+    /// Active signal waits lacking both an exact correlation and an exact source.
+    pub fn broad_active_count(&self) -> usize {
+        self.active
+            .values()
+            .filter_map(|(id, _)| self.get(*id))
+            .filter(|w| {
+                w.spec
+                    .filter()
+                    .is_some_and(|f| f.correlation_id.is_none() && f.source_ref.is_none())
+            })
+            .count()
+    }
     /// Active waits in exactly one namespace; historical waits do not consume capacity.
     pub fn active_count_for_tenant(&self, tenant: Option<TenantId>) -> usize {
         self.active_by_tenant.get(&tenant).copied().unwrap_or(0)
@@ -100,8 +112,8 @@ impl WaitIndex {
     }
     pub fn signal_waiters(&self, e: &SignalEnvelope) -> BTreeSet<WaitId> {
         let mut ids = BTreeSet::new();
-        for correlation in [None, e.correlation_id.clone()] {
-            for source in [None, e.source_ref.clone()] {
+        for correlation in std::iter::once(None).chain(e.correlation_id.clone().map(Some)) {
+            for source in std::iter::once(None).chain(e.source_ref.clone().map(Some)) {
                 visit(Visit::WaitBucket);
                 if let Some(bucket) = self.matching.get(&(
                     e.tenant_id,

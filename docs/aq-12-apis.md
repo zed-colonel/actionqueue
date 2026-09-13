@@ -41,7 +41,7 @@ an idempotent acknowledgement, and the host replaces request control attribution
 Task and signal creates return 201; exact duplicates return 200; conflicts return
 409. Invalid JSON is 400, structural rejection is 422, missing authentication is
 401, permission denial is 403, absent or out-of-scope lookup is 404, oversized
-bodies are 413, and storage uncertainty/backpressure is 503. Service errors use
+bodies are 413, repeated admission conflicts are 429, and storage uncertainty/backpressure is 503. Service errors use
 fixed `error_code` values, never display-string classification. A signal that
 committed before matching failed returns 503 with `committed` and
 `recovery_required: true`. Retrying its identity after recovery is safe.
@@ -142,3 +142,34 @@ error becomes a metric label. Histogram observations are accumulated once at
 commit, with cumulative count/sum and the positive-infinity bucket.
 
 The storage crate requires its `serde` feature for the target persistence format. A minimal storage build uses `--no-default-features --features serde`; runtime and daemon can be checked with `--no-default-features`.
+
+### Admission conflict throttling
+
+The daemon permits eight known changed-digest admission attempts per 30-second
+window for each authenticated `(tenant, actor)` scope. A single-tenant host without
+actor identities shares one scope. The window uses monotonic process time and
+starts at the first conflict. Further conflicts return HTTP 429 with
+`{"error_code":"admission_conflict_throttled"}` and `Retry-After: 30`, without
+entering the mutation lane or changing the WAL/projection. New admission keys and
+exact idempotent retries remain available and undergo normal authorization.
+Changing request IDs, caller attribution, admission keys or rejected content does
+not reset a scope's budget. Scope comes from the host, never the payload.
+
+Limiter state is process-local and resets on daemon restart. At most 1,024 live
+scope budgets are retained; when full, known conflicts from additional scopes are
+throttled until a budget expires. Existing scopes remain isolated. This protects
+the host boundary; embedded execution retains the ordinary admission contract.
+
+### Broad matching telemetry
+
+A broad signal wait omits both exact correlation and exact source. It still needs
+an explicit lower-bound cursor. `actionqueue_waits_broad_active` reports the current
+number, including waits restored by replay. `actionqueue_waits_broad_established_total`
+counts live committed establishments in this authority's lifetime.
+`actionqueue_signal_match_candidates_total{direction="waits"|"signals"}` counts
+actual indexed candidate visits while preparing live mutations: waiter visits for
+incoming signals and retained-signal visits for wait matching. Repeated preparation
+work counts as work, even when a later append fails. These are work measurements,
+not distinct signals, successful wakeups, or durable history totals. Empty index
+lookups contribute zero. Replay, snapshot hydration, inspection and metrics scrapes
+do not increment these counters. All labels are fixed and contain no identifiers.

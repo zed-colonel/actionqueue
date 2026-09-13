@@ -75,6 +75,18 @@ async fn mutate(
     if !state.router_config.control_enabled {
         return StatusCode::NOT_FOUND.into_response();
     }
+    if !state.operational_failed.load(std::sync::atomic::Ordering::Acquire) {
+        if let ControlOperation::AdmitTask(q) = &operation {
+            if super::admission_throttle::throttled(&state, &host, q) {
+                return (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    [(axum::http::header::RETRY_AFTER, "30")],
+                    Json(serde_json::json!({"error_code":"admission_conflict_throttled"})),
+                )
+                    .into_response();
+            }
+        }
+    }
     let permit = match state.authority_lane.clone().try_acquire_owned() {
         Ok(p) => p,
         Err(_) => return error(StatusCode::SERVICE_UNAVAILABLE, "backpressure"),

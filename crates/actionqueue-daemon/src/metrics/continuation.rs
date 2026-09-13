@@ -12,6 +12,7 @@ pub(crate) fn encode(state: &crate::http::RouterStateInner) -> String {
     let mut out = String::new();
     for (name, value) in [
         ("actionqueue_admission_conflict_total", o.admission_conflicts),
+        ("actionqueue_waits_broad_established_total", o.broad_waits_established),
         ("actionqueue_signal_duplicate_total", o.signal_duplicates),
         ("actionqueue_projection_digest_mismatch_total", o.projection_mismatches),
     ] {
@@ -37,6 +38,15 @@ pub(crate) fn encode(state: &crate::http::RouterStateInner) -> String {
             "actionqueue_signals_admitted_total{{namespace=\"{ns}\",kind=\"{k}\"}} {n}"
         );
     }
+    out.push_str("# TYPE actionqueue_signal_match_candidates_total counter\n");
+    for (direction, n) in
+        [("waits", o.match_wait_candidates), ("signals", o.match_signal_candidates)]
+    {
+        let _ = writeln!(
+            out,
+            "actionqueue_signal_match_candidates_total{{direction=\"{direction}\"}} {n}"
+        );
+    }
     out.push_str("# TYPE actionqueue_waits_satisfied_total counter\n");
     for reason in ["signal", "children", "deadline", "control", "canceled"] {
         let _ = writeln!(
@@ -47,6 +57,7 @@ pub(crate) fn encode(state: &crate::http::RouterStateInner) -> String {
     }
     for (name, n) in [
         ("actionqueue_waits_active", p.waits().active_count()),
+        ("actionqueue_waits_broad_active", p.waits().broad_active_count()),
         (
             "actionqueue_runs_awaiting",
             p.run_instances()

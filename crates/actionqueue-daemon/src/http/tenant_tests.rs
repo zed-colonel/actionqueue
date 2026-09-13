@@ -542,3 +542,111 @@ fn http_remote_claims_higher_priority_scheduled_work_first() {
     drop(runtime);
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn admission_throttle_uses_authenticated_scope_and_preserves_other_tenant_retries() {
+    let (root, state, one, two) = fixture();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    runtime.block_on(async {
+        let router = build_router(state.clone());
+        maintenance::shutdown(&state).await;
+        let requests: Vec<_> = {
+            let a = state.control_authority.as_ref().unwrap().lock().unwrap();
+            [&one, &two]
+                .iter()
+                .map(|h| {
+                    let ControlScope::Tenant(tenant) = h.scope else { unreachable!() };
+                    a.projection()
+                        .admissions()
+                        .find(|r| r.tenant_id() == Some(tenant))
+                        .unwrap()
+                        .request()
+                        .clone()
+                })
+                .collect()
+        };
+        let changed = |q: &actionqueue_core::admission::EnsureTaskRequest| {
+            let mut task = q.task_spec().clone();
+            task.set_payload(actionqueue_core::task::task_spec::TaskPayload::new(
+                b"changed-secret".to_vec(),
+            ));
+            actionqueue_core::admission::EnsureTaskRequest::new(
+                q.admission_key().clone(),
+                task,
+                vec![],
+                q.causal_context().clone(),
+                None,
+            )
+            .unwrap()
+        };
+        async fn post(
+            router: &axum::Router,
+            token: &str,
+            q: &actionqueue_core::admission::EnsureTaskRequest,
+        ) -> axum::response::Response {
+            router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/v2/admissions:ensure")
+                        .header("authorization", token)
+                        .header("content-type", "application/json")
+                        .body(Body::from(serde_json::to_vec(q).unwrap()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+        }
+        let before = state
+            .control_authority
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .projection()
+            .projection_digest()
+            .unwrap();
+        let wal_before = std::fs::read(root.join("wal/actionqueue.wal")).unwrap();
+        for _ in 0..8 {
+            assert_eq!(
+                post(&router, "one", &changed(&requests[0])).await.status(),
+                StatusCode::CONFLICT
+            );
+        }
+        let occupied = state.authority_lane.try_acquire_many(32).unwrap();
+        let throttled = post(&router, "one", &changed(&requests[0])).await;
+        drop(occupied);
+        assert_eq!(throttled.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(throttled.headers()["retry-after"], "30");
+        assert_eq!(
+            post(&router, "two", &changed(&requests[1])).await.status(),
+            StatusCode::CONFLICT
+        );
+        assert_eq!(post(&router, "one", &requests[0]).await.status(), StatusCode::OK);
+        assert_eq!(post(&router, "two", &requests[1]).await.status(), StatusCode::OK);
+        assert_eq!(
+            post(&router, "two", &changed(&requests[0])).await.status(),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            post(&router, "missing-scope", &changed(&requests[0])).await.status(),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            state
+                .control_authority
+                .as_ref()
+                .unwrap()
+                .lock()
+                .unwrap()
+                .projection()
+                .projection_digest()
+                .unwrap(),
+            before
+        );
+        assert_eq!(std::fs::read(root.join("wal/actionqueue.wal")).unwrap(), wal_before);
+    });
+    drop(state);
+    std::fs::remove_dir_all(root).unwrap();
+}
