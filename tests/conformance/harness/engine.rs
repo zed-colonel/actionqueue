@@ -85,10 +85,12 @@ impl Embedded {
     pub fn reopen(path: &Path) -> Self {
         let a = s::reopen(path);
         let mut runs = BTreeMap::new();
-        for n in 1..=100 {
-            if let Some(r) = a.projection().runs_for_task(admission_support::id(n)).next() {
-                runs.insert(n, r.id());
-            }
+        for task in a.projection().tasks() {
+            let n = u64::try_from(task.id().as_uuid().as_u128()).expect("fixture task alias");
+            let mut task_runs = a.projection().runs_for_task(task.id());
+            let run = task_runs.next().expect("admitted run");
+            assert!(task_runs.next().is_none(), "scenarios have one run per task");
+            assert!(runs.insert(n, run.id()).is_none(), "unique task aliases");
         }
         Self { authority: Some(a), path: path.into(), runs }
     }
@@ -295,4 +297,26 @@ pub fn reference_signal(n: u64) -> AdmitSignalRequest {
 }
 pub fn reference_filter() -> SignalFilter {
     s::filter()
+}
+
+impl Embedded {
+    pub fn assert_rejected_fanout(&mut self, children: Vec<u64>) {
+        let r = self.runs[&1];
+        let a = self.authority.as_mut().unwrap();
+        let before = a.projection().projection_digest().unwrap();
+        let p = parent(a, r);
+        let cs: Vec<_> =
+            children.iter().map(|n| child(*n, vec![], ChildLifecyclePolicy::Required, p)).collect();
+        let ids = cs.iter().map(|c| c.task_spec().id()).collect();
+        let d = child_disposition(a, r, cs, ids, ChildWaitPolicy::AllTerminal);
+        let c = proposal(a, r, d, 20);
+        assert!(matches!(
+            a.submit_command(
+                MutationCommand::AttemptDispositionCommit(c),
+                DurabilityPolicy::Immediate
+            ),
+            Err(MutationAuthorityError::Disposition(DispositionRejection::TooLarge))
+        ));
+        assert_eq!(before, a.projection().projection_digest().unwrap());
+    }
 }

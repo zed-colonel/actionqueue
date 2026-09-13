@@ -52,11 +52,21 @@ impl Drop for EventScope {
 pub(crate) fn armed(point: &str) -> bool {
     FAIL.with(|p| p.borrow().as_deref() == Some(point))
         || PAUSE.with(|p| {
-            p.borrow().as_ref().is_some_and(|s| {
-                s.point == point && (s.kind.is_none() || s.kind == KIND.with(|k| k.get()))
-            })
+            let mut p = p.borrow_mut();
+            let Some(s) = p.as_mut() else { return false };
+            if s.point != point || (s.kind.is_some() && s.kind != KIND.with(|k| k.get())) {
+                return false;
+            }
+            // Partial-write hooks ask before touching the file. Skipped occurrences
+            // must remain complete frames, not leave an unacknowledged torn prefix.
+            if s.remaining > 1 {
+                s.remaining -= 1;
+                return false;
+            }
+            true
         })
 }
+
 pub(crate) fn checkpoint(point: &str) -> std::io::Result<()> {
     #[cfg(feature = "testing")]
     if PAUSE.with(|p| {
@@ -103,13 +113,20 @@ mod tests {
             checkpoint("selected").unwrap();
             {
                 let _inner = event_scope(336);
-                assert!(armed("selected"));
                 checkpoint("selected").unwrap();
                 PAUSE.with(|p| assert_eq!(p.borrow().as_ref().unwrap().remaining, 1));
             }
             assert!(!armed("selected"));
         }
         assert_eq!(KIND.with(|k| k.get()), None);
+        PAUSE.with(|p| *p.borrow_mut() = None);
+    }
+    #[test]
+    fn skipped_partial_write_occurrences_do_not_arm_a_torn_write() {
+        pause_on("wal_partial_header", Some(336), 2);
+        let _event = event_scope(336);
+        assert!(!armed("wal_partial_header"));
+        assert!(armed("wal_partial_header"));
         PAUSE.with(|p| *p.borrow_mut() = None);
     }
 }

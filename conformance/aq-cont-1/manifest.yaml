@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "package": "conformance/aq-cont-1",
-  "package_revision": 9,
+  "package_revision": 10,
   "status": "in_progress",
   "contract": "AQ-CONT-1",
   "contract_revision": "STACK-2026-07-20-CLEAN-1",
@@ -604,7 +604,7 @@
     },
     {
       "path": "performance/workloads.json",
-      "sha256": "3718b4b0f23f3e743b8d7963a3cb4b06708b29bfa0349b7ba1ea38b1f2ac42e3"
+      "sha256": "b01352f94f73c9d28a4b3860ffa1beeebe4cad73d8d2a4bb5403efb03b71072a"
     },
     {
       "path": "developmental/workloads.json",

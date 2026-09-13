@@ -32,7 +32,9 @@ fn main() {
     )
     .unwrap();
     let mut results = Vec::new();
-    for n in input["sizes"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap()) {
+    for (index, n) in
+        input["sizes"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap()).enumerate()
+    {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("store");
         let mut normal = ActionQueueEngine::new(
@@ -109,7 +111,14 @@ fn main() {
         let wal_bytes = std::fs::metadata(d.a().store_session().unwrap().wal_path()).unwrap().len();
         let snapshot_bytes =
             std::fs::metadata(d.a().store_session().unwrap().snapshot_path()).unwrap().len();
-        let mut reader = WalFsReader::for_session(d.a().store_session().unwrap()).unwrap();
+        let mut child_batch = Embedded::new(&dir.path().join("compound"));
+        child_batch.apply_step(&Step::Start { task: 1 });
+        let batch = input["compound_children"][index].as_u64().unwrap();
+        child_batch.apply_step(&Step::Fanout { task: 1, children: (2..batch + 2).collect() });
+        assert_eq!(child_batch.a().projection().task_count(), batch as usize + 1);
+        assert_eq!(child_batch.a().projection().waits().active_count(), 1);
+        let mut reader =
+            WalFsReader::for_session(child_batch.a().store_session().unwrap()).unwrap();
         let mut compound = Vec::new();
         while let Some(event) = reader.read_next().unwrap() {
             if matches!(event.event(), WalEventType::AttemptDispositionCommitted { .. }) {
@@ -119,21 +128,29 @@ fn main() {
         let (compound_bytes, serialization_ns) = timed(|| {
             compound
                 .iter()
-                .map(|e| actionqueue_storage::wal::codec::encode(e).unwrap().len())
+                .map(|e| {
+                    let bytes = actionqueue_storage::wal::codec::encode(e).unwrap().len();
+                    assert!(bytes <= actionqueue_core::limits::MAX_ADMISSION_RECORD_BYTES);
+                    bytes
+                })
                 .sum::<usize>()
         });
-        assert_eq!(compound.len(), n as usize);
-        assert!(
-            compound_bytes <= n as usize * actionqueue_core::limits::MAX_ADMISSION_RECORD_BYTES
-        );
+        assert_eq!(compound.len(), 1);
+        if index == 0 {
+            let mut rejected = Embedded::new(&dir.path().join("oversized"));
+            rejected.apply_step(&Step::Start { task: 1 });
+            rejected.assert_rejected_fanout(
+                (2..input["rejected_compound_children"].as_u64().unwrap() + 2).collect(),
+            );
+        }
         let digest = d.a().projection().projection_digest().unwrap();
         drop(d);
         let (recovered, recovery_ns) = timed(|| Embedded::reopen(&path));
         assert_eq!(recovered.a().projection().projection_digest().unwrap(), digest);
-        results.push(json!({"tasks":n,"ordinary_admission_ns":admission_ns,"ordinary_ready_selection_handler_dispatch_completion_ns":plain_completion_ns,"unmatched_signal_admission_ns":unmatched_signal_ns,"compound_serialization_ns":serialization_ns,"compound_serialization_bytes":compound_bytes,"admission_ready_and_accepted_start_ns":start_ns,"unmatched_wait_ns":wait_ns,"matching_fanout_ns":fanout_ns,"resumed_completion_ns":completion_ns,"snapshot_build_ns":snapshot_ns,"snapshot_bytes":snapshot_bytes,"wal_bytes":wal_bytes,"snapshot_tail_recovery_ns":recovery_ns}));
+        results.push(json!({"tasks":n,"compound_children":batch,"ordinary_admission_ns":admission_ns,"ordinary_ready_selection_handler_dispatch_completion_ns":plain_completion_ns,"unmatched_signal_admission_ns":unmatched_signal_ns,"compound_serialization_ns":serialization_ns,"compound_serialization_bytes":compound_bytes,"admission_ready_and_accepted_start_ns":start_ns,"unmatched_wait_ns":wait_ns,"matching_fanout_ns":fanout_ns,"resumed_completion_ns":completion_ns,"snapshot_build_ns":snapshot_ns,"snapshot_bytes":snapshot_bytes,"wal_bytes":wal_bytes,"snapshot_tail_recovery_ns":recovery_ns}));
     }
     let rustc = std::process::Command::new("rustc").arg("-Vv").output().unwrap();
-    let report = json!({"schema_version":1,"workload_hash":package::hash(&std::fs::read(package::root().join("performance/workloads.json")).unwrap()),"rustc":String::from_utf8_lossy(&rustc.stdout),"os":std::env::consts::OS,"arch":std::env::consts::ARCH,"features":{"workflow":cfg!(feature="workflow"),"budget":cfg!(feature="budget"),"actor":cfg!(feature="actor"),"platform":cfg!(feature="platform")},"measurements":results,"limitations":["Full projection preparation and full retained-WAL verification are included.","Elapsed-time measurements are informational; no machine-independent throughput gate."]});
+    let report = json!({"schema_version":1,"workload_hash":package::hash(&std::fs::read(package::root().join("performance/workloads.json")).unwrap()),"rustc":String::from_utf8_lossy(&rustc.stdout),"os":std::env::consts::OS,"arch":std::env::consts::ARCH,"debug_assertions":cfg!(debug_assertions),"parallelism":std::thread::available_parallelism().map(|n|n.get()).unwrap_or(1),"features":{"workflow":cfg!(feature="workflow"),"budget":cfg!(feature="budget"),"actor":cfg!(feature="actor"),"platform":cfg!(feature="platform")},"measurements":results,"limitations":["Full projection preparation and full retained-WAL verification are included.","Elapsed-time measurements are informational; no machine-independent throughput gate."]});
     let path = std::env::var_os("AQ_PERFORMANCE_REPORT")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::env::temp_dir().join("aq-cont-1-performance.json"));

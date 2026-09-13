@@ -120,7 +120,37 @@ async fn two_stores_lost_admission_duplicate_callback_early_signal_and_uncertain
             |output: &DataRef| matches!(output, DataRef::Inline(data) if data.bytes() == b"4");
         assert!(!verifier_accepts(output));
         assert_eq!(remote_run.state(), RunState::Completed);
-        let callback = engine::reference_signal(1);
+        let producer =
+            remote.projection().get_attempt_history(&remote_run.id()).unwrap()[0].attempt_id();
+        // Concrete task/run/attempt links are store-local. Cross-store provenance
+        // uses the contract's opaque external causation reference.
+        let causation = actionqueue_core::causal::CausationLink::new(
+            None,
+            None,
+            None,
+            Some(
+                actionqueue_core::bounded::OpaqueRef::new(format!(
+                    "remote-store/{}/{}/{}",
+                    r.task_spec().id(),
+                    remote_run.id(),
+                    producer
+                ))
+                .unwrap(),
+            ),
+        )
+        .unwrap();
+        let callback = AdmitSignalRequest::new(
+            SignalId::new("signal/1").unwrap(),
+            SignalNamespace::new("remote").unwrap(),
+            SignalKind::new("complete").unwrap(),
+            Some(l.causal_context().correlation_id().clone()),
+            Some(causation.clone()),
+            Some(actionqueue_core::bounded::OpaqueRef::new("worldinterface-owned-output").unwrap()),
+            Some(output.clone()),
+            None,
+            None,
+        )
+        .unwrap();
         let first = local.admit_signal(callback.clone()).unwrap();
         let duplicate = local.admit_signal(callback.clone()).unwrap();
         assert_eq!(first.sequence(), duplicate.sequence());
@@ -138,12 +168,32 @@ async fn two_stores_lost_admission_duplicate_callback_early_signal_and_uncertain
             .filter_map(|a| local.projection().attempt_resume(run.id(), a.attempt_id()))
             .collect();
         assert_eq!(contexts.len(), 1);
+        assert_eq!(
+            local
+                .projection()
+                .signals()
+                .get_signal(None, &SignalId::new("signal/1").unwrap())
+                .unwrap()
+                .envelope()
+                .causation,
+            Some(causation.clone())
+        );
         let digest = local.projection().projection_digest().unwrap();
         local.shutdown().unwrap();
         remote.shutdown().unwrap();
         let mut local = boot(&local_path, true);
         assert_eq!(local.projection().projection_digest().unwrap(), digest);
         local.admit_signal(callback).unwrap();
+        assert_eq!(
+            local
+                .projection()
+                .signals()
+                .get_signal(None, &SignalId::new("signal/1").unwrap())
+                .unwrap()
+                .envelope()
+                .causation,
+            Some(causation)
+        );
         idle(&mut local).await;
         assert_eq!(local.projection().projection_digest().unwrap(), digest);
         local.shutdown().unwrap();

@@ -10,8 +10,8 @@ continuation semantics.
 | `aq-cont-1-developmental-campaign-acceptance-matrix.yaml` | Eighteen `AQ-DD-*` developmental-neutrality cases (attribution neutrality, durable execution, recovery and idempotency, semantic non-ownership, privacy and observability); executed with replay and crash variants by `AQ-13` |
 | `contract-boundaries.json` | Policy driving the repository boundary checks in `tests/conformance/contract_boundaries.rs`; run with `cargo aq-conformance` |
 
-Fixture directories and black-box drivers are added by later pull requests. The manifest's
-fixture inventory is intentionally empty at `AQ-01`.
+The fixture inventory began empty at `AQ-01`; subsequent revisions preserve the
+historical vectors while adding executable coverage.
 
 AQ-05 adds signal canonical and projection-v3 vectors while preserving v1/v2
 evidence. `generate-signal-vectors.py` independently computes the bytes/digests.
@@ -35,9 +35,9 @@ and opaque attribution. `cross-feature-persistence.sh` builds isolated base and
 expanded binaries, checks identical child wire bytes, and refuses unsupported
 store profiles without mutation. Scratch data honors `TMPDIR`.
 
-## AQ-13 revision 9 implementation status
+## AQ-13 revision 10 implementation status
 
-Revision 9 is **in progress, not release conformance**. `manifest.yaml` now uses
+Revision 10 is **in progress, not release conformance**. `manifest.yaml` now uses
 JSON syntax (a YAML subset) so the runner and tests share structured validation.
 All previous fixture bytes and historical projection versions are preserved.
 `coverage.json` inventories all twenty invariants and eighteen developmental cases;
@@ -84,3 +84,10 @@ sensitive-content variants; parent/child and physical retry lineage in the pure
 model; per-fixture backup/corruption variants; stronger algorithmic cost bounds;
 and promotion to executable status only after complete coverage evidence passes.
 See [driver contract and reporting](drivers/README.md).
+
+Two existing API boundaries shape these tests. Concrete signal causation IDs must
+resolve within the receiving store, so the two-store reference workload preserves
+remote producer IDs in the supported opaque external causation reference. The
+persistence probe's tenantless workload uses an explicitly non-platform store and
+an authenticated single-tenant host; a separate empty full-feature store proves
+that a base binary still rejects the platform-bearing manifest without writes.

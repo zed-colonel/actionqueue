@@ -19,7 +19,7 @@ Exit status 0 means the selected subset passed. Reports identify package revisio
 fixture SHA-256, compiled feature profile, variant, and crash cut. A caught assertion
 failure is exit 1. Missing capabilities, fixtures, or full-profile coverage is exit
 2. A base-profile report is never full conformance. `--full` currently fails closed
-because revision 9 is still in progress; it also requires
+because revision 10 is still in progress; it also requires
 `workflow,budget,actor,platform` and forbids fixture selection.
 
 Each crash worker owns its own store and acknowledges the exact cut. The controller
@@ -49,4 +49,4 @@ child's stdin/stdout, one request and response per line:
 Identity credentials are out-of-band driver configuration, never scenario metadata.
 Lifecycle, restart, clock control, and storage fault injection belong to the harness
 controller, never daemon endpoints. This reserved protocol is documentation only;
-revision 9 does not yet implement or certify an external protocol consumer.
+revision 10 does not yet implement or certify an external protocol consumer.

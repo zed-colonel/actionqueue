@@ -161,6 +161,7 @@ jobs:
           path: |
             ${{ runner.temp }}/aq-conformance/report.json
             ${{ runner.temp }}/aq-conformance/aq-model-failure-*.json
+            ${{ runner.temp }}/aq-conformance/aq-dd-*-report.json
 
   production-feature-builds:
     name: Production feature boundaries (${{ matrix.features || 'base' }})

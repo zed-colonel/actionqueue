@@ -5,6 +5,8 @@ mod engine;
 mod package;
 #[path = "../../../tests/conformance/harness/process.rs"]
 mod process;
+#[path = "../../../tests/conformance/harness/report.rs"]
+mod report;
 use std::{fs, path::PathBuf, process::Command};
 
 use engine::{read_scenario, Embedded};
@@ -167,6 +169,9 @@ fn main() {
                 results.push(json!({"fixture_id":f.id,"fixture_hash":f.sha256,"feature_profile":features(),"driver":driver,"variant":"crash","crash_point":cut,"assertion_result":if result.is_ok(){"passed"}else{"failed"}}));
             }
         }
+    }
+    if full {
+        missing.extend(report::missing_evidence(&coverage, &results));
     }
     let passed = missing.is_empty() && results.iter().all(|v| v["assertion_result"] == "passed");
     let report = json!({"schema_version":1,"package_revision":manifest.package_revision,"contract_revision":manifest.contract_revision,"developmental_profile_revision":manifest.developmental_profile_revision,"profile":if full{"full"}else{"subset"},"passed":passed,"missing":missing,"results":results});

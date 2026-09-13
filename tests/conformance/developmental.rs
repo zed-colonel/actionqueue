@@ -173,10 +173,15 @@ fn run(case: u32) {
     assert_eq!(before, d.evidence());
     check(case, &d);
     d.verify();
-    println!(
-        "{}",
-        json!({"case":format!("AQ-DD-{case:03}"),"variants":["ordinary","replay","crash"],"result":"passed"})
-    );
+    let (manifest, _) = package::validate(&package::root()).unwrap();
+    let hash =
+        package::hash(&fs::read(package::root().join("developmental/workloads.json")).unwrap());
+    let results:Vec<_>=["ordinary","replay","crash"].iter().map(|variant|json!({"package_revision":manifest.package_revision,"case_id":format!("AQ-DD-{case:03}"),"fixture_hash":hash,"feature_profile":manifest.full_feature_set,"variant":variant,"driver":"embedded","crash_point":if *variant=="crash" {Some("after_workload_commit")}else{None},"assertion_result":"passed"})).collect();
+    let report = std::env::temp_dir().join(format!("aq-dd-{case:03}-report.json"));
+    fs::write(report, serde_json::to_vec_pretty(&results).unwrap()).unwrap();
+    for result in results {
+        println!("{result}");
+    }
 }
 #[test]
 fn aq_dd_001() {

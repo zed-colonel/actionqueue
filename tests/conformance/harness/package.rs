@@ -60,6 +60,7 @@ pub fn hash(bytes: &[u8]) -> String {
 }
 pub fn safe_path(root: &Path, relative: &str) -> Result<PathBuf, String> {
     if relative.is_empty()
+        || relative.split('/').any(|part| part.is_empty() || part == "." || part == "..")
         || relative.contains('\\')
         || Path::new(relative).components().any(|c| !matches!(c, Component::Normal(_)))
     {
@@ -204,6 +205,9 @@ pub fn validate(root: &Path) -> Result<(Manifest, Coverage), String> {
     fn inventory(root: &Path, dir: &Path, paths: &BTreeSet<String>) -> Result<(), String> {
         for entry in fs::read_dir(dir).map_err(|e| e.to_string())? {
             let p = entry.map_err(|e| e.to_string())?.path();
+            if p.symlink_metadata().map_err(|e| e.to_string())?.file_type().is_symlink() {
+                return Err(format!("symlink in package inventory: {}", p.display()));
+            }
             if p.is_dir() {
                 inventory(root, &p, paths)?;
             } else {

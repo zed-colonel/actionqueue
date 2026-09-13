@@ -7,7 +7,7 @@ fn inventory_is_closed_and_hashes_are_immutable() {
 #[test]
 fn rejects_path_traversal_absolute_paths_and_symlink_escape() {
     let root = tempfile::tempdir().unwrap();
-    for path in ["../manifest.yaml", "/etc/passwd", "a/../b", "a\\b", ""] {
+    for path in ["../manifest.yaml", "/etc/passwd", "a/../b", "a/./b", "a//b", "a\\b", ""] {
         assert!(package::safe_path(root.path(), path).is_err());
     }
     #[cfg(unix)]
@@ -64,5 +64,29 @@ fn malformed_inventory_fails_closed() {
         }
         std::fs::write(root.join("manifest.yaml"), serde_json::to_vec(&m).unwrap()).unwrap();
         assert!(package::validate(&root).is_err(), "mutation {mutation} passed");
+    }
+}
+
+#[path = "harness/report.rs"]
+mod report;
+#[test]
+fn passing_subset_cannot_satisfy_missing_variants_drivers_or_features() {
+    use serde_json::json;
+    let coverage:package::Coverage=serde_json::from_value(json!({"schema_version":1,"cases":[{"id":"AQ-DD-001","fixtures":["fixture"],"drivers":["embedded"],"required_features":["platform"],"variants":["ordinary","replay","crash"],"assertions":["preservation"],"supplemental_tests":[]}]})).unwrap();
+    let ordinary = json!({"fixture_id":"fixture","driver":"embedded","variant":"ordinary","assertion_result":"passed","feature_profile":["platform"]});
+    assert_eq!(report::missing_evidence(&coverage, std::slice::from_ref(&ordinary)).len(), 2);
+    let records: Vec<_> = ["ordinary", "replay", "crash"]
+        .iter()
+        .map(|variant| {
+            let mut r = ordinary.clone();
+            r["variant"] = json!(variant);
+            r
+        })
+        .collect();
+    assert!(report::missing_evidence(&coverage, &records).is_empty());
+    for field in ["driver", "assertion_result", "feature_profile"] {
+        let mut records = records.clone();
+        records[2][field] = json!("wrong");
+        assert_eq!(report::missing_evidence(&coverage, &records).len(), 1);
     }
 }
