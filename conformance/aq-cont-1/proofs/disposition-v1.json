@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "id": "AQ-CF-PROOF-DISPOSITION",
+  "target": "acceptance_attempt_disposition",
+  "case_ids": [
+    "AQ-H9"
+  ],
+  "minimum_passed": 1,
+  "evidence_kind": "complete_test_binary",
+  "assertions": "All tests in this named binary must pass; replay/crash assertions execute inside their test controllers."
+}

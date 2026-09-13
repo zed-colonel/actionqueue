@@ -159,6 +159,24 @@ impl WalWriter for WalFsWriter {
                 WalWriterError::IoError(e.to_string())
             })?;
         }
+        #[cfg(feature = "testing")]
+        for (point, length) in [
+            ("wal_partial_header", super::codec::HEADER_LEN / 2),
+            (
+                "wal_partial_payload",
+                super::codec::HEADER_LEN + (bytes.len() - super::codec::HEADER_LEN) / 2,
+            ),
+        ] {
+            if crate::store::fault::armed(point) {
+                self.file
+                    .write_all(&bytes[..length])
+                    .map_err(|e| WalWriterError::IoError(e.to_string()))?;
+                crate::store::fault::checkpoint(point).map_err(|e| {
+                    self.poisoned = true;
+                    WalWriterError::IoError(e.to_string())
+                })?;
+            }
+        }
         if let Err(e) = self.file.write_all(&bytes) {
             // A failed append is uncertain; fence this writer even if rollback succeeds.
             self.poisoned = true;

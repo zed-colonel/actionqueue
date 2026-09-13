@@ -17,7 +17,14 @@ pub(crate) fn encode(state: &crate::http::RouterStateInner) -> String {
     ] {
         let _ = writeln!(out, "# TYPE {name} counter\n{name} {value}");
     }
-    let _=writeln!(out,"# TYPE actionqueue_admission_total counter\nactionqueue_admission_total{{outcome=\"created\"}} {}\nactionqueue_admission_total{{outcome=\"duplicate\"}} {}\nactionqueue_admission_total{{outcome=\"conflict\"}} {}",o.admissions_created,o.admission_duplicates,o.admission_conflicts);
+    let _ = writeln!(
+        out,
+        "# TYPE actionqueue_admission_total \
+         counter\nactionqueue_admission_total{{outcome=\"created\"}} \
+         {}\nactionqueue_admission_total{{outcome=\"duplicate\"}} \
+         {}\nactionqueue_admission_total{{outcome=\"conflict\"}} {}",
+        o.admissions_created, o.admission_duplicates, o.admission_conflicts
+    );
     out.push_str("# TYPE actionqueue_signals_admitted_total counter\n");
     if o.signals.is_empty() {
         out.push_str(
@@ -53,12 +60,23 @@ pub(crate) fn encode(state: &crate::http::RouterStateInner) -> String {
     ] {
         let _ = writeln!(out, "# TYPE {name} gauge\n{name} {n}");
     }
-    let _=writeln!(out,"# TYPE actionqueue_disposition_rejected_total counter\nactionqueue_disposition_rejected_total{{reason=\"rejected\"}} {}\n# TYPE actionqueue_recovery_reconciliations_total counter\nactionqueue_recovery_reconciliations_total{{kind=\"execution\"}} {}",o.disposition_rejected,o.recovery_reconciliations);
+    let _ = writeln!(
+        out,
+        "# TYPE actionqueue_disposition_rejected_total \
+         counter\nactionqueue_disposition_rejected_total{{reason=\"rejected\"}} {}\n# TYPE \
+         actionqueue_recovery_reconciliations_total \
+         counter\nactionqueue_recovery_reconciliations_total{{kind=\"execution\"}} {}",
+        o.disposition_rejected, o.recovery_reconciliations
+    );
     for (name, count, sum) in [
         ("actionqueue_wait_latency_seconds", o.wait_latency_count, o.wait_latency_sum),
         ("actionqueue_compound_record_bytes", o.compound_bytes_count, o.compound_bytes_sum),
     ] {
-        let _=writeln!(out,"# TYPE {name} histogram\n{name}_bucket{{le=\"+Inf\"}} {count}\n{name}_count {count}\n{name}_sum {sum}");
+        let _ = writeln!(
+            out,
+            "# TYPE {name} histogram\n{name}_bucket{{le=\"+Inf\"}} {count}\n{name}_count \
+             {count}\n{name}_sum {sum}"
+        );
     }
     out
 }

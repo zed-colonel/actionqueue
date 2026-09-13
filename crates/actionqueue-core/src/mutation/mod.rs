@@ -26,6 +26,10 @@ pub enum DurabilityPolicy {
 }
 
 /// Semantic mutation command proposed by an engine-facing caller.
+// Commands are submitted individually to the single mutation owner. Keep the bounded
+// disposition inline: boxing it adds an allocation to every handler completion and
+// changes the public construction API without reducing any retained queue storage.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[must_use = "mutation commands should be submitted to a MutationAuthority"]
 pub enum MutationCommand {

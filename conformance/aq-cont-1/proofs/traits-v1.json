@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "id": "AQ-CF-PROOF-TRAITS",
+  "target": "acceptance_executor_trait_matching",
+  "case_ids": [
+    "AQ-H12"
+  ],
+  "minimum_passed": 1,
+  "evidence_kind": "complete_test_binary",
+  "assertions": "All tests in this named binary must pass; replay/crash assertions execute inside their test controllers."
+}

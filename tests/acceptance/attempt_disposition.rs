@@ -284,7 +284,7 @@ fn yields_do_not_increase_failure_backoff_and_interruption_counts_once() {
     .unwrap();
     assert_eq!(
         actionqueue_engine::scheduler::retry_promotion::promote_retry_wait_to_ready(
-            &[run.clone()],
+            std::slice::from_ref(run),
             80,
             &backoff
         )
@@ -720,16 +720,17 @@ impl actionqueue_executor_local::handler::ExecutorHandler for ExpiryHandler {
 // returned. Both retry allowance and a shared concurrency key must remain usable.
 #[tokio::test]
 async fn delayed_tick_recovers_expired_execution_and_advances_queued_task() {
-    use actionqueue_runtime::{
-        config::{BackoffStrategyConfig, RuntimeConfig},
-        engine::ActionQueueEngine,
-    };
     use std::{
         sync::{
             atomic::{AtomicU64, Ordering},
             Arc,
         },
         time::Duration,
+    };
+
+    use actionqueue_runtime::{
+        config::{BackoffStrategyConfig, RuntimeConfig},
+        engine::ActionQueueEngine,
     };
     for max_attempts in [1, 2] {
         for delayed_time in [1003, 1009] {

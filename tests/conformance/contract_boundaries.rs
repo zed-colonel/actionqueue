@@ -900,6 +900,21 @@ fn untracked_files_inside_the_repository_are_invisible_to_every_scan() {
     drop(guard);
 }
 
+/// Exercise the same AST boundary checker with a synthetic forbidden public field.
+#[allow(dead_code)]
+pub fn assert_synthetic_metadata_rejected() {
+    let source = RustSource::parse(
+        "synthetic.rs",
+        "pub struct Input { pub metadata: std::collections::HashMap<String, String> }",
+    );
+    let violations = public_type_violations(
+        &source,
+        &[compact_type("std::collections::HashMap<String, String>")],
+    );
+    assert_eq!(violations.len(), 1);
+    assert_eq!(violations[0].item.as_deref(), Some("Input::metadata"));
+}
+
 #[cfg(test)]
 mod unit {
     use super::*;

@@ -1,14 +1,15 @@
 //! Host-authenticated control boundary. Check current durable grants before any
 //! target lookup or duplicate acknowledgement; caller/causal references are opaque.
+pub use actionqueue_core::control::ControlError;
 pub use actionqueue_core::control::{ControlScope, HostControlContext, QueueAction};
 use actionqueue_core::{mutation::*, time::clock::Clock};
+pub use actionqueue_storage::mutation::control::{authorize, check_scope};
 use actionqueue_storage::{
     mutation::authority::*, recovery::reducer::ReplayReducer, wal::writer::WalWriter,
 };
-
-pub use actionqueue_core::control::ControlError;
-pub use actionqueue_storage::mutation::control::{authorize, check_scope};
 /// Host operations supported by the handler-independent control service.
+// Public value API; avoid an allocation and breaking constructor change.
+#[allow(clippy::large_enum_variant)]
 pub enum ControlOperation {
     /// Durable task admission.
     AdmitTask(actionqueue_core::admission::EnsureTaskRequest),

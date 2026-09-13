@@ -6,6 +6,8 @@ use actionqueue_core::{
     task::task_spec::*,
 };
 /// Construct a child with explicit lifecycle policy; attribution is inherited by storage.
+// Preserve the explicit dependencies of this existing boundary API.
+#[allow(clippy::too_many_arguments)]
 pub fn child(
     parent: TaskId,
     key: AdmissionKey,

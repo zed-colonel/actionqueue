@@ -1,0 +1,780 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "AQ-H1",
+      "fixtures": [],
+      "drivers": [],
+      "required_features": [],
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ],
+      "assertions": [
+        "Contract AQ-H1 proof required"
+      ],
+      "supplemental_tests": [
+        "tests/conformance/contract_boundaries.rs"
+      ]
+    },
+    {
+      "id": "AQ-H2",
+      "fixtures": [
+        "AQ-CF-SCENARIO-EARLY",
+        "AQ-CF-SCENARIO-LATE",
+        "AQ-CF-SCENARIO-DEADLINE",
+        "AQ-CF-SCENARIO-CANCEL",
+        "AQ-CF-SCENARIO-ADMISSION",
+        "AQ-CF-SCENARIO-FANOUT"
+      ],
+      "drivers": [
+        "embedded"
+      ],
+      "required_features": [],
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ],
+      "assertions": [
+        "Contract AQ-H2 proof required"
+      ],
+      "supplemental_tests": [
+        "tests/acceptance/concurrent_mutation_boundary.rs"
+      ]
+    },
+    {
+      "id": "AQ-H3",
+      "fixtures": [
+        "AQ-CF-SCENARIO-EARLY",
+        "AQ-CF-SCENARIO-LATE",
+        "AQ-CF-SCENARIO-DEADLINE"
+      ],
+      "drivers": [
+        "embedded"
+      ],
+      "required_features": [],
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ],
+      "assertions": [
+        "Contract AQ-H3 proof required"
+      ],
+      "supplemental_tests": [
+        "tests/acceptance/waits.rs",
+        "tests/acceptance/wait_crash.rs"
+      ]
+    },
+    {
+      "id": "AQ-H4",
+      "fixtures": [
+        "AQ-CF-SCENARIO-EARLY",
+        "AQ-CF-SCENARIO-LATE"
+      ],
+      "drivers": [
+        "embedded"
+      ],
+      "required_features": [],
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ],
+      "assertions": [
+        "Contract AQ-H4 proof required"
+      ],
+      "supplemental_tests": [
+        "tests/acceptance/attempt_disposition.rs"
+      ]
+    },
+    {
+      "id": "AQ-H5",
+      "fixtures": [
+        "AQ-CF-SCENARIO-EARLY",
+        "AQ-CF-SCENARIO-LATE",
+        "AQ-CF-SCENARIO-DEADLINE"
+      ],
+      "drivers": [
+        "embedded"
+      ],
+      "required_features": [],
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ],
+      "assertions": [
+        "Contract AQ-H5 proof required"
+      ],
+      "supplemental_tests": [
+        "tests/acceptance/checkpoint_resume.rs"
+      ]
+    },
+    {
+      "id": "AQ-H6",
+      "fixtures": [
+        "AQ-CF-SCENARIO-ADMISSION"
+      ],
+      "drivers": [
+        "embedded"
+      ],
+      "required_features": [],
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ],
+      "assertions": [
+        "Contract AQ-H6 proof required"
+      ],
+      "supplemental_tests": [
+        "tests/acceptance/idempotent_admission.rs",
+        "tests/acceptance/compound_admission_crash.rs"
+      ]
+    },
+    {
+      "id": "AQ-H7",
+      "fixtures": [
+        "AQ-CF-SCENARIO-ADMISSION"
+      ],
+      "drivers": [
+        "embedded"
+      ],
+      "required_features": [],
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ],
+      "assertions": [
+        "Contract AQ-H7 proof required"
+      ],
+      "supplemental_tests": [
+        "tests/acceptance/admission_conflict.rs"
+      ]
+    },
+    {
+      "id": "AQ-H8",
+      "fixtures": [
+        "AQ-CF-SCENARIO-FANOUT"
+      ],
+      "drivers": [
+        "embedded"
+      ],
+      "required_features": [],
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ],
+      "assertions": [
+        "Contract AQ-H8 proof required"
+      ],
+      "supplemental_tests": [
+        "tests/acceptance/parent_wait_child_atomicity.rs"
+      ]
+    },
+    {
+      "id": "AQ-H9",
+      "fixtures": [],
+      "drivers": [],
+      "required_features": [],
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ],
+      "assertions": [
+        "Contract AQ-H9 proof required"
+      ],
+      "supplemental_tests": [
+        "tests/acceptance/attempt_disposition.rs"
+      ]
+    },
+    {
+      "id": "AQ-H10",
+      "fixtures": [],
+      "drivers": [],
+      "required_features": [],
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ],
+      "assertions": [
+        "Contract AQ-H10 proof required"
+      ],
+      "supplemental_tests": [
+        "tests/acceptance/control_mutation_attribution.rs"
+      ]
+    },
+    {
+      "id": "AQ-H11",
+      "fixtures": [],
+      "drivers": [],
+      "required_features": [],
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ],
+      "assertions": [
+        "Contract AQ-H11 proof required"
+      ],
+      "supplemental_tests": [
+        "tests/acceptance/control_mutation_attribution.rs"
+      ]
+    },
+    {
+      "id": "AQ-H12",
+      "fixtures": [],
+      "drivers": [],
+      "required_features": [],
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ],
+      "assertions": [
+        "Contract AQ-H12 proof required"
+      ],
+      "supplemental_tests": [
+        "tests/acceptance/executor_trait_matching.rs"
+      ]
+    },
+    {
+      "id": "AQ-H13",
+      "fixtures": [],
+      "drivers": [],
+      "required_features": [],
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ],
+      "assertions": [
+        "Contract AQ-H13 proof required"
+      ],
+      "supplemental_tests": [
+        "tests/acceptance/budget_awaiting.rs"
+      ]
+    },
+    {
+      "id": "AQ-H14",
+      "fixtures": [],
+      "drivers": [],
+      "required_features": [],
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ],
+      "assertions": [
+        "Contract AQ-H14 proof required"
+      ],
+      "supplemental_tests": [
+        "tests/conformance/reference_adapter.rs"
+      ]
+    },
+    {
+      "id": "AQ-H15",
+      "fixtures": [],
+      "drivers": [],
+      "required_features": [],
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ],
+      "assertions": [
+        "Contract AQ-H15 proof required"
+      ],
+      "supplemental_tests": [
+        "tests/acceptance/control_mutation_attribution.rs"
+      ]
+    },
+    {
+      "id": "AQ-H16",
+      "fixtures": [],
+      "drivers": [],
+      "required_features": [],
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ],
+      "assertions": [
+        "Contract AQ-H16 proof required"
+      ],
+      "supplemental_tests": [
+        "tests/conformance/target_persistence.rs"
+      ]
+    },
+    {
+      "id": "AQ-H17",
+      "fixtures": [],
+      "drivers": [],
+      "required_features": [],
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ],
+      "assertions": [
+        "Contract AQ-H17 proof required"
+      ],
+      "supplemental_tests": [
+        "tests/conformance/contract_boundaries.rs"
+      ]
+    },
+    {
+      "id": "AQ-H18",
+      "fixtures": [],
+      "drivers": [],
+      "required_features": [],
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ],
+      "assertions": [
+        "Contract AQ-H18 proof required"
+      ],
+      "supplemental_tests": [
+        "tests/acceptance/cron_scheduling.rs"
+      ]
+    },
+    {
+      "id": "AQ-H19",
+      "fixtures": [],
+      "drivers": [],
+      "required_features": [],
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ],
+      "assertions": [
+        "Contract AQ-H19 proof required"
+      ],
+      "supplemental_tests": [
+        "tests/acceptance/admission_conflict.rs"
+      ]
+    },
+    {
+      "id": "AQ-H20",
+      "fixtures": [],
+      "drivers": [],
+      "required_features": [],
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ],
+      "assertions": [
+        "Contract AQ-H20 proof required"
+      ],
+      "supplemental_tests": [
+        "tests/conformance/reference_adapter.rs"
+      ]
+    },
+    {
+      "id": "AQ-DD-001",
+      "fixtures": [],
+      "drivers": [],
+      "required_features": [
+        "workflow",
+        "budget",
+        "actor",
+        "platform"
+      ],
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ],
+      "assertions": [
+        "ActionQueue preserves and returns the bounded reference without dereferencing or validating campaign meaning."
+      ],
+      "supplemental_tests": [
+        "tests/conformance/developmental.rs"
+      ]
+    },
+    {
+      "id": "AQ-DD-002",
+      "fixtures": [],
+      "drivers": [],
+      "required_features": [
+        "workflow",
+        "budget",
+        "actor",
+        "platform"
+      ],
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ],
+      "assertions": [
+        "Admission, scheduling, priority, budget, executor eligibility, deadlines, and retention are identical."
+      ],
+      "supplemental_tests": []
+    },
+    {
+      "id": "AQ-DD-003",
+      "fixtures": [],
+      "drivers": [],
+      "required_features": [
+        "workflow",
+        "budget",
+        "actor",
+        "platform"
+      ],
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ],
+      "assertions": [
+        "The mutation is denied; the reference creates no admission, signal, cancellation, resume, or reprioritization authority."
+      ],
+      "supplemental_tests": []
+    },
+    {
+      "id": "AQ-DD-004",
+      "fixtures": [],
+      "drivers": [],
+      "required_features": [
+        "workflow",
+        "budget",
+        "actor",
+        "platform"
+      ],
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ],
+      "assertions": [
+        "Contract and API checks fail; rich campaign state remains in an application-owned record behind one bounded reference."
+      ],
+      "supplemental_tests": []
+    },
+    {
+      "id": "AQ-DD-005",
+      "fixtures": [
+        "AQ-CF-SCENARIO-FANOUT"
+      ],
+      "drivers": [
+        "embedded"
+      ],
+      "required_features": [
+        "workflow",
+        "budget",
+        "actor",
+        "platform"
+      ],
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ],
+      "assertions": [
+        "The parent wait and required child admissions commit according to ordinary compound-disposition guarantees, with no partial required fan-out."
+      ],
+      "supplemental_tests": []
+    },
+    {
+      "id": "AQ-DD-006",
+      "fixtures": [
+        "AQ-CF-SCENARIO-EARLY",
+        "AQ-CF-SCENARIO-LATE"
+      ],
+      "drivers": [
+        "embedded"
+      ],
+      "required_features": [
+        "workflow",
+        "budget",
+        "actor",
+        "platform"
+      ],
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ],
+      "assertions": [
+        "The run resumes exactly once with preserved signal, wait, checkpoint, correlation, and causal lineage."
+      ],
+      "supplemental_tests": []
+    },
+    {
+      "id": "AQ-DD-007",
+      "fixtures": [],
+      "drivers": [],
+      "required_features": [
+        "workflow",
+        "budget",
+        "actor",
+        "platform"
+      ],
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ],
+      "assertions": [
+        "Inspection exposes the ordinary queue-field difference; ActionQueue does not hide or normalize it."
+      ],
+      "supplemental_tests": []
+    },
+    {
+      "id": "AQ-DD-008",
+      "fixtures": [],
+      "drivers": [],
+      "required_features": [
+        "workflow",
+        "budget",
+        "actor",
+        "platform"
+      ],
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ],
+      "assertions": [
+        "Authorized cancellation follows ordinary queue semantics and preserves control attribution; ActionQueue does not infer saturation."
+      ],
+      "supplemental_tests": []
+    },
+    {
+      "id": "AQ-DD-009",
+      "fixtures": [
+        "AQ-CF-SCENARIO-ADMISSION"
+      ],
+      "drivers": [
+        "embedded"
+      ],
+      "required_features": [
+        "workflow",
+        "budget",
+        "actor",
+        "platform"
+      ],
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ],
+      "assertions": [
+        "ensure_task returns AlreadyExists and one logical queue task remains."
+      ],
+      "supplemental_tests": []
+    },
+    {
+      "id": "AQ-DD-010",
+      "fixtures": [
+        "AQ-CF-SCENARIO-ADMISSION"
+      ],
+      "drivers": [
+        "embedded"
+      ],
+      "required_features": [
+        "workflow",
+        "budget",
+        "actor",
+        "platform"
+      ],
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ],
+      "assertions": [
+        "Admission returns a stable digest conflict and preserves the original task."
+      ],
+      "supplemental_tests": []
+    },
+    {
+      "id": "AQ-DD-011",
+      "fixtures": [],
+      "drivers": [],
+      "required_features": [
+        "workflow",
+        "budget",
+        "actor",
+        "platform"
+      ],
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ],
+      "assertions": [
+        "ActionQueue records attempt lineage and resume context but exposes no sample, replication, or statistical-independence judgment."
+      ],
+      "supplemental_tests": []
+    },
+    {
+      "id": "AQ-DD-012",
+      "fixtures": [
+        "AQ-CF-SCENARIO-EARLY",
+        "AQ-CF-SCENARIO-LATE",
+        "AQ-CF-SCENARIO-FANOUT"
+      ],
+      "drivers": [
+        "embedded"
+      ],
+      "required_features": [
+        "workflow",
+        "budget",
+        "actor",
+        "platform"
+      ],
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ],
+      "assertions": [
+        "Replay reconstructs exact trace, correlation, origin, causation, wait, signal, and attempt lineage before dispatch opens."
+      ],
+      "supplemental_tests": []
+    },
+    {
+      "id": "AQ-DD-013",
+      "fixtures": [],
+      "drivers": [],
+      "required_features": [
+        "workflow",
+        "budget",
+        "actor",
+        "platform"
+      ],
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ],
+      "assertions": [
+        "ActionQueue preserves Completed as an execution fact and does not expose task correctness or candidate acceptance."
+      ],
+      "supplemental_tests": [
+        "tests/conformance/developmental.rs"
+      ]
+    },
+    {
+      "id": "AQ-DD-014",
+      "fixtures": [],
+      "drivers": [],
+      "required_features": [
+        "workflow",
+        "budget",
+        "actor",
+        "platform"
+      ],
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ],
+      "assertions": [
+        "ActionQueue reports structural failure evidence only and does not label intelligence, representation, or harness as binding."
+      ],
+      "supplemental_tests": [
+        "tests/conformance/developmental.rs"
+      ]
+    },
+    {
+      "id": "AQ-DD-015",
+      "fixtures": [],
+      "drivers": [],
+      "required_features": [
+        "workflow",
+        "budget",
+        "actor",
+        "platform"
+      ],
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ],
+      "assertions": [
+        "No queue API, projection, metric, or inspector field declares a winner, gain, saturation state, or activation recommendation."
+      ],
+      "supplemental_tests": [
+        "tests/conformance/developmental.rs"
+      ]
+    },
+    {
+      "id": "AQ-DD-016",
+      "fixtures": [],
+      "drivers": [],
+      "required_features": [
+        "workflow",
+        "budget",
+        "actor",
+        "platform"
+      ],
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ],
+      "assertions": [
+        "Queue records contain admitted bounded references or hashes rather than raw campaign ontology or fixture content unless the ordinary task payload contract explicitly requires it."
+      ],
+      "supplemental_tests": [
+        "tests/conformance/developmental.rs"
+      ]
+    },
+    {
+      "id": "AQ-DD-017",
+      "fixtures": [],
+      "drivers": [],
+      "required_features": [
+        "workflow",
+        "budget",
+        "actor",
+        "platform"
+      ],
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ],
+      "assertions": [
+        "They appear only in authorized inspection or traces under redaction policy, not in metric labels."
+      ],
+      "supplemental_tests": []
+    },
+    {
+      "id": "AQ-DD-018",
+      "fixtures": [],
+      "drivers": [],
+      "required_features": [
+        "workflow",
+        "budget",
+        "actor",
+        "platform"
+      ],
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ],
+      "assertions": [
+        "The inspector returns structural execution history and an explicit non-interpretation notice, not benchmark or acceptance semantics."
+      ],
+      "supplemental_tests": [
+        "tests/conformance/developmental.rs"
+      ]
+    }
+  ]
+}

@@ -1,6 +1,7 @@
 //! Derived exact-reference lookup. Rebuilt by admission insertion on replay and hydration.
-use actionqueue_core::ids::{TaskId, TenantId};
 use std::collections::{BTreeSet, HashMap};
+
+use actionqueue_core::ids::{TaskId, TenantId};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ReferenceField {
     Trace,
@@ -92,8 +93,9 @@ impl super::reducer::ReplayReducer {
         self.inspection_index.attempts.get(&attempt).copied()
     }
     pub(crate) fn index_inspection_event(&mut self, event: &crate::wal::event::WalEvent) {
-        use crate::wal::event::WalEventType as E;
         use ControlTarget as T;
+
+        use crate::wal::event::WalEventType as E;
         match event.event() {
             E::AcceptedAttemptStarted { record } => {
                 self.inspection_index.attempts.insert(record.attempt_id, record.run_id);

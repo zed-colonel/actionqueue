@@ -28,6 +28,8 @@ pub fn commit_remote<W: WalWriter>(
 ) -> Result<(), Error> {
     commit_proposal(a, expected, disposition, now, Some(remote), false)
 }
+// Preserve the explicit dependencies of this existing boundary API.
+#[allow(clippy::too_many_arguments)]
 fn commit_proposal<W: WalWriter>(
     a: &mut StorageMutationAuthority<W, ReplayReducer>,
     expected: AttemptCommitExpectation,

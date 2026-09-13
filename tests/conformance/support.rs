@@ -110,6 +110,11 @@ pub fn read_text_if_text(path: &Path) -> Option<String> {
 
 /// Reads a scalar `key: value` line from a simple YAML document.
 pub fn yaml_scalar(text: &str, key: &str) -> Option<String> {
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(text) {
+        return value
+            .get(key)
+            .map(|v| v.as_str().map(str::to_owned).unwrap_or_else(|| v.to_string()));
+    }
     let prefix = format!("{key}:");
     text.lines()
         .map(str::trim_end)

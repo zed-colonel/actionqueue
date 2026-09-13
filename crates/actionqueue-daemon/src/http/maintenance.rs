@@ -1,9 +1,10 @@
 //! Remote scheduler ownership is serialized with every HTTP mutation.
-use super::{ControlMutationAuthority, RouterState};
 use actionqueue_core::control::ControlError;
 use actionqueue_storage::{
     mutation::StorageMutationAuthority, recovery::reducer::ReplayReducer, wal::writer::WalWriter,
 };
+
+use super::{ControlMutationAuthority, RouterState};
 
 pub(crate) fn maintain_locked<W: WalWriter>(
     state: &RouterState,

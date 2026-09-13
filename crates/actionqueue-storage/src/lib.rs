@@ -50,7 +50,8 @@
 //!     actor_id: None,
 //!     scope: actionqueue_core::control::ControlScope::SingleTenant,
 //!     attribution: actionqueue_core::causal::ControlMutationContext::new(
-//!         actionqueue_core::bounded::OpaqueRef::new("example-host").unwrap()),
+//!         actionqueue_core::bounded::OpaqueRef::new("example-host").unwrap(),
+//!     ),
 //! }));
 //! authority
 //!     .submit_command(

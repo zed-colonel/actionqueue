@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "id": "AQ-CF-SCENARIO-DEADLINE",
+  "required_features": [],
+  "steps": [
+    {
+      "op": "start",
+      "task": 1
+    },
+    {
+      "op": "wait",
+      "task": 1,
+      "deadline": 24
+    },
+    {
+      "op": "reconcile",
+      "at": 30
+    },
+    {
+      "op": "signal",
+      "signal": 1
+    },
+    {
+      "op": "finish",
+      "task": 1,
+      "success": true
+    }
+  ],
+  "expected_observations": "expected-projections/deadline.json",
+  "recovery_cuts": [
+    1,
+    2,
+    3,
+    4,
+    5
+  ]
+}

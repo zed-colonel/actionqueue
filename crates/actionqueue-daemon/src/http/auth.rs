@@ -1,6 +1,7 @@
 //! Host-provided authentication hook and trusted extractor. No body field can
 //! supply this extension. Authentication runs before body extraction.
-use super::RouterState;
+use std::sync::Arc;
+
 use actionqueue_core::control::HostControlContext;
 use axum::{
     extract::{Request, State},
@@ -8,7 +9,8 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use std::sync::Arc;
+
+use super::RouterState;
 /// Hook implemented by the daemon host (token/session validation is not core policy).
 pub type HostAuthenticator = Arc<
     dyn Fn(&HeaderMap, &axum::http::Uri) -> Result<HostControlContext, AuthenticationError>

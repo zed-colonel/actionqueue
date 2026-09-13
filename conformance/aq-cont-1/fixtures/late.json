@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "id": "AQ-CF-SCENARIO-LATE",
+  "required_features": [],
+  "steps": [
+    {
+      "op": "start",
+      "task": 1
+    },
+    {
+      "op": "wait",
+      "task": 1,
+      "deadline": null
+    },
+    {
+      "op": "snapshot"
+    },
+    {
+      "op": "signal",
+      "signal": 1
+    },
+    {
+      "op": "signal",
+      "signal": 1
+    },
+    {
+      "op": "finish",
+      "task": 1,
+      "success": true
+    }
+  ],
+  "expected_observations": "expected-projections/late.json",
+  "recovery_cuts": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+  ]
+}

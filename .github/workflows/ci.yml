@@ -121,3 +121,80 @@ jobs:
 
       - name: Run actionqueue-storage serde roundtrip tests
         run: cargo test -p actionqueue-storage --features serde
+
+  conformance-package:
+    name: Versioned conformance evidence
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.89.0
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            target
+          key: ${{ runner.os }}-aq-conformance-${{ hashFiles('**/Cargo.lock') }}
+      - name: Prepare controller-owned evidence directory
+        run: mkdir -p "${{ runner.temp }}/aq-conformance"
+      - name: Package, model, and acknowledged process cuts
+        env:
+          TMPDIR: ${{ runner.temp }}/aq-conformance
+        run: cargo aq-conformance
+      - name: Expanded developmental and two-store evidence
+        env:
+          TMPDIR: ${{ runner.temp }}/aq-conformance
+        run: cargo aq-developmental
+      - name: Complete conformance and public-driver report
+        env:
+          TMPDIR: ${{ runner.temp }}/aq-conformance
+        run: cargo run --example aq_conformance --features workflow,budget,actor,platform -- --full --report "${{ runner.temp }}/aq-conformance/report.json"
+      - name: Independent cross-feature persistence
+        env:
+          TMPDIR: ${{ runner.temp }}/aq-conformance
+        run: bash conformance/aq-cont-1/cross-feature-persistence.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: aq-conformance-evidence
+          path: |
+            ${{ runner.temp }}/aq-conformance/report.json
+            ${{ runner.temp }}/aq-conformance/aq-model-failure-*.json
+            ${{ runner.temp }}/aq-conformance/aq-dd-*-report.json
+            ${{ runner.temp }}/aq-conformance/aq-full-evidence-*/
+
+  production-feature-builds:
+    name: Production feature boundaries (${{ matrix.features || 'base' }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        features: ['', 'workflow', 'budget', 'workflow,budget', 'actor', 'platform', 'actor,platform', 'workflow,budget,actor,platform']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.89.0
+      - name: Build independent production consumers without test feature unification
+        run: |
+          cargo build -p actionqueue-daemon --no-default-features --features '${{ matrix.features }}'
+          cargo build -p actionqueue-cli --no-default-features --features '${{ matrix.features }}'
+
+  continuation-performance:
+    name: Continuation workload measurements and bounds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.89.0
+      - name: Measure fixed workloads
+        env:
+          AQ_PERFORMANCE_REPORT: ${{ runner.temp }}/aq-performance.json
+        run: cargo bench --bench continuation
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: aq-performance
+          path: ${{ runner.temp }}/aq-performance.json

@@ -178,12 +178,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let path = std::path::Path::new(args.get(2).ok_or("missing path")?);
     match mode.as_str() {
         "create" => {
-            let session = open_store(path, OpenOptions::Initialize { features: capabilities() })?;
+            // This wire workload is deliberately tenantless. Rich binaries can
+            // open this explicit single-tenant profile without manufacturing RBAC.
+            let features = capabilities().into_iter().filter(|f| f != "platform").collect();
+            let session = open_store(path, OpenOptions::Initialize { features })?;
             let mut writer = WalFsWriter::new(session.clone())?;
             writer.append(&admission_event()?)?;
             writer.flush()?;
             let p = recover_read_only(&session, RepairPolicy::Strict)?.projection;
-            let mut a = actionqueue_storage::mutation::StorageMutationAuthority::new(writer, p);
+            let mut a = actionqueue_storage::mutation::StorageMutationAuthority::new(writer, p)
+                .with_host(actionqueue_core::control::HostControlContext {
+                    actor_id: None,
+                    scope: actionqueue_core::control::ControlScope::SingleTenant,
+                    attribution: actionqueue_core::causal::ControlMutationContext::new(
+                        actionqueue_core::bounded::OpaqueRef::new("lineage-probe")?,
+                    ),
+                });
             let (w, _) = wait_records();
             for (from, to) in
                 [(RunState::Scheduled, RunState::Ready), (RunState::Ready, RunState::Leased)]
@@ -384,6 +394,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let mut sw = SnapshotFsWriter::new(&session)?;
             sw.write(&build_snapshot_from_projection(p, 42)?)?;
             sw.close()?;
+        }
+        "create-profile" => {
+            let _session = open_store(path, OpenOptions::Initialize { features: capabilities() })?;
         }
         "read" => {
             println!("{}", serde_json::to_string(&inspect_store(path)?)?);

@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "id": "AQ-CF-SCENARIO-FANOUT",
+  "required_features": [],
+  "steps": [
+    {
+      "op": "start",
+      "task": 1
+    },
+    {
+      "op": "fanout",
+      "task": 1,
+      "children": [
+        2,
+        3
+      ]
+    },
+    {
+      "op": "snapshot"
+    },
+    {
+      "op": "restart"
+    },
+    {
+      "op": "reconcile",
+      "at": 30
+    }
+  ],
+  "expected_observations": "expected-projections/fanout.json",
+  "recovery_cuts": [
+    1,
+    2,
+    3,
+    4,
+    5
+  ]
+}

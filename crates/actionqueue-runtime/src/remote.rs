@@ -1,11 +1,12 @@
 //! Authenticated remote execution over the same durable accepted-start and
 //! disposition paths used by local workers. No remote lease enters local in-flight state.
-use crate::control::{authorize, check_scope};
 use actionqueue_actor::protocol::*;
 use actionqueue_core::{control::*, ids::*, mutation::*, run::RunState};
 use actionqueue_storage::{
     mutation::authority::*, recovery::reducer::ReplayReducer, wal::writer::WalWriter,
 };
+
+use crate::control::{authorize, check_scope};
 
 /// Accepted work and immutable execution input. Resume context comes from the
 /// accepted start's durable assignment, including on response retransmission.
@@ -212,6 +213,8 @@ pub fn claim<W: WalWriter>(
 }
 /// Renewal names the active attempt and accepted fence. Actor liveness heartbeats
 /// never renew execution, and local worker heartbeats never renew these leases.
+// Preserve the explicit dependencies of this existing boundary API.
+#[allow(clippy::too_many_arguments)]
 pub fn renew<W: WalWriter>(
     a: &mut StorageMutationAuthority<W, ReplayReducer>,
     h: &HostControlContext,

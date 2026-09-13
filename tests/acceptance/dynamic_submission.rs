@@ -62,7 +62,7 @@ mod wf {
                 .expect("valid child spec")
                 .with_parent(self.coordinator_id);
 
-                return super::support::admit_children(vec![child_a, child_b]);
+                super::support::admit_children(vec![child_a, child_b])
             }
         }
     }

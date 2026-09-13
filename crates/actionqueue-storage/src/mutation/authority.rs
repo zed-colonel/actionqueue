@@ -1774,6 +1774,13 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
             _ => MutationAuthorityError::Wait(actionqueue_core::mutation::WaitRejection::TooLarge),
         };
         let frame_bytes = crate::wal::codec::encode(&event).map_err(|_| too_large())?.len();
+        let _fault_scope =
+            crate::store::fault::event_scope(crate::wal::wire_v1::kind(event.event()));
+        crate::store::fault::checkpoint("compound_after_serialization").map_err(|e| {
+            MutationAuthorityError::Append(crate::wal::writer::WalWriterError::IoError(
+                e.to_string(),
+            ))
+        })?;
         let limit = match event.event() {
             WalEventType::AdmissionCommitted { .. } => self
                 .admission_limits
@@ -2429,6 +2436,29 @@ impl<ProjectionError: std::error::Error + 'static> std::error::Error
 {
 }
 
+impl<W: WalWriter, P: MutationProjection> MutationAuthority for StorageMutationAuthority<W, P> {
+    type Error = MutationAuthorityError<P::Error>;
+    fn submit_command(
+        &mut self,
+        command: MutationCommand,
+        durability: DurabilityPolicy,
+    ) -> Result<MutationOutcome, Self::Error> {
+        let disposition = matches!(&command, MutationCommand::AttemptDispositionCommit(_));
+        let result = self.submit_inner(command, durability);
+        if disposition
+            && matches!(
+                &result,
+                Err(MutationAuthorityError::Disposition(_)
+                    | MutationAuthorityError::Control(_)
+                    | MutationAuthorityError::Validation(_))
+            )
+        {
+            self.telemetry.disposition_rejected();
+        }
+        result
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use actionqueue_core::ids::{RunId, TaskId};
@@ -2662,28 +2692,5 @@ mod tests {
             }
             other => panic!("expected PartialDurability, got {other:?}"),
         }
-    }
-}
-
-impl<W: WalWriter, P: MutationProjection> MutationAuthority for StorageMutationAuthority<W, P> {
-    type Error = MutationAuthorityError<P::Error>;
-    fn submit_command(
-        &mut self,
-        command: MutationCommand,
-        durability: DurabilityPolicy,
-    ) -> Result<MutationOutcome, Self::Error> {
-        let disposition = matches!(&command, MutationCommand::AttemptDispositionCommit(_));
-        let result = self.submit_inner(command, durability);
-        if disposition
-            && matches!(
-                &result,
-                Err(MutationAuthorityError::Disposition(_)
-                    | MutationAuthorityError::Control(_)
-                    | MutationAuthorityError::Validation(_))
-            )
-        {
-            self.telemetry.disposition_rejected();
-        }
-        result
     }
 }

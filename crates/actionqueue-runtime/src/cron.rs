@@ -1,5 +1,4 @@
 //! Shared rolling cron window maintenance under the exclusive mutation owner.
-use crate::dispatch::DispatchError;
 use actionqueue_core::{
     ids::TaskId,
     mutation::{DurabilityPolicy, MutationAuthority, MutationCommand, RunCreateCommand},
@@ -9,6 +8,8 @@ use actionqueue_storage::{
     mutation::authority::StorageMutationAuthority, recovery::reducer::ReplayReducer,
     wal::writer::WalWriter,
 };
+
+use crate::dispatch::DispatchError;
 pub(crate) fn replenish<W: WalWriter>(
     authority: &mut StorageMutationAuthority<W, ReplayReducer>,
     cache: &mut actionqueue_engine::derive::cron::CronScheduleCache,

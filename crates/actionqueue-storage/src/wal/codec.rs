@@ -53,6 +53,18 @@ pub(crate) struct Header {
     pub length: usize,
     pub crc: u32,
 }
+pub(crate) fn check_record_schema(kind: u16, schema: u16) -> Result<(), DecodeError> {
+    if kind != 352 {
+        wire_v1::check_kind(kind)?;
+    }
+    if schema != 1
+        && schema != wire_v1::schema(kind)
+        && !(schema == 2 && matches!(kind, 16 | 256 | 352))
+    {
+        return Err(DecodeError::UnsupportedRecordSchema { kind, found: schema });
+    }
+    Ok(())
+}
 pub(crate) fn header(bytes: &[u8]) -> Result<Header, DecodeError> {
     if bytes.len() < HEADER_LEN {
         return Err(DecodeError::InvalidLength("short header".into()));
@@ -68,16 +80,8 @@ pub(crate) fn header(bytes: &[u8]) -> Result<Header, DecodeError> {
         return Err(DecodeError::HeaderIntegrity);
     }
     let kind = u16::from_le_bytes(bytes[12..14].try_into().unwrap());
-    if kind != 352 {
-        wire_v1::check_kind(kind)?;
-    }
     let schema = u16::from_le_bytes(bytes[14..16].try_into().unwrap());
-    if schema != 1
-        && schema != wire_v1::schema(kind)
-        && !(schema == 2 && matches!(kind, 16 | 256 | 352))
-    {
-        return Err(DecodeError::UnsupportedRecordSchema { kind, found: schema });
-    }
+    check_record_schema(kind, schema)?;
     let length = u32::from_le_bytes(bytes[40..44].try_into().unwrap()) as usize;
     if matches!(kind, 288..=291)
         && length + HEADER_LEN > actionqueue_core::limits::MAX_SIGNAL_RECORD_BYTES

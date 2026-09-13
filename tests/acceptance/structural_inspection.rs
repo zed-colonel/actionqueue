@@ -183,12 +183,13 @@ fn committed_signal_matching_failure_preserves_identity_and_recovery() {
 
 #[test]
 fn daemon_maintenance_resolves_deadlines_without_actor_requirement() {
+    use std::sync::{Arc, RwLock};
+
     use actionqueue_daemon::{
         bootstrap::{ReadyStatus, RouterConfig},
         http::{RouterObservability, RouterStateInner},
     };
     use actionqueue_storage::wal::{InstrumentedWalWriter, WalAppendTelemetry};
-    use std::sync::{Arc, RwLock};
     let dir = resume_dir();
     let mut a = s::open(dir.path());
     let r = running(&mut a, 1, None, false);
@@ -321,7 +322,7 @@ fn offline_cli_wait_signal_checkpoint_and_resume_share_embedded_views() {
     let request_file = tempfile::NamedTempFile::new().unwrap();
     let file = request_file.path();
     // The test directory is controller-owned scratch, outside the repository.
-    std::fs::write(&file, serde_json::to_vec(&s::request(1)).unwrap()).unwrap();
+    std::fs::write(file, serde_json::to_vec(&s::request(1)).unwrap()).unwrap();
     let admitted = invoke(&["signal", "admit", "--file", file.to_str().unwrap()]);
     let duplicate = invoke(&["signal", "admit", "--file", file.to_str().unwrap()]);
     assert_ne!(admitted, duplicate);

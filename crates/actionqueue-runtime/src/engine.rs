@@ -167,6 +167,8 @@ impl<H: ExecutorHandler + 'static, C: Clock> BootstrappedEngine<H, C> {
     }
     /// Renews the named remote attempt and fence.
     #[cfg(feature = "actor")]
+    // Preserve the explicit dependencies of this existing boundary API.
+    #[allow(clippy::too_many_arguments)]
     pub fn renew_remote(
         &mut self,
         host: &actionqueue_core::control::HostControlContext,

@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "id": "AQ-CF-DD-006",
+  "steps": [
+    {
+      "op": "start",
+      "task": 1
+    },
+    {
+      "op": "signal",
+      "signal": 1
+    },
+    {
+      "op": "wait",
+      "task": 1,
+      "deadline": null
+    },
+    {
+      "op": "reconcile",
+      "at": 26
+    },
+    {
+      "op": "start",
+      "task": 2
+    },
+    {
+      "op": "wait",
+      "task": 2,
+      "deadline": null
+    },
+    {
+      "op": "signal",
+      "signal": 1
+    },
+    {
+      "op": "reconcile",
+      "at": 26
+    },
+    {
+      "op": "finish",
+      "task": 1,
+      "success": true
+    },
+    {
+      "op": "finish",
+      "task": 2,
+      "success": true
+    }
+  ],
+  "variants": [
+    "ordinary",
+    "replay",
+    "crash"
+  ]
+}

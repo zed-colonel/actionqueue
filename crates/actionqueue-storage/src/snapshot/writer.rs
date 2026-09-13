@@ -253,6 +253,9 @@ impl SnapshotWriter for SnapshotFsWriter {
         std::fs::rename(&self.temp_path, &self.target_path)
             .map_err(|e| SnapshotWriterError::IoError(e.to_string()))?;
 
+        crate::store::fault::checkpoint("snapshot_after_rename")
+            .map_err(|e| SnapshotWriterError::IoError(e.to_string()))?;
+
         // Fsync parent directory to make the rename durable
         if let Some(parent) = self.target_path.parent() {
             let dir = File::open(parent).map_err(|e| {

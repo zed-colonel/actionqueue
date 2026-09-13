@@ -1,10 +1,11 @@
 //! Atomic application and replay validation of complete dispositions.
-use super::reducer::{ReplayReducer, ReplayReducerError};
-use crate::mutation::disposition::DispositionRecord;
 use actionqueue_core::{
     admission::AdmissionPlan, disposition::DispositionOutcome, limits::*, mutation::*,
     run::RunState,
 };
+
+use super::reducer::{ReplayReducer, ReplayReducerError};
+use crate::mutation::disposition::DispositionRecord;
 impl ReplayReducer {
     pub(crate) fn apply_disposition(
         &mut self,

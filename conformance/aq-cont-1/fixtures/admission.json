@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "id": "AQ-CF-SCENARIO-ADMISSION",
+  "required_features": [],
+  "steps": [
+    {
+      "op": "start",
+      "task": 1
+    },
+    {
+      "op": "restart"
+    },
+    {
+      "op": "retry_admission",
+      "task": 1,
+      "conflict": false
+    },
+    {
+      "op": "retry_admission",
+      "task": 1,
+      "conflict": true
+    }
+  ],
+  "expected_observations": "expected-projections/admission.json",
+  "recovery_cuts": [
+    1,
+    2,
+    3,
+    4
+  ]
+}

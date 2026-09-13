@@ -281,10 +281,13 @@ pub struct Page<T> {
     pub revision: u64,
 }
 /// Structural trace notice, also used by CLI rendering.
-pub const TRACE_NOTICE: &str = "Opaque references are attribution only. Queue outcomes describe execution; application-level judgments belong to the caller.";
+pub const TRACE_NOTICE: &str = "Opaque references are attribution only. Queue outcomes describe \
+                                execution; application-level judgments belong to the caller.";
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
 #[cfg_attr(feature = "serde", serde(tag = "kind", content = "view", rename_all = "snake_case"))]
+// Public value API; avoid an allocation and breaking constructor change.
+#[allow(clippy::large_enum_variant)]
 pub enum TraceNode {
     Task(TaskView),
     Run(RunView),
