@@ -888,3 +888,34 @@ fn remote_priority_matches_local_promotion_before_and_after_recovery() {
         }
     }
 }
+
+// F-022: remote rejection leaves ownership with the executor, which can retry
+// after capacity is released; it must not use local terminal-failure fallback.
+#[test]
+fn remote_wait_capacity_rejection_preserves_attempt_for_retry() {
+    use actionqueue_core::limits::ContinuationLimits;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut a, h, r) = setup(dir.path());
+    let w = remote::claim(&mut a, &h, request(r), 11, 30).unwrap();
+    let d = result(&w, AttemptDisposition::awaiting(spec(WaitId::new(), None), None));
+    a.set_continuation_limits(ContinuationLimits { active_waits: 0, ..Default::default() });
+    let digest = a.projection().projection_digest().unwrap();
+    let error = remote::submit_result(&mut a, &h, d.clone(), 12).unwrap_err();
+    assert!(error.to_string().contains("WaitCapacity"), "{error}");
+    assert_eq!(a.projection().projection_digest().unwrap(), digest);
+    assert_eq!(a.projection().get_run_state(&r), Some(&RunState::Running));
+    assert!(a.projection().get_lease_metadata(&r).is_some());
+    assert!(a.projection().get_attempt_history(&r).unwrap()[0].finished_at().is_none());
+    parity(&a);
+    drop(a);
+    let mut a = s::reopen(dir.path());
+    a.set_continuation_limits(ContinuationLimits { active_waits: 1, ..Default::default() });
+    remote::submit_result(&mut a, &h, d.clone(), 13).unwrap();
+    assert_eq!(a.projection().get_run_state(&r), Some(&RunState::Awaiting));
+    assert!(a.projection().get_lease_metadata(&r).is_none());
+    assert_eq!(a.projection().waits().active_count(), 1);
+    let sequence = seq(&a);
+    remote::submit_result(&mut a, &h, d, 14).unwrap();
+    assert_eq!(seq(&a), sequence);
+    parity(&a);
+}

@@ -174,6 +174,7 @@ impl RuntimeConfig {
             R::ChildrenNonterminal,
             R::InvalidChildWait,
             R::UnsupportedFeature,
+            R::WaitCapacity,
         ]
         .into_iter()
         .map(|reason| {
@@ -233,6 +234,8 @@ pub const INVALID_CHILD_WAIT: &str = "invalid_child_wait";
 pub const INVALID_DISPOSITION: &str = "invalid_disposition";
 /// Disposition requires an unavailable store feature.
 pub const UNSUPPORTED_DISPOSITION_FEATURE: &str = "unsupported_disposition_feature";
+/// Store or tenant active-wait capacity rejected a local handler's continuation.
+pub const WAIT_CAPACITY: &str = "wait_capacity";
 
 /// Shared error vocabulary for rejection fallback and the minimum record budget.
 pub(crate) fn disposition_rejection_error(
@@ -245,6 +248,7 @@ pub(crate) fn disposition_rejection_error(
         R::ChildrenNonterminal => (CHILDREN_NONTERMINAL, CHILDREN_NONTERMINAL),
         R::InvalidChildWait => (INVALID_CHILD_WAIT, INVALID_CHILD_WAIT),
         R::UnsupportedFeature => (UNSUPPORTED_DISPOSITION_FEATURE, UNSUPPORTED_DISPOSITION_FEATURE),
+        R::WaitCapacity => (WAIT_CAPACITY, WAIT_CAPACITY),
         _ => (INVALID_DISPOSITION, INVALID_DISPOSITION),
     };
     BoundedError {

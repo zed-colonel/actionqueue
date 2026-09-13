@@ -68,7 +68,7 @@ def safe(base, name):
 
 def metadata():
     manifest = read(ROOT / PACKAGE / 'manifest.yaml')
-    require(manifest['package_revision'] == 14 and manifest['status'] == 'executable', 'unexpected conformance revision/status')
+    require(manifest['package_revision'] == 15 and manifest['status'] == 'executable', 'unexpected conformance revision/status')
     require(manifest['contract_revision'] == 'STACK-2026-07-20-CLEAN-1', 'wrong contract revision')
     for entry in manifest['fixtures'] + manifest['assets'] + manifest['acceptance_matrices']:
         require(sha(safe(ROOT / PACKAGE, entry['path'])) == entry['sha256'], f'tampered conformance asset: {entry["path"]}')

@@ -1,5 +1,10 @@
 # AQ-CONT-1 plan-wide finalization, polish round 1
 
+The later independent review partially superseded the F-020 claim and added
+F-022. See [the follow-up remediation](finalization-wait-capacity.md) for current
+implementation dispositions and verification. This document retains round-one
+evidence.
+
 Plan version: `3d8a857d-25fe-4202-accf-bb133b5453cb`.
 Candidate baseline: `48b84834a690d57dee30b564f2e745d8c856b422`.
 Destination inspected: `main` at `97c9dc26c19c697dbfb204ed503e82c5f053394f`,

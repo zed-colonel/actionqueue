@@ -850,3 +850,215 @@ fn active_wait_quota_rejects_entire_compound_disposition() {
         assert_eq!(a.projection().waits().active_count_for_tenant(None), 1);
     }
 }
+
+struct CapacityHandler {
+    reject: RunId,
+    queued: RunId,
+    tenant: Option<TenantId>,
+}
+impl actionqueue_executor_local::ExecutorHandler for CapacityHandler {
+    fn execute(&self, ctx: actionqueue_executor_local::ExecutorContext) -> AttemptDisposition {
+        if ctx.input.run_id == self.queued {
+            return AttemptDisposition::complete(None);
+        }
+        let mut filter = s::filter();
+        filter.tenant_id = self.tenant;
+        let wait = WaitSpec::new(
+            WaitId::new(),
+            filter,
+            WaitMatchPolicy::FirstMatch,
+            SignalEligibility::After(SignalSequence::new(0)),
+            None,
+        )
+        .unwrap();
+        if ctx.input.run_id != self.reject {
+            return AttemptDisposition::awaiting(wait, None);
+        }
+        let mut child = admission_support::request(99).task_spec().clone();
+        if let Some(tenant) = self.tenant {
+            child = child.with_tenant(tenant);
+        }
+        // Every subordinate effect must be discarded when capacity rejects the wait.
+        AttemptDisposition::new(
+            DispositionOutcome::Awaiting,
+            DispositionParts {
+                wait: Some(wait),
+                checkpoint: Some(CheckpointRef {
+                    checkpoint_id: CheckpointId::new(),
+                    created_by_attempt: ctx.input.attempt_id,
+                    data: DataRef::from_bytes(vec![42]).unwrap(),
+                }),
+                child_admissions: vec![ChildAdmission::new(
+                    AdmissionKey::new("capacity-child").unwrap(),
+                    child,
+                    vec![],
+                    Default::default(),
+                )
+                .unwrap()],
+                emitted_signals: vec![SignalProposal {
+                    signal_id: SignalId::new("capacity-signal").unwrap(),
+                    namespace: SignalNamespace::new("unrelated").unwrap(),
+                    kind: SignalKind::new("complete").unwrap(),
+                    correlation_id: CorrelationId::new("capacity").unwrap(),
+                    payload: None,
+                    payload_hash: None,
+                    occurred_at: None,
+                }],
+                consumption: vec![actionqueue_core::budget::BudgetConsumption::new(
+                    actionqueue_core::budget::BudgetDimension::Token,
+                    7,
+                )],
+                ..Default::default()
+            },
+        )
+        .unwrap()
+    }
+}
+
+async fn local_wait_capacity_case(occupied: bool, tenant_limit: bool, tenant: Option<TenantId>) {
+    use std::{sync::atomic::Ordering, time::Duration};
+
+    use actionqueue_core::limits::ContinuationLimits;
+    use actionqueue_runtime::{config::RuntimeConfig, engine::ActionQueueEngine};
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = if tenant.is_some() {
+        #[cfg(feature = "platform")]
+        {
+            s::open_platform(dir.path())
+        }
+        #[cfg(not(feature = "platform"))]
+        {
+            unreachable!()
+        }
+    } else {
+        s::open(dir.path())
+    };
+    #[cfg(feature = "platform")]
+    if let Some(tenant) = tenant {
+        commit!(
+            &mut a,
+            MutationCommand::TenantCreate(TenantCreateCommand::new(
+                seq(&a),
+                actionqueue_core::platform::TenantRegistration::new(tenant, "capacity-tenant"),
+                1
+            ))
+        );
+    }
+    // Separate admission times force the accepted wait, rejected wait and queued
+    // completion to execute in that order, through the sole local worker slot.
+    for n in if occupied { 1..=3 } else { 2..=3 } {
+        let q = admission_support::request(n);
+        let mut task = TaskSpec::new(
+            q.task_spec().id(),
+            q.task_spec().task_payload().clone(),
+            actionqueue_core::task::run_policy::RunPolicy::Once,
+            q.task_spec().constraints().clone(),
+            q.task_spec().metadata().clone(),
+        )
+        .unwrap();
+        let mut constraints =
+            TaskConstraints::new(3, None, (n != 1).then(|| "capacity-key".into())).unwrap();
+        constraints.set_concurrency_key_wait_policy(ConcurrencyKeyWaitPolicy::HoldWhileAwaiting);
+        task.set_constraints(constraints).unwrap();
+        if let Some(tenant) = tenant {
+            task = task.with_tenant(tenant);
+        }
+        let _ = admission_support::ensure(&mut a, admission_support::with_spec(&q, task), 10 + n)
+            .unwrap();
+    }
+    let reject = a.projection().runs_for_task(admission_support::id(2)).next().unwrap().id();
+    let queued = a.projection().runs_for_task(admission_support::id(3)).next().unwrap().id();
+    drop(a);
+    let clock = ExpiryClock(std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1000)));
+    let config = RuntimeConfig {
+        data_dir: dir.path().into(),
+        dispatch_concurrency: std::num::NonZeroUsize::new(1).unwrap(),
+        lease_timeout_secs: 3,
+        continuation_limits: ContinuationLimits {
+            active_waits: if tenant_limit { 10 } else { usize::from(occupied) },
+            active_waits_per_tenant: if tenant_limit { usize::from(occupied) } else { 10 },
+            disposition_bytes: RuntimeConfig::minimum_disposition_bytes(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut boot =
+        ActionQueueEngine::new(config.clone(), CapacityHandler { reject, queued, tenant })
+            .bootstrap_with_clock(clock.clone())
+            .unwrap();
+    let summary = tokio::time::timeout(Duration::from_secs(10), boot.run_until_idle())
+        .await
+        .expect("completed workers must release their slots")
+        .expect("wait capacity must close a local attempt durably");
+    assert_eq!(summary.total_dispatched, if occupied { 3 } else { 2 });
+    assert_eq!(boot.projection().get_run_state(&reject), Some(&RunState::Failed));
+    assert_eq!(boot.projection().get_run_state(&queued), Some(&RunState::Completed));
+    let run = boot.projection().get_run_instance(&reject).unwrap();
+    assert_eq!(run.attempt_count(), 1);
+    assert_eq!(run.failure_attempt_count(), 1);
+    assert!(boot.projection().get_lease_metadata(&reject).is_none());
+    assert_eq!(boot.projection().key_reservations().count(), 0);
+    let attempt = &boot.projection().get_attempt_history(&reject).unwrap()[0];
+    assert_eq!(attempt.result(), Some(AttemptResultKind::Failure));
+    assert_eq!(attempt.finished_at(), Some(1000));
+    assert_eq!(attempt.error(), Some(actionqueue_runtime::config::WAIT_CAPACITY));
+    assert_eq!(attempt.finish_origin(), AttemptFinishOrigin::Executor);
+    let failure = attempt.disposition.as_ref().unwrap();
+    assert!(matches!(failure.disposition.outcome(), DispositionOutcome::TerminalFailure { error }
+        if error.code.as_str() == actionqueue_runtime::config::WAIT_CAPACITY));
+    assert!(failure.disposition.checkpoint().is_none());
+    assert!(failure.disposition.wait().is_none());
+    assert!(failure.disposition.child_admissions().is_empty());
+    assert!(failure.disposition.emitted_signals().is_empty());
+    assert!(failure.disposition.consumption().is_empty());
+    assert!(failure.children.is_empty());
+    assert!(failure.signals.is_empty());
+    assert_eq!(boot.projection().checkpoints_by_producer(reject, attempt.attempt_id()).count(), 0);
+    assert_eq!(boot.projection().task_count(), if occupied { 3 } else { 2 });
+    assert_eq!(boot.projection().signals().statistics().retained, 0);
+    assert_eq!(boot.projection().waits().records().count(), usize::from(occupied));
+    assert_eq!(boot.projection().waits().active_count_for_tenant(tenant), usize::from(occupied));
+    let digest = boot.projection().projection_digest().unwrap();
+    for now in 1001..=1010 {
+        clock.0.store(now, Ordering::SeqCst);
+        assert_eq!(boot.tick().await.unwrap().dispatched, 0);
+        assert_eq!(
+            boot.projection().projection_digest().unwrap(),
+            digest,
+            "no abandoned heartbeat"
+        );
+    }
+    boot.shutdown().unwrap();
+    let a = s::reopen(dir.path());
+    assert_eq!(a.projection().projection_digest().unwrap(), digest);
+    parity(&a); // Independent WAL-only and snapshot recovery preserve the closure.
+    drop(a);
+    let mut boot = ActionQueueEngine::new(config, CapacityHandler { reject, queued, tenant })
+        .bootstrap_with_clock(clock)
+        .unwrap();
+    assert_eq!(boot.run_until_idle().await.unwrap().total_dispatched, 0);
+    assert_eq!(boot.projection().projection_digest().unwrap(), digest);
+    boot.shutdown().unwrap();
+}
+
+// F-022: zero capacity and normal saturation must not strand a finished worker,
+// retain its concurrency key, or leak any effect of the rejected proposal.
+#[tokio::test]
+async fn local_wait_capacity_closes_worker_and_advances_queue() {
+    for occupied in [false, true] {
+        for tenant_limit in [false, true] {
+            local_wait_capacity_case(occupied, tenant_limit, None).await;
+        }
+    }
+}
+
+#[cfg(feature = "platform")]
+#[tokio::test]
+async fn local_wait_capacity_closes_tenant_worker_and_advances_queue() {
+    for occupied in [false, true] {
+        for tenant_limit in [false, true] {
+            local_wait_capacity_case(occupied, tenant_limit, Some(TenantId::new())).await;
+        }
+    }
+}

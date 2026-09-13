@@ -102,7 +102,7 @@ that an unavailable WorldInterface checkout was tested. See
 
 ## Release handoff
 
-Release 0.2.0 pins package revision 14 and publishes this package, the unchanged
+Release 0.2.0 pins package revision 15 and publishes this package, the unchanged
 developmental profile and matrix, and exact source/evidence hashes in a separate
 release manifest. See [release procedure](../../docs/releases/0.2.0.md).
 Download the complete `source.bundle` and check out the manifest SHA before running
@@ -122,3 +122,13 @@ quota regressions (F-017–F-019) to the existing complete-binary proof suites.
 It preserves the normative contract and all frozen fixtures. The full feature
 matrix additionally exercises the authenticated HTTP priority path and isolated
 triad fixture (F-021).
+
+## Local wait-capacity closure (package revision 15)
+
+Revision 15 adds F-022 real-handler regressions to `acceptance_attempt_disposition`:
+zero and saturated store/tenant limits, bounded terminal failure, discarded
+subordinate effects, queued-work progress, released lease/key ownership, and
+WAL/snapshot/restart parity. `acceptance_remote_protocol` separately proves that
+remote capacity rejection preserves the active attempt for an executor retry.
+The existing full proof binaries execute this coverage. Normative semantics and
+frozen fixture bytes remain unchanged.

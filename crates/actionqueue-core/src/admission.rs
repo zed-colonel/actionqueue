@@ -166,7 +166,7 @@ impl EnsureTaskRequest {
         }
         Ok(Self { admission_key, task_spec, dependencies, causal_context, control_context })
     }
-    /// Computes canonical v1 meaning, ignoring lookup key and control attribution.
+    /// Computes canonical v2 meaning, ignoring lookup key and control attribution.
     pub fn digest(&self) -> Result<AdmissionDigest, AdmissionRejection> {
         canonical::CanonicalAdmissionV2::new(self)?.digest()
     }

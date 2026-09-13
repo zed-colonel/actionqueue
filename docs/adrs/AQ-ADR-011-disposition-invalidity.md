@@ -44,3 +44,10 @@ rejected disposition reproduces the same terminal failure.
 | Superseded by | — |
 
 Storage validates the fence before subordinate effects and publishes one immediately synced record. Invalid store-dependent proposals produce a minimal terminal failure with no proposed effects. Stale results append nothing. Uncertain append/sync/publication and impossible preparation mismatches fence the authority. `acceptance_attempt_disposition` exercises these boundaries.
+
+Local active-wait capacity rejection follows the same bounded terminal-failure
+policy, with code `wait_capacity`. The rejected checkpoint, children, signals and
+consumption do not commit. Closure releases execution ownership so other work can
+progress, including at the minimum configured disposition size. A remote executor
+instead receives the rejection with its attempt and lease intact and may retry
+while the fence remains valid. F-022 acceptance tests cover both paths and recovery.

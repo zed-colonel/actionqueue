@@ -92,7 +92,8 @@ fn commit_proposal<W: WalWriter>(
             | DispositionRejection::TooLarge
             | DispositionRejection::UnsupportedFeature
             | DispositionRejection::ChildrenNonterminal
-            | DispositionRejection::InvalidChildWait),
+            | DispositionRejection::InvalidChildWait
+            | DispositionRejection::WaitCapacity),
         )) if fallback => {
             let failure = AttemptDisposition::terminal_failure(
                 crate::config::disposition_rejection_error(reason),
