@@ -3335,6 +3335,7 @@ mod tests {
         release_tx.send(()).unwrap();
     }
 
+    #[cfg(feature = "workflow")]
     #[test]
     fn coordination_refresh_collects_exhausted_cron_tasks_without_runs() {
         let dir = tempfile::tempdir().unwrap();

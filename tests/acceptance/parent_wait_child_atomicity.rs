@@ -413,7 +413,7 @@ fn append_sync_and_publication_failures_fence_without_fallback() {
     }
 }
 #[test]
-fn child_deadline_failure_and_zero_run_cancellation_are_terminal_facts() {
+fn child_deadline_failure_is_a_terminal_fact() {
     let dir = tempfile::tempdir().unwrap();
     let mut a = s::open(dir.path());
     let r = running(&mut a, 1, None, false);
@@ -443,6 +443,14 @@ fn child_deadline_failure_and_zero_run_cancellation_are_terminal_facts() {
     assert_eq!(reconcile(&mut a, 31).unwrap(), 2);
     assert_eq!(a.projection().task_terminal_status(id), Some(TaskTerminalStatus::Failed));
     parity(&a);
+}
+#[cfg(feature = "workflow")]
+#[test]
+fn exhausted_zero_run_cron_cancellation_is_a_terminal_fact() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = s::open(dir.path());
+    let r = running(&mut a, 1, None, false);
+    let p = parent(&a, r);
     let zero = child(3, vec![], ChildLifecyclePolicy::Detached, p).task_spec().clone();
     let zid = zero.id();
     let zero = TaskSpec::new(

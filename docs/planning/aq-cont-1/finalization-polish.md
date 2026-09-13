@@ -70,3 +70,10 @@ cron/coordination fixtures and crash recovery. Exploratory runs exposed outdated
 zero-run Once fixture assumptions after closing F-018; these were replaced with
 legitimate exhausted cron admissions and rechecked. Final quality-gate results
 are recorded below after completion; scratch logs are never source artifacts.
+
+The first matrix attempt also found missing `workflow` guards on the new cron
+fixtures; deadline coverage remains feature-independent and the cron-only cases
+are now explicitly gated. Public drivers use the supported `AQ_CLI`/`AQ_ADAPTER`
+overrides to locate binaries in the reused scratch Cargo target, after building
+those binaries from this checkout. This avoids the harness defaults under the
+worktree-local `target/` directory. Failed exploratory logs remain in scratch.
