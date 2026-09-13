@@ -101,6 +101,18 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual(metadata['version'], '0.2.0')
         self.assertEqual(metadata['developmental']['case_count'], 18)
 
+    def test_release_guidance_must_match_conformance_revision(self):
+        revision = release.read(ROOT / release.PACKAGE / 'manifest.yaml')['package_revision']
+        real_read = Path.read_text
+        for file in ['README.md', 'docs/releases/0.2.0.md']:
+            for replacement in [f'**{revision - 1}**', '**unknown**']:
+                def changed(path, *args, **kwargs):
+                    value = real_read(path, *args, **kwargs)
+                    return value.replace(f'**{revision}**', replacement) if path == ROOT / file else value
+                with self.subTest(file=file, replacement=replacement):
+                    with patch.object(Path, 'read_text', changed), self.assertRaisesRegex(ValueError, 'conformance revision in ' + file):
+                        release.metadata()
+
     def test_assets_and_versions_cannot_be_forged(self):
         original = release.sha
         with patch.object(release, 'sha', side_effect=lambda p: '0' * 64 if str(p).endswith('admission-v1-vector.json') else original(p)):
