@@ -41,3 +41,26 @@ run always has exactly one active wait after replay.
 | Accepted on | 2026-09-09 |
 | Superseded by | — |
 | Deferred verification | Verified in `AQ-02`: `WaitSpec` and `ResumeContext` carry exactly one `WaitId`, and resume identifies its wait for every wake kind (`continuation_vocabulary.rs`). Deferred to `AQ-06`: rejection of a second wait registration for a run, and the replay property that an `Awaiting` run has exactly one active wait. |
+
+## Aggregate creation quotas (F-019)
+
+Plan §11.4 and architecture §25.8 also require bounded aggregate active waits.
+`ContinuationLimits` defaults to 100,000 active waits per store and 10,000 per
+tenant namespace. Hosts configure `active_waits` and `active_waits_per_tenant`
+through `RuntimeConfig::continuation_limits` or the storage authority setter.
+Zero stops new waits. Each count is an indexed projection of unresolved waits;
+child and signal waits consume the same capacity. Single-tenant stores use the
+`None` namespace.
+
+Both standalone establishment and compound dispositions check capacity before
+append. Rejection commits no checkpoint, children, signals, or consumption.
+Resolution (including cancellation and deadlines) releases capacity. Pending
+resume context and retained history do not count as active waits. WAL replay and
+snapshot hydration reconstruct counts without applying creation quotas: lowering
+limits never discards accepted waits or prevents their resolution, and exact
+establishment retries remain append-free.
+
+`acceptance_checkpoint_resume` and `acceptance_attempt_disposition` cover store
+and tenant rejection, atomicity, release, duplicate retries, and WAL/snapshot
+recovery. This completes the deferred AQ-06 verification alongside
+`acceptance_waits` and `acceptance_wait_crash`.

@@ -486,3 +486,59 @@ fn http_remote_cron_claims_continue_past_five_occurrences() {
         std::fs::remove_dir_all(root).unwrap();
     }
 }
+
+// F-017: HTTP selection and claim use the same priority as local Ready promotion.
+#[test]
+fn http_remote_claims_higher_priority_scheduled_work_first() {
+    let (root, state, one, _) = fixture();
+    let ControlScope::Tenant(tenant) = one.scope else { unreachable!() };
+    let mut runs = Vec::new();
+    {
+        let mut a = state.control_authority.as_ref().unwrap().lock().unwrap();
+        for priority in [1, 100] {
+            let task = actionqueue_core::task::task_spec::TaskSpec::new(
+                TaskId::new(),
+                actionqueue_core::task::task_spec::TaskPayload::new(vec![]),
+                actionqueue_core::task::run_policy::RunPolicy::Once,
+                Default::default(),
+                actionqueue_core::task::metadata::TaskMetadata::new(vec![], priority, None),
+            )
+            .unwrap()
+            .with_tenant(tenant);
+            let task_id = task.id();
+            execute_control(
+                &mut a,
+                &one,
+                ControlOperation::AdmitTask(
+                    actionqueue_core::admission::EnsureTaskRequest::for_task(task, vec![]).unwrap(),
+                ),
+                &MockClock::new(10),
+            )
+            .unwrap();
+            runs.push(a.projection().runs_for_task(task_id).next().unwrap().id());
+        }
+    }
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    runtime.block_on(async {
+        let router = build_router(state.clone());
+        let path = format!("/api/v2/actors/{}", one.actor_id.unwrap());
+        let (status, body) = get(router.clone(), &format!("{path}/claimable"), Some("one")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["runs"][0], serde_json::json!(runs[1]));
+        let claim = |run| {
+            serde_json::json!({"protocol_version":1,"contract_revision":"AQ-CONT-1-r2",
+            "run_id":run,"attempt_id":AttemptId::new()})
+        };
+        assert_eq!(
+            post(router.clone(), &format!("{path}/claim"), "one", claim(runs[0])).await.0,
+            StatusCode::CONFLICT
+        );
+        let (status, work) = post(router, &format!("{path}/claim"), "one", claim(runs[1])).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(work["run_id"], serde_json::json!(runs[1]));
+    });
+    runtime.block_on(maintenance::shutdown(&state));
+    drop(state);
+    drop(runtime);
+    std::fs::remove_dir_all(root).unwrap();
+}

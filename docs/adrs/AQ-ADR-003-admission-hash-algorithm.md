@@ -53,7 +53,9 @@ the documented canonical tree encoding, then checked against storage output.
 ## AQ-04 accepted algorithm
 
 SHA-256 (RustCrypto `sha2` 0.10) hashes exactly ADR-002 canonical bytes. AdmissionDigest
-stores canonical version 1 and an algorithm-tagged 32-byte ContentHash. Storage wire
+stores the canonical version and an algorithm-tagged 32-byte ContentHash.
+AQ-04 used version 1; current request digests use version 2, as specified in
+[ADR-002](AQ-ADR-002-admission-canonicalization.md#current-canonical-admission-version-2). Storage wire
 algorithm ID 1 means SHA-256. Unknown canonical versions, algorithm IDs, and malformed
 hash lengths fail explicitly. Commit recomputes the digest even for caller-planned
 commands. Conflict errors contain key, original task ID, and both digests, never payload.

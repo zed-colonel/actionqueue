@@ -8,10 +8,6 @@ mod wf {
     use std::sync::Arc;
 
     use actionqueue_core::ids::TaskId;
-    use actionqueue_core::mutation::{
-        DurabilityPolicy, MutationAuthority, MutationCommand, RunCreateCommand, TaskCreateCommand,
-    };
-    use actionqueue_core::run::run_instance::RunInstance;
     use actionqueue_core::run::state::RunState;
     use actionqueue_core::task::constraints::TaskConstraints;
     use actionqueue_core::task::metadata::TaskMetadata;
@@ -191,8 +187,7 @@ mod wf {
         let ts = 1000u64;
 
         // Phase 1: Use authority to submit coordinator + 2 children (with parent_task_id).
-        // Both children are scheduled BEFORE the coordinator to ensure the snapshot
-        // is populated when the coordinator runs.
+        // Both children have higher priority so the snapshot is populated when the coordinator runs.
         {
             let recovery = load_projection_from_storage(&data_dir).expect("recovery must succeed");
             let mut auth = StorageMutationAuthority::new(recovery.wal_writer, recovery.projection)
@@ -204,65 +199,40 @@ mod wf {
                     ),
                 });
 
-            // Submit coordinator task (scheduled later so children run first).
-            let coordinator_spec = make_spec(coordinator_id, b"coordinator");
-            let seq = auth.projection().latest_sequence() + 1;
-            let _ = auth
-                .submit_command(
-                    MutationCommand::TaskCreate(TaskCreateCommand::new(seq, coordinator_spec, ts)),
-                    DurabilityPolicy::Immediate,
+            // Admit the parent first; explicit child priority populates its snapshot
+            // before the coordinator executes, using ordinary scheduling semantics.
+            actionqueue_runtime::admission::ensure_task(
+                &mut auth,
+                actionqueue_core::admission::EnsureTaskRequest::for_task(
+                    make_spec(coordinator_id, b"coordinator"),
+                    vec![],
                 )
-                .expect("create coordinator");
-
-            // Submit child1 with parent_task_id = coordinator_id.
-            let child1_spec = make_spec(child1_id, b"child").with_parent(coordinator_id);
-            let seq = auth.projection().latest_sequence() + 1;
-            let _ = auth
-                .submit_command(
-                    MutationCommand::TaskCreate(TaskCreateCommand::new(seq, child1_spec, ts)),
-                    DurabilityPolicy::Immediate,
+                .unwrap(),
+                &MockClock::new(ts),
+            )
+            .unwrap();
+            for id in [child1_id, child2_id] {
+                let base = make_spec(id, b"child");
+                let child = TaskSpec::new(
+                    id,
+                    base.task_payload().clone(),
+                    RunPolicy::Once,
+                    base.constraints().clone(),
+                    TaskMetadata::new(vec![], 1, None),
                 )
-                .expect("create child1");
-            let child1_run = RunInstance::new_scheduled(child1_id, ts, ts).expect("valid run");
-            let seq = auth.projection().latest_sequence() + 1;
-            let _ = auth
-                .submit_command(
-                    MutationCommand::RunCreate(RunCreateCommand::new(seq, child1_run)),
-                    DurabilityPolicy::Immediate,
+                .unwrap()
+                .with_parent(coordinator_id);
+                actionqueue_runtime::admission::ensure_task(
+                    &mut auth,
+                    actionqueue_core::admission::EnsureTaskRequest::for_task(child, vec![])
+                        .unwrap(),
+                    &MockClock::new(ts),
                 )
-                .expect("create child1 run");
-
-            // Submit child2 with parent_task_id = coordinator_id.
-            let child2_spec = make_spec(child2_id, b"child").with_parent(coordinator_id);
-            let seq = auth.projection().latest_sequence() + 1;
-            let _ = auth
-                .submit_command(
-                    MutationCommand::TaskCreate(TaskCreateCommand::new(seq, child2_spec, ts)),
-                    DurabilityPolicy::Immediate,
-                )
-                .expect("create child2");
-            let child2_run = RunInstance::new_scheduled(child2_id, ts, ts).expect("valid run");
-            let seq = auth.projection().latest_sequence() + 1;
-            let _ = auth
-                .submit_command(
-                    MutationCommand::RunCreate(RunCreateCommand::new(seq, child2_run)),
-                    DurabilityPolicy::Immediate,
-                )
-                .expect("create child2 run");
-
-            let coord_run =
-                RunInstance::new_scheduled(coordinator_id, ts + 100, ts).expect("valid run");
-            let seq = auth.projection().latest_sequence() + 1;
-            let _ = auth
-                .submit_command(
-                    MutationCommand::RunCreate(RunCreateCommand::new(seq, coord_run)),
-                    DurabilityPolicy::Immediate,
-                )
-                .expect("create coordinator run");
+                .unwrap();
+            }
         }
 
-        // Phase 2: run the engine. Children complete first (scheduled at ts=1000).
-        // Coordinator runs after (scheduled at ts+100=1100).
+        // Phase 2: children complete first, then the coordinator inspects their results.
         let children_seen = Arc::new(AtomicBool::new(false));
         let captured = Arc::new(std::sync::Mutex::new(CapturedSnapshot::default()));
 
@@ -274,8 +244,7 @@ mod wf {
                     captured: Arc::clone(&captured),
                 },
             );
-            // Clock at 1100 so both children (scheduled at 1000) and coordinator (at 1100)
-            // are immediately eligible.
+            // All admitted work is due.
             let mut eng = engine
                 .bootstrap_with_clock(MockClock::new(1100))
                 .expect("bootstrap must succeed")

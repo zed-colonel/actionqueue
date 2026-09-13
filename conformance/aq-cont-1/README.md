@@ -102,7 +102,7 @@ that an unavailable WorldInterface checkout was tested. See
 
 ## Release handoff
 
-Release 0.2.0 pins package revision 13 and publishes this package, the unchanged
+Release 0.2.0 pins package revision 14 and publishes this package, the unchanged
 developmental profile and matrix, and exact source/evidence hashes in a separate
 release manifest. See [release procedure](../../docs/releases/0.2.0.md).
 Download the complete `source.bundle` and check out the manifest SHA before running
@@ -114,3 +114,11 @@ not certify a WorldInterface or Exoskeleton revision. Downstream implementers ru
 the full driver with `--adapter PATH_TO_EXECUTABLE` for their own adapter evidence.
 See the [independent outbox example](../../docs/examples/downstream-handoff.md)
 for a production consumer without repository test helpers.
+
+## Finalization coverage (package revision 14)
+
+Revision 14 adds admission-bypass, remote-priority, and aggregate active-wait
+quota regressions (F-017–F-019) to the existing complete-binary proof suites.
+It preserves the normative contract and all frozen fixtures. The full feature
+matrix additionally exercises the authenticated HTTP priority path and isolated
+triad fixture (F-021).

@@ -72,11 +72,33 @@ must retain it with their key. Tenant absence is explicit. Lookup key, control c
 generated run identities, commit timestamp, and WAL sequence are excluded. The first
 successful control context remains immutable on retries.
 
-The current core stores only the default wait concurrency policy; V1 encodes that
-`0` explicitly. Adding configurable durable wait policy remains its owning continuation
-work item's responsibility. No second field is introduced by admission.
+At the AQ-04 milestone, only the default wait policy was stored. AQ-06 completed
+persistence of the selected policy: both canonical versions now encode
+`ReleaseWhileAwaiting` as `0` and `HoldWhileAwaiting` as `1` in field 3.
 
 Hard input bounds apply before normalization allocation or hashing. Configurable
 creation limits apply only after duplicate resolution. A dedicated Python encoder
 pins a vector containing every optional causal field, set permutations, a negative
 priority, and fixed UUIDs in `conformance/aq-cont-1/admission-v1-vector.json`.
+
+## Current canonical admission (version 2)
+
+`EnsureTaskRequest::digest` uses `CanonicalAdmissionV2`. It retains the exact V1
+field order above, replaces the prefix's little-endian version with `2`, and
+appends one u8 child lifecycle tag after the eight causal references: `Required`
+is `0`, `Detached` is `1`. The selected wait policy remains in field 3. See
+[canonical.rs](../../crates/actionqueue-core/src/admission/canonical.rs) and
+[ADR-013](AQ-ADR-013-parent-completion-with-children.md).
+
+V1 describes the retained AQ-04 encoding, not the version new callers should
+choose. Stored V1 admission facts are valid only with required child lifecycle;
+new admission digest computation includes the V2 lifecycle field. The V1 known
+answer fixture remains useful to independently verify the shared encoding;
+[the V2 vector](../../conformance/aq-cont-1/admission-v2-vector.json) pins the
+current version and lifecycle tags.
+
+Task creation uses `AdmissionCommit` (normally planned by `ensure_task`). The
+production storage authority rejects standalone `TaskCreate` before append.
+`RunCreate` only replenishes an admitted, uncanceled cron task's next occurrence,
+within its rolling window and total occurrence cap. Fixture-only unbound writers
+are available under test support; they cannot bypass admission on a store session.

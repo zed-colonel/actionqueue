@@ -832,3 +832,59 @@ fn platform_remote_operations_reject_missing_cross_tenant_and_revoked_principals
     remote::submit_result(&mut a, &h, result(&w, AttemptDisposition::complete(None)), 13).unwrap();
     assert_eq!(before, a.projection().projection_digest().unwrap());
 }
+
+// F-017: due Scheduled work and persisted Ready snapshots share priority/FIFO order.
+#[test]
+fn remote_priority_matches_local_promotion_before_and_after_recovery() {
+    for snapshot in [false, true] {
+        for ready in [None, Some(2), Some(3)] {
+            let dir = tempfile::tempdir().unwrap();
+            let (mut a, h, _) = setup(dir.path());
+            let mut runs = Vec::new();
+            for (n, priority, at) in [(2, 1, 10), (3, 100, 11)] {
+                let q = admission_support::request(n);
+                let t = q.task_spec();
+                let task = TaskSpec::new(
+                    t.id(),
+                    t.task_payload().clone(),
+                    actionqueue_core::task::run_policy::RunPolicy::Once,
+                    t.constraints().clone(),
+                    actionqueue_core::task::metadata::TaskMetadata::new(vec![], priority, None),
+                )
+                .unwrap();
+                admission_support::ensure(&mut a, admission_support::with_spec(&q, task), at)
+                    .unwrap();
+                let run = a.projection().runs_for_task(t.id()).next().unwrap().id();
+                if ready == Some(n) {
+                    transition(&mut a, run, RunState::Ready, 12);
+                }
+                runs.push(run);
+            }
+            let expected = vec![runs[1], runs[0]];
+            let ordered = |a: &s::Authority| {
+                remote::claimable(a, &h, 12)
+                    .unwrap()
+                    .into_iter()
+                    .filter(|r| runs.contains(r))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(ordered(&a), expected);
+            if snapshot {
+                parity(&a);
+            }
+            drop(a);
+            let mut a = s::reopen(dir.path());
+            actionqueue_runtime::remote::maintain(&mut a, 12, Default::default()).unwrap();
+            assert_eq!(ordered(&a), expected);
+            let before = seq(&a);
+            assert!(remote::claim(&mut a, &h, request(runs[0]), 12, 30).is_err());
+            assert_eq!(seq(&a), before);
+            let work = remote::claim(&mut a, &h, request(runs[1]), 12, 30).unwrap();
+            assert_eq!(work.run_id, runs[1]);
+            assert_eq!(
+                a.projection().get_run_instance(&runs[1]).unwrap().effective_priority(),
+                100
+            );
+        }
+    }
+}

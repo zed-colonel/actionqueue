@@ -50,6 +50,8 @@ pub enum WaitRejection {
     TaskCanceled,
     InvalidState,
     ActiveWaitExists,
+    /// The store or tenant active-wait creation quota is exhausted.
+    Capacity,
     WaitAlreadyResolved,
     InvalidSignal,
     NotDue,

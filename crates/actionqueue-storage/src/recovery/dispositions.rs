@@ -41,6 +41,8 @@ impl ReplayReducer {
                 &c,
                 AdmissionLimits::default(),
                 ContinuationLimits {
+                    active_waits: usize::MAX,
+                    active_waits_per_tenant: usize::MAX,
                     output_bytes: MAX_INLINE_DATA_BYTES,
                     checkpoint_bytes: MAX_INLINE_DATA_BYTES,
                     disposition_bytes: MAX_ADMISSION_RECORD_BYTES,

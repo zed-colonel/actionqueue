@@ -190,3 +190,143 @@ fn dependency_sets_parent_terminal_retry_and_current_dependencies_are_distinct()
         q.dependencies()
     );
 }
+
+// F-018: even a host-bound storage caller cannot persist partial admission facts.
+#[test]
+fn standalone_creation_cannot_bypass_admission_or_limits() {
+    use actionqueue_core::{
+        mutation::{RunCreateCommand, TaskCreateCommand},
+        run::RunInstance,
+        task::{
+            run_policy::RunPolicy,
+            task_spec::{TaskPayload, TaskSpec},
+        },
+    };
+    use actionqueue_storage::mutation::{
+        authority::MutationValidationError, MutationAuthorityError,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = open(dir.path());
+    a.set_admission_limits(AdmissionLimits { payload_bytes: 1, ..Default::default() });
+    for size in [1, 2, 65_537] {
+        let task = TaskSpec::new(
+            id(10),
+            TaskPayload::new(vec![0; size]),
+            RunPolicy::Once,
+            Default::default(),
+            Default::default(),
+        )
+        .unwrap();
+        let before = a.projection().projection_digest().unwrap();
+        let result = a.submit_command(
+            MutationCommand::TaskCreate(TaskCreateCommand::new(
+                a.projection().latest_sequence() + 1,
+                task,
+                10,
+            )),
+            DurabilityPolicy::Immediate,
+        );
+        assert!(matches!(
+            result,
+            Err(MutationAuthorityError::Validation(
+                MutationValidationError::TaskCreateRequiresAdmission
+            ))
+        ));
+        assert_eq!(before, a.projection().projection_digest().unwrap());
+        assert_eq!(a.projection().task_count(), 0);
+        assert_eq!(a.projection().run_count(), 0);
+        assert_eq!(a.projection().admissions().count(), 0);
+    }
+    assert!(ensure(&mut a, request(1), 10).is_err());
+    drop(a);
+    let mut a = open(dir.path());
+    assert_eq!(a.projection().task_count(), 0);
+    ensure(&mut a, request(1), 10).unwrap();
+    let before = image(&a);
+    let extra = RunInstance::new_scheduled(id(1), 31, 30).unwrap();
+    assert!(matches!(
+        a.submit_command(
+            MutationCommand::RunCreate(RunCreateCommand::new(
+                a.projection().latest_sequence() + 1,
+                extra
+            )),
+            DurabilityPolicy::Immediate
+        ),
+        Err(MutationAuthorityError::Validation(
+            MutationValidationError::RunCreateRequiresCronReplenishment
+        ))
+    ));
+    assert_eq!(image(&a), before);
+    drop(a);
+    assert_eq!(image(&open(dir.path())), before);
+}
+
+#[cfg(feature = "workflow")]
+#[test]
+fn standalone_run_creation_only_replenishes_next_bounded_cron_occurrence() {
+    use actionqueue_core::{
+        mutation::{RunCreateCommand, RunStateTransitionCommand},
+        run::{RunInstance, RunState},
+        task::{
+            run_policy::{CronPolicy, RunPolicy},
+            task_spec::TaskSpec,
+        },
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = open(dir.path());
+    let base = request(1);
+    let task = base.task_spec();
+    let policy = CronPolicy::new("* * * * * * *").unwrap().with_max_occurrences(6).unwrap();
+    let spec = TaskSpec::new(
+        task.id(),
+        task.task_payload().clone(),
+        RunPolicy::Cron(policy),
+        task.constraints().clone(),
+        task.metadata().clone(),
+    )
+    .unwrap();
+    ensure(&mut a, with_spec(&base, spec), 10).unwrap();
+    let mut runs: Vec<_> = a.projection().runs_for_task(id(1)).cloned().collect();
+    runs.sort_by_key(|r| r.scheduled_at());
+    assert_eq!(runs.len(), 5);
+    let next = runs.last().unwrap().scheduled_at() + 1;
+    let create = |a: &mut Authority, scheduled_at| {
+        a.submit_command(
+            MutationCommand::RunCreate(RunCreateCommand::new(
+                a.projection().latest_sequence() + 1,
+                RunInstance::new_scheduled(id(1), scheduled_at, 10).unwrap(),
+            )),
+            DurabilityPolicy::Immediate,
+        )
+    };
+    let before = image(&a);
+    assert!(create(&mut a, next).is_err(), "full rolling window");
+    assert_eq!(image(&a), before);
+    let cancel = |a: &mut Authority, run: actionqueue_core::ids::RunId| {
+        let _ = a
+            .submit_command(
+                MutationCommand::RunStateTransition(RunStateTransitionCommand::new(
+                    a.projection().latest_sequence() + 1,
+                    run,
+                    RunState::Scheduled,
+                    RunState::Canceled,
+                    11,
+                )),
+                DurabilityPolicy::Immediate,
+            )
+            .unwrap();
+    };
+    cancel(&mut a, runs[0].id());
+    for invalid in [next - 1, next + 1] {
+        let before = image(&a);
+        assert!(create(&mut a, invalid).is_err(), "duplicate or skipped occurrence");
+        assert_eq!(image(&a), before);
+    }
+    let _ = create(&mut a, next).unwrap();
+    cancel(&mut a, runs[1].id());
+    let before = image(&a);
+    assert!(create(&mut a, next + 1).is_err(), "total occurrence cap");
+    assert_eq!(image(&a), before);
+    drop(a);
+    assert_eq!(image(&open(dir.path())), before);
+}

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "package": "conformance/aq-cont-1",
-  "package_revision": 13,
+  "package_revision": 14,
   "status": "executable",
   "contract": "AQ-CONT-1",
   "contract_revision": "STACK-2026-07-20-CLEAN-1",

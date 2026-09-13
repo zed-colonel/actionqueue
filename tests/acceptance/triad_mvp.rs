@@ -6,7 +6,7 @@
 mod host_support;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -43,15 +43,6 @@ impl Clock for AdvancableClock {
     }
 }
 
-static COUNTER: AtomicUsize = AtomicUsize::new(0);
-
-fn data_dir(label: &str) -> PathBuf {
-    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let dir = std::env::temp_dir().join(format!("8i-triad-{label}-{}-{n}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("data dir");
-    dir
-}
-
 struct SucceedHandler;
 
 impl ExecutorHandler for SucceedHandler {
@@ -85,9 +76,9 @@ fn task_spec(id: TaskId, label: &str) -> TaskSpec {
 /// Full triad workflow with audit trail.
 #[tokio::test]
 async fn triad_mvp_full_workflow() {
-    let dir = data_dir("full");
+    let dir = tempfile::tempdir().expect("isolated triad store");
     let clock = AdvancableClock::new(1000);
-    let engine = ActionQueueEngine::new(make_config(dir), SucceedHandler);
+    let engine = ActionQueueEngine::new(make_config(dir.path().to_path_buf()), SucceedHandler);
     let mut boot = engine.bootstrap_with_clock(clock.clone()).expect("bootstrap").with_host(
         actionqueue_core::control::HostControlContext {
             actor_id: None,

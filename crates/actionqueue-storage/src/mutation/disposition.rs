@@ -22,6 +22,7 @@ pub enum DispositionRejection {
     Invalid,
     ChildrenNonterminal,
     InvalidChildWait,
+    WaitCapacity,
     TooLarge,
     UnsupportedFeature,
     ImmediateDurabilityRequired,
@@ -174,6 +175,11 @@ impl ReplayReducer {
         let run = self.get_run_instance(&c.run_id()).unwrap();
         let task = self.get_task(&run.task_id()).unwrap();
         let d = c.disposition();
+        if d.wait().is_some() {
+            self.waits()
+                .validate_capacity(task.tenant_id(), continuation_limits)
+                .map_err(|_| R::WaitCapacity)?;
+        }
         if matches!(d.outcome(), actionqueue_core::disposition::DispositionOutcome::Complete)
             && !self.required_children_terminal(run.task_id())
         {

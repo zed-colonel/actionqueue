@@ -129,7 +129,9 @@ fn initial_schedule(policy: &RunPolicy, timestamp: u64) -> Result<Vec<u64>, R> {
         #[cfg(feature = "workflow")]
         RunPolicy::Cron(p) => Ok(p.next_occurrences_after(
             timestamp.saturating_sub(1),
-            p.max_occurrences().map_or(5, |n| n.min(5)) as usize,
+            p.max_occurrences()
+                .unwrap_or(actionqueue_core::task::run_policy::CRON_WINDOW_SIZE)
+                .min(actionqueue_core::task::run_policy::CRON_WINDOW_SIZE) as usize,
         )),
     }
 }

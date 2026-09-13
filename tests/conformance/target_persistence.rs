@@ -438,7 +438,7 @@ fn cancellation_preserves_unfinished_attempt_through_snapshot_tail_and_restore()
 #[test]
 fn cancellation_before_creation_is_rejected_before_append_and_projection_publication() {
     use actionqueue_core::mutation::{
-        DurabilityPolicy, MutationAuthority, MutationCommand, TaskCancelCommand, TaskCreateCommand,
+        DurabilityPolicy, MutationAuthority, MutationCommand, TaskCancelCommand,
     };
     use actionqueue_storage::recovery::reducer::{ReplayReducerError, TaskCausalityError};
     let dir = tempfile::tempdir().unwrap();
@@ -455,7 +455,26 @@ fn cancellation_before_creation_is_rejected_before_append_and_projection_publica
     );
     let _ = authority
         .submit_command(
-            MutationCommand::TaskCreate(TaskCreateCommand::new(2, task(t), 100)),
+            MutationCommand::AdmissionCommit(
+                actionqueue_core::mutation::AdmissionCommitCommand::new(
+                    2,
+                    {
+                        let q = actionqueue_core::admission::EnsureTaskRequest::for_task(
+                            task(t),
+                            vec![],
+                        )
+                        .unwrap();
+                        actionqueue_engine::admission::plan_admission(
+                            q.clone(),
+                            q.digest().unwrap(),
+                            100,
+                        )
+                        .unwrap()
+                    },
+                    None,
+                    100,
+                ),
+            ),
             DurabilityPolicy::Immediate,
         )
         .unwrap();

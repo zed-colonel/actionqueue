@@ -656,6 +656,7 @@ async fn output_limit_case(
             checkpoint_bytes: limit,
             disposition_bytes: record_limit
                 .unwrap_or(actionqueue_core::limits::MAX_ADMISSION_RECORD_BYTES),
+            ..Default::default()
         },
         backoff_strategy: actionqueue_runtime::config::BackoffStrategyConfig::Fixed {
             interval: std::time::Duration::ZERO,
@@ -883,4 +884,146 @@ async fn unsafe_record_limits_reject_before_bootstrap_and_minimum_recovers_activ
         assert_eq!(a.projection().projection_digest().unwrap(), digest);
         parity(&a);
     }
+}
+
+// F-019: quota rejections preserve the active attempt and checkpoint atomicity.
+#[test]
+fn active_wait_capacity_survives_recovery_and_releases_on_resolution() {
+    use actionqueue_core::limits::ContinuationLimits;
+    for snapshot in [false, true] {
+        for resolution in [0, 1, 2] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut a = s::open(dir.path());
+            let first = running(&mut a, 1, None, false);
+            let second = running(&mut a, 2, None, false);
+            a.set_continuation_limits(ContinuationLimits {
+                active_waits: 1,
+                active_waits_per_tenant: 1,
+                ..Default::default()
+            });
+            let w = spec(
+                WaitId::new(),
+                Some(WaitDeadline { at: 30, policy: WaitTimeoutPolicy::ResumeWithTimeout }),
+            );
+            let accepted = establish_wait(&mut a, first, w);
+            if snapshot {
+                parity(&a);
+            }
+            drop(a);
+            let mut a = s::reopen(dir.path());
+            a.set_continuation_limits(ContinuationLimits {
+                active_waits: 0,
+                active_waits_per_tenant: 0,
+                ..Default::default()
+            });
+            assert_eq!(a.projection().waits().active_count(), 1);
+            assert_eq!(a.projection().waits().active_count_for_tenant(None), 1);
+            assert!(matches!(
+                establish(&mut a, accepted.clone()).unwrap(),
+                WaitOutcome::AlreadyEstablished { .. }
+            ));
+            for limits in [
+                ContinuationLimits {
+                    active_waits: 1,
+                    active_waits_per_tenant: 10,
+                    ..Default::default()
+                },
+                ContinuationLimits {
+                    active_waits: 10,
+                    active_waits_per_tenant: 1,
+                    ..Default::default()
+                },
+            ] {
+                a.set_continuation_limits(limits);
+                let mut c = command(&a, second, spec(WaitId::new(), None));
+                c.checkpoint = Some(checkpoint(&a, second, b"rejected checkpoint"));
+                let before = a.projection().projection_digest().unwrap();
+                assert!(matches!(
+                    establish(&mut a, c),
+                    Err(MutationAuthorityError::Wait(WaitRejection::Capacity))
+                ));
+                assert_eq!(a.projection().projection_digest().unwrap(), before);
+            }
+            match resolution {
+                0 => cancel(&mut a, first),
+                1 => {
+                    let _ = timeout(&mut a, first, accepted.wait.wait_id(), 30).unwrap();
+                }
+                _ => {
+                    let _ = s::submit(&mut a, s::envelope(1, 25)).unwrap();
+                    reconcile(&mut a, 30).unwrap();
+                }
+            }
+            assert_eq!(a.projection().waits().active_count(), 0);
+            assert_eq!(a.projection().waits().active_count_for_tenant(None), 0);
+            establish_wait(&mut a, second, spec(WaitId::new(), None));
+            assert_eq!(a.projection().waits().active_count(), 1);
+            parity(&a);
+        }
+    }
+}
+
+#[cfg(feature = "platform")]
+#[test]
+fn active_wait_tenant_quota_is_scoped_and_store_quota_is_shared() {
+    use actionqueue_core::limits::ContinuationLimits;
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = s::open_platform(dir.path());
+    let tenants = [TenantId::new(), TenantId::new()];
+    for tenant in tenants {
+        commit!(
+            &mut a,
+            MutationCommand::TenantCreate(TenantCreateCommand::new(
+                seq(&a),
+                actionqueue_core::platform::TenantRegistration::new(tenant, "tenant"),
+                1
+            ))
+        );
+    }
+    let runs = [
+        running_scoped(&mut a, 1, None, false, Some(tenants[0])),
+        running_scoped(&mut a, 2, None, false, Some(tenants[0])),
+        running_scoped(&mut a, 3, None, false, Some(tenants[1])),
+    ];
+    let wait = |tenant| {
+        let mut f = s::filter();
+        f.tenant_id = Some(tenant);
+        WaitSpec::new(
+            WaitId::new(),
+            f,
+            WaitMatchPolicy::FirstMatch,
+            SignalEligibility::After(SignalSequence::new(0)),
+            None,
+        )
+        .unwrap()
+    };
+    a.set_continuation_limits(ContinuationLimits {
+        active_waits: 2,
+        active_waits_per_tenant: 1,
+        ..Default::default()
+    });
+    establish_wait(&mut a, runs[0], wait(tenants[0]));
+    let c = command(&a, runs[1], wait(tenants[0]));
+    assert!(matches!(
+        establish(&mut a, c),
+        Err(MutationAuthorityError::Wait(WaitRejection::Capacity))
+    ));
+    establish_wait(&mut a, runs[2], wait(tenants[1]));
+    parity(&a);
+    drop(a);
+    let mut a = s::reopen(dir.path());
+    assert_eq!(a.projection().waits().active_count(), 2);
+    for tenant in tenants {
+        assert_eq!(a.projection().waits().active_count_for_tenant(Some(tenant)), 1);
+    }
+    a.set_continuation_limits(ContinuationLimits {
+        active_waits: 2,
+        active_waits_per_tenant: 10,
+        ..Default::default()
+    });
+    let c = command(&a, runs[1], wait(tenants[0]));
+    assert!(matches!(
+        establish(&mut a, c),
+        Err(MutationAuthorityError::Wait(WaitRejection::Capacity))
+    ));
 }

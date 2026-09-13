@@ -1,4 +1,4 @@
-//! ADR-002 CanonicalAdmissionV1. No serde output or Rust discriminants are hashed.
+//! ADR-002 versioned canonical admission. No serde output or Rust discriminants are hashed.
 use sha2::{Digest, Sha256};
 
 use super::{AdmissionDigest, AdmissionRejection, EnsureTaskRequest};

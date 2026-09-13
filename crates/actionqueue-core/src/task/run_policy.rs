@@ -1,5 +1,9 @@
 //! Run policy definitions for task execution scheduling.
 
+/// Number of nonterminal cron runs maintained by admission and replenishment.
+#[cfg(feature = "workflow")]
+pub const CRON_WINDOW_SIZE: u32 = 5;
+
 /// Error returned when constructing or configuring a [`CronPolicy`].
 #[cfg(feature = "workflow")]
 #[derive(Debug, Clone, PartialEq, Eq)]

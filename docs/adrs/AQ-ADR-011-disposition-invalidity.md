@@ -1,6 +1,6 @@
 # AQ-ADR-011 — Disposition invalidity
 
-- **Status:** Accepted for implementation in AQ-08; integration review pending.
+- **Status:** Accepted; implemented and covered by the AQ-08 acceptance suites.
 - **Decide before:** `AQ-08`
 - **Contract:** `AQ-CONT-1`
 - **Invariants:** AQ-H9

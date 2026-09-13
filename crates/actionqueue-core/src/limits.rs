@@ -197,9 +197,14 @@ impl SignalRetentionPolicy {
 /// Hard ceiling for compound continuation/control frames, including checkpoint references.
 pub const MAX_WAIT_RECORD_BYTES: usize = 128 * 1024;
 
-/// Creation limits for continuation data; replay uses hard format ceilings.
+/// Creation limits for continuation data and resident active waits.
+/// Replay uses hard data ceilings and preserves accepted waits even when quotas are lowered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ContinuationLimits {
+    /// Maximum active waits across the store. Zero rejects new waits.
+    pub active_waits: usize,
+    /// Maximum active waits in each tenant (including the single-tenant namespace).
+    pub active_waits_per_tenant: usize,
     /// Final inline output bytes.
     pub output_bytes: usize,
     /// Inline checkpoint bytes.
@@ -210,6 +215,8 @@ pub struct ContinuationLimits {
 impl Default for ContinuationLimits {
     fn default() -> Self {
         Self {
+            active_waits: 100_000,
+            active_waits_per_tenant: 10_000,
             output_bytes: MAX_INLINE_DATA_BYTES,
             checkpoint_bytes: 32 * 1024,
             disposition_bytes: 128 * 1024,

@@ -82,7 +82,20 @@ fn eligible_runs<W: WalWriter>(
                 && crate::claim::eligible(a.projection(), r.id(), Some(traits), now)
         })
         .cloned()
-        .map(ReadyRunSelectionInput::from_ready_run)
+        .map(|run| {
+            // Scheduled runs have no persisted priority snapshot until promotion.
+            // Resolve the same task priority that the local Ready transition records.
+            let priority = if run.state() == RunState::Scheduled {
+                a.projection()
+                    .get_task(&run.task_id())
+                    .expect("eligible task")
+                    .metadata()
+                    .priority()
+            } else {
+                run.effective_priority()
+            };
+            ReadyRunSelectionInput::new(run, priority)
+        })
         .collect();
     Ok(select_ready_runs(&inputs).into_selected().into_iter().map(|r| r.id()).collect())
 }

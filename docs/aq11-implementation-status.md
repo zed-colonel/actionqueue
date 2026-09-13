@@ -1,5 +1,9 @@
 # AQ-11 implementation and remediation
 
+This living summary includes subsequent AQ-12 API changes. Historical review
+IDs below record the AQ-11 milestone; current API guidance is
+[the operational API reference](aq-12-apis.md).
+
 AQ-11 uses one storage control boundary for embedded, daemon, CLI, and direct
 Rust callers. Host identity, explicit scope, current queue permissions, target
 namespace, and embedded attribution consistency are checked before duplicate
@@ -40,13 +44,13 @@ to the explicit single namespace; it cannot infer a tenant from submitted data.
 Task/run HTTP inspection uses authentication even when controls are disabled,
 authorizes against the same current projection used to construct responses, and
 filters tenant scope before lookup and pagination. A platform store without a
-host hook rejects inspection. Legacy anonymous inspection is restricted to the
-single namespace of a non-platform store. Mutating routes remain gated by
+host hook rejects inspection. AQ-12 requires authenticated inspection in
+non-platform stores as well; there is no anonymous inspection namespace. Mutating routes remain gated by
 `enable_control` and authentication.
 
 ## Execution and recovery
 
-Local and remote eligibility share FIFO selection, executor trait matching,
+Local and remote eligibility share priority-then-FIFO selection, executor trait matching,
 dependency, budget, pause, namespace, and concurrency-key gates. Remote claims
 and results use the same accepted-start and atomic disposition paths as embedded
 execution. Embedded runtime exposes claimable, claim, renewal, and result methods.

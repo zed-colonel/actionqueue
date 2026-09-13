@@ -16,15 +16,18 @@
 //! # Example
 //!
 //! ```
+//! use actionqueue_core::admission::{AdmissionPlan, EnsureTaskRequest};
+//! use actionqueue_core::causal::CausalContext;
 //! use actionqueue_core::ids::TaskId;
+//! use actionqueue_core::ids::{AdmissionKey, CorrelationId, TraceId};
 //! use actionqueue_core::mutation::{
-//!     DurabilityPolicy, MutationAuthority, MutationCommand, TaskCreateCommand,
+//!     AdmissionCommitCommand, DurabilityPolicy, MutationAuthority, MutationCommand,
 //! };
+//! use actionqueue_core::run::RunInstance;
 //! use actionqueue_core::task::constraints::TaskConstraints;
 //! use actionqueue_core::task::metadata::TaskMetadata;
 //! use actionqueue_core::task::run_policy::RunPolicy;
 //! use actionqueue_core::task::task_spec::{TaskPayload, TaskSpec};
-//! use actionqueue_storage::mutation::StorageMutationAuthority;
 //! use actionqueue_storage::recovery::reducer::ReplayReducer;
 //! use actionqueue_storage::wal::fs_writer::WalFsWriter;
 //!
@@ -53,9 +56,24 @@
 //!         actionqueue_core::bounded::OpaqueRef::new("example-host").unwrap(),
 //!     ),
 //! }));
+//! let request = EnsureTaskRequest::new(
+//!     AdmissionKey::new("example/1").unwrap(),
+//!     task_spec.clone(),
+//!     vec![],
+//!     CausalContext::new(TraceId::new("trace/1").unwrap(), CorrelationId::new("work/1").unwrap()),
+//!     None,
+//! )
+//! .unwrap();
+//! let digest = request.digest().unwrap();
+//! let plan = AdmissionPlan::new(
+//!     request,
+//!     vec![RunInstance::new_scheduled(task_id, 0, 0).unwrap()],
+//!     digest,
+//! )
+//! .unwrap();
 //! authority
 //!     .submit_command(
-//!         MutationCommand::TaskCreate(TaskCreateCommand::new(2, task_spec, 0)),
+//!         MutationCommand::AdmissionCommit(AdmissionCommitCommand::new(2, plan, None, 0)),
 //!         DurabilityPolicy::Immediate,
 //!     )
 //!     .expect("authority command should succeed");

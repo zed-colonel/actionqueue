@@ -171,6 +171,8 @@ impl EngineResumeCommand {
 
 /// Semantic command for task creation.
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Fixture construction command. Production storage rejects standalone task creation;
+/// callers must use [`AdmissionCommitCommand`] to establish all admission facts.
 pub struct TaskCreateCommand {
     sequence: u64,
     task_spec: TaskSpec,

@@ -32,7 +32,8 @@ fn after(w: &WaitSpec) -> SignalSequence {
 #[derive(Debug, Clone, Default)]
 pub struct WaitIndex {
     pub(crate) records: BTreeMap<WaitId, WaitRecord>,
-    active: HashMap<RunId, WaitId>,
+    active: HashMap<RunId, (WaitId, Option<TenantId>)>,
+    active_by_tenant: HashMap<Option<TenantId>, usize>,
     matching: HashMap<Key, BTreeSet<WaitId>>,
     deadlines: BTreeSet<(u64, WaitId)>,
     candidates: BTreeSet<(SignalSequence, WaitId)>,
@@ -50,10 +51,26 @@ impl WaitIndex {
         self.records.values().inspect(|_| visit(Visit::WaitHistory))
     }
     pub fn active(&self, run: RunId) -> Option<&WaitRecord> {
-        self.active.get(&run).and_then(|id| self.get(*id))
+        self.active.get(&run).and_then(|(id, _)| self.get(*id))
     }
     pub fn active_count(&self) -> usize {
         self.active.len()
+    }
+    /// Active waits in exactly one namespace; historical waits do not consume capacity.
+    pub fn active_count_for_tenant(&self, tenant: Option<TenantId>) -> usize {
+        self.active_by_tenant.get(&tenant).copied().unwrap_or(0)
+    }
+    pub(crate) fn validate_capacity(
+        &self,
+        tenant: Option<TenantId>,
+        limits: actionqueue_core::limits::ContinuationLimits,
+    ) -> Result<(), WaitRejection> {
+        if self.active_count() >= limits.active_waits
+            || self.active_count_for_tenant(tenant) >= limits.active_waits_per_tenant
+        {
+            return Err(WaitRejection::Capacity);
+        }
+        Ok(())
     }
     pub fn next_deadline(&self) -> Option<u64> {
         self.deadlines.first().map(|v| v.0)
@@ -99,10 +116,11 @@ impl WaitIndex {
         }
         ids
     }
-    pub(crate) fn insert(&mut self, r: WaitRecord) {
+    pub(crate) fn insert(&mut self, r: WaitRecord, tenant: Option<TenantId>) {
         let id = r.spec.wait_id();
         if r.resolution.is_none() {
-            self.active.insert(r.run_id, id);
+            self.active.insert(r.run_id, (id, tenant));
+            *self.active_by_tenant.entry(tenant).or_default() += 1;
             if let Some(f) = r.spec.filter() {
                 self.matching.entry(key(f)).or_default().insert(id);
             }
@@ -123,7 +141,12 @@ impl WaitIndex {
     }
     fn close(&mut self, r: WaitResolution) {
         let w = self.records.get_mut(&r.wait_id).expect("validated wait");
-        self.active.remove(&w.run_id);
+        let (_, tenant) = self.active.remove(&w.run_id).expect("active wait namespace");
+        let count = self.active_by_tenant.get_mut(&tenant).expect("active wait count");
+        *count -= 1;
+        if *count == 0 {
+            self.active_by_tenant.remove(&tenant);
+        }
         if let Some(k) = w.spec.filter().map(key) {
             if let Some(bucket) = self.matching.get_mut(&k) {
                 bucket.remove(&r.wait_id);
@@ -631,13 +654,14 @@ impl ReplayReducer {
         p.lease_metadata.remove(&r.run_id);
         p.apply_run_state_changed(&r.run_id, &RunState::Running, &RunState::Awaiting, r.timestamp)?;
         let task = p.get_task(&p.get_run_instance(&r.run_id).unwrap().task_id()).unwrap();
+        let tenant = task.tenant_id();
         if task.constraints().concurrency_key_wait_policy()
             == ConcurrencyKeyWaitPolicy::ReleaseWhileAwaiting
         {
             p.key_reservations.remove(&r.run_id);
         }
         p.index_checkpoint(r)?;
-        p.waits.insert(r.clone());
+        p.waits.insert(r.clone(), tenant);
         p.refresh_wait_candidate(r.spec.wait_id());
         *self = p;
         Ok(())
@@ -794,7 +818,7 @@ impl ReplayReducer {
                     return Err(E::InvalidSignal);
                 }
             }
-            index.insert(r.clone());
+            index.insert(r.clone(), self.tenant_for_run(r.run_id)?);
         }
         for run in self.run_instances() {
             if run.state() == RunState::Awaiting && index.active(run.id()).is_none() {
@@ -897,7 +921,7 @@ impl ReplayReducer {
         self.waits = index;
         self.key_reservations = claims;
         self.cancellations = cancels.to_vec();
-        let ids: Vec<_> = self.waits.active.values().copied().collect();
+        let ids: Vec<_> = self.waits.active.values().map(|(id, _)| *id).collect();
         for id in ids {
             self.refresh_wait_candidate(id);
         }

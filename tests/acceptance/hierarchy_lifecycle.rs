@@ -15,10 +15,8 @@ mod support;
 mod wf {
     use actionqueue_core::ids::TaskId;
     use actionqueue_core::mutation::{
-        DurabilityPolicy, MutationAuthority, MutationCommand, RunCreateCommand, TaskCancelCommand,
-        TaskCreateCommand,
+        DurabilityPolicy, MutationAuthority, MutationCommand, TaskCancelCommand,
     };
-    use actionqueue_core::run::run_instance::RunInstance;
     use actionqueue_core::run::state::RunState;
     use actionqueue_core::task::constraints::TaskConstraints;
     use actionqueue_core::task::metadata::TaskMetadata;
@@ -88,8 +86,7 @@ mod wf {
                     ),
                 });
 
-            // Create parent task and its run.
-            let seq = auth.projection().latest_sequence() + 1;
+            // Admit each task and its initial run atomically, parent first.
             let parent_spec = TaskSpec::new(
                 parent_id,
                 TaskPayload::new(b"parent".to_vec()),
@@ -97,58 +94,19 @@ mod wf {
                 TaskConstraints::default(),
                 TaskMetadata::default(),
             )
-            .expect("valid spec");
-            let _ = auth
-                .submit_command(
-                    MutationCommand::TaskCreate(TaskCreateCommand::new(seq, parent_spec, ts)),
-                    DurabilityPolicy::Immediate,
+            .unwrap();
+            for spec in [
+                parent_spec,
+                make_once_spec_with_parent(child1_id, parent_id, b"child1"),
+                make_once_spec_with_parent(child2_id, parent_id, b"child2"),
+            ] {
+                actionqueue_runtime::admission::ensure_task(
+                    &mut auth,
+                    actionqueue_core::admission::EnsureTaskRequest::for_task(spec, vec![]).unwrap(),
+                    &MockClock::new(ts),
                 )
-                .expect("create parent task");
-
-            let parent_run = RunInstance::new_scheduled(parent_id, ts, ts).expect("valid run");
-            let seq = auth.projection().latest_sequence() + 1;
-            let _ = auth
-                .submit_command(
-                    MutationCommand::RunCreate(RunCreateCommand::new(seq, parent_run)),
-                    DurabilityPolicy::Immediate,
-                )
-                .expect("create parent run");
-
-            // Create child1 with parent_task_id = parent_id.
-            let child1_spec = make_once_spec_with_parent(child1_id, parent_id, b"child1");
-            let seq = auth.projection().latest_sequence() + 1;
-            let _ = auth
-                .submit_command(
-                    MutationCommand::TaskCreate(TaskCreateCommand::new(seq, child1_spec, ts)),
-                    DurabilityPolicy::Immediate,
-                )
-                .expect("create child1 task");
-            let child1_run = RunInstance::new_scheduled(child1_id, ts, ts).expect("valid run");
-            let seq = auth.projection().latest_sequence() + 1;
-            let _ = auth
-                .submit_command(
-                    MutationCommand::RunCreate(RunCreateCommand::new(seq, child1_run)),
-                    DurabilityPolicy::Immediate,
-                )
-                .expect("create child1 run");
-
-            // Create child2 with parent_task_id = parent_id.
-            let child2_spec = make_once_spec_with_parent(child2_id, parent_id, b"child2");
-            let seq = auth.projection().latest_sequence() + 1;
-            let _ = auth
-                .submit_command(
-                    MutationCommand::TaskCreate(TaskCreateCommand::new(seq, child2_spec, ts)),
-                    DurabilityPolicy::Immediate,
-                )
-                .expect("create child2 task");
-            let child2_run = RunInstance::new_scheduled(child2_id, ts, ts).expect("valid run");
-            let seq = auth.projection().latest_sequence() + 1;
-            let _ = auth
-                .submit_command(
-                    MutationCommand::RunCreate(RunCreateCommand::new(seq, child2_run)),
-                    DurabilityPolicy::Immediate,
-                )
-                .expect("create child2 run");
+                .unwrap();
+            }
 
             // Cancel the parent task.
             let seq = auth.projection().latest_sequence() + 1;

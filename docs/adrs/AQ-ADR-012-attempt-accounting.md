@@ -1,6 +1,6 @@
 # AQ-ADR-012 — Attempt accounting
 
-- **Status:** Accepted for implementation in AQ-08; integration review pending.
+- **Status:** Accepted; implemented and covered by the AQ-08 acceptance suites.
 - **Decide before:** `AQ-08`
 - **Contract:** `AQ-CONT-1`
 - **Invariants:** AQ-H13
@@ -41,4 +41,4 @@ Accounting tests across await/resume/suspend/crash sequences; `AQ-DD-011`.
 | Accepted on | 2026-09-12 |
 | Superseded by | — |
 
-Accepted starts increment `attempt_count`. Committed failure, timeout, terminal failure, and interrupted accepted execution increment `failure_attempt_count` exactly once. Completion, awaiting, suspension, cancellation, and recovery before acceptance do not. Retry caps and backoff use failures. Schema-6 snapshots retain both counters; WAL replay uses the same accounting rules.
+Accepted starts increment `attempt_count`. Committed failure, timeout, terminal failure, and interrupted accepted execution increment `failure_attempt_count` exactly once. Completion, awaiting, suspension, cancellation, and recovery before acceptance do not. Retry caps and backoff use failures. The AQ-08 schema-6 milestone introduced both counters; current schema-9 snapshots retain them. WAL replay uses the same accounting rules.

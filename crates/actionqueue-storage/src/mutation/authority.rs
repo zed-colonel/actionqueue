@@ -114,6 +114,18 @@ pub trait MutationProjection: Clone {
     ) -> Result<(), actionqueue_core::continuation::SignalRejection> {
         Err(actionqueue_core::continuation::SignalRejection::UnsupportedFeature)
     }
+    /// Checks operational capacity for a new wait, independently of replay validation.
+    fn validate_wait_capacity(
+        &self,
+        _run: RunId,
+        _limits: actionqueue_core::limits::ContinuationLimits,
+    ) -> Result<(), actionqueue_core::mutation::WaitRejection> {
+        Err(actionqueue_core::mutation::WaitRejection::UnsupportedFeature)
+    }
+    /// Additional runs are permitted only for an admitted cron task's next occurrence.
+    fn validate_additional_run(&self, _run: &RunInstance) -> Result<(), MutationValidationError> {
+        Err(MutationValidationError::RunCreateRequiresCronReplenishment)
+    }
     /// Prepare continuation and compound controls against the serialized projection.
     fn prepare_wait(
         &self,
@@ -191,6 +203,46 @@ pub trait MutationProjection: Clone {
 }
 
 impl MutationProjection for ReplayReducer {
+    fn validate_wait_capacity(
+        &self,
+        run: RunId,
+        limits: actionqueue_core::limits::ContinuationLimits,
+    ) -> Result<(), actionqueue_core::mutation::WaitRejection> {
+        use actionqueue_core::mutation::WaitRejection;
+        let run = self.get_run_instance(&run).ok_or(WaitRejection::NotFound)?;
+        let task = self.get_task(&run.task_id()).ok_or(WaitRejection::NotFound)?;
+        self.waits().validate_capacity(task.tenant_id(), limits)
+    }
+    fn validate_additional_run(&self, run: &RunInstance) -> Result<(), MutationValidationError> {
+        let invalid = MutationValidationError::RunCreateRequiresCronReplenishment;
+        #[cfg(feature = "workflow")]
+        if let Some(admission) = self.task_admission(run.task_id()) {
+            if let actionqueue_core::task::run_policy::RunPolicy::Cron(policy) =
+                admission.request().task_spec().run_policy()
+            {
+                let runs: Vec<_> = self.runs_for_task(run.task_id()).collect();
+                let after = runs
+                    .iter()
+                    .map(|r| r.scheduled_at())
+                    .max()
+                    .unwrap_or_else(|| run.created_at().saturating_sub(1));
+                if !self.is_task_canceled(run.task_id())
+                    && policy.max_occurrences().is_none_or(|max| runs.len() < max as usize)
+                    && runs.iter().filter(|r| !r.state().is_terminal()).count()
+                        < actionqueue_core::task::run_policy::CRON_WINDOW_SIZE as usize
+                    && run.created_at() >= admission.timestamp()
+                    && policy.next_occurrences_after(after, 1).first() == Some(&run.scheduled_at())
+                    && run.attempt_count() == 0
+                    && run.failure_attempt_count() == 0
+                    && run.current_attempt_id().is_none()
+                {
+                    return Ok(());
+                }
+            }
+        }
+        let _ = run;
+        Err(invalid)
+    }
     fn wait_index(&self) -> Option<&crate::recovery::waits::WaitIndex> {
         Some(self.waits())
     }
@@ -665,6 +717,11 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
         &self,
         command: &TaskCreateCommand,
     ) -> Result<(), MutationValidationError> {
+        // Unbound test writers may construct reducer fixtures. A durable store
+        // always requires compound admission, even in a build with test support.
+        if self.store_session().is_some() || !cfg!(any(test, feature = "testing")) {
+            return Err(MutationValidationError::TaskCreateRequiresAdmission);
+        }
         self.validate_sequence(command.sequence())?;
 
         if self.projection.task_exists(command.task_spec().id()) {
@@ -694,6 +751,9 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
             });
         }
 
+        if self.store_session().is_some() || !cfg!(any(test, feature = "testing")) {
+            self.projection.validate_additional_run(command.run_instance())?;
+        }
         if command.run_instance().state() != RunState::Scheduled {
             return Err(MutationValidationError::RunCreateRequiresScheduled {
                 run_id: command.run_instance().id(),
@@ -1689,6 +1749,9 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
                 ));
             }
             if let WalEventType::WaitEstablished { record } = event.event() {
+                self.projection
+                    .validate_wait_capacity(record.run_id, self.continuation_limits)
+                    .map_err(MutationAuthorityError::Wait)?;
                 if record.checkpoint.as_ref().is_some_and(|c| matches!(&c.data, actionqueue_core::data_ref::DataRef::Inline(v) if v.bytes().len() > self.continuation_limits.checkpoint_bytes.min(actionqueue_core::limits::MAX_INLINE_DATA_BYTES)))
                     || self.continuation_limits.validate_record(bytes.len()).is_err() {
                     return Err(MutationAuthorityError::Wait(actionqueue_core::mutation::WaitRejection::TooLarge));
@@ -1940,6 +2003,10 @@ struct LeaseCloseParams<'a> {
 /// Typed validation failures from the authority validation stage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MutationValidationError {
+    /// Task creation must atomically establish admission and initial runs.
+    TaskCreateRequiresAdmission,
+    /// Standalone runs must replenish an admitted cron policy's bounded window.
+    RunCreateRequiresCronReplenishment,
     /// Control attribution cannot be nested.
     NestedControl,
     /// Actor IDs cannot be reassigned to another tenant namespace.
@@ -2155,6 +2222,12 @@ pub enum MutationValidationError {
 impl std::fmt::Display for MutationValidationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::TaskCreateRequiresAdmission => {
+                write!(f, "task creation requires compound admission")
+            }
+            Self::RunCreateRequiresCronReplenishment => {
+                write!(f, "standalone run creation requires valid cron replenishment")
+            }
             Self::NestedControl => write!(f, "nested control attribution"),
             Self::ActorTenantChange => write!(f, "actor tenant is immutable"),
             MutationValidationError::SequenceOverflow => {

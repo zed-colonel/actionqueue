@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use actionqueue_core::ids::{AttemptId, RunId, TaskId};
 use actionqueue_core::mutation::{
     AttemptFinishCommand, AttemptOutcome, AttemptStartCommand, DurabilityPolicy, MutationAuthority,
-    MutationCommand, RunCreateCommand, RunStateTransitionCommand, TaskCreateCommand,
+    MutationCommand, RunStateTransitionCommand,
 };
 use actionqueue_core::run::state::RunState;
 use actionqueue_core::run::RunInstance;
@@ -90,6 +90,28 @@ fn next_seq(
     authority.projection().latest_sequence().checked_add(1).expect("sequence should not overflow")
 }
 
+/// Commits a Once task and its chosen initial run in one admission frame.
+fn admit_once(
+    authority: &mut StorageMutationAuthority<InstrumentedWalWriter<WalFsWriter>, ReplayReducer>,
+    spec: TaskSpec,
+    run_id: RunId,
+) {
+    use actionqueue_core::admission::{AdmissionPlan, EnsureTaskRequest};
+    let seq = next_seq(authority);
+    let run = RunInstance::new_scheduled_with_id(run_id, spec.id(), seq, seq).unwrap();
+    let request = EnsureTaskRequest::for_task(spec, vec![]).unwrap();
+    let digest = request.digest().unwrap();
+    let plan = AdmissionPlan::new(request, vec![run], digest).unwrap();
+    let _ = authority
+        .submit_command(
+            MutationCommand::AdmissionCommit(
+                actionqueue_core::mutation::AdmissionCommitCommand::new(seq, plan, None, seq),
+            ),
+            DurabilityPolicy::Immediate,
+        )
+        .unwrap();
+}
+
 /// Simulates loss of the process-owned projection after durable, unbuffered writes.
 /// Dropping releases the OS lock without a WAL sync. A separate target conformance
 /// child-process test proves real SIGKILL lock release and durable recovery.
@@ -101,14 +123,14 @@ fn simulate_kill9(
 }
 
 // ---------------------------------------------------------------------------
-// Scenario A: Crash after task creation, before run creation.
+// Scenario A: Crash after compound admission, before scheduling.
 //
-// Submit 3 tasks, crash immediately. Recovery should see all 3 tasks, 0 runs.
-// Then create runs on 2 of them and verify operations proceed.
+// Submit 3 tasks, crash immediately. Recovery should see all tasks and initial runs.
+// Then promote an admitted run and verify operations proceed.
 // ---------------------------------------------------------------------------
 
 #[test]
-fn crash_after_task_creation_before_run_creation() {
+fn crash_after_compound_admission_before_scheduling() {
     let data_dir = unique_data_dir("scenario_a");
 
     // Phase 1: Create tasks, then kill -9.
@@ -119,13 +141,7 @@ fn crash_after_task_creation_before_run_creation() {
         for i in 0u8..3 {
             let spec = make_task_spec(&[10 + i, 20 + i]);
             let task_id = spec.id();
-            let seq = next_seq(&authority);
-            let _ = authority
-                .submit_command(
-                    MutationCommand::TaskCreate(TaskCreateCommand::new(seq, spec, seq)),
-                    DurabilityPolicy::Immediate,
-                )
-                .expect("task create should succeed");
+            admit_once(&mut authority, spec, RunId::new());
             ids.push(task_id);
         }
 
@@ -134,7 +150,7 @@ fn crash_after_task_creation_before_run_creation() {
         ids
     };
 
-    // Phase 2: Recovery — verify all 3 tasks present, 0 runs.
+    // Phase 2: Recovery — verify all 3 complete admissions.
     {
         let recovery =
             load_projection_from_storage(&data_dir).expect("recovery should succeed after crash");
@@ -144,7 +160,7 @@ fn crash_after_task_creation_before_run_creation() {
             3,
             "all 3 tasks must survive kill -9 recovery"
         );
-        assert_eq!(recovery.projection.run_count(), 0, "no runs were created before crash");
+        assert_eq!(recovery.projection.run_count(), 3, "all initial runs survive with their tasks");
 
         for task_id in &task_ids {
             assert!(
@@ -154,23 +170,12 @@ fn crash_after_task_creation_before_run_creation() {
         }
     }
 
-    // Phase 3: Post-recovery — create runs and drive to completion.
+    // Phase 3: Post-recovery — promote an admitted run.
     {
         let mut authority = open_authority(&data_dir);
 
-        // Create a run for the first task, drive to Ready.
-        let run_id = RunId::new();
-        let task_id = task_ids[0];
-        let seq = next_seq(&authority);
-        let run = RunInstance::new_scheduled_with_id(run_id, task_id, seq, seq)
-            .expect("run instance should be valid");
-        let _ = authority
-            .submit_command(
-                MutationCommand::RunCreate(RunCreateCommand::new(seq, run)),
-                DurabilityPolicy::Immediate,
-            )
-            .expect("run create should succeed post-recovery");
-
+        // The run was committed atomically with the task before the crash.
+        let run_id = authority.projection().run_ids_for_task(task_ids[0])[0];
         let seq = next_seq(&authority);
         let _ = authority
             .submit_command(
@@ -215,23 +220,7 @@ fn crash_during_state_transitions_running() {
         let mut authority = open_authority(&data_dir);
         let spec = make_task_spec_with_id(task_id, &[0xBA, 0xBE]);
 
-        let seq = next_seq(&authority);
-        let _ = authority
-            .submit_command(
-                MutationCommand::TaskCreate(TaskCreateCommand::new(seq, spec, seq)),
-                DurabilityPolicy::Immediate,
-            )
-            .expect("task create should succeed");
-
-        let seq = next_seq(&authority);
-        let run = RunInstance::new_scheduled_with_id(run_id, task_id, seq, seq)
-            .expect("run instance should be valid");
-        let _ = authority
-            .submit_command(
-                MutationCommand::RunCreate(RunCreateCommand::new(seq, run)),
-                DurabilityPolicy::Immediate,
-            )
-            .expect("run create should succeed");
+        admit_once(&mut authority, spec, run_id);
 
         // Scheduled -> Ready
         let seq = next_seq(&authority);
@@ -423,29 +412,10 @@ fn crash_with_mixed_terminal_and_active_runs() {
     {
         let mut authority = open_authority(&data_dir);
 
-        // --- Create all 3 tasks ---
-        for (tid, payload) in [(task_a, 0xAAu8), (task_b, 0xBBu8), (task_c, 0xCCu8)] {
-            let spec = make_task_spec_with_id(tid, &[payload]);
-            let seq = next_seq(&authority);
-            let _ = authority
-                .submit_command(
-                    MutationCommand::TaskCreate(TaskCreateCommand::new(seq, spec, seq)),
-                    DurabilityPolicy::Immediate,
-                )
-                .expect("task create should succeed");
-        }
-
-        // --- Create runs for each task ---
-        for (rid, tid) in [(run_a, task_a), (run_b, task_b), (run_c, task_c)] {
-            let seq = next_seq(&authority);
-            let run = RunInstance::new_scheduled_with_id(rid, tid, seq, seq)
-                .expect("run instance should be valid");
-            let _ = authority
-                .submit_command(
-                    MutationCommand::RunCreate(RunCreateCommand::new(seq, run)),
-                    DurabilityPolicy::Immediate,
-                )
-                .expect("run create should succeed");
+        for (tid, rid, payload) in
+            [(task_a, run_a, 0xAAu8), (task_b, run_b, 0xBBu8), (task_c, run_c, 0xCCu8)]
+        {
+            admit_once(&mut authority, make_task_spec_with_id(tid, &[payload]), rid);
         }
 
         // Helper: drive a run through Scheduled -> Ready -> Leased -> Running.
@@ -730,23 +700,7 @@ fn sequential_crashes_with_incremental_progress() {
         let mut authority = open_authority(&data_dir);
 
         let spec = make_task_spec_with_id(task_id, &[0xDD]);
-        let seq = next_seq(&authority);
-        let _ = authority
-            .submit_command(
-                MutationCommand::TaskCreate(TaskCreateCommand::new(seq, spec, seq)),
-                DurabilityPolicy::Immediate,
-            )
-            .expect("task create");
-
-        let seq = next_seq(&authority);
-        let run = RunInstance::new_scheduled_with_id(run_id, task_id, seq, seq)
-            .expect("run instance should be valid");
-        let _ = authority
-            .submit_command(
-                MutationCommand::RunCreate(RunCreateCommand::new(seq, run)),
-                DurabilityPolicy::Immediate,
-            )
-            .expect("run create");
+        admit_once(&mut authority, spec, run_id);
 
         simulate_kill9(authority);
     }
@@ -952,23 +906,13 @@ fn wal_sequence_monotonicity_across_crashes() {
         task_id_1 = spec1.id();
         let seq = next_seq(&authority);
         assert_eq!(seq, 2, "StoreInitialized precedes the first mutation");
-        let _ = authority
-            .submit_command(
-                MutationCommand::TaskCreate(TaskCreateCommand::new(seq, spec1, seq)),
-                DurabilityPolicy::Immediate,
-            )
-            .expect("task create 1");
+        admit_once(&mut authority, spec1, RunId::new());
 
         let spec2 = make_task_spec(&[0xE2]);
         task_id_2 = spec2.id();
         let seq = next_seq(&authority);
         assert_eq!(seq, 3, "second mutation follows initialization");
-        let _ = authority
-            .submit_command(
-                MutationCommand::TaskCreate(TaskCreateCommand::new(seq, spec2, seq)),
-                DurabilityPolicy::Immediate,
-            )
-            .expect("task create 2");
+        admit_once(&mut authority, spec2, RunId::new());
 
         simulate_kill9(authority);
     }
@@ -990,12 +934,7 @@ fn wal_sequence_monotonicity_across_crashes() {
         let seq = next_seq(&authority);
         assert_eq!(seq, 4, "post-crash mutation is contiguous");
         let spec3 = make_task_spec(&[0xE3]);
-        let _ = authority
-            .submit_command(
-                MutationCommand::TaskCreate(TaskCreateCommand::new(seq, spec3, seq)),
-                DurabilityPolicy::Immediate,
-            )
-            .expect("task create 3");
+        admit_once(&mut authority, spec3, RunId::new());
 
         simulate_kill9(authority);
     }
@@ -1036,23 +975,7 @@ fn crash_during_retry_wait_preserves_state() {
         let mut authority = open_authority(&data_dir);
 
         let spec = make_task_spec_with_id(task_id, &[0xFF]);
-        let seq = next_seq(&authority);
-        let _ = authority
-            .submit_command(
-                MutationCommand::TaskCreate(TaskCreateCommand::new(seq, spec, seq)),
-                DurabilityPolicy::Immediate,
-            )
-            .expect("task create");
-
-        let seq = next_seq(&authority);
-        let run = RunInstance::new_scheduled_with_id(run_id, task_id, seq, seq)
-            .expect("run instance should be valid");
-        let _ = authority
-            .submit_command(
-                MutationCommand::RunCreate(RunCreateCommand::new(seq, run)),
-                DurabilityPolicy::Immediate,
-            )
-            .expect("run create");
+        admit_once(&mut authority, spec, run_id);
 
         // Scheduled -> Ready -> Leased -> Running
         for (from, to) in [
@@ -1278,13 +1201,7 @@ fn high_volume_tasks_survive_crash() {
         for i in 0u16..50 {
             let spec = make_task_spec(&i.to_le_bytes());
             task_ids.push(spec.id());
-            let seq = next_seq(&authority);
-            let _ = authority
-                .submit_command(
-                    MutationCommand::TaskCreate(TaskCreateCommand::new(seq, spec, seq)),
-                    DurabilityPolicy::Immediate,
-                )
-                .expect("task create in bulk");
+            admit_once(&mut authority, spec, RunId::new());
         }
 
         simulate_kill9(authority);

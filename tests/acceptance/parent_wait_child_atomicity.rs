@@ -445,8 +445,19 @@ fn child_deadline_failure_and_zero_run_cancellation_are_terminal_facts() {
     parity(&a);
     let zero = child(3, vec![], ChildLifecyclePolicy::Detached, p).task_spec().clone();
     let zid = zero.id();
-    commit!(&mut a, MutationCommand::TaskCreate(TaskCreateCommand::new(seq(&a), zero, 32)));
-    assert_eq!(a.projection().task_terminal_status(zid), None);
+    let zero = TaskSpec::new(
+        zid,
+        zero.task_payload().clone(),
+        actionqueue_core::task::run_policy::RunPolicy::cron("0 0 0 1 1 * 1970").unwrap(),
+        zero.constraints().clone(),
+        zero.metadata().clone(),
+    )
+    .unwrap()
+    .with_parent_policy(p, ChildLifecyclePolicy::Detached);
+    let q = actionqueue_core::admission::EnsureTaskRequest::for_task(zero, vec![]).unwrap();
+    admission_support::ensure(&mut a, q, 32).unwrap();
+    assert_eq!(a.projection().runs_for_task(zid).count(), 0);
+    assert_eq!(a.projection().task_terminal_status(zid), Some(TaskTerminalStatus::Failed));
     control_task(&mut a, zid, 33);
     assert_eq!(a.projection().task_terminal_status(zid), Some(TaskTerminalStatus::Canceled));
     parity(&a);

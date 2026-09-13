@@ -808,3 +808,45 @@ async fn delayed_tick_recovers_expired_execution_and_advances_queued_task() {
         }
     }
 }
+
+#[test]
+fn active_wait_quota_rejects_entire_compound_disposition() {
+    for tenant_limit in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = s::open(dir.path());
+        let first = running(&mut a, 10, None, false);
+        establish_wait(&mut a, first, spec(WaitId::new(), None));
+        let r = running(&mut a, 1, None, false);
+        a.set_continuation_limits(actionqueue_core::limits::ContinuationLimits {
+            active_waits: if tenant_limit { 10 } else { 1 },
+            active_waits_per_tenant: if tenant_limit { 1 } else { 10 },
+            ..Default::default()
+        });
+        let d = compound(&a, r);
+        let cp = d.checkpoint().unwrap().checkpoint_id;
+        let c = proposed(&a, r, d);
+        let before = a.projection().projection_digest().unwrap();
+        assert!(matches!(
+            submit_disposition(&mut a, c),
+            Err(MutationAuthorityError::Disposition(DispositionRejection::WaitCapacity))
+        ));
+        assert_eq!(before, a.projection().projection_digest().unwrap());
+        assert!(a.projection().checkpoint(cp).is_none());
+        assert!(a.projection().get_task(&admission_support::id(2)).is_none());
+        assert_eq!(a.projection().get_run_state(&r), Some(&RunState::Running));
+        parity(&a);
+        cancel(&mut a, first);
+        let c = proposed(&a, r, compound(&a, r));
+        let _ = submit_disposition(&mut a, c).unwrap();
+        a.set_continuation_limits(actionqueue_core::limits::ContinuationLimits {
+            active_waits: 0,
+            active_waits_per_tenant: 0,
+            ..Default::default()
+        });
+        parity(&a);
+        drop(a);
+        let a = s::reopen(dir.path());
+        assert_eq!(a.projection().waits().active_count(), 1);
+        assert_eq!(a.projection().waits().active_count_for_tenant(None), 1);
+    }
+}

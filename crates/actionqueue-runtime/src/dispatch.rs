@@ -2872,6 +2872,7 @@ mod tests {
                     output_bytes: 0,
                     checkpoint_bytes: 0,
                     disposition_bytes: limit,
+                    ..Default::default()
                 },
                 ..Default::default()
             };
@@ -3335,43 +3336,34 @@ mod tests {
     }
 
     #[test]
-    fn coordination_refresh_preserves_uncanceled_tasks_without_runs() {
+    fn coordination_refresh_collects_exhausted_cron_tasks_without_runs() {
         let dir = tempfile::tempdir().unwrap();
         let mut dispatch = new_dispatch(dir.path(), DependencyHandler);
         let parent = task(b"parent", None);
         let parent_id = parent.id();
         dispatch.submit_task(parent).unwrap();
-        let child = task(b"child", None).with_parent(parent_id);
-        let child_id = child.id();
-        let _ = dispatch
-            .authority
-            .submit_command(
-                MutationCommand::TaskCreate(actionqueue_core::mutation::TaskCreateCommand::new(
-                    dispatch.next_sequence().unwrap(),
-                    child,
-                    1000,
-                )),
-                DurabilityPolicy::Immediate,
-            )
-            .unwrap();
+        let original = task(b"child", None);
+        let child_id = original.id();
+        let child = TaskSpec::new(
+            child_id,
+            original.task_payload().clone(),
+            actionqueue_core::task::run_policy::RunPolicy::cron("0 0 0 1 1 * 1970").unwrap(),
+            original.constraints().clone(),
+            original.metadata().clone(),
+        )
+        .unwrap()
+        .with_parent(parent_id);
+        dispatch.submit_task(child).unwrap();
+        assert!(dispatch.projection().run_ids_for_task(child_id).is_empty());
 
         dispatch.refresh_coordination();
         dispatch.gc_terminal_tasks();
-        assert_eq!(dispatch.hierarchy_tracker.depth(child_id), 1);
-        assert!(!dispatch.hierarchy_tracker.is_terminal(child_id));
-
-        dispatch
-            .cancel(actionqueue_core::mutation::CancelCommand {
-                expected_sequence: dispatch.next_sequence().unwrap(),
-                target: actionqueue_core::mutation::CancelTarget::Task(parent_id),
-                tenant_id: None,
-                control_context: None,
-                timestamp: 1000,
-            })
-            .unwrap();
-        assert!(dispatch.projection().is_task_canceled(child_id));
-        dispatch.gc_terminal_tasks();
         assert_eq!(dispatch.hierarchy_tracker.depth(child_id), 0);
+        assert_eq!(
+            dispatch.projection().task_terminal_status(child_id),
+            Some(actionqueue_core::continuation::TaskTerminalStatus::Failed)
+        );
+        assert!(dispatch.projection().get_task(&child_id).is_some(), "GC retains durable history");
     }
 
     #[tokio::test]
