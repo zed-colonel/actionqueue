@@ -1,12 +1,13 @@
 //! CanonicalDispositionV1. Integers are little endian, strings/bytes have u64
 //! lengths, options have 0/1 tags. Collections preserve proposal order. Field
 //! tags and enum tags below are protocol constants, never Rust discriminants.
+use sha2::{Digest, Sha256};
+
 use crate::{
     continuation::*,
     data_ref::DataRef,
     disposition::{AttemptDisposition, DispositionOutcome},
 };
-use sha2::{Digest, Sha256};
 
 /// SHA-256 digest of the versioned canonical disposition bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]

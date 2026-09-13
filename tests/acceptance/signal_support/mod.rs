@@ -1,4 +1,6 @@
 #![allow(dead_code)]
+// Each standalone fixture helper owns its host authorization setup.
+#[allow(clippy::duplicate_mod)]
 #[path = "../host_support.rs"]
 pub mod host_support;
 use actionqueue_core::{continuation::*, ids::*, mutation::*, time::clock::MockClock};

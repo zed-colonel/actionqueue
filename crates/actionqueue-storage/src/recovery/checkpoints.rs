@@ -51,12 +51,7 @@ impl ReplayReducer {
             }
             self.checkpoints.insert(
                 c.checkpoint_id,
-                CheckpointRecord {
-                    run_id: run_id,
-                    attempt_id: attempt_id,
-                    sequence: sequence,
-                    checkpoint: c.clone(),
-                },
+                CheckpointRecord { run_id, attempt_id, sequence, checkpoint: c.clone() },
             );
         }
         Ok(())

@@ -1,10 +1,11 @@
 //! Authorized, bounded structural inspection against a single immutable projection revision.
-use crate::views::*;
 use actionqueue_core::{continuation::*, control::*, ids::*};
 use actionqueue_storage::{
     mutation::control::authorize_projection,
     recovery::{inspection::ReferenceField, reducer::ReplayReducer},
 };
+
+use crate::views::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InspectionError {
@@ -57,6 +58,8 @@ pub struct Inspector<'a> {
     now: u64,
 }
 impl<'a> Inspector<'a> {
+    // Preserve the explicit dependencies of this existing boundary API.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         p: &'a ReplayReducer,
         host: &'a HostControlContext,

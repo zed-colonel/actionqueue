@@ -101,6 +101,8 @@ fn next<W: WalWriter>(a: &StorageMutationAuthority<W, ReplayReducer>) -> Result<
 /// Caller holds exclusive authority ownership across all four records. Returning
 /// work is permitted only after the accepted start has synced durably. Recovery
 /// closes every partial sequence through the existing execution recovery path.
+// Preserve the explicit dependencies of this existing boundary API.
+#[allow(clippy::too_many_arguments)]
 pub fn accept<W: WalWriter>(
     a: &mut StorageMutationAuthority<W, ReplayReducer>,
     run_id: RunId,
@@ -109,7 +111,8 @@ pub fn accept<W: WalWriter>(
     now: u64,
     expiry: u64,
 ) -> Result<LeaseFence, Error> {
-    for (from, to) in [(RunState::Ready, RunState::Leased)] {
+    {
+        let (from, to) = (RunState::Ready, RunState::Leased);
         let _ = a.submit_command(
             MutationCommand::RunStateTransition(RunStateTransitionCommand::new(
                 next(a)?,

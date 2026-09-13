@@ -46,7 +46,10 @@ pub struct WaitDeadline {
 pub struct WaitSpecError;
 impl std::fmt::Display for WaitSpecError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("invalid wait: retained signals require correlation; child targets require 1..=64 non-nil IDs")
+        f.write_str(
+            "invalid wait: retained signals require correlation; child targets require 1..=64 \
+             non-nil IDs",
+        )
     }
 }
 impl std::error::Error for WaitSpecError {}

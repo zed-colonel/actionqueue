@@ -48,7 +48,6 @@ use actionqueue_storage::wal::writer::WalWriter;
 use actionqueue_workflow::children::build_children_snapshot;
 use actionqueue_workflow::dag::DependencyGate;
 use actionqueue_workflow::hierarchy::HierarchyTracker;
-
 use tokio::sync::mpsc;
 
 use crate::admission::AdmissionError;
@@ -2340,6 +2339,8 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
     }
     /// Renews the named remote attempt and fence.
     #[cfg(feature = "actor")]
+    // Preserve the explicit dependencies of this existing boundary API.
+    #[allow(clippy::too_many_arguments)]
     pub fn renew_remote(
         &mut self,
         host: &actionqueue_core::control::HostControlContext,

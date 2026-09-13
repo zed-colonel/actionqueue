@@ -1,10 +1,12 @@
 //! Process-lifetime observations at the mutation authority boundary. Never replayed as counters.
-use crate::wal::event::{WalEvent, WalEventType as E};
-use actionqueue_core::{continuation::*, ids::WaitId};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     sync::{Arc, Mutex},
 };
+
+use actionqueue_core::{continuation::*, ids::WaitId};
+
+use crate::wal::event::{WalEvent, WalEventType as E};
 #[derive(Debug, Clone, Default)]
 pub struct QueueTelemetry(Arc<Mutex<Observations>>);
 #[derive(Debug, Clone, Default)]

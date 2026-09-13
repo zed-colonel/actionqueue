@@ -5,6 +5,7 @@
 //!
 //! - [`health`] - Liveness endpoint (`GET /healthz`)
 //! - [`ready`] - Readiness endpoint (`GET /ready`)
+//!
 //! V2 operations are registered by [`api`].
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -307,6 +308,8 @@ pub fn build_router(state: RouterState) -> axum::Router {
         .with_state(state)
 }
 
+// The caller returns this response directly to Axum on the exceptional path.
+#[allow(clippy::result_large_err)]
 pub(crate) fn sync_projection<W: actionqueue_storage::wal::writer::WalWriter>(
     state: &RouterState,
     a: &StorageMutationAuthority<W, ReplayReducer>,

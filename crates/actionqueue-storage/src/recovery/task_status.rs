@@ -1,11 +1,12 @@
 //! Shared durable task terminality and structural coordination checks.
-use super::reducer::ReplayReducer;
 use actionqueue_core::{
     continuation::*,
     ids::TaskId,
     run::RunState,
     task::{run_policy::RunPolicy, task_spec::ChildLifecyclePolicy},
 };
+
+use super::reducer::ReplayReducer;
 impl ReplayReducer {
     /// A drained cron window is not terminal while another occurrence can be derived.
     pub fn task_terminal_status(&self, id: TaskId) -> Option<TaskTerminalStatus> {

@@ -1,5 +1,4 @@
 //! Frozen v1 record payloads. Kind IDs never depend on enum discriminants.
-use crate::structural_filter::StructuralFilter;
 use actionqueue_core::budget::BudgetDimension;
 use actionqueue_core::ids::{ActorId, AttemptId, LedgerEntryId, RunId, TaskId, TenantId};
 use actionqueue_core::mutation::AttemptResultKind;
@@ -10,6 +9,7 @@ use actionqueue_core::subscription::SubscriptionId;
 use super::codec::{DecodeError, EncodeError};
 use super::event::WalEventType;
 use super::task_v1::TaskSpecV1;
+use crate::structural_filter::StructuralFilter;
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StoreInitializedV1 {

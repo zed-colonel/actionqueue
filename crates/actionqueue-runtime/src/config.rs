@@ -225,6 +225,34 @@ impl RuntimeConfig {
     }
 }
 
+/// Rejected parent completion while required children are active.
+pub const CHILDREN_NONTERMINAL: &str = "children_nonterminal";
+/// Rejected child target ownership or structural deadlock.
+pub const INVALID_CHILD_WAIT: &str = "invalid_child_wait";
+/// Rejected compound effect shape or admission.
+pub const INVALID_DISPOSITION: &str = "invalid_disposition";
+/// Disposition requires an unavailable store feature.
+pub const UNSUPPORTED_DISPOSITION_FEATURE: &str = "unsupported_disposition_feature";
+
+/// Shared error vocabulary for rejection fallback and the minimum record budget.
+pub(crate) fn disposition_rejection_error(
+    reason: actionqueue_storage::mutation::disposition::DispositionRejection,
+) -> actionqueue_core::bounded::BoundedError {
+    use actionqueue_core::bounded::{BoundedCode, BoundedError, BoundedMessage};
+    use actionqueue_storage::mutation::disposition::DispositionRejection as R;
+    let (code, message) = match reason {
+        R::TooLarge => ("result_too_large", RESULT_TOO_LARGE),
+        R::ChildrenNonterminal => (CHILDREN_NONTERMINAL, CHILDREN_NONTERMINAL),
+        R::InvalidChildWait => (INVALID_CHILD_WAIT, INVALID_CHILD_WAIT),
+        R::UnsupportedFeature => (UNSUPPORTED_DISPOSITION_FEATURE, UNSUPPORTED_DISPOSITION_FEATURE),
+        _ => (INVALID_DISPOSITION, INVALID_DISPOSITION),
+    };
+    BoundedError {
+        code: BoundedCode::new(code).expect("bounded rejection code"),
+        message: BoundedMessage::new(message).expect("bounded rejection message"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -308,33 +336,5 @@ mod tests {
             ..RuntimeConfig::default()
         };
         assert_eq!(config.validate(), Err(ConfigError::BackoffBaseExceedsMax));
-    }
-}
-
-/// Rejected parent completion while required children are active.
-pub const CHILDREN_NONTERMINAL: &str = "children_nonterminal";
-/// Rejected child target ownership or structural deadlock.
-pub const INVALID_CHILD_WAIT: &str = "invalid_child_wait";
-/// Rejected compound effect shape or admission.
-pub const INVALID_DISPOSITION: &str = "invalid_disposition";
-/// Disposition requires an unavailable store feature.
-pub const UNSUPPORTED_DISPOSITION_FEATURE: &str = "unsupported_disposition_feature";
-
-/// Shared error vocabulary for rejection fallback and the minimum record budget.
-pub(crate) fn disposition_rejection_error(
-    reason: actionqueue_storage::mutation::disposition::DispositionRejection,
-) -> actionqueue_core::bounded::BoundedError {
-    use actionqueue_core::bounded::{BoundedCode, BoundedError, BoundedMessage};
-    use actionqueue_storage::mutation::disposition::DispositionRejection as R;
-    let (code, message) = match reason {
-        R::TooLarge => ("result_too_large", RESULT_TOO_LARGE),
-        R::ChildrenNonterminal => (CHILDREN_NONTERMINAL, CHILDREN_NONTERMINAL),
-        R::InvalidChildWait => (INVALID_CHILD_WAIT, INVALID_CHILD_WAIT),
-        R::UnsupportedFeature => (UNSUPPORTED_DISPOSITION_FEATURE, UNSUPPORTED_DISPOSITION_FEATURE),
-        _ => (INVALID_DISPOSITION, INVALID_DISPOSITION),
-    };
-    BoundedError {
-        code: BoundedCode::new(code).expect("bounded rejection code"),
-        message: BoundedMessage::new(message).expect("bounded rejection message"),
     }
 }

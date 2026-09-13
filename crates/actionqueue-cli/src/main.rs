@@ -15,7 +15,8 @@ fn main() {
     if args.len() < 2 {
         emit_error_and_exit(CliError::usage(
             "usage_missing_command",
-            "Usage: actionqueue <command> [options]\nAvailable commands: daemon, ensure-task, admission, task, run, signal, wait, trace, inspect, store, backup, restore",
+            "Usage: actionqueue <command> [options]\nAvailable commands: daemon, ensure-task, \
+             admission, task, run, signal, wait, trace, inspect, store, backup, restore",
         ));
     }
 

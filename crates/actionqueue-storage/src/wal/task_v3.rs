@@ -1,6 +1,7 @@
 //! Schema 3 task: frozen schema 2 followed by the child lifecycle tag.
-use super::{codec::DecodeError, task_v2::TaskSpecV2};
 use actionqueue_core::task::task_spec::{ChildLifecyclePolicy, TaskSpec};
+
+use super::{codec::DecodeError, task_v2::TaskSpecV2};
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct TaskSpecV3 {

@@ -2436,6 +2436,29 @@ impl<ProjectionError: std::error::Error + 'static> std::error::Error
 {
 }
 
+impl<W: WalWriter, P: MutationProjection> MutationAuthority for StorageMutationAuthority<W, P> {
+    type Error = MutationAuthorityError<P::Error>;
+    fn submit_command(
+        &mut self,
+        command: MutationCommand,
+        durability: DurabilityPolicy,
+    ) -> Result<MutationOutcome, Self::Error> {
+        let disposition = matches!(&command, MutationCommand::AttemptDispositionCommit(_));
+        let result = self.submit_inner(command, durability);
+        if disposition
+            && matches!(
+                &result,
+                Err(MutationAuthorityError::Disposition(_)
+                    | MutationAuthorityError::Control(_)
+                    | MutationAuthorityError::Validation(_))
+            )
+        {
+            self.telemetry.disposition_rejected();
+        }
+        result
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use actionqueue_core::ids::{RunId, TaskId};
@@ -2669,28 +2692,5 @@ mod tests {
             }
             other => panic!("expected PartialDurability, got {other:?}"),
         }
-    }
-}
-
-impl<W: WalWriter, P: MutationProjection> MutationAuthority for StorageMutationAuthority<W, P> {
-    type Error = MutationAuthorityError<P::Error>;
-    fn submit_command(
-        &mut self,
-        command: MutationCommand,
-        durability: DurabilityPolicy,
-    ) -> Result<MutationOutcome, Self::Error> {
-        let disposition = matches!(&command, MutationCommand::AttemptDispositionCommit(_));
-        let result = self.submit_inner(command, durability);
-        if disposition
-            && matches!(
-                &result,
-                Err(MutationAuthorityError::Disposition(_)
-                    | MutationAuthorityError::Control(_)
-                    | MutationAuthorityError::Validation(_))
-            )
-        {
-            self.telemetry.disposition_rejected();
-        }
-        result
     }
 }

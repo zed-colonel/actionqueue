@@ -87,6 +87,15 @@ mod tests {
 
 #[cfg(all(test, feature = "budget"))]
 mod recovery_tests {
+    use actionqueue_core::{
+        mutation::*,
+        subscription::SubscriptionId,
+        task::{
+            run_policy::RunPolicy,
+            task_spec::{TaskPayload, TaskSpec},
+        },
+    };
+
     use super::*;
     use crate::{
         recovery::bootstrap::recover_read_only,
@@ -96,14 +105,6 @@ mod recovery_tests {
         },
         store::{capabilities, open_store, OpenOptions},
         wal::{fs_writer::WalFsWriter, repair::RepairPolicy},
-    };
-    use actionqueue_core::{
-        mutation::*,
-        subscription::SubscriptionId,
-        task::{
-            run_policy::RunPolicy,
-            task_spec::{TaskPayload, TaskSpec},
-        },
     };
 
     #[test]

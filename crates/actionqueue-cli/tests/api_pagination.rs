@@ -1,4 +1,9 @@
 //! Regressions for paginated CLI transport and literal IPv6 loopback.
+use std::{
+    process::Command,
+    sync::{Arc, RwLock},
+};
+
 use actionqueue_core::{
     bounded::OpaqueRef,
     causal::ControlMutationContext,
@@ -27,10 +32,6 @@ use actionqueue_storage::{
 };
 use axum::{body::Body, http::Request};
 use http_body_util::BodyExt;
-use std::{
-    process::Command,
-    sync::{Arc, RwLock},
-};
 use tower::ServiceExt;
 fn host() -> HostControlContext {
     HostControlContext {

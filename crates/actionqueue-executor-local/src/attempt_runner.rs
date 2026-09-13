@@ -13,13 +13,13 @@ use std::{
     sync::Arc,
 };
 
+use actionqueue_core::disposition::DispositionOutcome;
 use actionqueue_core::ids::{AttemptId, RunId};
 
 use crate::handler::{AttemptDisposition, AttemptMetadata, ExecutorHandler, HandlerInput};
 use crate::retry::{decide_retry_transition, RetryDecision, RetryDecisionError};
 use crate::timeout::{TimeoutClassification, TimeoutClock, TimeoutFailure, TimeoutGuard};
 use crate::types::ExecutorRequest;
-use actionqueue_core::disposition::DispositionOutcome;
 
 const DEFAULT_MAX_CANCELLATION_POLL_LATENCY: Duration = Duration::from_millis(250);
 
@@ -457,10 +457,10 @@ fn classify_timeout_cooperation(
 
 #[cfg(test)]
 mod tests {
-    use actionqueue_core::disposition::{AttemptDisposition, DispositionOutcome};
     use std::sync::Mutex;
     use std::time::Duration;
 
+    use actionqueue_core::disposition::{AttemptDisposition, DispositionOutcome};
     use actionqueue_core::ids::{AttemptId, RunId};
     use actionqueue_core::task::constraints::TaskConstraints;
 

@@ -1,5 +1,4 @@
 //! End-to-end host authentication, current grants, namespace filtering and remote maintenance.
-use super::*;
 use actionqueue_core::{
     actor::*, bounded::*, causal::*, control::*, ids::*, mutation::*, platform::*,
     time::clock::MockClock,
@@ -10,6 +9,8 @@ use axum::{
     http::{Request, StatusCode},
 };
 use tower::ServiceExt;
+
+use super::*;
 
 fn host(scope: ControlScope, actor_id: Option<ActorId>) -> HostControlContext {
     HostControlContext {

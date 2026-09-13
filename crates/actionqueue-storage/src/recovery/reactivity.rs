@@ -1,11 +1,13 @@
 //! Record reactive evidence in WAL order, never by wall-clock comparison.
-use super::reducer::ReplayReducer;
+use std::collections::{BTreeSet, HashMap};
+
 use actionqueue_core::{
     ids::RunId,
     run::RunState,
     subscription::{EventFilter, SubscriptionId},
 };
-use std::collections::{BTreeSet, HashMap};
+
+use super::reducer::ReplayReducer;
 
 pub(super) enum Observation {
     Runs(BTreeSet<RunId>),

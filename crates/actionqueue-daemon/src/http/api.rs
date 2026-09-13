@@ -1,5 +1,4 @@
 //! V2 adapters for the shared runtime service. Blocking storage work stays off executor threads.
-use super::RouterState;
 use actionqueue_core::{control::HostControlContext, ids::*, mutation::CancelTarget};
 use actionqueue_runtime::{
     control::{ControlOperation, ControlOutcome, ServiceError},
@@ -12,6 +11,8 @@ use axum::{
     Extension, Json,
 };
 use serde::Deserialize;
+
+use super::RouterState;
 
 fn error(status: StatusCode, code: &'static str) -> Response {
     (status, Json(serde_json::json!({"error_code":code}))).into_response()
@@ -411,7 +412,7 @@ pub async fn sanitize_errors(
 ) -> Response {
     let response = next.run(request).await;
     if response.status().is_client_error()
-        && !response.headers().get("content-type").is_some_and(|v| v == "application/json")
+        && response.headers().get("content-type").is_none_or(|v| v != "application/json")
     {
         let status = response.status();
         let code = match status.as_u16() {

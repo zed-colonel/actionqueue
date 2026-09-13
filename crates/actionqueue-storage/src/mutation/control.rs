@@ -1,7 +1,8 @@
 //! Shared authorization against the authoritative projection.
+use actionqueue_core::{control::*, ids::TenantId};
+
 use super::authority::StorageMutationAuthority;
 use crate::{recovery::reducer::ReplayReducer, wal::writer::WalWriter};
-use actionqueue_core::{control::*, ids::TenantId};
 /// Enforces current permissions without inspecting the operation's target.
 pub fn authorize<W: WalWriter>(
     a: &StorageMutationAuthority<W, ReplayReducer>,

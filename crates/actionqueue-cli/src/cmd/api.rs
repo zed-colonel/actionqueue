@@ -1,11 +1,12 @@
 //! Canonical API client and explicit offline adapter. Both render the daemon DTOs unchanged.
-use super::{CliError, CommandOutput};
 use axum::{
     body::Body,
     http::{Request, Uri},
 };
 use http_body_util::BodyExt;
 use tower::ServiceExt;
+
+use super::{CliError, CommandOutput};
 fn invalid() -> CliError {
     CliError::validation("invalid_request", "invalid command arguments")
 }
@@ -129,9 +130,11 @@ async fn execute(args: Vec<String>) -> Result<CommandOutput, CliError> {
         if options.contains_key("--daemon") || options.contains_key("--token-file") {
             return Err(invalid());
         }
-        let mut config = actionqueue_daemon::config::DaemonConfig::default();
-        config.data_dir = opt("--data-dir")?.into();
-        config.enable_control = true;
+        let config = actionqueue_daemon::config::DaemonConfig {
+            data_dir: opt("--data-dir")?.into(),
+            enable_control: true,
+            ..Default::default()
+        };
         let host = actionqueue_core::control::HostControlContext {
             actor_id: None,
             scope: actionqueue_core::control::ControlScope::SingleTenant,

@@ -309,13 +309,11 @@ fn daemon_serves_authenticated_cli_requests_and_releases_store_on_sigterm() {
     let stdout = child.stdout.take().unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines() {
-            if let Ok(line) = line {
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
-                    if v["bind_address"].is_string() {
-                        let _ = tx.send(v);
-                        break;
-                    }
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
+                if v["bind_address"].is_string() {
+                    let _ = tx.send(v);
+                    break;
                 }
             }
         }

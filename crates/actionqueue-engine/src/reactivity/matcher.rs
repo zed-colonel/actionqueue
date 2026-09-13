@@ -23,12 +23,12 @@ impl SubscriptionSource for InternalSubscriptionRegistry {
 #[cfg(test)]
 mod tests {
     use actionqueue_core::budget::BudgetDimension;
+    use actionqueue_core::event::{check_event, ActionQueueEvent};
     use actionqueue_core::ids::TaskId;
     use actionqueue_core::run::state::RunState;
     use actionqueue_core::subscription::{EventFilter, SubscriptionId};
 
     use crate::reactivity::registry::InternalSubscriptionRegistry;
-    use actionqueue_core::event::{check_event, ActionQueueEvent};
 
     #[test]
     fn task_completed_filter_matches_terminal_success_event() {

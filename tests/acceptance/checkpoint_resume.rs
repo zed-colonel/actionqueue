@@ -591,21 +591,20 @@ impl actionqueue_executor_local::handler::ExecutorHandler for OversizedResult {
             let attempt_id = c.input.attempt_id;
             seen.push(c.input);
             if seen.len() <= self.failures {
-                let output = Some(vec![b'x'; self.rejected_bytes]);
+                let output = vec![b'x'; self.rejected_bytes];
                 return if self.suspended {
                     AttemptDisposition::suspended(
                         Some(CheckpointRef {
                             checkpoint_id: CheckpointId::new(),
                             created_by_attempt: attempt_id,
-                            data: DataRef::from_bytes(output.unwrap()).unwrap(),
+                            data: DataRef::from_bytes(output).unwrap(),
                         }),
                         None,
                     )
                 } else {
-                    actionqueue_core::disposition::AttemptDisposition::complete(
-                        (output)
-                            .map(|v| actionqueue_core::data_ref::DataRef::from_bytes(v).unwrap()),
-                    )
+                    actionqueue_core::disposition::AttemptDisposition::complete(Some(
+                        DataRef::from_bytes(output).unwrap(),
+                    ))
                 };
             }
         }
@@ -657,7 +656,6 @@ async fn output_limit_case(
             checkpoint_bytes: limit,
             disposition_bytes: record_limit
                 .unwrap_or(actionqueue_core::limits::MAX_ADMISSION_RECORD_BYTES),
-            ..Default::default()
         },
         backoff_strategy: actionqueue_runtime::config::BackoffStrategyConfig::Fixed {
             interval: std::time::Duration::ZERO,
