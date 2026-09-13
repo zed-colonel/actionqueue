@@ -99,6 +99,9 @@ fn main() {
         if manifest.status != "executable" {
             missing.push(format!("package status: {}", manifest.status));
         }
+        if value("--driver").is_some() {
+            missing.push("full profile cannot select a driver; all drivers are required".into());
+        }
         if selected.is_some() {
             missing.push("full profile cannot select a subset".into());
         }
@@ -191,6 +194,7 @@ fn main() {
     }
     if full {
         missing.extend(report::missing_evidence(&coverage, &results));
+        missing.extend(report::missing_storage_evidence(&root, &manifest, &results));
     }
     let passed = missing.is_empty() && results.iter().all(|v| v["assertion_result"] == "passed");
     let report = json!({"schema_version":1,"package_revision":manifest.package_revision,"contract_revision":manifest.contract_revision,"developmental_profile_revision":manifest.developmental_profile_revision,"profile":if full{"full"}else{"subset"},"passed":passed,"missing":missing,"results":results});

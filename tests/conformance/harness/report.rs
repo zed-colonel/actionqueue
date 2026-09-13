@@ -63,3 +63,59 @@ pub fn invalid_hashes(manifest: &super::package::Manifest, results: &[Value]) ->
         })
         .collect()
 }
+
+/// Storage recovery coverage is derived from the immutable executable inventory,
+/// independently of the invariant mappings. One crash record cannot cover another cut.
+pub fn missing_storage_evidence(
+    root: &std::path::Path,
+    manifest: &super::package::Manifest,
+    results: &[Value],
+) -> Vec<String> {
+    let mut missing = Vec::new();
+    for fixture in manifest.fixtures.iter().filter(|f| f.path.starts_with("fixtures/")) {
+        let scenario: Value = serde_json::from_slice(
+            &std::fs::read(root.join(&fixture.path)).expect("validated scenario"),
+        )
+        .expect("validated scenario JSON");
+        let mut requirements = vec![];
+        for variant in &fixture.variants {
+            if variant == "crash" {
+                for cut in scenario["recovery_cuts"].as_array().expect("validated cuts") {
+                    requirements.push((variant.as_str(), cut.clone()));
+                }
+            } else {
+                requirements.push((variant.as_str(), Value::Null));
+            }
+        }
+        // Backup and corruption are mandatory even for older inventories that
+        // predate those variant declarations.
+        requirements.extend([("backup", Value::Null), ("corruption", Value::Null)]);
+        requirements.sort_by_key(|(variant, cut)| (variant.to_string(), cut.to_string()));
+        requirements.dedup();
+        for (variant, cut) in requirements {
+            if !results.iter().any(|r| {
+                r["fixture_id"] == fixture.id
+                    && r["fixture_hash"] == fixture.sha256
+                    && r["driver"] == fixture.driver
+                    && r["variant"] == variant
+                    && r["crash_point"] == cut
+                    && r["assertion_result"] == "passed"
+                    && scenario["required_features"]
+                        .as_array()
+                        .expect("validated features")
+                        .iter()
+                        .all(|feature| {
+                            r["feature_profile"]
+                                .as_array()
+                                .is_some_and(|features| features.contains(feature))
+                        })
+            }) {
+                missing.push(format!(
+                    "storage scenario: {}/{}/{variant}/{cut}",
+                    fixture.id, fixture.driver
+                ));
+            }
+        }
+    }
+    missing
+}

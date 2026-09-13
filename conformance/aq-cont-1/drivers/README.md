@@ -10,7 +10,9 @@ cargo run --example aq_conformance --features workflow,budget,actor,platform -- 
 `--driver daemon`, `--driver cli`, and `--driver adapter` run the corresponding
 public-driver subset. They require the expanded feature profile. The default
 base-feature embedded subset runs the immutable storage scenarios. Only `--full`
-requires all invariant, developmental, and public-driver evidence. A subset cannot
+requires all invariant, developmental, storage-scenario, and public-driver evidence.
+`--full` rejects `--driver` and `--fixture` selections. Every storage scenario
+requires ordinary, replay, backup, corruption, and each declared crash-cut record. A subset cannot
 be promoted by changing its report label: missing evidence and input hashes are
 validated before success. Exit 1 indicates failed assertions; exit 2 indicates
 missing capabilities, coverage or evidence.

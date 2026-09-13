@@ -106,3 +106,76 @@ fn evidence_hashes_and_public_driver_variants_are_required() {
     coverage.public_drivers = vec!["embedded".into(), "daemon".into()];
     assert_eq!(report::missing_evidence(&coverage, &[good]).len(), 5);
 }
+
+#[test]
+fn every_storage_variant_and_crash_cut_is_required() {
+    use serde_json::{json, Value};
+    let root = package::root();
+    let (manifest, _) = package::validate(&root).unwrap();
+    let mut records = Vec::new();
+    for fixture in manifest.fixtures.iter().filter(|f| f.path.starts_with("fixtures/")) {
+        let scenario: Value =
+            serde_json::from_slice(&std::fs::read(root.join(&fixture.path)).unwrap()).unwrap();
+        for variant in ["ordinary", "replay", "backup", "corruption", "crash"] {
+            let cuts = if variant == "crash" {
+                scenario["recovery_cuts"].as_array().unwrap().clone()
+            } else {
+                vec![Value::Null]
+            };
+            for cut in cuts {
+                records.push(json!({"fixture_id":fixture.id,"fixture_hash":fixture.sha256,"driver":fixture.driver,"variant":variant,"crash_point":cut,"feature_profile":scenario["required_features"],"assertion_result":"passed"}));
+            }
+        }
+    }
+    assert_eq!(records.len(), 56);
+    assert!(report::missing_storage_evidence(&root, &manifest, &records).is_empty());
+    assert_eq!(report::missing_storage_evidence(&root, &manifest, &[]).len(), records.len());
+    for index in 0..records.len() {
+        let mut subset = records.clone();
+        subset.remove(index);
+        assert_eq!(report::missing_storage_evidence(&root, &manifest, &subset).len(), 1);
+        for field in ["fixture_hash", "driver", "crash_point", "assertion_result"] {
+            let mut corrupted = records.clone();
+            corrupted[index][field] = json!("wrong");
+            assert_eq!(report::missing_storage_evidence(&root, &manifest, &corrupted).len(), 1);
+        }
+    }
+}
+
+#[test]
+fn full_driver_selection_cannot_certify_a_partial_report() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("report.json");
+    let output = std::process::Command::new("cargo")
+        .args([
+            "run",
+            "--quiet",
+            "--example",
+            "aq_conformance",
+            "--",
+            "--full",
+            "--driver",
+            "daemon",
+            "--report",
+        ])
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2), "{}", String::from_utf8_lossy(&output.stderr));
+    let report: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    assert_eq!(report["passed"], false);
+    assert!(report["missing"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|v| v.as_str().unwrap().contains("full profile cannot select a driver")));
+    assert_eq!(
+        report["missing"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|v| v.as_str().unwrap().starts_with("storage scenario:"))
+            .count(),
+        56
+    );
+}
