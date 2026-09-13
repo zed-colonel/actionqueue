@@ -51,7 +51,7 @@ pub enum RunState {
     Canceled,
 
     /// Waiting for a durable continuation. Non-terminal; resolves to Ready, Failed, or Canceled.
-    /// Appended to preserve WAL v5 postcard discriminants until AQ-03.
+    /// Durable continuation state; storage uses explicit versioned wire DTOs.
     Awaiting,
 }
 

@@ -341,7 +341,7 @@ pub enum AttemptResultKind {
     /// Does not count toward the max_attempts retry cap.
     Suspended,
     /// Attempt yielded to a continuation; excluded from the failure count (AQ-H13).
-    /// Appended to preserve WAL v5 postcard discriminants until AQ-03.
+    /// Durable continuation state; storage uses explicit versioned wire DTOs.
     Awaiting,
 }
 

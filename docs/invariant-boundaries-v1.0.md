@@ -66,11 +66,11 @@ Any other mutation path is forbidden.
 
 | Invariant | Mandatory enforcement | Primary implementation surfaces |
 | --- | --- | --- |
-| All runs originate from durable intent | Run creation must trace to task policy or explicit append; creation must be durably representable | [`crates/actionqueue-engine/src/derive/repeat.rs`](crates/actionqueue-engine/src/derive/repeat.rs), [`crates/actionqueue-storage/src/wal/event.rs`](crates/actionqueue-storage/src/wal/event.rs) |
-| State transitions are monotonic and validated | Transition checks must gate state evolution; backward transitions forbidden | [`crates/actionqueue-core/src/run/transitions.rs`](crates/actionqueue-core/src/run/transitions.rs), [`crates/actionqueue-storage/src/recovery/reducer.rs`](crates/actionqueue-storage/src/recovery/reducer.rs) |
-| Completion is durable | Completed truth must depend on durable record, not volatile memory | [`crates/actionqueue-storage/src/wal/event.rs`](crates/actionqueue-storage/src/wal/event.rs), [`crates/actionqueue-storage/src/recovery/reducer.rs`](crates/actionqueue-storage/src/recovery/reducer.rs) |
-| Lease and concurrency constraints are core-enforced | Eligibility and execution ownership must be constrained by lease and key gates | [`crates/actionqueue-engine/src/lease/model.rs`](crates/actionqueue-engine/src/lease/model.rs), [`crates/actionqueue-engine/src/concurrency/key_gate.rs`](crates/actionqueue-engine/src/concurrency/key_gate.rs) |
-| External extensions cannot mutate persistence directly | Mutations must route through validated core interfaces | [`actionqueue-charter.md`](actionqueue-charter.md), [`crates/actionqueue-storage/src/wal/event.rs`](crates/actionqueue-storage/src/wal/event.rs) |
+| All runs originate from durable intent | Run creation must trace to task policy or explicit append; creation must be durably representable | [`crates/actionqueue-engine/src/derive/repeat.rs`](../crates/actionqueue-engine/src/derive/repeat.rs), [`crates/actionqueue-storage/src/wal/event.rs`](../crates/actionqueue-storage/src/wal/event.rs) |
+| State transitions are monotonic and validated | Transition checks must gate state evolution; backward transitions forbidden | [`crates/actionqueue-core/src/run/transitions.rs`](../crates/actionqueue-core/src/run/transitions.rs), [`crates/actionqueue-storage/src/recovery/reducer.rs`](../crates/actionqueue-storage/src/recovery/reducer.rs) |
+| Completion is durable | Completed truth must depend on durable record, not volatile memory | [`crates/actionqueue-storage/src/wal/event.rs`](../crates/actionqueue-storage/src/wal/event.rs), [`crates/actionqueue-storage/src/recovery/reducer.rs`](../crates/actionqueue-storage/src/recovery/reducer.rs) |
+| Lease and concurrency constraints are core-enforced | Eligibility and execution ownership must be constrained by lease and key gates | [`crates/actionqueue-engine/src/lease/model.rs`](../crates/actionqueue-engine/src/lease/model.rs), [`crates/actionqueue-engine/src/concurrency/key_gate.rs`](../crates/actionqueue-engine/src/concurrency/key_gate.rs) |
+| External extensions cannot mutate persistence directly | Mutations must route through validated core interfaces | [`actionqueue-charter.md`](actionqueue-charter.md), [`crates/actionqueue-storage/src/wal/event.rs`](../crates/actionqueue-storage/src/wal/event.rs) |
 
 ---
 
@@ -84,9 +84,9 @@ Any other mutation path is forbidden.
 
 Current hardening targets:
 
-- [`crates/actionqueue-core/src/run/run_instance.rs`](crates/actionqueue-core/src/run/run_instance.rs)
-- [`crates/actionqueue-core/src/task/task_spec.rs`](crates/actionqueue-core/src/task/task_spec.rs)
-- [`crates/actionqueue-core/src/task/constraints.rs`](crates/actionqueue-core/src/task/constraints.rs)
+- [`crates/actionqueue-core/src/run/run_instance.rs`](../crates/actionqueue-core/src/run/run_instance.rs)
+- [`crates/actionqueue-core/src/task/task_spec.rs`](../crates/actionqueue-core/src/task/task_spec.rs)
+- [`crates/actionqueue-core/src/task/constraints.rs`](../crates/actionqueue-core/src/task/constraints.rs)
 
 ### 6.2 Derivation and accounting rules
 
@@ -96,8 +96,8 @@ Current hardening targets:
 
 Current hardening targets:
 
-- [`crates/actionqueue-engine/src/derive/repeat.rs`](crates/actionqueue-engine/src/derive/repeat.rs)
-- [`crates/actionqueue-engine/src/derive/mod.rs`](crates/actionqueue-engine/src/derive/mod.rs)
+- [`crates/actionqueue-engine/src/derive/repeat.rs`](../crates/actionqueue-engine/src/derive/repeat.rs)
+- [`crates/actionqueue-engine/src/derive/mod.rs`](../crates/actionqueue-engine/src/derive/mod.rs)
 
 ### 6.3 WAL admission rules
 
@@ -107,7 +107,7 @@ Current hardening targets:
 
 Current hardening targets:
 
-- [`crates/actionqueue-storage/src/wal/fs_writer.rs`](crates/actionqueue-storage/src/wal/fs_writer.rs)
+- [`crates/actionqueue-storage/src/wal/fs_writer.rs`](../crates/actionqueue-storage/src/wal/fs_writer.rs)
 
 ### 6.4 Recovery and uncertainty rules
 
@@ -117,8 +117,8 @@ Current hardening targets:
 
 Current hardening targets:
 
-- [`crates/actionqueue-storage/src/wal/event.rs`](crates/actionqueue-storage/src/wal/event.rs)
-- [`crates/actionqueue-storage/src/recovery/reducer.rs`](crates/actionqueue-storage/src/recovery/reducer.rs)
+- [`crates/actionqueue-storage/src/wal/event.rs`](../crates/actionqueue-storage/src/wal/event.rs)
+- [`crates/actionqueue-storage/src/recovery/reducer.rs`](../crates/actionqueue-storage/src/recovery/reducer.rs)
 
 ### 6.5 Executor timeout rules
 
@@ -128,8 +128,8 @@ Current hardening targets:
 
 Current hardening targets:
 
-- [`crates/actionqueue-executor-local/src/attempt_runner.rs`](crates/actionqueue-executor-local/src/attempt_runner.rs)
-- [`crates/actionqueue-executor-local/src/timeout.rs`](crates/actionqueue-executor-local/src/timeout.rs)
+- [`crates/actionqueue-executor-local/src/attempt_runner.rs`](../crates/actionqueue-executor-local/src/attempt_runner.rs)
+- [`crates/actionqueue-executor-local/src/timeout.rs`](../crates/actionqueue-executor-local/src/timeout.rs)
 
 ---
 
@@ -160,9 +160,9 @@ Minimum proof categories:
 
 Primary test surfaces:
 
-- [`crates/actionqueue-engine/tests/`](crates/actionqueue-engine/tests/)
-- [`crates/actionqueue-storage/tests/`](crates/actionqueue-storage/tests/)
-- [`crates/actionqueue-executor-local/tests/`](crates/actionqueue-executor-local/tests/)
+- [`crates/actionqueue-engine/tests/`](../crates/actionqueue-engine/tests/)
+- [`crates/actionqueue-storage/tests/`](../crates/actionqueue-storage/tests/)
+- [`crates/actionqueue-executor-local/tests/`](../crates/actionqueue-executor-local/tests/)
 
 ---
 

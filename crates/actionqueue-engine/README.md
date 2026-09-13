@@ -1,5 +1,7 @@
 # actionqueue-engine
 
+Release 0.2.0 implements AQ-CONT-1. See the [release and compatibility notes](../../docs/releases/0.2.0.md).
+
 Scheduling, derivation, and concurrency primitives for the ActionQueue task queue engine.
 
 ## Overview

@@ -1,5 +1,7 @@
 # actionqueue-budget
 
+Release 0.2.0 implements AQ-CONT-1. See the [release and compatibility notes](../../docs/releases/0.2.0.md).
+
 Budget tracking and dispatch eligibility for ActionQueue. `BudgetTracker` mirrors
 storage's complete allocation, consumption, and exhaustion records; `BudgetGate`
 blocks leasing while any dimension is exhausted. Dimensions are Token, CostCents,

@@ -1,5 +1,5 @@
 //! AQ-CONT-1 WAL v1: 52-byte header followed by a bounded postcard wire payload.
-//! Header: magic[8], format u32, kind u16, schema u16, store UUID[16],
+//! Header: `magic[8]`, format u32, kind u16, schema u16, store `UUID[16]`,
 //! sequence u64, length u32, payload CRC32 u32, header CRC32 u32. Integers are LE.
 use super::{event::WalEvent, wire_v1};
 pub const MAGIC: &[u8; 8] = b"AQCONT1W";

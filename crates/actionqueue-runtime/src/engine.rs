@@ -143,7 +143,7 @@ pub struct BootstrappedEngine<H: ExecutorHandler + 'static, C: Clock = SystemClo
 }
 
 impl<H: ExecutorHandler + 'static, C: Clock> BootstrappedEngine<H, C> {
-    /// Idempotent convenience admission with task/<uuid> key, trace, and correlation.
+    /// Idempotent convenience admission with `task/<uuid>` key, trace, and correlation.
     /// Constructs an explicitly host-bound embedded control surface.
     pub fn with_host(mut self, host: actionqueue_core::control::HostControlContext) -> Self {
         self.set_control_context(Some(host));

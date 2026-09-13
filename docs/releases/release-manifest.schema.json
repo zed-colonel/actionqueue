@@ -1,0 +1,226 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ActionQueue 0.2.0 release manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "version",
+    "tag",
+    "source_commit",
+    "crates",
+    "contract",
+    "contract_revision",
+    "conformance",
+    "developmental",
+    "rustc",
+    "lockfile_sha256",
+    "store_versions",
+    "supported_feature_profiles",
+    "tested_feature_combinations",
+    "evidence",
+    "artifacts",
+    "known_limitations",
+    "downstream",
+    "blockers"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "version": {
+      "type": "string",
+      "const": "0.2.0"
+    },
+    "tag": {
+      "type": "string",
+      "const": "v0.2.0"
+    },
+    "source_commit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "crates": {
+      "type": "array",
+      "minItems": 11,
+      "maxItems": 11,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "version"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^actionqueue-"
+          },
+          "version": {
+            "const": "0.2.0"
+          }
+        }
+      }
+    },
+    "contract": {
+      "type": "string",
+      "const": "AQ-CONT-1"
+    },
+    "contract_revision": {
+      "type": "string",
+      "const": "STACK-2026-07-20-CLEAN-1"
+    },
+    "conformance": {
+      "type": "object"
+    },
+    "developmental": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "revision",
+        "profile_sha256",
+        "matrix_sha256",
+        "case_count",
+        "protocol_or_authority_change"
+      ],
+      "properties": {
+        "revision": {
+          "const": "STACK-DEVELOPMENTAL-DIAGNOSTICS-1"
+        },
+        "profile_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "matrix_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "case_count": {
+          "const": 18
+        },
+        "protocol_or_authority_change": {
+          "const": false
+        }
+      }
+    },
+    "rustc": {
+      "type": "string"
+    },
+    "lockfile_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "store_versions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "manifest_schema",
+        "wal_format",
+        "snapshot_schema",
+        "projection_version"
+      ],
+      "properties": {
+        "manifest_schema": {
+          "const": 1
+        },
+        "wal_format": {
+          "const": 1
+        },
+        "snapshot_schema": {
+          "const": 9
+        },
+        "projection_version": {
+          "const": 9
+        }
+      }
+    },
+    "supported_feature_profiles": {
+      "type": "array"
+    },
+    "tested_feature_combinations": {
+      "type": "array"
+    },
+    "evidence": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "gate",
+          "command",
+          "feature_profile",
+          "source_commit",
+          "result",
+          "log",
+          "sha256"
+        ],
+        "properties": {
+          "gate": {
+            "type": "string"
+          },
+          "command": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "feature_profile": {
+            "type": "string"
+          },
+          "source_commit": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{40}$"
+          },
+          "result": {
+            "const": "passed"
+          },
+          "log": {
+            "type": "string"
+          },
+          "sha256": {
+            "$ref": "#/$defs/hash"
+          }
+        }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/artifact"
+      }
+    },
+    "known_limitations": {
+      "type": "array"
+    },
+    "downstream": {
+      "type": "object"
+    },
+    "blockers": {
+      "type": "array",
+      "maxItems": 0
+    }
+  },
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "sha256": {
+          "$ref": "#/$defs/hash"
+        }
+      }
+    }
+  }
+}

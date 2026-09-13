@@ -1,5 +1,7 @@
 # actionqueue
 
+Release 0.2.0 implements AQ-CONT-1. See the [release and compatibility notes](../../docs/releases/0.2.0.md).
+
 The canonical executable is `actionqueue`.
 
 ```text

@@ -1,93 +1,39 @@
-# WAL Recovery Operator Guide
+# WAL recovery operator guide
 
-## Overview
+Stop the process holding the store lock before offline work. Preserve the original
+store and diagnostics when investigating corruption. Use target-aware inspection:
 
-The ActionQueue WAL (Write-Ahead Log) uses a binary format (postcard + CRC-32) to durably record every state change. On crash or unclean shutdown, partial writes may leave incomplete records at the tail of the WAL file.
-
-## What Are Partial Writes?
-
-A partial write occurs when the process crashes mid-way through appending a WAL record. This can leave:
-
-- **Incomplete header**: Less than 12 bytes of the record header were written
-- **Incomplete payload**: The header was written but the payload is truncated
-- **CRC mismatch**: All bytes were written but data was corrupted (e.g., hardware fault)
-
-Partial writes only occur at the **tail** of the WAL -- records before the crash point are guaranteed complete and checksummed.
-
-## Detection
-
-On startup, the WAL writer validates all existing records. Corruption is reported as a `WalCorruption` with:
-- `offset`: Byte position of the corrupt record
-- `reason`: One of `IncompleteHeader`, `IncompletePayload`, `CrcMismatch`, `UnsupportedVersion`, `DecodeFailure`
-
-## RepairPolicy
-
-The `RepairPolicy` enum controls how the writer handles trailing corruption:
-
-### `RepairPolicy::Strict` (default)
-
-Hard-fails on any corruption. The writer will not open if any record is incomplete or invalid. This is the safest option and requires manual intervention to resolve corruption.
-
-### `RepairPolicy::TruncatePartial`
-
-Automatically truncates the incomplete trailing record and opens normally. Only the last incomplete record is removed -- all prior complete records are preserved.
-
-**What data is lost**: Only the single incomplete trailing record. This is the record that was being written when the crash occurred, so it was never confirmed durable.
-
-## When to Use Each Policy
-
-| Scenario | Recommended Policy |
-|----------|-------------------|
-| Production with strict durability requirements | `Strict` |
-| Development and testing | `TruncatePartial` |
-| Recovery after known crash | `TruncatePartial` |
-| Corruption in the middle of the WAL | Neither -- requires manual investigation |
-
-## Programmatic Recovery Example
-
-```rust
-use actionqueue_storage::wal::fs_writer::WalFsWriter;
-use actionqueue_storage::wal::repair::RepairPolicy;
-
-// Attempt strict open first
-let path = std::path::PathBuf::from("data/wal/actionqueue.wal");
-match WalFsWriter::new(path.clone()) {
-    Ok(writer) => { /* clean WAL, proceed normally */ }
-    Err(e) => {
-        eprintln!("Strict validation failed: {e}");
-        // Fall back to truncation repair
-        let writer = WalFsWriter::new_with_repair(path, RepairPolicy::TruncatePartial)
-            .expect("repair should succeed for trailing corruption");
-        // Proceed with repaired WAL
-    }
-}
+```sh
+actionqueue store inspect --data-dir /srv/actionqueue
 ```
 
-## WAL Format (v5)
+`Strict` is the default repair policy. `TruncatePartial` permits only an incomplete
+final target frame after a validated semantic prefix. A complete header must pass
+format, identity, kind/schema, bounds, sequence and integrity checks before a short
+payload qualifies. CRC failures, unknown records, gaps and interior damage halt
+recovery. Recovery never scans forward to resynchronize past damage. Do not repair
+these errors with byte editing or treat them as ordinary interrupted appends.
 
-Each record has a 12-byte header:
+The [storage API](../crates/actionqueue-storage/README.md) owns opening, repair,
+backup and restore. `runtime::store::{inspect_store,backup,restore}` expose verified
+offline operations. The operational CLI does not expose an arbitrary WAL repair
+command. The complete WAL must remain present, even with a snapshot.
 
+After uncertain writes the mutation authority is fenced. Drop the engine/store
+owner and reopen through recovery before further mutation or cached duplicate
+acknowledgement. Recoverable interrupted attempts are closed by runtime recovery;
+offline inspection and backup do not invoke handlers or reconcile execution.
+
+```sh
+actionqueue backup --data-dir /srv/actionqueue --output /srv/backups/queue-001
+actionqueue restore --input /srv/backups/queue-001 --data-dir /srv/restored-queue
 ```
-+-------------+-------------+------------+------------------------+
-| Version (4B)| Length (4B) | CRC-32 (4B)| Serialized Event (N B) |
-+-------------+-------------+------------+------------------------+
-```
 
-- **Version**: `5` (little-endian u32)
-- **Length**: Payload byte count (little-endian u32)
-- **CRC-32**: Checksum of the payload (little-endian u32)
-- **Payload**: postcard-serialized `WalEvent`
+Backup verifies the complete WAL, a usable snapshot, checksums and projection
+identity before publication. Restore rejects populated/unsafe destinations,
+symlinks, traversal, overlap, unexpected entries and mismatched digests. Restore
+preserves store identity and profile. Application-owned external artifact bytes
+require separate retention and verification.
 
-### WAL Event Types (v5)
-
-The WAL records 32 event types across five categories:
-
-**Core lifecycle**: TaskCreated, RunCreated, RunStateChanged, AttemptStarted, AttemptFinished, TaskCanceled, RunCanceled, LeaseAcquired, LeaseHeartbeat, LeaseExpired, LeaseReleased, EnginePaused, EngineResumed
-
-**Workflow**: DependencyDeclared
-
-**Budget/Subscription**: RunSuspended, RunResumed, BudgetAllocated, BudgetConsumed, BudgetExhausted (reserved), BudgetReplenished, SubscriptionCreated, SubscriptionTriggered, SubscriptionCanceled
-
-**Actor**: ActorRegistered, ActorDeregistered, ActorHeartbeat
-
-**Platform**: TenantCreated, RoleAssigned, CapabilityGranted, CapabilityRevoked, LedgerEntryAppended
+No release migration reader accepts 0.1.x or earlier development schemas. Consult
+[release limits](releases/0.2.0.md) before cutover.

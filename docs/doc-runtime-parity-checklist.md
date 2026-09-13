@@ -1,55 +1,16 @@
-# Documentation Runtime Parity Checklist
+# Documentation and runtime parity — 0.2.0
 
-This checklist is the fail-fast review artifact for the documentation truth gate.
+| Surface | Current reference | Verification |
+|---|---|---|
+| Embedded admission, signal, wait and checkpoint delivery | [Consumer](examples/downstream-handoff.md) | Independent production consumer tests |
+| HTTP v2 and CLI controls/inspection | [AQ-12 API](aq-12-apis.md) | Public conformance drivers over all transports |
+| Manifest 1, WAL 1, snapshot/projection 9 | [Store format](data-dir-format-v1.0.md) | Target persistence and cross-feature process tests |
+| Recovery and offline transfer | [Operator guide](wal-recovery-guide.md) | Corruption, process cuts, backup and restore evidence |
+| Base hierarchy and transactional child admission; optional cron | [Workflow](../crates/actionqueue-workflow/README.md) | Compound-child and expanded workflow tests |
+| Developmental attribution neutrality | [Conformance](../conformance/aq-cont-1/README.md) | Eighteen developmental cases and full report |
+| Registry package usability | [Release](releases/0.2.0.md) | Cargo archives, isolated directory-source consumer |
 
-A public capability claim is accepted only when it maps to concrete runtime symbols and, where applicable, executable tests.
-
-## 1) Shipped capability claim inventory (current repository state)
-
-| Public surface claim | Status | Runtime evidence | Test evidence |
-|---|---|---|---|
-| Daemon HTTP server and API endpoints | **Shipped** | HTTP routes in `crates/actionqueue-daemon/src/http/` | Acceptance tests in `tests/acceptance/` |
-| Daemon metrics exporter | **Shipped** | `/metrics` endpoint | `acceptance_observability` test |
-| CLI subcommands (`daemon`, `submit`, `stats`) | **Shipped** | `crates/actionqueue-cli/src/cmd/` | CLI integration tests |
-| Local executor timeout and cancellation | **Shipped** | `crates/actionqueue-executor-local/src/timeout.rs` | Timeout and cancellation unit tests |
-| WAL v5 (postcard + CRC-32) durability/replay | **Shipped** | `crates/actionqueue-storage/src/wal/codec.rs` | Codec roundtrip, CRC-32 integrity, WAL replay tests |
-| WAL partial write repair | **Shipped** | `crates/actionqueue-storage/src/wal/repair.rs` | `wal_corruption_recovery` acceptance test |
-| Snapshot parity mapping (schema v8) | **Shipped** | `crates/actionqueue-storage/src/snapshot/mapping.rs` | Snapshot model parity tests |
-| Runtime dispatch loop | **Shipped** | `crates/actionqueue-runtime/src/dispatch.rs` | All lifecycle acceptance tests |
-| Backoff strategies (fixed + exponential) | **Shipped** | `crates/actionqueue-executor-local/src/backoff.rs` | Backoff unit tests |
-| DAG dependency scheduling | **Shipped** | `crates/actionqueue-workflow/src/dag.rs` | `dag_ordering`, `dag_failure_propagation`, `dag_cycle_rejection` |
-| Task hierarchy (parent-child) | **Shipped** | `crates/actionqueue-workflow/src/hierarchy.rs` | `hierarchy_lifecycle` acceptance test |
-| Cron scheduling | **Shipped** | `crates/actionqueue-engine/src/derive/cron.rs` | `cron_scheduling` acceptance test |
-| Dynamic task submission | **Shipped** | `crates/actionqueue-workflow/src/submission.rs` | `dynamic_submission` acceptance test |
-| Budget enforcement | **Shipped** | `crates/actionqueue-budget/src/gate.rs` | `budget_enforcement`, `budget_replenishment` tests |
-| Suspend/resume | **Shipped** | RunState::Suspended + dispatch handling | `suspend_resume` acceptance test |
-| Event subscriptions | **Shipped** | `crates/actionqueue-budget/src/subscription/` | `subscription_triggered_promotion`, `custom_event_subscription` tests |
-| Actor registration + heartbeat | **Shipped** | `crates/actionqueue-actor/src/registry.rs`, `heartbeat.rs` | `actor_registration`, `remote_actor_crash` tests |
-| Executor trait routing | **Shipped** | `crates/actionqueue-actor/src/routing.rs` | `executor_trait_matching` acceptance test |
-| Multi-tenant isolation | **Shipped** | `crates/actionqueue-platform/src/tenant.rs` | `multi_tenant_isolation` acceptance test |
-| RBAC enforcement | **Shipped** | `crates/actionqueue-platform/src/rbac.rs` | `rbac_enforcement` acceptance test |
-| Append-only ledgers | **Shipped** | `crates/actionqueue-platform/src/ledger.rs` | `ledger_recovery` acceptance test |
-| Approval workflows | **Shipped** | DAG + roles integration | `approval_workflow`, `triad_mvp` acceptance tests |
-
-## 2) Positive checks (must all pass)
-
-1. **P1**: each shipped capability statement in `README.md` maps to code symbols and test evidence.
-2. **P2**: no roadmap-only capabilities are claimed as shipped.
-
-## 3) Negative checks (any single fail blocks closure)
-
-1. **N1**: documented endpoint/command lacks implementation evidence in repository code.
-2. **N2**: implemented contract-relevant behavior is omitted or contradicted by public docs.
-3. **N3**: docs contain contradictory wording between shipped and planned sections.
-
-## 4) Reviewer execution steps
-
-1. Read capability sections in `README.md`.
-2. For each claim, resolve runtime evidence links and verify symbols are implemented.
-3. Confirm shipped claims have matching tests where behavior is contract-relevant.
-4. Mark gate result as pass/fail and record any blocking claim drift.
-
-## 5) Gate decision rubric
-
-- **Pass**: all positive checks pass and no negative check fails.
-- **Fail**: any negative check fails or any shipped claim lacks concrete runtime evidence.
+`python3 -B scripts/check-docs.py` checks active Markdown file links. Release gates
+also scan generated ActionQueue API HTML using the existing forbidden-symbol
+policy. Frozen contracts, planning evidence and archive content remain unchanged;
+these link checks do not redefine their policy exemptions.

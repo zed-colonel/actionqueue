@@ -18,6 +18,7 @@ members = [
     "crates/actionqueue-actor",
     "crates/actionqueue-platform",
 ]
+exclude = ["examples/downstream-handoff"]
 resolver = "2"
 
 [features]
@@ -46,17 +47,17 @@ platform = [
 ]
 
 [dev-dependencies]
-actionqueue-core = "0.1.2"
-actionqueue-storage = { version = "0.1.2", features = ["testing"] }
-actionqueue-engine = "0.1.2"
-actionqueue-executor-local = "0.1.2"
-actionqueue-runtime = "0.1.2"
-actionqueue-workflow = "0.1.2"
-actionqueue-budget = "0.1.2"
-actionqueue-actor = "0.1.2"
-actionqueue-platform = "0.1.2"
-actionqueue-daemon = "0.1.2"
-actionqueue-cli = "0.1.2"
+actionqueue-core = "0.2.0"
+actionqueue-storage = { version = "0.2.0", features = ["testing"] }
+actionqueue-engine = "0.2.0"
+actionqueue-executor-local = "0.2.0"
+actionqueue-runtime = "0.2.0"
+actionqueue-workflow = "0.2.0"
+actionqueue-budget = "0.2.0"
+actionqueue-actor = "0.2.0"
+actionqueue-platform = "0.2.0"
+actionqueue-daemon = "0.2.0"
+actionqueue-cli = "0.2.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 axum = "0.7"
 tower = { version = "0.4", features = ["util"] }
