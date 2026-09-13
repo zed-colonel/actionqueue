@@ -290,6 +290,7 @@ impl TaskRecord {
 /// A reducer that applies WAL events to reconstruct state.
 #[derive(Debug, Clone)]
 pub struct ReplayReducer {
+    pub(crate) inspection_index: super::inspection::InspectionIndex,
     pub(crate) control_history:
         std::collections::BTreeMap<u64, actionqueue_core::control::ControlAttribution>,
     pub(crate) dispatch_sequences: std::collections::BTreeMap<RunId, u64>,
@@ -366,6 +367,7 @@ impl ReplayReducer {
     /// Creates a new replay reducer.
     pub fn new() -> Self {
         ReplayReducer {
+            inspection_index: Default::default(),
             checkpoints: Default::default(),
             administrative_wakes: Default::default(),
             administrative_pending: Default::default(),
@@ -583,6 +585,7 @@ impl ReplayReducer {
         self.admissions.values()
     }
     pub(crate) fn insert_admission(&mut self, record: crate::mutation::admission::AdmissionRecord) {
+        self.inspection_index.insert(&record);
         let key = (record.tenant_id(), record.key().clone());
         self.admission_by_task.insert(record.task_id(), key.clone());
         self.admissions.insert(key, record);
@@ -1015,6 +1018,7 @@ impl ReplayReducer {
 
         self.record_subscription_matches(observations, event.sequence());
 
+        self.index_inspection_event(event);
         // Commit bookkeeping only after semantic application succeeds.
         if let Some(control) = event.control() {
             self.control_history.insert(event.sequence(), control.clone());

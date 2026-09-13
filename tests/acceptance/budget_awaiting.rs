@@ -536,8 +536,8 @@ async fn inspection_distinguishes_budget_block_from_satisfied_wait() {
     let value = support::run_get(&mut router, r).await;
     assert_eq!(value["state"], "Ready");
     assert_eq!(value["block_reason"], "budget");
-    assert_eq!(value["satisfied_wait_id"], context.wait_id().unwrap().to_string());
-    assert_eq!(value["pending_context_id"], context.context_id.0);
+    assert_eq!(value["last_wait_id"], context.wait_id().unwrap().to_string());
+    assert_eq!(value["pending_resume"]["context_id"], context.context_id.0);
     assert!(value["lease"].is_null());
 }
 

@@ -153,6 +153,11 @@ pub(crate) fn recover(
             return Err(invalid("snapshot plus tail differs from WAL replay"));
         }
     }
+    if let Some(h) = &mut hydrated {
+        // The target format retains the complete WAL. Restore derived operation
+        // associations without extending the snapshot schema or its digest.
+        h.inspection_index = full.inspection_index.clone();
+    }
     Ok(RecoveredProjection {
         projection: hydrated.unwrap_or(full),
         snapshot_loaded: snapshot.is_some(),

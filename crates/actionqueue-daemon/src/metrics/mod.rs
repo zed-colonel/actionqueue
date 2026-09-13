@@ -51,3 +51,5 @@ mod tests {
         assert_eq!(lag_now(&state), 424_242);
     }
 }
+
+pub(crate) mod continuation;

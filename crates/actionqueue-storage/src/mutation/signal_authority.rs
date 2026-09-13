@@ -52,13 +52,18 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
         }
         let digest =
             CanonicalSignalV1::new(envelope).map_err(MutationAuthorityError::Signal)?.digest();
-        self.projection()
+        let result = self
+            .projection()
             .signal_index()
             .ok_or(MutationAuthorityError::Signal(R::UnsupportedFeature))?
             .get_signal(envelope.tenant_id, &envelope.signal_id)
             .map(|r| r.resolve(&digest))
             .transpose()
-            .map_err(MutationAuthorityError::Signal)
+            .map_err(MutationAuthorityError::Signal);
+        if matches!(result, Ok(Some(_))) {
+            self.telemetry().signal_duplicate();
+        }
+        result
     }
     pub(super) fn prepare_signal(
         &self,

@@ -196,6 +196,25 @@ impl<H: ExecutorHandler + 'static, C: Clock> BootstrappedEngine<H, C> {
         self.dispatch.submit_remote_result(host, result)
     }
     /// Retain the preallocated task UUID on retry.
+    pub fn control(
+        &mut self,
+        operation: crate::control::ControlOperation,
+    ) -> Result<crate::control::ControlOutcome, crate::control::ServiceError> {
+        self.dispatch.control(operation)
+    }
+    /// Redacted host-bound structural inspection.
+    pub fn inspector(
+        &self,
+    ) -> Result<crate::inspection::Inspector<'_>, crate::inspection::InspectionError> {
+        self.dispatch.inspector(Default::default(), false)
+    }
+    /// Disclosure additionally requires an explicit trusted host policy.
+    pub fn inspector_with_disclosure(
+        &self,
+        policy: crate::inspection::DisclosurePolicy,
+    ) -> Result<crate::inspection::Inspector<'_>, crate::inspection::InspectionError> {
+        self.dispatch.inspector(policy, true)
+    }
     pub fn submit_task(
         &mut self,
         spec: TaskSpec,
@@ -206,37 +225,116 @@ impl<H: ExecutorHandler + 'static, C: Clock> BootstrappedEngine<H, C> {
         self.dispatch.submit_task(spec)
     }
 
-    /// Inspect a signal in its tenant namespace, including retired records.
+    pub fn get_admission(
+        &self,
+        key: &actionqueue_core::ids::AdmissionKey,
+    ) -> Result<crate::views::AdmissionView, crate::inspection::InspectionError> {
+        self.inspector()?.get_admission(key)
+    }
+    pub fn get_task(
+        &self,
+        id: actionqueue_core::ids::TaskId,
+    ) -> Result<crate::views::TaskView, crate::inspection::InspectionError> {
+        self.inspector()?.get_task(id)
+    }
+    pub fn get_run(
+        &self,
+        id: actionqueue_core::ids::RunId,
+    ) -> Result<crate::views::RunView, crate::inspection::InspectionError> {
+        self.inspector()?.get_run(id)
+    }
+    pub fn get_attempt(
+        &self,
+        run: actionqueue_core::ids::RunId,
+        attempt: actionqueue_core::ids::AttemptId,
+    ) -> Result<crate::views::AttemptView, crate::inspection::InspectionError> {
+        self.inspector()?.get_attempt(run, attempt)
+    }
+    pub fn get_wait(
+        &self,
+        id: actionqueue_core::ids::WaitId,
+    ) -> Result<crate::views::WaitView, crate::inspection::InspectionError> {
+        self.inspector()?.get_wait(id)
+    }
     pub fn get_signal(
         &self,
-        tenant: Option<actionqueue_core::ids::TenantId>,
         id: &actionqueue_core::ids::SignalId,
-    ) -> Option<&actionqueue_storage::mutation::signal::SignalRecord> {
-        self.projection().signals().get_signal(tenant, id)
+    ) -> Result<crate::views::SignalView, crate::inspection::InspectionError> {
+        self.inspector()?.get_signal(id)
     }
-    /// Bounded sequence-paginated inspection with an exclusive cursor.
+    pub fn get_checkpoint(
+        &self,
+        id: actionqueue_core::ids::CheckpointId,
+    ) -> Result<crate::views::CheckpointView, crate::inspection::InspectionError> {
+        self.inspector()?.get_checkpoint(id)
+    }
+    #[cfg(feature = "serde")]
     pub fn list_signals(
         &self,
-        tenant: Option<actionqueue_core::ids::TenantId>,
-        after: actionqueue_core::ids::SignalSequence,
-        limit: usize,
-    ) -> Vec<&actionqueue_storage::mutation::signal::SignalRecord> {
-        self.projection().signals().list_signals(tenant, after, limit)
+        q: &crate::inspection::Query,
+    ) -> Result<crate::views::Page<crate::views::SignalView>, crate::inspection::InspectionError>
+    {
+        self.inspector()?.list_signals(q)
+    }
+    #[cfg(feature = "serde")]
+    pub fn list_waits(
+        &self,
+        q: &crate::inspection::Query,
+    ) -> Result<crate::views::Page<crate::views::WaitView>, crate::inspection::InspectionError>
+    {
+        self.inspector()?.list_waits(q)
+    }
+    #[cfg(feature = "serde")]
+    pub fn trace(
+        &self,
+        q: &crate::inspection::Query,
+    ) -> Result<crate::views::TraceView, crate::inspection::InspectionError> {
+        self.inspector()?.trace(q)
+    }
+    pub fn cancel_task(
+        &mut self,
+        id: actionqueue_core::ids::TaskId,
+    ) -> Result<crate::control::ControlOutcome, crate::control::ServiceError> {
+        self.control(crate::control::ControlOperation::Cancel(
+            actionqueue_core::mutation::CancelTarget::Task(id),
+        ))
+    }
+    pub fn cancel_run(
+        &mut self,
+        id: actionqueue_core::ids::RunId,
+    ) -> Result<crate::control::ControlOutcome, crate::control::ServiceError> {
+        self.control(crate::control::ControlOperation::Cancel(
+            actionqueue_core::mutation::CancelTarget::Run(id),
+        ))
+    }
+    pub fn cancel_wait(
+        &mut self,
+        run_id: actionqueue_core::ids::RunId,
+        wait_id: actionqueue_core::ids::WaitId,
+    ) -> Result<crate::control::ControlOutcome, crate::control::ServiceError> {
+        self.control(crate::control::ControlOperation::CancelWait { run_id, wait_id })
+    }
+    pub fn resolve_wait(
+        &mut self,
+        run_id: actionqueue_core::ids::RunId,
+        wait_id: actionqueue_core::ids::WaitId,
+    ) -> Result<crate::control::ControlOutcome, crate::control::ServiceError> {
+        self.control(crate::control::ControlOperation::ResolveWait { run_id, wait_id })
     }
     /// Resident signal and live capacity-rejection counters.
     pub fn signal_statistics(&self) -> actionqueue_storage::recovery::signals::SignalStatistics {
         self.dispatch.signal_statistics()
     }
-    /// Admits a durable signal with host-attested scope and attribution.
+    /// Admits a signal with the configured trusted host context.
     pub fn admit_signal(
         &mut self,
         request: actionqueue_core::continuation::AdmitSignalRequest,
-        ingress: actionqueue_core::continuation::SignalIngressContext,
-    ) -> Result<
-        actionqueue_core::continuation::AdmitSignalOutcome,
-        crate::signals::SignalAdmissionError,
-    > {
-        self.dispatch.admit_signal(request, ingress)
+    ) -> Result<actionqueue_core::continuation::AdmitSignalOutcome, crate::control::ServiceError>
+    {
+        match self.control(crate::control::ControlOperation::AdmitSignal(request))? {
+            crate::control::ControlOutcome::Signal(outcome) => Ok(outcome),
+            _ => unreachable!("signal operation"),
+        }
     }
     /// Explicit durable retention control through the mutation authority.
     pub fn pin_signal(
@@ -268,9 +366,11 @@ impl<H: ExecutorHandler + 'static, C: Clock> BootstrappedEngine<H, C> {
     pub fn ensure_task(
         &mut self,
         request: actionqueue_core::admission::EnsureTaskRequest,
-    ) -> Result<actionqueue_core::admission::EnsureTaskOutcome, crate::admission::AdmissionError>
-    {
-        self.dispatch.ensure_task(request)
+    ) -> Result<actionqueue_core::admission::EnsureTaskOutcome, crate::control::ServiceError> {
+        match self.control(crate::control::ControlOperation::AdmitTask(request))? {
+            crate::control::ControlOutcome::Task(outcome) => Ok(outcome),
+            _ => unreachable!("task operation"),
+        }
     }
     /// Advances the dispatch loop by one tick.
     pub async fn tick(&mut self) -> Result<TickResult, EngineError> {

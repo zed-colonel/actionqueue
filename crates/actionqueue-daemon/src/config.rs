@@ -66,6 +66,9 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DaemonConfig {
+    /// Finite namespace/kind metric label allowlist (maximum 64 pairs).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub signal_metric_allowlist: std::collections::BTreeSet<(String, String)>,
     /// Remote capacity, execution lease, and retry policy.
     #[cfg(feature = "actor")]
     pub remote_policy: actionqueue_runtime::remote::RemotePolicy,
@@ -96,9 +99,9 @@ pub struct DaemonConfig {
     /// Feature flag to enable control endpoints.
     ///
     /// When `false` (the default), control endpoints are unreachable. When
-    /// `true`, control endpoints (`/api/v1/tasks/:task_id/cancel`,
-    /// `/api/v1/runs/:run_id/cancel`, `/api/v1/engine/pause`,
-    /// `/api/v1/engine/resume`) are registered and may be invoked.
+    /// `true`, control endpoints (`/api/v2/tasks/:task_id:cancel`,
+    /// `/api/v2/runs/:run_id:cancel`, `/api/v2/engine/pause`,
+    /// `/api/v2/engine/resume`) are registered and may be invoked.
     ///
     /// # Safety
     ///
@@ -124,6 +127,7 @@ pub struct DaemonConfig {
 impl Default for DaemonConfig {
     fn default() -> Self {
         Self {
+            signal_metric_allowlist: Default::default(),
             #[cfg(feature = "actor")]
             remote_policy: Default::default(),
             bind_address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8787),
@@ -187,6 +191,15 @@ impl DaemonConfig {
     ///
     /// Returns a `ConfigError` if any field contains an invalid value.
     pub fn validate(&self) -> Result<(), ConfigError> {
+        if actionqueue_storage::mutation::telemetry::QueueTelemetry::default()
+            .set_signal_allowlist(self.signal_metric_allowlist.clone())
+            .is_err()
+        {
+            return Err(ConfigError {
+                code: ConfigErrorCode::InvalidMetricsBind,
+                message: "invalid signal metric allowlist".into(),
+            });
+        }
         #[cfg(feature = "actor")]
         self.remote_policy.validate().map_err(|e| ConfigError {
             code: ConfigErrorCode::InvalidBindAddress,

@@ -1813,6 +1813,44 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         Ok(summary)
     }
 
+    /// Host-bound service entry point; no principal is synthesized when context is missing.
+    pub fn control(
+        &mut self,
+        operation: crate::control::ControlOperation,
+    ) -> Result<crate::control::ControlOutcome, crate::control::ServiceError> {
+        let host = self.authority.control_context().cloned().ok_or(
+            crate::control::ServiceError::Authorization(
+                actionqueue_core::control::ControlError::Unauthorized,
+            ),
+        )?;
+        let result =
+            crate::control::execute_control(&mut self.authority, &host, operation, &self.clock);
+        self.refresh_coordination();
+        result
+    }
+    /// Inspection always uses the configured host and actual store profile.
+    pub fn inspector(
+        &self,
+        policy: crate::inspection::DisclosurePolicy,
+        display_references: bool,
+    ) -> Result<crate::inspection::Inspector<'_>, crate::inspection::InspectionError> {
+        let host = self
+            .authority
+            .control_context()
+            .ok_or(crate::inspection::InspectionError::Unauthorized)?;
+        let platform = self
+            .authority
+            .store_session()
+            .is_some_and(|s| s.manifest().features.iter().any(|f| f == "platform"));
+        crate::inspection::Inspector::new(
+            self.projection(),
+            host,
+            platform,
+            policy,
+            display_references,
+            self.clock.now(),
+        )
+    }
     /// Idempotent convenience admission using stable task/<uuid> key, trace, and correlation.
     /// Retain the task UUID on retry. Outbox callers should supply explicit ensure_task requests.
     pub fn submit_task(&mut self, spec: TaskSpec) -> Result<EnsureTaskOutcome, AdmissionError> {
@@ -1820,22 +1858,21 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
             EnsureTaskRequest::for_task(spec, vec![]).map_err(AdmissionError::Rejected)?,
         )
     }
-    /// Inspect a signal in its tenant namespace, including retired records.
+    /// Inspect a signal through the configured host and default redaction policy.
     pub fn get_signal(
         &self,
-        tenant: Option<actionqueue_core::ids::TenantId>,
         id: &actionqueue_core::ids::SignalId,
-    ) -> Option<&actionqueue_storage::mutation::signal::SignalRecord> {
-        self.projection().signals().get_signal(tenant, id)
+    ) -> Result<crate::views::SignalView, crate::inspection::InspectionError> {
+        self.inspector(Default::default(), false)?.get_signal(id)
     }
-    /// Bounded sequence-paginated inspection with an exclusive cursor.
+    /// Bounded, authorized structural signal inspection.
+    #[cfg(feature = "serde")]
     pub fn list_signals(
         &self,
-        tenant: Option<actionqueue_core::ids::TenantId>,
-        after: actionqueue_core::ids::SignalSequence,
-        limit: usize,
-    ) -> Vec<&actionqueue_storage::mutation::signal::SignalRecord> {
-        self.projection().signals().list_signals(tenant, after, limit)
+        query: &crate::inspection::Query,
+    ) -> Result<crate::views::Page<crate::views::SignalView>, crate::inspection::InspectionError>
+    {
+        self.inspector(Default::default(), false)?.list_signals(query)
     }
     /// Resident signal and live capacity-rejection counters.
     pub fn signal_statistics(&self) -> actionqueue_storage::recovery::signals::SignalStatistics {

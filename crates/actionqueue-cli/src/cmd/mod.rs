@@ -3,8 +3,6 @@
 use serde::Serialize;
 
 pub mod daemon;
-pub mod stats;
-pub mod submit;
 
 /// Stable classification for CLI failure lanes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -35,30 +33,47 @@ impl ErrorKind {
 /// Typed CLI command failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CliError {
+    committed_signal: Option<actionqueue_core::continuation::AdmitSignalOutcome>,
     kind: ErrorKind,
     code: &'static str,
     message: String,
 }
 
 impl CliError {
+    /// Preserve the durable identity when matching fails after signal commit.
+    pub fn with_committed_signal(
+        mut self,
+        outcome: actionqueue_core::continuation::AdmitSignalOutcome,
+    ) -> Self {
+        self.committed_signal = Some(outcome);
+        self
+    }
+    pub fn committed_signal(&self) -> Option<&actionqueue_core::continuation::AdmitSignalOutcome> {
+        self.committed_signal.as_ref()
+    }
     /// Builds a usage-class error.
     pub fn usage(code: &'static str, message: impl Into<String>) -> Self {
-        Self { kind: ErrorKind::Usage, code, message: message.into() }
+        Self { committed_signal: None, kind: ErrorKind::Usage, code, message: message.into() }
     }
 
     /// Builds a validation-class error.
     pub fn validation(code: &'static str, message: impl Into<String>) -> Self {
-        Self { kind: ErrorKind::Validation, code, message: message.into() }
+        Self { committed_signal: None, kind: ErrorKind::Validation, code, message: message.into() }
     }
 
     /// Builds a runtime-class error.
     pub fn runtime(code: &'static str, message: impl Into<String>) -> Self {
-        Self { kind: ErrorKind::Runtime, code, message: message.into() }
+        Self { committed_signal: None, kind: ErrorKind::Runtime, code, message: message.into() }
     }
 
     /// Builds a connectivity-class error.
     pub fn connectivity(code: &'static str, message: impl Into<String>) -> Self {
-        Self { kind: ErrorKind::Connectivity, code, message: message.into() }
+        Self {
+            committed_signal: None,
+            kind: ErrorKind::Connectivity,
+            code,
+            message: message.into(),
+        }
     }
 
     /// Returns failure classification.
@@ -88,6 +103,10 @@ impl std::error::Error for CliError {}
 /// Structured stderr payload for deterministic automation-safe failures.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ErrorPayload<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub committed: Option<&'a actionqueue_core::continuation::AdmitSignalOutcome>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub recovery_required: bool,
     /// Stable error class taxonomy.
     pub error_kind: ErrorKind,
     /// Stable machine-readable failure code.
@@ -128,3 +147,5 @@ pub fn resolve_data_dir(override_dir: Option<&std::path::Path>) -> std::path::Pa
 }
 
 pub mod storage;
+
+pub mod api;

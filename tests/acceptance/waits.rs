@@ -906,6 +906,7 @@ fn rejects_invalid_identity_attempt_scope_and_non_earliest_signal_without_writes
 }
 #[tokio::test]
 async fn daemon_run_and_task_cancellation_resolve_waits_through_compound_controls() {
+    use http_body_util::BodyExt;
     use tower::ServiceExt;
     for task_control in [false, true] {
         let dir = tempfile::tempdir().unwrap();
@@ -943,9 +944,9 @@ async fn daemon_run_and_task_cancellation_resolve_waits_through_compound_control
         )
         .unwrap();
         let path = if task_control {
-            format!("/api/v1/tasks/{task}/cancel")
+            format!("/api/v2/tasks/{task}:cancel")
         } else {
-            format!("/api/v1/runs/{r}/cancel")
+            format!("/api/v2/runs/{r}:cancel")
         };
         let response = state
             .http_router()
@@ -953,14 +954,52 @@ async fn daemon_run_and_task_cancellation_resolve_waits_through_compound_control
             .oneshot(
                 axum::http::Request::builder()
                     .method("POST")
-                    .uri(path)
+                    .uri(&path)
                     .body(axum::body::Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
         assert_eq!(response.status(), axum::http::StatusCode::OK);
-        drop(state);
+        for _ in 0..3 {
+            let response = state
+                .http_router()
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri(&path)
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200);
+            let response = state
+                .http_router()
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri("/metrics")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200);
+            let text = String::from_utf8(
+                response.into_body().collect().await.unwrap().to_bytes().to_vec(),
+            )
+            .unwrap();
+            assert!(
+                text.contains("actionqueue_waits_satisfied_total{reason=\"canceled\"} 1\n"),
+                "{text}"
+            );
+            assert!(text.contains("actionqueue_waits_active 0\n"));
+            // The wait predates this process: only resolutions, not latency starts, are observed.
+            assert!(text.contains("actionqueue_wait_latency_seconds_count 0\n"));
+        }
+        state.shutdown().await;
         let a = s::reopen(dir.path());
         assert!(matches!(
             a.projection().waits().get(w).unwrap().resolution.as_ref().unwrap().kind,
@@ -1115,4 +1154,84 @@ fn wait_policy_changes_conflict_under_the_same_admission_key() {
     let changed = admission_support::with_spec(&q, spec);
     assert_ne!(q.digest().unwrap(), changed.digest().unwrap());
     assert!(admission_support::ensure(&mut a, changed, 11).is_err());
+}
+
+#[test]
+fn compound_cancellation_observes_wait_latency_once_and_leaves_unrelated_waits_active() {
+    for task_control in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = s::open(dir.path());
+        let run = running(&mut a, 1, None, false);
+        let unrelated = running(&mut a, 2, None, false);
+        establish_wait(&mut a, run, spec(WaitId::new(), None));
+        establish_wait(&mut a, unrelated, spec(WaitId::new(), None));
+        let task = a.projection().get_run_instance(&run).unwrap().task_id();
+        let canceled_waits = if task_control {
+            let sibling = a
+                .projection()
+                .runs_for_task(task)
+                .find(|r| r.state() == RunState::Scheduled)
+                .unwrap()
+                .id();
+            transition(&mut a, sibling, RunState::Ready, 11);
+            transition(&mut a, sibling, RunState::Leased, 12);
+            commit!(
+                &mut a,
+                MutationCommand::LeaseAcquire(LeaseAcquireCommand::new(
+                    seq(&a),
+                    sibling,
+                    "worker",
+                    1000,
+                    12
+                ))
+            );
+            transition(&mut a, sibling, RunState::Running, 13);
+            let fence = a.projection().get_lease_metadata(&sibling).unwrap().granted_at_sequence();
+            commit!(
+                &mut a,
+                MutationCommand::AttemptStart(AttemptStartCommand::new(
+                    seq(&a),
+                    sibling,
+                    AttemptId::new(),
+                    13,
+                    LeaseFence::new("worker".into(), fence),
+                    None
+                ))
+            );
+            establish_wait(&mut a, sibling, spec(WaitId::new(), None));
+            2
+        } else {
+            1
+        };
+        assert_eq!(a.telemetry().snapshot().wait_latency_count, 0);
+        let mut sequence = None;
+        for _ in 0..3 {
+            let c = if task_control {
+                MutationCommand::TaskCancel(TaskCancelCommand::new(seq(&a), task, 30))
+            } else {
+                MutationCommand::Cancel(CancelCommand {
+                    expected_sequence: seq(&a),
+                    target: CancelTarget::Run(run),
+                    tenant_id: None,
+                    control_context: None,
+                    timestamp: 30,
+                })
+            };
+            let _ = apply(&mut a, c);
+            if let Some(previous) = sequence {
+                assert_eq!(seq(&a), previous);
+            }
+            sequence = Some(seq(&a));
+            assert_eq!(a.projection().waits().active_count(), 1);
+            let observed = a.telemetry().snapshot();
+            assert_eq!(observed.waits_satisfied["canceled"], canceled_waits);
+            assert_eq!(observed.wait_latency_count, canceled_waits);
+            assert_eq!(observed.wait_latency_sum, 10 * canceled_waits);
+        }
+        cancel(&mut a, unrelated);
+        let observed = a.telemetry().snapshot();
+        assert_eq!(observed.waits_satisfied["canceled"], canceled_waits + 1);
+        assert_eq!(observed.wait_latency_count, canceled_waits + 1);
+        assert_eq!(a.projection().waits().active_count(), 0);
+    }
 }

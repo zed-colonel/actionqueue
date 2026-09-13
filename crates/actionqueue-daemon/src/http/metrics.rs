@@ -10,24 +10,30 @@ use axum::response::IntoResponse;
 /// Handles `GET /metrics` export requests.
 #[tracing::instrument(skip_all)]
 pub async fn handle(state: State<super::RouterState>) -> impl IntoResponse {
-    crate::metrics::runs::update(state.0.as_ref());
-    crate::metrics::attempts::update(state.0.as_ref());
-    crate::metrics::wal::update(state.0.as_ref());
-    crate::metrics::recovery::update(state.0.as_ref());
+    tokio::task::spawn_blocking(move || {
+        crate::metrics::runs::update(state.0.as_ref());
+        crate::metrics::attempts::update(state.0.as_ref());
+        crate::metrics::wal::update(state.0.as_ref());
+        crate::metrics::recovery::update(state.0.as_ref());
 
-    match state.metrics.encode_text() {
-        Ok(encoded) => {
-            let mut response = encoded.body.into_response();
-            if let Ok(value) = HeaderValue::from_str(&encoded.content_type) {
-                response.headers_mut().insert(axum::http::header::CONTENT_TYPE, value);
+        match state.metrics.encode_text() {
+            Ok(encoded) => {
+                let mut response =
+                    (encoded.body + &crate::metrics::continuation::encode(&state)).into_response();
+                if let Ok(value) = HeaderValue::from_str(&encoded.content_type) {
+                    response.headers_mut().insert(axum::http::header::CONTENT_TYPE, value);
+                }
+                response
             }
-            response
+            Err(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "metrics_encode_failed: failed to encode metrics\n",
+            )
+                .into_response(),
         }
-        Err(_) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, "metrics_encode_failed: failed to encode metrics\n")
-                .into_response()
-        }
-    }
+    })
+    .await
+    .unwrap_or_else(|_| StatusCode::SERVICE_UNAVAILABLE.into_response())
 }
 
 /// Registers metrics routes when enabled.

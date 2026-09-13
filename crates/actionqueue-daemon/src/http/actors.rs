@@ -112,11 +112,7 @@ async fn register_actor(
     ) {
         Ok(_) => (StatusCode::CREATED, Json(serde_json::json!({ "actor_id": body.actor_id })))
             .into_response(),
-        Err(e) => (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "mutation_failed", "message": e.to_string() })),
-        )
-            .into_response(),
+        Err(e) => super::api::service_response(Err(e)),
     }
 }
 
@@ -144,7 +140,7 @@ async fn actor_heartbeat(
         MutationCommand::ActorHeartbeat(ActorHeartbeatCommand::new(seq, actor_id, ts)),
     ) {
         Ok(_) => StatusCode::OK.into_response(),
-        Err(_) => StatusCode::NOT_FOUND.into_response(),
+        Err(e) => super::api::service_response(Err(e)),
     }
 }
 
@@ -172,7 +168,7 @@ async fn deregister_actor(
         MutationCommand::ActorDeregister(ActorDeregisterCommand::new(seq, actor_id, ts)),
     ) {
         Ok(_) => StatusCode::OK.into_response(),
-        Err(_) => StatusCode::NOT_FOUND.into_response(),
+        Err(e) => super::api::service_response(Err(e)),
     }
 }
 

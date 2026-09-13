@@ -213,6 +213,12 @@ impl BootstrapState {
         (self.http_router, self.router_state)
     }
 
+    /// Waits for background maintenance after callers have drained HTTP requests.
+    /// Consuming the owner then releases its store references.
+    pub async fn shutdown(self) {
+        crate::http::maintenance::shutdown(&self.router_state).await;
+    }
+
     /// Returns the WAL path.
     pub fn wal_path(&self) -> &PathBuf {
         &self.wal_path
@@ -271,6 +277,15 @@ pub fn bootstrap_with_authenticator(
 
     // Validate configuration first
     config.validate()?;
+    if config.enable_control && hook.is_none() {
+        return Err(BootstrapError::Dependency("host_auth_required".into()));
+    }
+
+    // Create metrics registry
+    let metrics =
+        std::sync::Arc::new(MetricsRegistry::new(config.metrics_bind).map_err(|error| {
+            BootstrapError::Dependency(format!("metrics_registry_init_failed: {error}"))
+        })?);
 
     let recovery = load_projection_from_storage(&config.data_dir).map_err(map_recovery_error)?;
     let wal_path = recovery.wal_path.clone();
@@ -281,6 +296,10 @@ pub fn bootstrap_with_authenticator(
 
     let store_session = recovery.wal_writer.inner().session().cloned();
     let mut authority = StorageMutationAuthority::new(recovery.wal_writer, recovery.projection);
+    authority
+        .telemetry()
+        .set_signal_allowlist(config.signal_metric_allowlist.clone())
+        .map_err(|_| BootstrapError::Dependency("invalid signal metric allowlist".into()))?;
     if config.enable_control {
         actionqueue_runtime::waits::recover_execution(&mut authority, SystemClock.now())
             .map_err(|e| BootstrapError::Dependency(format!("execution_recovery: {e}")))?;
@@ -290,17 +309,7 @@ pub fn bootstrap_with_authenticator(
     actionqueue_runtime::waits::reconcile(&mut authority, SystemClock.now())
         .map_err(|e| BootstrapError::Dependency(format!("wait_reconciliation: {e}")))?;
     let projection = authority.projection().clone();
-    let control_authority = if config.enable_control {
-        Some(std::sync::Arc::new(std::sync::Mutex::new(authority)))
-    } else {
-        None
-    };
-
-    // Create metrics registry
-    let metrics =
-        std::sync::Arc::new(MetricsRegistry::new(config.metrics_bind).map_err(|error| {
-            BootstrapError::Dependency(format!("metrics_registry_init_failed: {error}"))
-        })?);
+    let control_authority = Some(std::sync::Arc::new(std::sync::Mutex::new(authority)));
 
     // Create a single authoritative daemon clock handle for router and metrics wiring.
     let clock: SharedDaemonClock = std::sync::Arc::new(SystemClock);

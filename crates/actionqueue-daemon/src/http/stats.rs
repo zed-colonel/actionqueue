@@ -1,6 +1,6 @@
 //! Stats route module.
 //!
-//! This module provides the aggregate statistics endpoint (`GET /api/v1/stats`)
+//! This module provides the aggregate statistics endpoint (`GET /api/v2/stats`)
 //! for the daemon. The stats endpoint returns read-only operational summaries
 //! derived from authoritative state without speculation, consistent with
 //! `actionqueue-charter.md`, `actionqueue-scope-appendix-v0.1.md`, and invariant
@@ -187,7 +187,7 @@ impl StatsResponse {
 
 /// Stats handler.
 ///
-/// This handler responds to `GET /api/v1/stats` requests with a deterministic,
+/// This handler responds to `GET /api/v2/stats` requests with a deterministic,
 /// side-effect-free payload containing aggregate statistics derived from
 /// authoritative state.
 ///
@@ -206,7 +206,7 @@ pub async fn handle(state: State<super::RouterState>) -> impl IntoResponse {
 
 /// Registers the stats route in the router builder.
 ///
-/// This function adds the `/api/v1/stats` endpoint to the router configuration.
+/// This function adds the `/api/v2/stats` endpoint to the router configuration.
 /// The route is always available when HTTP is enabled and does not depend
 /// on any feature flags.
 ///
@@ -216,7 +216,7 @@ pub async fn handle(state: State<super::RouterState>) -> impl IntoResponse {
 pub fn register_routes(
     router: axum::Router<super::RouterState>,
 ) -> axum::Router<super::RouterState> {
-    router.route("/api/v1/stats", axum::routing::get(handle))
+    router.route("/api/v2/stats", axum::routing::get(handle))
 }
 
 #[cfg(test)]

@@ -209,15 +209,19 @@ async fn http_requires_control_mode_and_a_host_hook() {
                 ..Default::default()
             },
             hook,
-        )
-        .unwrap();
+        );
+        if enabled && !authenticated {
+            assert!(state.is_err());
+            continue;
+        }
+        let state = state.unwrap();
         let response = state
             .http_router()
             .clone()
             .oneshot(
                 axum::http::Request::builder()
                     .method("POST")
-                    .uri("/api/v1/engine/pause")
+                    .uri("/api/v2/engine/pause")
                     .body(axum::body::Body::empty())
                     .unwrap(),
             )
@@ -433,7 +437,7 @@ fn authenticated_signal_inspection_and_all_retention_mutations_are_attributed() 
         .unwrap();
     }
     assert!(inspect_signal(&a, &host(ControlScope::Store, None), &s::id(1)).is_err());
-    assert_eq!(inspect_signal(&a, &h, &s::id(1)).unwrap().sequence(), SignalSequence::new(1));
+    assert_eq!(inspect_signal(&a, &h, &s::id(1)).unwrap().sequence, SignalSequence::new(1));
     for add in [true, false] {
         let c = SignalPinCommand {
             expected_sequence: seq(&a),
@@ -787,10 +791,14 @@ fn platform_wait_and_retention_operations_reject_missing_cross_tenant_and_revoke
             "inspect_signal" => QueueAction::InspectSignal,
             _ => QueueAction::RetainSignal,
         };
-        let invoke = |a: &mut s::Authority, h: &HostControlContext| -> Result<(), ControlError> {
+        let invoke = |a: &mut s::Authority,
+                      h: &HostControlContext|
+         -> Result<(), actionqueue_runtime::control::ServiceError> {
             match operation {
-                "inspect_wait" => inspect_wait(a, h, wait).map(|_| ()),
-                "inspect_signal" => inspect_signal(a, h, &s::id(501)).map(|_| ()),
+                "inspect_wait" => inspect_wait(a, h, wait).map(|_| ()).map_err(Into::into),
+                "inspect_signal" => {
+                    inspect_signal(a, h, &s::id(501)).map(|_| ()).map_err(Into::into)
+                }
                 "resolve" => execute_control(
                     a,
                     h,
@@ -817,7 +825,7 @@ fn platform_wait_and_retention_operations_reject_missing_cross_tenant_and_revoke
                             control_context: None,
                         }),
                     };
-                    execute_mutation(a, h, c).map(|_| ())
+                    execute_mutation(a, h, c).map(|_| ()).map_err(Into::into)
                 }
             }
         };
@@ -1020,5 +1028,94 @@ fn platform_mutation_operations_enforce_context_target_and_revocation_before_app
             "{operation}"
         );
         parity(&a);
+    }
+}
+
+#[cfg(feature = "platform")]
+#[tokio::test]
+async fn wait_only_inspection_lists_own_tenant_and_honors_revocation_in_embedded_and_http() {
+    use actionqueue_runtime::inspection::{InspectionError, Inspector, Query};
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+    for granted in [true, false] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = s::open_platform(dir.path());
+        let (h, other) = tenant_pair(&mut a);
+        let mut waits = Vec::new();
+        for (n, owner) in [&h, &other].into_iter().enumerate() {
+            let ControlScope::Tenant(tenant) = owner.scope else { panic!() };
+            let run = running_scoped(&mut a, 401 + n as u64, None, false, Some(tenant));
+            let mut filter = s::filter();
+            filter.tenant_id = Some(tenant);
+            let id = WaitId::new();
+            let wait = WaitSpec::new(
+                id,
+                filter,
+                WaitMatchPolicy::FirstMatch,
+                SignalEligibility::After(SignalSequence::new(0)),
+                None,
+            )
+            .unwrap();
+            establish_wait(&mut a, run, wait);
+            waits.push(id);
+        }
+        permission(&mut a, &h, QueueAction::InspectTask, false);
+        permission(&mut a, &h, QueueAction::InspectWait, granted);
+        let i = Inspector::new(a.projection(), &h, true, Default::default(), false, 40).unwrap();
+        let list = i.list_waits(&Query::default());
+        let own = i.get_wait(waits[0]);
+        let foreign = i.get_wait(waits[1]);
+        if granted {
+            assert_eq!(list.as_ref().unwrap().items.len(), 1);
+            assert_eq!(list.as_ref().unwrap().items[0].wait_id, waits[0]);
+            assert!(own.is_ok());
+            assert_eq!(foreign.unwrap_err(), InspectionError::NotFound);
+            assert_eq!(
+                i.list_waits(&Query { origin_ref: Some("protected".into()), ..Default::default() })
+                    .unwrap_err(),
+                InspectionError::Unauthorized
+            );
+        } else {
+            assert_eq!(list.as_ref().unwrap_err(), &InspectionError::Unauthorized);
+            assert_eq!(own.as_ref().unwrap_err(), &InspectionError::Unauthorized);
+        }
+        let expected_list = list.ok().map(|v| serde_json::to_value(v).unwrap());
+        let expected_own = own.ok().map(|v| serde_json::to_value(v).unwrap());
+        drop(a);
+        let state = actionqueue_daemon::bootstrap::bootstrap_with_authenticator(
+            actionqueue_daemon::config::DaemonConfig {
+                data_dir: dir.path().into(),
+                ..Default::default()
+            },
+            Some(std::sync::Arc::new(move |_, _| Ok(h.clone()))),
+        )
+        .unwrap();
+        for (path, expected, status) in [
+            ("/api/v2/waits".into(), expected_list, if granted { 200 } else { 403 }),
+            (format!("/api/v2/waits/{}", waits[0]), expected_own, if granted { 200 } else { 403 }),
+            (format!("/api/v2/waits/{}", waits[1]), None, if granted { 404 } else { 403 }),
+            ("/api/v2/waits?origin_ref=protected".into(), None, 403),
+        ] {
+            let response = state
+                .http_router()
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri(&path)
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status().as_u16(), status, "{path}");
+            if let Some(expected) = expected {
+                let value: serde_json::Value = serde_json::from_slice(
+                    &response.into_body().collect().await.unwrap().to_bytes(),
+                )
+                .unwrap();
+                assert_eq!(value, expected);
+            }
+        }
+        state.shutdown().await;
     }
 }

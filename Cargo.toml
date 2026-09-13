@@ -391,3 +391,7 @@ required-features = ["actor"]
 [[test]]
 name = "acceptance_control_mutation_attribution"
 path = "tests/acceptance/control_mutation_attribution.rs"
+
+[[test]]
+name = "acceptance_structural_inspection"
+path = "tests/acceptance/structural_inspection.rs"

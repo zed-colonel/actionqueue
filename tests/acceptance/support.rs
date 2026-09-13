@@ -8,7 +8,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-use actionqueue_cli::args::SubmitArgs;
 use actionqueue_core::ids::{AttemptId, RunId, TaskId};
 use actionqueue_core::mutation::{
     AppliedMutation, AttemptStartCommand, DurabilityPolicy, LeaseAcquireCommand,
@@ -58,7 +57,7 @@ pub struct CrashRecoveryCheckpoint {
     pub pre_restart_sequence: u64,
 }
 
-/// Lease payload evidence parsed from `/api/v1/runs/:id`.
+/// Lease payload evidence parsed from `/api/v2/runs/:id`.
 #[derive(Debug, Clone)]
 pub struct LeaseSnapshotEvidence {
     /// Lease owner identity.
@@ -120,64 +119,78 @@ pub fn unique_data_dir(label: &str) -> PathBuf {
     dir
 }
 
-/// Submits a Once task through the CLI submit flow and returns JSON output payload.
+/// Submit through canonical CLI admission, then measure resulting durable runs.
 pub fn submit_once_task_via_cli(task_id: &str, data_dir: &Path) -> Value {
-    let args = SubmitArgs {
-        data_dir: Some(data_dir.to_path_buf()),
-        task_id: task_id.to_string(),
-        payload_path: None,
-        content_type: None,
-        run_policy: "once".to_string(),
-        constraints: None,
-        metadata: None,
-        json: true,
-    };
-
-    let output = actionqueue_cli::cmd::submit::run(args).expect("cli submit should succeed");
-    let value = match output {
-        actionqueue_cli::cmd::CommandOutput::Json(value) => value,
-        actionqueue_cli::cmd::CommandOutput::Text(text) => {
-            panic!("expected JSON output from submit helper, got text: {text}")
-        }
-    };
-
-    assert_eq!(value["command"], "submit");
-    assert_eq!(value["run_policy"], "once");
-    assert_eq!(value["runs_created"], 1);
-
-    value
+    submit_once_task_with_constraints_via_cli(task_id, data_dir, None)
 }
-
-/// Submits a Once task through CLI submit flow with optional raw constraints JSON.
 pub fn submit_once_task_with_constraints_via_cli(
     task_id: &str,
     data_dir: &Path,
-    constraints_json: Option<&str>,
+    constraints: Option<&str>,
 ) -> Value {
-    let args = SubmitArgs {
-        data_dir: Some(data_dir.to_path_buf()),
-        task_id: task_id.to_string(),
-        payload_path: None,
-        content_type: None,
-        run_policy: "once".to_string(),
-        constraints: constraints_json.map(str::to_string),
-        metadata: None,
-        json: true,
+    admit_via_cli(
+        task_id,
+        data_dir,
+        actionqueue_core::task::run_policy::RunPolicy::Once,
+        constraints,
+        "once".into(),
+    )
+}
+fn admit_via_cli(
+    task_id: &str,
+    data_dir: &Path,
+    policy: actionqueue_core::task::run_policy::RunPolicy,
+    constraints: Option<&str>,
+    policy_label: String,
+) -> Value {
+    use actionqueue_core::{
+        admission::EnsureTaskRequest,
+        task::{
+            constraints::TaskConstraints,
+            metadata::TaskMetadata,
+            task_spec::{TaskPayload, TaskSpec},
+        },
     };
-
-    let output = actionqueue_cli::cmd::submit::run(args).expect("cli submit should succeed");
-    let value = match output {
-        actionqueue_cli::cmd::CommandOutput::Json(value) => value,
-        actionqueue_cli::cmd::CommandOutput::Text(text) => {
-            panic!("expected JSON output from submit helper, got text: {text}")
-        }
-    };
-
-    assert_eq!(value["command"], "submit");
-    assert_eq!(value["run_policy"], "once");
-    assert_eq!(value["runs_created"], 1);
-
-    value
+    let constraints: TaskConstraints =
+        constraints.map(|s| serde_json::from_str(s).unwrap()).unwrap_or_default();
+    let task = TaskSpec::new(
+        task_id.parse().unwrap(),
+        TaskPayload::new(vec![]),
+        policy,
+        constraints,
+        TaskMetadata::default(),
+    )
+    .unwrap();
+    let q = EnsureTaskRequest::for_task(task, vec![]).unwrap();
+    let file = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(file.path(), serde_json::to_vec(&q).unwrap()).unwrap();
+    let args = vec![
+        "ensure-task".into(),
+        "--offline".into(),
+        "--data-dir".into(),
+        data_dir.to_str().unwrap().into(),
+        "--file".into(),
+        file.path().to_str().unwrap().into(),
+        "--json".into(),
+    ];
+    let out = std::thread::spawn(move || actionqueue_cli::cmd::api::run(args))
+        .join()
+        .unwrap()
+        .expect("CLI admission");
+    let actionqueue_cli::cmd::CommandOutput::Json(value) = out else { panic!("JSON expected") };
+    assert!(value["Created"].is_object());
+    let session = actionqueue_storage::store::open_store(
+        data_dir,
+        actionqueue_storage::store::OpenOptions::ReadOnly,
+    )
+    .unwrap();
+    let p = actionqueue_storage::recovery::bootstrap::recover_read_only(
+        &session,
+        actionqueue_storage::wal::repair::RepairPolicy::Strict,
+    )
+    .unwrap()
+    .projection;
+    serde_json::json!({"runs_created":p.run_ids_for_task(q.task_spec().id()).len(),"run_policy":policy_label})
 }
 
 /// Submits a Once task through CLI submit flow with explicit `max_attempts` constraints.
@@ -371,18 +384,18 @@ pub fn evaluate_and_apply_running_exit_with_key_gate(
     ConcurrencyGateOutcomeEvidence { run_id, from, to, gate_outcome, transition_applied: true }
 }
 
-/// Returns the `/api/v1/runs` row for a specific run identifier.
+/// Returns the `/api/v2/runs` row for a specific run identifier.
 pub async fn runs_list_entry_by_run_id(router: &mut axum::Router<()>, run_id: RunId) -> Value {
-    let runs = get_json(router, "/api/v1/runs").await;
-    let entries = runs["runs"].as_array().expect("runs list should be an array");
+    let runs = get_json(router, "/api/v2/runs").await;
+    let entries = runs["items"].as_array().expect("runs list should be an array");
     entries
         .iter()
         .find(|entry| entry["run_id"] == run_id.to_string())
         .cloned()
-        .unwrap_or_else(|| panic!("run id {run_id} should exist in /api/v1/runs response"))
+        .unwrap_or_else(|| panic!("run id {run_id} should exist in /api/v2/runs response"))
 }
 
-/// Asserts `/api/v1/runs` exposes exact concurrency-key truth for a run row.
+/// Asserts `/api/v2/runs` exposes exact concurrency-key truth for a run row.
 pub async fn assert_runs_list_concurrency_key(
     router: &mut axum::Router<()>,
     run_id: RunId,
@@ -841,31 +854,13 @@ pub fn submit_repeat_task_via_cli(
     count: u32,
     interval_secs: u64,
 ) -> Value {
-    let run_policy = format!("repeat:{count}:{interval_secs}");
-    let args = SubmitArgs {
-        data_dir: Some(data_dir.to_path_buf()),
-        task_id: task_id.to_string(),
-        payload_path: None,
-        content_type: None,
-        run_policy: run_policy.clone(),
-        constraints: None,
-        metadata: None,
-        json: true,
-    };
-
-    let output = actionqueue_cli::cmd::submit::run(args).expect("cli submit should succeed");
-    let value = match output {
-        actionqueue_cli::cmd::CommandOutput::Json(value) => value,
-        actionqueue_cli::cmd::CommandOutput::Text(text) => {
-            panic!("expected JSON output from submit helper, got text: {text}")
-        }
-    };
-
-    assert_eq!(value["command"], "submit");
-    assert_eq!(value["run_policy"], run_policy);
-    assert_eq!(value["runs_created"], count);
-
-    value
+    admit_via_cli(
+        task_id,
+        data_dir,
+        actionqueue_core::task::run_policy::RunPolicy::repeat(count, interval_secs).unwrap(),
+        None,
+        format!("repeat:{count}:{interval_secs}"),
+    )
 }
 
 /// Bootstraps a daemon HTTP router from storage state and feature settings.
@@ -909,6 +904,19 @@ pub fn bootstrap_http_router(data_dir: &Path, metrics_enabled: bool) -> axum::Ro
         observability,
         actionqueue_daemon::bootstrap::ReadyStatus::ready(),
     );
+    let inner = inner
+        .with_disclosure_policy(actionqueue_runtime::inspection::DisclosurePolicy {
+            allow_references: true,
+        })
+        .with_host_authenticator(std::sync::Arc::new(|_, _| {
+            Ok(actionqueue_core::control::HostControlContext {
+                actor_id: None,
+                scope: actionqueue_core::control::ControlScope::SingleTenant,
+                attribution: actionqueue_core::causal::ControlMutationContext::new(
+                    actionqueue_core::bounded::OpaqueRef::new("test-reader").unwrap(),
+                ),
+            })
+        }));
     actionqueue_daemon::http::build_router(std::sync::Arc::new(inner)).with_state(())
 }
 
@@ -928,11 +936,11 @@ pub async fn get_text(router: &mut axum::Router<()>, path: &str) -> String {
     String::from_utf8(bytes.to_vec()).expect("response should be utf-8")
 }
 
-/// Returns ordered attempt IDs from `/api/v1/runs/:id` as stable strings.
+/// Returns ordered attempt IDs from `/api/v2/runs/:id` as stable strings.
 pub async fn run_get_attempt_ids(router: &mut axum::Router<()>, run_id: RunId) -> Vec<String> {
-    let run_get_path = format!("/api/v1/runs/{run_id}");
+    let run_get_path = format!("/api/v2/runs/{run_id}");
     let run_get = get_json(router, &run_get_path).await;
-    run_get["attempts"]
+    run_get["attempts"]["items"]
         .as_array()
         .expect("attempts should be an array")
         .iter()
@@ -945,16 +953,16 @@ pub async fn run_get_attempt_ids(router: &mut axum::Router<()>, run_id: RunId) -
         .collect()
 }
 
-/// Executes `/api/v1/runs/:id` and returns the parsed response payload.
+/// Executes `/api/v2/runs/:id` and returns the parsed response payload.
 pub async fn run_get(router: &mut axum::Router<()>, run_id: RunId) -> Value {
-    let run_get_path = format!("/api/v1/runs/{run_id}");
+    let run_get_path = format!("/api/v2/runs/{run_id}");
     get_json(router, &run_get_path).await
 }
 
-/// Returns `/api/v1/runs` rows sorted by stable `run_id` string.
+/// Returns `/api/v2/runs` rows sorted by stable `run_id` string.
 pub async fn runs_list_rows_sorted_by_run_id(router: &mut axum::Router<()>) -> Vec<Value> {
-    let runs = get_json(router, "/api/v1/runs").await;
-    let mut rows = runs["runs"].as_array().expect("runs list should be an array").to_vec();
+    let runs = get_json(router, "/api/v2/runs").await;
+    let mut rows = runs["items"].as_array().expect("runs list should be an array").to_vec();
     rows.sort_by(|left, right| {
         left["run_id"]
             .as_str()
@@ -998,12 +1006,12 @@ pub fn capture_checkpoint(data_dir: &Path, run_id: RunId) -> CrashRecoveryCheckp
     }
 }
 
-/// Returns parsed lease evidence from `/api/v1/runs/:id` when a lease is active.
+/// Returns parsed lease evidence from `/api/v2/runs/:id` when a lease is active.
 pub async fn current_lease_from_run_get(
     router: &mut axum::Router<()>,
     run_id: RunId,
 ) -> Option<LeaseSnapshotEvidence> {
-    let run_get_path = format!("/api/v1/runs/{run_id}");
+    let run_get_path = format!("/api/v2/runs/{run_id}?display_references=true");
     let run_get = get_json(router, &run_get_path).await;
     let lease = &run_get["lease"];
     if lease.is_null() {
@@ -1011,7 +1019,7 @@ pub async fn current_lease_from_run_get(
     }
 
     Some(LeaseSnapshotEvidence {
-        owner: lease["owner"]
+        owner: lease["owner"]["value"]
             .as_str()
             .expect("lease owner should be present as string")
             .to_string(),
@@ -1488,7 +1496,7 @@ pub fn next_sequence(latest_sequence: u64) -> u64 {
 // Shared truth structs and assertion helpers for stats and metrics
 // ---------------------------------------------------------------------------
 
-/// Deterministic `/api/v1/stats` truth expectation set.
+/// Deterministic `/api/v2/stats` truth expectation set.
 ///
 /// Used by crash_recovery, concurrency_key, observability, and lease_expiry
 /// acceptance tests to assert aggregate parity from the stats endpoint.
@@ -1526,9 +1534,9 @@ pub struct MetricsTruth {
     pub attempts_timeout: f64,
 }
 
-/// Asserts required aggregate parity truth from `/api/v1/stats`.
+/// Asserts required aggregate parity truth from `/api/v2/stats`.
 pub async fn assert_stats_truth(router: &mut axum::Router<()>, expected: StatsTruth) {
-    let stats = get_json(router, "/api/v1/stats").await;
+    let stats = get_json(router, "/api/v2/stats").await;
     assert_eq!(stats["total_tasks"], expected.total_tasks);
     assert_eq!(stats["total_runs"], expected.total_runs);
     assert_eq!(stats["attempts_total"], expected.attempts_total);

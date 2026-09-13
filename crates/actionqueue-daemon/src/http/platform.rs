@@ -60,8 +60,7 @@ async fn create_tenant(
     ) {
         Ok(_) => (StatusCode::CREATED, Json(serde_json::json!({ "tenant_id": body.tenant_id })))
             .into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": e.to_string() })))
-            .into_response(),
+        Err(e) => super::api::service_response(Err(e)),
     }
 }
 
@@ -103,8 +102,7 @@ async fn assign_role(
         )),
     ) {
         Ok(_) => StatusCode::OK.into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": e.to_string() })))
-            .into_response(),
+        Err(e) => super::api::service_response(Err(e)),
     }
 }
 
@@ -143,8 +141,7 @@ async fn grant_capability(
         )),
     ) {
         Ok(_) => StatusCode::OK.into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": e.to_string() })))
-            .into_response(),
+        Err(e) => super::api::service_response(Err(e)),
     }
 }
 
@@ -198,8 +195,7 @@ async fn append_ledger_entry(
         Ok(_) => {
             (StatusCode::CREATED, Json(serde_json::json!({ "entry_id": entry_id }))).into_response()
         }
-        Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": e.to_string() })))
-            .into_response(),
+        Err(e) => super::api::service_response(Err(e)),
     }
 }
 

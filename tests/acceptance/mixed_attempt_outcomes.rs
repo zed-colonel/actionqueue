@@ -44,7 +44,7 @@ async fn mat_a_mixed_outcomes_preserve_attempt_lineage() {
     // 6) Bootstrap HTTP router and verify final state via HTTP.
     let mut router = support::bootstrap_http_router(&data_dir, true);
 
-    let run_get_path = format!("/api/v1/runs/{}", evidence.run_id);
+    let run_get_path = format!("/api/v2/runs/{}", evidence.run_id);
     let run_get = support::get_json(&mut router, &run_get_path).await;
 
     // 7) Final state is Completed and attempt_count is 3.
@@ -52,7 +52,7 @@ async fn mat_a_mixed_outcomes_preserve_attempt_lineage() {
     assert_eq!(run_get["attempt_count"], 3, "exactly 3 attempts should be recorded");
 
     // 8) Verify there are exactly 3 attempts in the response.
-    let attempts = run_get["attempts"].as_array().expect("attempts should be an array");
+    let attempts = run_get["attempts"]["items"].as_array().expect("attempts should be an array");
     assert_eq!(attempts.len(), 3, "run should have exactly 3 attempt entries");
 
     // 9) Verify each attempt has the correct result type.
