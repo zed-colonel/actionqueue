@@ -83,3 +83,61 @@ that still created a standalone task. Its setup now admits a task and initial ru
 in the same frame, retaining the exact subscription-corruption and no-repair
 assertions. Remaining raw TaskCreate calls are explicit negative tests or unbound
 mutation/reducer test writers, not initialized production stores.
+
+## Final verification outcome
+
+All **51 command gates passed** on implementation commit
+`f27599049369405f076dd64718a9a8d1e122a12e`: all 47 commands returned by
+`scripts/release.py::gates()`, two public-driver build prerequisites, nightly
+formatting, and core without default features. The subsequent documentation-only
+commit records these results and does not alter the tested implementation.
+
+Commands ran from the repository root with Rust 1.89.0, offline dependencies, the
+reused Cargo cache under controller scratch, and loopback access for transport
+tests. Public-driver overrides pointed at binaries built from this checkout.
+
+- `cargo test --locked --workspace [--features PROFILE] -- --test-threads=1`
+- `cargo clippy --locked --all --all-targets [--features PROFILE] -- -D warnings`
+- `cargo build --locked -p actionqueue-cli --no-default-features [--features PROFILE]`
+- `cargo build --locked -p actionqueue-daemon --no-default-features [--features PROFILE]`
+
+Each of those four commands passed for all eight profiles: default, `workflow`,
+`budget`, `workflow,budget`, `actor`, `platform`, `actor,platform`, and
+`workflow,budget,actor,platform`. Also passed:
+
+- `cargo build --locked --workspace`
+- `cargo fmt --all -- --check` and `cargo +nightly fmt --all -- --check`
+- `cargo fmt --manifest-path examples/downstream-handoff/Cargo.toml -- --check`
+- `cargo test --locked -p actionqueue-core --features serde`
+- `cargo test --locked -p actionqueue-storage --features serde`
+- `cargo test --locked -p actionqueue-core --no-default-features`
+- `cargo aq-conformance` and `cargo aq-developmental`
+- `cargo run --locked --example aq_conformance --features workflow,budget,actor,platform -- --full --report SCRATCH/conformance-report.json`
+- `bash conformance/aq-cont-1/cross-feature-persistence.sh`
+- `cargo bench --locked --bench continuation`
+- `cargo doc --locked --workspace --no-deps --features workflow,budget,actor,platform` with `RUSTDOCFLAGS=-D warnings`
+- `python3 -B -m unittest discover -s tests/release`
+- `python3 -B scripts/check-docs.py --api TARGET/doc`
+- `python3 -B scripts/check-consumer.py --report SCRATCH/consumer-resolution.json`
+- `python3 -B scripts/check-packages.py --output SCRATCH/crates`
+
+The actual full report also passed `release.validate_report`: `passed=true`,
+`missing=[]`, package revision 14, and 214 evidence rows. `release.metadata` and
+`release.clean` passed on the tested commit. All eleven real crate archives were
+created, their production builds passed, and their independent consumer passed.
+Benchmarks met their indexed-work bounds at 8, 129 and 257 tasks. Elapsed timings
+remain informational and include full-projection/full-WAL costs. Stable rustfmt
+continues to emit its existing notices about nightly-only formatting options.
+
+Controller run `2ba026d3-466f-44d9-aca8-9e787ab21197` retains per-command logs,
+`results.json`, `report-validation.json`, the full report, performance measurements,
+consumer resolution and crate archives in `scratch/final-evidence-v3/`.
+The results inventory SHA-256 is
+`413e10a9e1396776fc7b87b64de0674679205a12f45b8fa0d5f96c3c9208ad76`.
+
+All fourteen plan obligations above have combined-tree evidence. F-017 through
+F-021 have implementation fixes and passing regressions; none is deferred or
+disagreed. These are implementation dispositions for the next independent review,
+not a replacement for that review. No additional justified behavioral change is
+left for this polish round. Publication, tagging, external downstream certification
+and promotion remain outside this implementation run. No merge or push occurred.
