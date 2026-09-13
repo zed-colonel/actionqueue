@@ -1774,6 +1774,13 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
             _ => MutationAuthorityError::Wait(actionqueue_core::mutation::WaitRejection::TooLarge),
         };
         let frame_bytes = crate::wal::codec::encode(&event).map_err(|_| too_large())?.len();
+        let _fault_scope =
+            crate::store::fault::event_scope(crate::wal::wire_v1::kind(event.event()));
+        crate::store::fault::checkpoint("compound_after_serialization").map_err(|e| {
+            MutationAuthorityError::Append(crate::wal::writer::WalWriterError::IoError(
+                e.to_string(),
+            ))
+        })?;
         let limit = match event.event() {
             WalEventType::AdmissionCommitted { .. } => self
                 .admission_limits

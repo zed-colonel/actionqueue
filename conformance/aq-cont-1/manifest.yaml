@@ -1,281 +1,621 @@
-# AQ-CONT-1 conformance package manifest.
-#
-# This file pins the contract revision that target pull requests implement and
-# inventories the fixtures and acceptance matrices that make the contract executable.
-# It is verified by `tests/conformance/frozen_evidence.rs`. Additive coverage
-# increments `package_revision`; normative change requires a contract amendment.
-schema_version: 1
-package: conformance/aq-cont-1
-package_revision: 8
-status: scaffold
-contract: AQ-CONT-1
-contract_revision: STACK-2026-07-20-CLEAN-1
-planning_profile: AQ-PLAN-2
-developmental_profile_revision: STACK-DEVELOPMENTAL-DIAGNOSTICS-1
-established_by: AQ-01
-baseline_commit: 97c9dc26c19c697dbfb204ed503e82c5f053394f
-baseline_tag: actionqueue/pre-aq-cont-1
-integration_branch: aq-cont-1
-normative_documents:
-- path: docs/contracts/actionqueue-hardening-implementation-ready.md
-  sha256: 1b80afa27e57c0ebe95eb456dcb490357187df23aa9b144970a69df1ba8f4cb0
-- path: docs/contracts/aq-cont-1-developmental-campaign-execution-profile.md
-  sha256: 2a7a4ecc6dd4b30551e7fcb8d72a863333564c7fdba191d899db4a5bf30d3499
-- path: docs/contracts/constitutional-stack-implementation-contracts.yaml
-  sha256: 842d5ae8bfbd4b8c3767f7b589267ab26de1b40a2bf722b0ab1d182768d48922
-- path: docs/contracts/developmental-diagnostics-cross-stack-profile.yaml
-  sha256: 5214651327d1aa0c688eb20a404de5a5f692387b193ee747ac79d3e4e1380f2d
-# Minimum feature set a conforming implementation must enable. Fixed by AQ-13.
-minimum_feature_set: []
-# Fixture record schema. Every fixture added by later PRs must carry these fields.
-fixture_schema:
-  version: 1
-  fields:
-    id: stable identifier, prefix AQ-CF-
-    title: one-line description
-    invariants: list of AQ-H identifiers proven
-    driver: black-box driver name (embedded, daemon, or cli)
-    path: package-relative fixture path
-    sha256: content hash of the fixture file
-    variants: subset of [replay, crash, race]
-    introduced_by: pull request identifier
-# AQ-04 admission vectors and replay/crash/race fixtures.
-fixtures:
-- id: AQ-CF-ADMISSION-001
-  title: Canonical admission bytes and SHA-256
-  invariants: [AQ-H2, AQ-H6, AQ-H7, AQ-H10]
-  driver: embedded
-  path: admission-v1-vector.json
-  sha256: cfc905ca4cb36beafa7d5b0a945afeb002f61acf853913651c0bbc819c293463
-  variants: [replay, crash, race]
-  introduced_by: AQ-04
-- id: AQ-CF-ADMISSION-002
-  title: Opaque stable execution-unit retries and changed meaning
-  invariants: [AQ-H2, AQ-H6, AQ-H7, AQ-H10]
-  driver: embedded
-  path: developmental-admission.json
-  sha256: dad7ff50ad70480b15a69b9cca165d6877c5d07f072bb3907853024648f35632
-  variants: [replay, crash, race]
-  introduced_by: AQ-04
-- id: AQ-CF-ADMISSION-003
-  title: Projection v2 known-answer vector
-  invariants: [AQ-H2, AQ-H6, AQ-H7, AQ-H10]
-  driver: embedded
-  path: projection-v2-vector.json
-  sha256: 7a50d107a210b2052694f1ab68a461179711bb58e45948fea83bbae58956f662
-  variants: [replay, crash, race]
-  introduced_by: AQ-04
-- id: AQ-CF-ADMISSION-004
-  title: Retained AQ-03 projection evidence
-  invariants: [AQ-H2, AQ-H6, AQ-H7, AQ-H10]
-  driver: embedded
-  path: projection-v1-vector.json
-  sha256: ceeb2d5999182cbc807597743fdd0da604322ca4ced6772dc86a1106fa50f73a
-  variants: [replay, crash, race]
-  introduced_by: AQ-04
-- id: AQ-CF-SIGNAL-001
-  title: Canonical signal bytes and SHA-256
-  invariants: [AQ-H3, AQ-H5, AQ-H10]
-  driver: embedded
-  path: signal-v1-vector.json
-  sha256: 3348070620ad4c33fd62824583b2ff49dcabb2dc2c3e634f97df6ee558bb610e
-  variants: [replay, crash, race]
-  introduced_by: AQ-05
-- id: AQ-CF-SIGNAL-002
-  title: Projection v3 known-answer vector
-  invariants: [AQ-H3, AQ-H5, AQ-H10]
-  driver: embedded
-  path: projection-v3-vector.json
-  sha256: bc045ace9a2ae82ccf095287580172f79c2bdde9f189bdf9241c9c57962b6904
-  variants: [replay, crash, race]
-  introduced_by: AQ-05
-- id: AQ-CF-WAIT-001
-  title: Projection v4 known-answer vector
-  invariants: [AQ-H2, AQ-H5, AQ-H13]
-  driver: embedded
-  path: projection-v4-vector.json
-  sha256: 15bb1d8266f6e8f53f24340a904ca3637ebbb43886b040b8370645889e0897eb
-  variants: [replay, crash, race]
-  introduced_by: AQ-06
-- id: AQ-CF-RESUME-001
-  title: Projection v5 known-answer vector
-  invariants: [AQ-H2, AQ-H9, AQ-H13]
-  driver: embedded
-  path: projection-v5-vector.json
-  sha256: 77084e88c8c26c94ede01e331fd0d054d1a73e8f346df4fb0e6cbf8c67ebbc5e
-  variants: [replay, crash, race]
-  introduced_by: AQ-07
-- id: AQ-CF-DISPOSITION-001
-  title: Projection v6 known-answer vector
-  invariants: [AQ-H2, AQ-H9, AQ-H13]
-  driver: embedded
-  path: projection-v6-vector.json
-  sha256: 3f1d07c8ed2d08065ba01c413afc43f6e5e81dc6b16cf82a78f3262408d61574
-  variants: [replay, crash, race]
-  introduced_by: AQ-08
-- id: AQ-CF-CHILD-001
-  title: Canonical admission v2 lifecycle policy
-  invariants: [AQ-H2, AQ-H8, AQ-H10]
-  driver: embedded
-  path: admission-v2-vector.json
-  sha256: 4d8560caa03753a6d991db09944eff806ae505a5c6f254e980c25fbb592f6f86
-  variants: [replay, crash, race]
-  introduced_by: AQ-09
-- id: AQ-CF-CHILD-002
-  title: Parent-run scoped keys and typed child wait evidence
-  invariants: [AQ-H2, AQ-H8, AQ-H10]
-  driver: embedded
-  path: child-coordination-v1-vector.json
-  sha256: 54cf09a0a50a515d448b6cf42d114fe0f38b810bc2e3ab162a507c487f796719
-  variants: [replay, crash, race]
-  introduced_by: AQ-09
-- id: AQ-CF-CHILD-003
-  title: Projection v7 known-answer vector
-  invariants: [AQ-H2, AQ-H8, AQ-H10]
-  driver: embedded
-  path: projection-v7-vector.json
-  sha256: e4e8da534ece9f7fdfdc2519d35f919d84bb61f82e8e74e2c3287dcb0f095c44
-  variants: [replay, crash, race]
-  introduced_by: AQ-09
-
-- id: AQ-CF-REMOTE-001
-  title: Canonical disposition v1 independent known-answer vector
-  invariants: [AQ-H9, AQ-H16]
-  driver: embedded
-  path: disposition-v1-vector.json
-  sha256: 82c3c7b3bdbcc0a125fb4fa023804949f87b553db6c14ef6ee5c76004c9718f6
-  variants: [replay]
-  introduced_by: AQ-11
-- id: AQ-CF-CONTROL-001
-  title: Projection v9 with host attribution and subscription provenance
-  invariants: [AQ-H2, AQ-H15]
-  driver: embedded
-  path: projection-v9-vector.json
-  sha256: bc45b3cdccd1a069fdd293a47c6717bdf0f3b0a92b0f0a0cd63d5b044e25a56a
-  variants: [replay]
-  introduced_by: AQ-11
-
-# Black-box drivers. Intentionally empty at AQ-01; populated by AQ-13.
-drivers: []
-acceptance_matrices:
-- id: developmental-campaign
-  path: aq-cont-1-developmental-campaign-acceptance-matrix.yaml
-  sha256: 4bd682ab29d64394e64f56cd0c5f2b944eddfc137fcd5b6e3e035b50218617c6
-  profile_revision: STACK-DEVELOPMENTAL-DIAGNOSTICS-1
-  case_count: 18
-  case_id_prefix: AQ-DD-
-  required_variants:
-  - replay
-  - crash
-  executed_by: AQ-13
-  normative_protocol_change: false
-boundary_policy:
-  path: contract-boundaries.json
-  enforced_by: tests/conformance/contract_boundaries.rs
-
-# Additive AQ-03 target persistence evidence; continuation gates remain scaffolded.
-target_persistence:
-  introduced_by: AQ-03
-  tests:
-  - tests/conformance/pre_contract_store.rs
-  - tests/conformance/target_persistence.rs
-  - tests/conformance/store_process_lock.rs
-  - tests/acceptance/wal_corruption_recovery.rs
-  cross_build_driver: conformance/aq-cont-1/cross-feature-persistence.sh
-  canonical_vector: conformance/aq-cont-1/projection-v1-vector.json
-  guarantees:
-  - manifest_and_frame_lineage_rejection_without_writes
-  - exclusive_lifetime_ownership_and_process_crash_release
-  - strict_replay_and_partial_final_frame_only_repair
-  - exact_snapshot_hydration_and_projection_equivalence
-  - verified_offline_backup_restore
-  - immutable_store_feature_profiles_and_stable_wire_ids
-
-
-admission:
-  introduced_by: AQ-04
-  wal_kind: 256
-  wal_record_schema: 1
-  wal_frame_version: 1
-  snapshot_schema: 2
-  projection_version: 2
-  tests:
-  - tests/acceptance/dispatch_invariants.rs
-  - tests/acceptance/idempotent_admission.rs
-  - tests/acceptance/admission_conflict.rs
-  - tests/acceptance/compound_admission_crash.rs
-  developmental_cases: [AQ-DD-009, AQ-DD-010]
-
-signals:
-  introduced_by: AQ-05
-  wal_kinds: [288, 289, 290, 291]
-  wal_record_schema: 1
-  wal_frame_version: 1
-  snapshot_schema: 3
-  projection_version: 3
-  tests:
-  - crates/actionqueue-core/tests/signal_canonical.rs
-  - tests/acceptance/signal_admission.rs
-  - tests/acceptance/signal_retention.rs
-  - tests/acceptance/signal_crash.rs
-  guarantees:
-  - tenant_scoped_identity_and_canonical_conflict_detection
-  - independent_global_signal_sequence_and_exclusive_cursors
-  - retained_index_matching_equivalent_to_pure_filter
-  - bounded_explicit_pins_retirement_and_backpressure
-  - immediate_durability_and_uncertainty_fencing
-  - replay_snapshot_and_backup_equivalence
-  deferred:
-  - physical_WAL_truncation
-
-continuations:
-  introduced_by: AQ-06
-  wal_kinds: [304, 305, 306, 307, 320, 321]
-  wal_record_schema: 1
-  task_admission_schema: 2
-  wal_frame_version: 1
-  snapshot_schema: 4
-  projection_version: 4
-  canonical_vector: projection-v4-vector.json
-  tests:
-  - tests/acceptance/waits.rs
-  - tests/acceptance/wait_crash.rs
-  developmental_cases: [AQ-DD-006, AQ-DD-012]
-  deferred:
-  - physical_WAL_truncation
-
-resume_assignment:
-  introduced_by: AQ-07
-  wal_kinds: [19, 20]
-  wal_record_schema: 2
-  historical_schema: 1
-  snapshot_schema: 5
-  projection_version: 5
-  canonical_vector: projection-v5-vector.json
-  tests:
-  - crates/actionqueue-core/tests/data_integrity.rs
-  - tests/acceptance/checkpoint_resume.rs
-  - tests/acceptance/resume_context_crash.rs
-  developmental_cases: [AQ-DD-006, AQ-DD-011, AQ-DD-012]
-
-attempt_disposition:
-  introduced_by: AQ-08
-  wal_kind: 336
-  wal_record_schema: 1
-  snapshot_schema: 6
-  projection_version: 6
-  canonical_vector: projection-v6-vector.json
-  tests:
-  - tests/acceptance/attempt_disposition.rs
-
-transactional_children:
-  introduced_by: AQ-09
-  task_admission_schema: 3
-  wait_disposition_schema: 2
-  canonical_admission_version: 2
-  snapshot_schema: 7
-  projection_version: 7
-  tests:
-  - tests/acceptance/transactional_child_admission.rs
-  - tests/acceptance/parent_wait_child_atomicity.rs
-  developmental_cases: [AQ-DD-005]
+{
+  "schema_version": 1,
+  "package": "conformance/aq-cont-1",
+  "package_revision": 9,
+  "status": "in_progress",
+  "contract": "AQ-CONT-1",
+  "contract_revision": "STACK-2026-07-20-CLEAN-1",
+  "planning_profile": "AQ-PLAN-2",
+  "developmental_profile_revision": "STACK-DEVELOPMENTAL-DIAGNOSTICS-1",
+  "established_by": "AQ-01",
+  "baseline_commit": "97c9dc26c19c697dbfb204ed503e82c5f053394f",
+  "baseline_tag": "actionqueue/pre-aq-cont-1",
+  "integration_branch": "aq-cont-1",
+  "normative_documents": [
+    {
+      "path": "docs/contracts/actionqueue-hardening-implementation-ready.md",
+      "sha256": "1b80afa27e57c0ebe95eb456dcb490357187df23aa9b144970a69df1ba8f4cb0"
+    },
+    {
+      "path": "docs/contracts/aq-cont-1-developmental-campaign-execution-profile.md",
+      "sha256": "2a7a4ecc6dd4b30551e7fcb8d72a863333564c7fdba191d899db4a5bf30d3499"
+    },
+    {
+      "path": "docs/contracts/constitutional-stack-implementation-contracts.yaml",
+      "sha256": "842d5ae8bfbd4b8c3767f7b589267ab26de1b40a2bf722b0ab1d182768d48922"
+    },
+    {
+      "path": "docs/contracts/developmental-diagnostics-cross-stack-profile.yaml",
+      "sha256": "5214651327d1aa0c688eb20a404de5a5f692387b193ee747ac79d3e4e1380f2d"
+    }
+  ],
+  "minimum_feature_set": [],
+  "fixture_schema": {
+    "version": 1,
+    "fields": {
+      "id": "stable identifier, prefix AQ-CF-",
+      "title": "one-line description",
+      "invariants": "list of AQ-H identifiers proven",
+      "driver": "black-box driver name (embedded, daemon, or cli)",
+      "path": "package-relative fixture path",
+      "sha256": "content hash of the fixture file",
+      "variants": "subset of [replay, crash, race]",
+      "introduced_by": "pull request identifier"
+    }
+  },
+  "fixtures": [
+    {
+      "id": "AQ-CF-ADMISSION-001",
+      "title": "Canonical admission bytes and SHA-256",
+      "invariants": [
+        "AQ-H2",
+        "AQ-H6",
+        "AQ-H7",
+        "AQ-H10"
+      ],
+      "driver": "embedded",
+      "path": "admission-v1-vector.json",
+      "sha256": "cfc905ca4cb36beafa7d5b0a945afeb002f61acf853913651c0bbc819c293463",
+      "variants": [
+        "replay",
+        "crash",
+        "race"
+      ],
+      "introduced_by": "AQ-04"
+    },
+    {
+      "id": "AQ-CF-ADMISSION-002",
+      "title": "Opaque stable execution-unit retries and changed meaning",
+      "invariants": [
+        "AQ-H2",
+        "AQ-H6",
+        "AQ-H7",
+        "AQ-H10"
+      ],
+      "driver": "embedded",
+      "path": "developmental-admission.json",
+      "sha256": "dad7ff50ad70480b15a69b9cca165d6877c5d07f072bb3907853024648f35632",
+      "variants": [
+        "replay",
+        "crash",
+        "race"
+      ],
+      "introduced_by": "AQ-04"
+    },
+    {
+      "id": "AQ-CF-ADMISSION-003",
+      "title": "Projection v2 known-answer vector",
+      "invariants": [
+        "AQ-H2",
+        "AQ-H6",
+        "AQ-H7",
+        "AQ-H10"
+      ],
+      "driver": "embedded",
+      "path": "projection-v2-vector.json",
+      "sha256": "7a50d107a210b2052694f1ab68a461179711bb58e45948fea83bbae58956f662",
+      "variants": [
+        "replay",
+        "crash",
+        "race"
+      ],
+      "introduced_by": "AQ-04"
+    },
+    {
+      "id": "AQ-CF-ADMISSION-004",
+      "title": "Retained AQ-03 projection evidence",
+      "invariants": [
+        "AQ-H2",
+        "AQ-H6",
+        "AQ-H7",
+        "AQ-H10"
+      ],
+      "driver": "embedded",
+      "path": "projection-v1-vector.json",
+      "sha256": "ceeb2d5999182cbc807597743fdd0da604322ca4ced6772dc86a1106fa50f73a",
+      "variants": [
+        "replay",
+        "crash",
+        "race"
+      ],
+      "introduced_by": "AQ-04"
+    },
+    {
+      "id": "AQ-CF-SIGNAL-001",
+      "title": "Canonical signal bytes and SHA-256",
+      "invariants": [
+        "AQ-H3",
+        "AQ-H5",
+        "AQ-H10"
+      ],
+      "driver": "embedded",
+      "path": "signal-v1-vector.json",
+      "sha256": "3348070620ad4c33fd62824583b2ff49dcabb2dc2c3e634f97df6ee558bb610e",
+      "variants": [
+        "replay",
+        "crash",
+        "race"
+      ],
+      "introduced_by": "AQ-05"
+    },
+    {
+      "id": "AQ-CF-SIGNAL-002",
+      "title": "Projection v3 known-answer vector",
+      "invariants": [
+        "AQ-H3",
+        "AQ-H5",
+        "AQ-H10"
+      ],
+      "driver": "embedded",
+      "path": "projection-v3-vector.json",
+      "sha256": "bc045ace9a2ae82ccf095287580172f79c2bdde9f189bdf9241c9c57962b6904",
+      "variants": [
+        "replay",
+        "crash",
+        "race"
+      ],
+      "introduced_by": "AQ-05"
+    },
+    {
+      "id": "AQ-CF-WAIT-001",
+      "title": "Projection v4 known-answer vector",
+      "invariants": [
+        "AQ-H2",
+        "AQ-H5",
+        "AQ-H13"
+      ],
+      "driver": "embedded",
+      "path": "projection-v4-vector.json",
+      "sha256": "15bb1d8266f6e8f53f24340a904ca3637ebbb43886b040b8370645889e0897eb",
+      "variants": [
+        "replay",
+        "crash",
+        "race"
+      ],
+      "introduced_by": "AQ-06"
+    },
+    {
+      "id": "AQ-CF-RESUME-001",
+      "title": "Projection v5 known-answer vector",
+      "invariants": [
+        "AQ-H2",
+        "AQ-H9",
+        "AQ-H13"
+      ],
+      "driver": "embedded",
+      "path": "projection-v5-vector.json",
+      "sha256": "77084e88c8c26c94ede01e331fd0d054d1a73e8f346df4fb0e6cbf8c67ebbc5e",
+      "variants": [
+        "replay",
+        "crash",
+        "race"
+      ],
+      "introduced_by": "AQ-07"
+    },
+    {
+      "id": "AQ-CF-DISPOSITION-001",
+      "title": "Projection v6 known-answer vector",
+      "invariants": [
+        "AQ-H2",
+        "AQ-H9",
+        "AQ-H13"
+      ],
+      "driver": "embedded",
+      "path": "projection-v6-vector.json",
+      "sha256": "3f1d07c8ed2d08065ba01c413afc43f6e5e81dc6b16cf82a78f3262408d61574",
+      "variants": [
+        "replay",
+        "crash",
+        "race"
+      ],
+      "introduced_by": "AQ-08"
+    },
+    {
+      "id": "AQ-CF-CHILD-001",
+      "title": "Canonical admission v2 lifecycle policy",
+      "invariants": [
+        "AQ-H2",
+        "AQ-H8",
+        "AQ-H10"
+      ],
+      "driver": "embedded",
+      "path": "admission-v2-vector.json",
+      "sha256": "4d8560caa03753a6d991db09944eff806ae505a5c6f254e980c25fbb592f6f86",
+      "variants": [
+        "replay",
+        "crash",
+        "race"
+      ],
+      "introduced_by": "AQ-09"
+    },
+    {
+      "id": "AQ-CF-CHILD-002",
+      "title": "Parent-run scoped keys and typed child wait evidence",
+      "invariants": [
+        "AQ-H2",
+        "AQ-H8",
+        "AQ-H10"
+      ],
+      "driver": "embedded",
+      "path": "child-coordination-v1-vector.json",
+      "sha256": "54cf09a0a50a515d448b6cf42d114fe0f38b810bc2e3ab162a507c487f796719",
+      "variants": [
+        "replay",
+        "crash",
+        "race"
+      ],
+      "introduced_by": "AQ-09"
+    },
+    {
+      "id": "AQ-CF-CHILD-003",
+      "title": "Projection v7 known-answer vector",
+      "invariants": [
+        "AQ-H2",
+        "AQ-H8",
+        "AQ-H10"
+      ],
+      "driver": "embedded",
+      "path": "projection-v7-vector.json",
+      "sha256": "e4e8da534ece9f7fdfdc2519d35f919d84bb61f82e8e74e2c3287dcb0f095c44",
+      "variants": [
+        "replay",
+        "crash",
+        "race"
+      ],
+      "introduced_by": "AQ-09"
+    },
+    {
+      "id": "AQ-CF-REMOTE-001",
+      "title": "Canonical disposition v1 independent known-answer vector",
+      "invariants": [
+        "AQ-H9",
+        "AQ-H16"
+      ],
+      "driver": "embedded",
+      "path": "disposition-v1-vector.json",
+      "sha256": "82c3c7b3bdbcc0a125fb4fa023804949f87b553db6c14ef6ee5c76004c9718f6",
+      "variants": [
+        "replay"
+      ],
+      "introduced_by": "AQ-11"
+    },
+    {
+      "id": "AQ-CF-CONTROL-001",
+      "title": "Projection v9 with host attribution and subscription provenance",
+      "invariants": [
+        "AQ-H2",
+        "AQ-H15"
+      ],
+      "driver": "embedded",
+      "path": "projection-v9-vector.json",
+      "sha256": "bc45b3cdccd1a069fdd293a47c6717bdf0f3b0a92b0f0a0cd63d5b044e25a56a",
+      "variants": [
+        "replay"
+      ],
+      "introduced_by": "AQ-11"
+    },
+    {
+      "id": "AQ-CF-SCENARIO-EARLY",
+      "title": "early",
+      "driver": "embedded",
+      "path": "fixtures/early.json",
+      "sha256": "47d3d80b8da958ca2cf864da36325647147defe2c30c138d8c84a4f5cc239338",
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ],
+      "introduced_by": "AQ-13",
+      "invariants": [
+        "AQ-H2",
+        "AQ-H3",
+        "AQ-H5"
+      ]
+    },
+    {
+      "id": "AQ-CF-SCENARIO-LATE",
+      "title": "late",
+      "driver": "embedded",
+      "path": "fixtures/late.json",
+      "sha256": "968f493f14d20bb98a5b58fc6642996cb1a21972a07b7ac0fb083939cd1abe78",
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ],
+      "introduced_by": "AQ-13",
+      "invariants": [
+        "AQ-H2",
+        "AQ-H3",
+        "AQ-H5"
+      ]
+    },
+    {
+      "id": "AQ-CF-SCENARIO-DEADLINE",
+      "title": "deadline",
+      "driver": "embedded",
+      "path": "fixtures/deadline.json",
+      "sha256": "f8e9ed3558a98100c188ac6e1f1c4a2cc783bd7a738cfef2209f14e2a571a30e",
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ],
+      "introduced_by": "AQ-13",
+      "invariants": [
+        "AQ-H2",
+        "AQ-H3",
+        "AQ-H5"
+      ]
+    },
+    {
+      "id": "AQ-CF-SCENARIO-CANCEL",
+      "title": "cancel",
+      "driver": "embedded",
+      "path": "fixtures/cancel.json",
+      "sha256": "335e0319976a53b6891e9a4cdae154c3d0452b913d6756da0f2b39001847fcd5",
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ],
+      "introduced_by": "AQ-13",
+      "invariants": [
+        "AQ-H2",
+        "AQ-H3",
+        "AQ-H5"
+      ]
+    },
+    {
+      "id": "AQ-CF-SCENARIO-ADMISSION",
+      "title": "admission",
+      "driver": "embedded",
+      "path": "fixtures/admission.json",
+      "sha256": "5da010e55680fbf84c1988a2d9aebccc4fe6266805fca0ad714f2e3af1d00c9b",
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ],
+      "introduced_by": "AQ-13",
+      "invariants": [
+        "AQ-H2",
+        "AQ-H3",
+        "AQ-H5"
+      ]
+    },
+    {
+      "id": "AQ-CF-SCENARIO-FANOUT",
+      "title": "fanout",
+      "driver": "embedded",
+      "path": "fixtures/fanout.json",
+      "sha256": "6028f4c3f49e8946fd6b8c7dedd7f7a58c23beecb6e933ed2e6a729194e6965c",
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ],
+      "introduced_by": "AQ-13",
+      "invariants": [
+        "AQ-H2",
+        "AQ-H3",
+        "AQ-H5"
+      ]
+    }
+  ],
+  "drivers": [
+    "embedded"
+  ],
+  "acceptance_matrices": [
+    {
+      "id": "developmental-campaign",
+      "path": "aq-cont-1-developmental-campaign-acceptance-matrix.yaml",
+      "sha256": "4bd682ab29d64394e64f56cd0c5f2b944eddfc137fcd5b6e3e035b50218617c6",
+      "profile_revision": "STACK-DEVELOPMENTAL-DIAGNOSTICS-1",
+      "case_count": 18,
+      "case_id_prefix": "AQ-DD-",
+      "required_variants": [
+        "replay",
+        "crash"
+      ],
+      "executed_by": "AQ-13",
+      "normative_protocol_change": false
+    }
+  ],
+  "boundary_policy": {
+    "path": "contract-boundaries.json",
+    "enforced_by": "tests/conformance/contract_boundaries.rs"
+  },
+  "target_persistence": {
+    "introduced_by": "AQ-03",
+    "tests": [
+      "tests/conformance/pre_contract_store.rs",
+      "tests/conformance/target_persistence.rs",
+      "tests/conformance/store_process_lock.rs",
+      "tests/acceptance/wal_corruption_recovery.rs"
+    ],
+    "cross_build_driver": "conformance/aq-cont-1/cross-feature-persistence.sh",
+    "canonical_vector": "conformance/aq-cont-1/projection-v1-vector.json",
+    "guarantees": [
+      "manifest_and_frame_lineage_rejection_without_writes",
+      "exclusive_lifetime_ownership_and_process_crash_release",
+      "strict_replay_and_partial_final_frame_only_repair",
+      "exact_snapshot_hydration_and_projection_equivalence",
+      "verified_offline_backup_restore",
+      "immutable_store_feature_profiles_and_stable_wire_ids"
+    ]
+  },
+  "admission": {
+    "introduced_by": "AQ-04",
+    "wal_kind": 256,
+    "wal_record_schema": 1,
+    "wal_frame_version": 1,
+    "snapshot_schema": 2,
+    "projection_version": 2,
+    "tests": [
+      "tests/acceptance/dispatch_invariants.rs",
+      "tests/acceptance/idempotent_admission.rs",
+      "tests/acceptance/admission_conflict.rs",
+      "tests/acceptance/compound_admission_crash.rs"
+    ],
+    "developmental_cases": [
+      "AQ-DD-009",
+      "AQ-DD-010"
+    ]
+  },
+  "signals": {
+    "introduced_by": "AQ-05",
+    "wal_kinds": [
+      288,
+      289,
+      290,
+      291
+    ],
+    "wal_record_schema": 1,
+    "wal_frame_version": 1,
+    "snapshot_schema": 3,
+    "projection_version": 3,
+    "tests": [
+      "crates/actionqueue-core/tests/signal_canonical.rs",
+      "tests/acceptance/signal_admission.rs",
+      "tests/acceptance/signal_retention.rs",
+      "tests/acceptance/signal_crash.rs"
+    ],
+    "guarantees": [
+      "tenant_scoped_identity_and_canonical_conflict_detection",
+      "independent_global_signal_sequence_and_exclusive_cursors",
+      "retained_index_matching_equivalent_to_pure_filter",
+      "bounded_explicit_pins_retirement_and_backpressure",
+      "immediate_durability_and_uncertainty_fencing",
+      "replay_snapshot_and_backup_equivalence"
+    ],
+    "deferred": [
+      "physical_WAL_truncation"
+    ]
+  },
+  "continuations": {
+    "introduced_by": "AQ-06",
+    "wal_kinds": [
+      304,
+      305,
+      306,
+      307,
+      320,
+      321
+    ],
+    "wal_record_schema": 1,
+    "task_admission_schema": 2,
+    "wal_frame_version": 1,
+    "snapshot_schema": 4,
+    "projection_version": 4,
+    "canonical_vector": "projection-v4-vector.json",
+    "tests": [
+      "tests/acceptance/waits.rs",
+      "tests/acceptance/wait_crash.rs"
+    ],
+    "developmental_cases": [
+      "AQ-DD-006",
+      "AQ-DD-012"
+    ],
+    "deferred": [
+      "physical_WAL_truncation"
+    ]
+  },
+  "resume_assignment": {
+    "introduced_by": "AQ-07",
+    "wal_kinds": [
+      19,
+      20
+    ],
+    "wal_record_schema": 2,
+    "historical_schema": 1,
+    "snapshot_schema": 5,
+    "projection_version": 5,
+    "canonical_vector": "projection-v5-vector.json",
+    "tests": [
+      "crates/actionqueue-core/tests/data_integrity.rs",
+      "tests/acceptance/checkpoint_resume.rs",
+      "tests/acceptance/resume_context_crash.rs"
+    ],
+    "developmental_cases": [
+      "AQ-DD-006",
+      "AQ-DD-011",
+      "AQ-DD-012"
+    ]
+  },
+  "attempt_disposition": {
+    "introduced_by": "AQ-08",
+    "wal_kind": 336,
+    "wal_record_schema": 1,
+    "snapshot_schema": 6,
+    "projection_version": 6,
+    "canonical_vector": "projection-v6-vector.json",
+    "tests": [
+      "tests/acceptance/attempt_disposition.rs"
+    ]
+  },
+  "transactional_children": {
+    "introduced_by": "AQ-09",
+    "task_admission_schema": 3,
+    "wait_disposition_schema": 2,
+    "canonical_admission_version": 2,
+    "snapshot_schema": 7,
+    "projection_version": 7,
+    "tests": [
+      "tests/acceptance/transactional_child_admission.rs",
+      "tests/acceptance/parent_wait_child_atomicity.rs"
+    ],
+    "developmental_cases": [
+      "AQ-DD-005"
+    ]
+  },
+  "assets": [
+    {
+      "path": "coverage.json",
+      "sha256": "b4e239bf01e66138fc15db54557defb25b302afb6ebb8b38ae881c4af4f09b81"
+    },
+    {
+      "path": "expected-projections/admission.json",
+      "sha256": "464959c6b607a229173f93a606479362d9639f46f7bb41ad733e0f5c2df12e3d"
+    },
+    {
+      "path": "expected-projections/cancel.json",
+      "sha256": "327c3573f08fa6c30c99f830275aed6716ef171eb90652811561d057d7e8417c"
+    },
+    {
+      "path": "expected-projections/deadline.json",
+      "sha256": "0f91ec9257fd3f92c85372b14a101a517d3007b3d148bb9b455af0adfc81109d"
+    },
+    {
+      "path": "expected-projections/early.json",
+      "sha256": "21402e39aad96cc7c1e1f7fc05367040b7f2d69a82bfea26fe1abc0190d15e6f"
+    },
+    {
+      "path": "expected-projections/fanout.json",
+      "sha256": "09f6a3e53bdacd79db4af0765097533d0af05524bcb64df3a7952ca05eade000"
+    },
+    {
+      "path": "expected-projections/late.json",
+      "sha256": "5ed62ab3a46399723ccab122cbfb799b2ffb630dba3bcf557786df0f70c20805"
+    },
+    {
+      "path": "crash-matrix/continuation.json",
+      "sha256": "ec0eb22db4e1165268b6c456da599ad61cac2f274eeefe623cab2a93a240d250"
+    },
+    {
+      "path": "performance/workloads.json",
+      "sha256": "3718b4b0f23f3e743b8d7963a3cb4b06708b29bfa0349b7ba1ea38b1f2ac42e3"
+    },
+    {
+      "path": "developmental/workloads.json",
+      "sha256": "8a1859ec70a6a85245934c6771bd704f3b59ad96b1bd8ad67efd217bf3a78be7"
+    }
+  ],
+  "coverage": "coverage.json",
+  "full_feature_set": [
+    "workflow",
+    "budget",
+    "actor",
+    "platform"
+  ]
+}

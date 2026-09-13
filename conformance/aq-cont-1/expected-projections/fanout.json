@@ -1,0 +1,107 @@
+[
+  {
+    "runs": {
+      "1": {
+        "state": "running",
+        "attempts": 1,
+        "failures": 0
+      }
+    },
+    "tasks": 1,
+    "waits": 0,
+    "active_waits": 0,
+    "resolved_waits": 0
+  },
+  {
+    "runs": {
+      "1": {
+        "state": "awaiting",
+        "attempts": 1,
+        "failures": 0
+      },
+      "2": {
+        "state": "scheduled",
+        "attempts": 0,
+        "failures": 0
+      },
+      "3": {
+        "state": "scheduled",
+        "attempts": 0,
+        "failures": 0
+      }
+    },
+    "tasks": 3,
+    "waits": 1,
+    "active_waits": 1,
+    "resolved_waits": 0
+  },
+  {
+    "runs": {
+      "1": {
+        "state": "awaiting",
+        "attempts": 1,
+        "failures": 0
+      },
+      "2": {
+        "state": "scheduled",
+        "attempts": 0,
+        "failures": 0
+      },
+      "3": {
+        "state": "scheduled",
+        "attempts": 0,
+        "failures": 0
+      }
+    },
+    "tasks": 3,
+    "waits": 1,
+    "active_waits": 1,
+    "resolved_waits": 0
+  },
+  {
+    "runs": {
+      "1": {
+        "state": "awaiting",
+        "attempts": 1,
+        "failures": 0
+      },
+      "2": {
+        "state": "scheduled",
+        "attempts": 0,
+        "failures": 0
+      },
+      "3": {
+        "state": "scheduled",
+        "attempts": 0,
+        "failures": 0
+      }
+    },
+    "tasks": 3,
+    "waits": 1,
+    "active_waits": 1,
+    "resolved_waits": 0
+  },
+  {
+    "runs": {
+      "1": {
+        "state": "awaiting",
+        "attempts": 1,
+        "failures": 0
+      },
+      "2": {
+        "state": "scheduled",
+        "attempts": 0,
+        "failures": 0
+      },
+      "3": {
+        "state": "scheduled",
+        "attempts": 0,
+        "failures": 0
+      }
+    },
+    "tasks": 3,
+    "waits": 1,
+    "active_waits": 1,
+    "resolved_waits": 0
+  }
+]

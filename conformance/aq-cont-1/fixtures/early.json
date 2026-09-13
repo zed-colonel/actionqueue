@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "id": "AQ-CF-SCENARIO-EARLY",
+  "required_features": [],
+  "steps": [
+    {
+      "op": "start",
+      "task": 1
+    },
+    {
+      "op": "signal",
+      "signal": 1
+    },
+    {
+      "op": "wait",
+      "task": 1,
+      "deadline": null
+    },
+    {
+      "op": "reconcile",
+      "at": 30
+    },
+    {
+      "op": "signal",
+      "signal": 1
+    },
+    {
+      "op": "snapshot"
+    },
+    {
+      "op": "finish",
+      "task": 1,
+      "success": true
+    }
+  ],
+  "expected_observations": "expected-projections/early.json",
+  "recovery_cuts": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+  ]
+}

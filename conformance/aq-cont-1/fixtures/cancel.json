@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "id": "AQ-CF-SCENARIO-CANCEL",
+  "required_features": [],
+  "steps": [
+    {
+      "op": "start",
+      "task": 1
+    },
+    {
+      "op": "wait",
+      "task": 1,
+      "deadline": null
+    },
+    {
+      "op": "cancel",
+      "task": 1
+    },
+    {
+      "op": "signal",
+      "signal": 1
+    },
+    {
+      "op": "reconcile",
+      "at": 30
+    }
+  ],
+  "expected_observations": "expected-projections/cancel.json",
+  "recovery_cuts": [
+    1,
+    2,
+    3,
+    4,
+    5
+  ]
+}

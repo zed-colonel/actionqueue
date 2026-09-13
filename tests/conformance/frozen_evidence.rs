@@ -5,6 +5,8 @@
 //! matrix, and the ADR queue are present and match their pinned hashes. Prints the
 //! pinned revisions so CI logs state exactly which contract revision the tree implements.
 
+#[path = "harness/package.rs"]
+mod package;
 mod support;
 
 use std::collections::BTreeSet;
@@ -140,40 +142,7 @@ fn manifest_pins_contract_baseline_and_normative_documents() {
         Some("actionqueue/pre-aq-cont-1")
     );
 
-    let mut section = String::new();
-    let mut last_path: Option<String> = None;
-    let mut checked = 0;
-    for raw in manifest.lines() {
-        if !raw.starts_with([' ', '-', '#']) && raw.ends_with(':') {
-            section = raw.trim_end_matches(':').to_string();
-        }
-        if section != "normative_documents"
-            && section != "acceptance_matrices"
-            && section != "fixtures"
-        {
-            continue;
-        }
-        let line = raw.trim();
-        if let Some(rest) = line.strip_prefix("- path:") {
-            last_path = Some(rest.trim().to_string());
-        } else if let Some(rest) = line.strip_prefix("path:") {
-            last_path = Some(rest.trim().to_string());
-        } else if let Some(rest) = line.strip_prefix("sha256:") {
-            let path = last_path.clone().expect("sha256 follows a path");
-            let full = if path.starts_with("docs/") {
-                repo_root().join(&path)
-            } else {
-                repo_root().join("conformance/aq-cont-1").join(&path)
-            };
-            assert_eq!(sha256_file(&full), rest.trim(), "manifest hash mismatch for {path}");
-            checked += 1;
-        }
-    }
-    assert_eq!(
-        checked, 19,
-        "manifest should pin four normative documents, one matrix, four admission fixtures, and \
-         two signal fixtures, one wait fixture, one resume fixture, one disposition fixture, three child coordination fixtures, and two remote/control fixtures"
-    );
+    package::validate(&repo_root().join("conformance/aq-cont-1")).unwrap();
 }
 
 #[test]

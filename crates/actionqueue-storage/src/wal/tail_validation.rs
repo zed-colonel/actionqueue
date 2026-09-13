@@ -66,9 +66,11 @@ fn reason(e: DecodeError) -> WalCorruptionReasonCode {
         DecodeError::InvalidMagic => R::InvalidMagic,
         DecodeError::HeaderIntegrity => R::HeaderIntegrity,
         DecodeError::UnsupportedRecordKind(_) => R::UnsupportedRecordKind,
-        DecodeError::UnsupportedRecordSchema { kind, found } => {
-            R::UnsupportedRecordSchema { kind, supported: if kind == 352 { 2 } else { super::wire_v1::schema(kind) }, found }
-        }
+        DecodeError::UnsupportedRecordSchema { kind, found } => R::UnsupportedRecordSchema {
+            kind,
+            supported: if kind == 352 { 2 } else { super::wire_v1::schema(kind) },
+            found,
+        },
         DecodeError::StoreIdentityMismatch => R::StoreIdentityMismatch,
         DecodeError::SequenceViolation => R::SequenceViolation,
         DecodeError::InvalidLength(_) => R::OversizedPayload,
@@ -107,10 +109,15 @@ pub(crate) fn read_record<R: Read + Seek>(
                 }
                 if count >= 14 {
                     let kind = u16::from_le_bytes(bytes[12..14].try_into().unwrap());
-                    if kind != 352 { super::wire_v1::check_kind(kind).map_err(|e| fail(reason(e)))?; }
+                    if kind != 352 {
+                        super::wire_v1::check_kind(kind).map_err(|e| fail(reason(e)))?;
+                    }
                     if count >= 16 {
-                        codec::check_record_schema(kind, u16::from_le_bytes(bytes[14..16].try_into().unwrap()))
-                            .map_err(|e| fail(reason(e)))?;
+                        codec::check_record_schema(
+                            kind,
+                            u16::from_le_bytes(bytes[14..16].try_into().unwrap()),
+                        )
+                        .map_err(|e| fail(reason(e)))?;
                     }
                 }
                 if count >= 32 && store_id.is_some_and(|id| bytes[16..32] != *id.as_bytes()) {
@@ -209,16 +216,22 @@ mod schema_tail_tests {
     use super::*;
     #[test]
     fn partial_current_headers_are_repairable_but_future_schemas_are_not() {
-        for (kind, schema) in [(256u16,3u16),(304,2),(305,2),(336,2),(352,2),(19,2)] {
+        for (kind, schema) in [(256u16, 3u16), (304, 2), (305, 2), (336, 2), (352, 2), (19, 2)] {
             let mut bytes = Vec::from(codec::MAGIC);
             bytes.extend(codec::VERSION.to_le_bytes());
             bytes.extend(kind.to_le_bytes());
             bytes.extend(schema.to_le_bytes());
-            assert_eq!(validate_tail_strict(&bytes).unwrap_err().reason,WalCorruptionReasonCode::IncompleteHeader);
+            assert_eq!(
+                validate_tail_strict(&bytes).unwrap_err().reason,
+                WalCorruptionReasonCode::IncompleteHeader
+            );
             bytes[14..16].copy_from_slice(&99u16.to_le_bytes());
-            let error=validate_tail_strict(&bytes).unwrap_err();
+            let error = validate_tail_strict(&bytes).unwrap_err();
             assert!(!error.repairable());
-            assert!(matches!(error.reason,WalCorruptionReasonCode::UnsupportedRecordSchema { found:99,.. }));
+            assert!(matches!(
+                error.reason,
+                WalCorruptionReasonCode::UnsupportedRecordSchema { found: 99, .. }
+            ));
         }
     }
 }

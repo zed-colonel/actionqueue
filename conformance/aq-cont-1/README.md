@@ -34,3 +34,53 @@ They cover `AQ-DD-005` with ordinary bounded child batches, checkpoints, DAG gat
 and opaque attribution. `cross-feature-persistence.sh` builds isolated base and
 expanded binaries, checks identical child wire bytes, and refuses unsupported
 store profiles without mutation. Scratch data honors `TMPDIR`.
+
+## AQ-13 revision 9 implementation status
+
+Revision 9 is **in progress, not release conformance**. `manifest.yaml` now uses
+JSON syntax (a YAML subset) so the runner and tests share structured validation.
+All previous fixture bytes and historical projection versions are preserved.
+`coverage.json` inventories all twenty invariants and eighteen developmental cases;
+unmapped entries are explicit release blockers, not passing evidence.
+
+New executable evidence:
+
+- Six immutable scenarios (early/late signal, deadline, cancellation, lost-response
+  admission, and required fan-out), reviewed expected structural observations,
+  WAL-only and snapshot/tail equality, and process restart at every declared cut.
+- Fourteen selected storage cuts covering all eleven planned commit/publication
+  boundaries, two torn-frame cuts, and accepted resume assignment. Snapshot
+  publication retains complete WAL history, as required by the accepted ADRs.
+- An independent one-to-three-task model with 192 short race sequences and sixteen
+  seeded longer sequences. Failures save a seed and deletion-minimized command
+  sequence under `TMPDIR`.
+- Dedicated persisted workloads for AQ-DD-001, 013, 014, 015, 016, and 018, each
+  checked live, after snapshot recovery, and after acknowledged process termination.
+  These are focused structural assertions; they do not complete the full eighteen
+  case exit gate or replace transport/authorization/metric matrix requirements.
+- A public-runtime two-store reference workload exercising uncertain external work,
+  lost admission responses, changed-meaning conflicts, early/duplicate callbacks,
+  restart of both sides, and application-owned output rejection.
+- Fixed-size performance inputs with ordinary admission and handler completion,
+  unmatched signals/waits, matching fan-out, snapshot bytes/time, recovery, and
+  compound encoding bytes/time. Timing is informational; current bounds cover
+  complete match drainage and hard frame limits, not a general complexity proof.
+
+```sh
+cargo aq-conformance
+cargo aq-developmental
+cargo run --example aq_conformance -- --report "$TMPDIR/aq-report.json"
+cargo bench --bench continuation
+bash conformance/aq-cont-1/cross-feature-persistence.sh
+```
+
+`AQ_PERFORMANCE_REPORT` selects the benchmark JSON output; the default is under
+`TMPDIR`. Tests never regenerate expected results or fixture hashes. Additive
+fixtures require a new package revision and reviewed SHA-256 inventory updates.
+
+Remaining AQ-13 work: executable daemon/CLI/external-adapter runner drivers;
+full per-case developmental attribution, permission, scheduling, metrics, and
+sensitive-content variants; parent/child and physical retry lineage in the pure
+model; per-fixture backup/corruption variants; stronger algorithmic cost bounds;
+and promotion to executable status only after complete coverage evidence passes.
+See [driver contract and reporting](drivers/README.md).

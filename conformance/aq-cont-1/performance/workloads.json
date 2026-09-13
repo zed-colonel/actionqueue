@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "sizes": [
+    8,
+    32,
+    64
+  ],
+  "clock": "explicit logical timestamps",
+  "bounds": {
+    "match_batch": 128,
+    "active_waits_after_matching": 0,
+    "remaining_match_candidates_after_completion": 0
+  },
+  "timing_policy": "informational"
+}

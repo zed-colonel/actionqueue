@@ -54,7 +54,9 @@ pub(crate) struct Header {
     pub crc: u32,
 }
 pub(crate) fn check_record_schema(kind: u16, schema: u16) -> Result<(), DecodeError> {
-    if kind != 352 { wire_v1::check_kind(kind)?; }
+    if kind != 352 {
+        wire_v1::check_kind(kind)?;
+    }
     if schema != 1
         && schema != wire_v1::schema(kind)
         && !(schema == 2 && matches!(kind, 16 | 256 | 352))

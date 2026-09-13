@@ -3,7 +3,7 @@
 # workspace test-feature unification. Scratch and build output honor TMPDIR and CARGO_TARGET_DIR.
 set -euo pipefail
 probe_dir=$(mktemp -d "${TMPDIR:-/tmp}/cross-feature.XXXXXX")
-export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$probe_dir/target}"
+export CARGO_TARGET_DIR="$(cargo metadata --offline --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
 trap 'rm -rf "$probe_dir"' EXIT
 cargo build --offline -p actionqueue-storage --example lineage_probe --no-default-features --features serde
 cp "$CARGO_TARGET_DIR/debug/examples/lineage_probe" "$probe_dir/base"

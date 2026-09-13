@@ -22,6 +22,7 @@ dependencies = [
  "proc-macro2",
  "proptest",
  "quote",
+ "serde",
  "serde_json",
  "sha2",
  "syn",
