@@ -243,9 +243,12 @@ fn check(case: u32, d: &mut Embedded) {
         7 => {
             use actionqueue_runtime::views::SchedulingField;
             let differences = i.trace(&Query::default()).unwrap().different_fields;
-            for field in
-                [SchedulingField::Priority, SchedulingField::Constraints, SchedulingField::Budget]
-            {
+            for field in [
+                SchedulingField::Priority,
+                SchedulingField::Constraints,
+                SchedulingField::Budget,
+                SchedulingField::WaitDeadline,
+            ] {
                 assert!(
                     differences
                         .iter()
@@ -264,6 +267,10 @@ fn check(case: u32, d: &mut Embedded) {
                 )
             );
             assert_eq!(task(6).budgets[0].limit, 99);
+            for n in [7, 8] {
+                let wait = p.waits().active(d.runs[&n]).unwrap();
+                assert_eq!(i.get_wait(wait.spec.wait_id()).unwrap().deadline.unwrap().at, n * 100);
+            }
         }
         8 => {
             assert_eq!(p.task_count(), 3);
