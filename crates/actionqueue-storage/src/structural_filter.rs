@@ -136,9 +136,18 @@ mod recovery_tests {
                 Default::default(),
             )
             .unwrap();
+            let request =
+                actionqueue_core::admission::EnsureTaskRequest::for_task(spec, vec![]).unwrap();
+            let digest = request.digest().unwrap();
+            let plan = actionqueue_core::admission::AdmissionPlan::new(
+                request,
+                vec![actionqueue_core::run::RunInstance::new_scheduled(task, 1, 1).unwrap()],
+                digest,
+            )
+            .unwrap();
             let _ = a
                 .submit_command(
-                    MutationCommand::TaskCreate(TaskCreateCommand::new(2, spec, 1)),
+                    MutationCommand::AdmissionCommit(AdmissionCommitCommand::new(2, plan, None, 1)),
                     DurabilityPolicy::Immediate,
                 )
                 .unwrap();

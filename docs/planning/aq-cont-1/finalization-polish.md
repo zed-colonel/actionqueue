@@ -77,3 +77,9 @@ are now explicitly gated. Public drivers use the supported `AQ_CLI`/`AQ_ADAPTER`
 overrides to locate binaries in the reused scratch Cargo target, after building
 those binaries from this checkout. This avoids the harness defaults under the
 worktree-local `target/` directory. Failed exploratory logs remain in scratch.
+
+The combined run subsequently reached a budget-gated malformed-filter fixture
+that still created a standalone task. Its setup now admits a task and initial run
+in the same frame, retaining the exact subscription-corruption and no-repair
+assertions. Remaining raw TaskCreate calls are explicit negative tests or unbound
+mutation/reducer test writers, not initialized production stores.
