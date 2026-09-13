@@ -78,7 +78,7 @@ def run(output):
             data = tomllib.loads(manifest.read_text())
             folder = work / 'unpacked' / f'{name}-{data["package"]["version"]}'
             subprocess.run(['cargo', 'build', '--offline'], cwd=folder, env=env, check=True)
-            features = [f for f in ['workflow', 'budget', 'actor', 'platform'] if f in data.get('features', {})]
+            features = [f for f in ['serde', 'workflow', 'budget', 'actor', 'platform'] if f in data.get('features', {})]
             if features:
                 subprocess.run(['cargo', 'build', '--offline', '--no-default-features', '--features', ','.join(features)], cwd=folder, env=env, check=True)
         (output / 'resolution.json').write_text(json.dumps(resolved, indent=2) + '\n')

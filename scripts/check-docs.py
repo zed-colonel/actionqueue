@@ -28,7 +28,7 @@ def check(api=None):
         api = Path(api)
         policy = json.loads((ROOT / 'conformance/aq-cont-1/contract-boundaries.json').read_text())
         symbols = [x['symbol'] for x in policy['legacy_symbols']['symbols'] if x['stage'] == 'forbid']
-        pages = [p for p in api.rglob('*.html') if p.relative_to(api).parts[0].startswith('actionqueue_')]
+        pages = [p for p in api.rglob('*.html') if (p.relative_to(api).parts[0].startswith('actionqueue_') or p.relative_to(api).parts[0] == 'actionqueue')]
         if not pages:
             errors.append('missing generated ActionQueue API pages')
         for path in pages:

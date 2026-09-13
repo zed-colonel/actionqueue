@@ -64,7 +64,7 @@ class ReportTests(unittest.TestCase):
             release.validate_report(report)
 
     def test_wrong_revisions_and_failed_assertions(self):
-        for key, value in [('profile', 'subset'), ('passed', False), ('package_revision', 12), ('contract_revision', 'wrong'), ('developmental_profile_revision', 'wrong'), ('missing', ['blocker'])]:
+        for key, value in [('schema_version', 99), ('profile', 'subset'), ('passed', False), ('package_revision', 12), ('contract_revision', 'wrong'), ('developmental_profile_revision', 'wrong'), ('missing', ['blocker'])]:
             report = full_report()
             report[key] = value
             with self.subTest(key=key), self.assertRaises(ValueError):
@@ -148,6 +148,14 @@ class ManifestTests(unittest.TestCase):
             release.write(path, manifest)
             with self.assertRaisesRegex(ValueError, 'tampered publication'):
                 release.verify(path)
+
+    def test_prepare_refuses_imported_or_stale_output(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(release, 'clean'):
+            output = Path(tmp)
+            (output / 'conformance-report.json').write_text('{}')
+            with self.assertRaisesRegex(ValueError, 'output must be empty'):
+                release.prepare('0.2.0', 'a' * 40, output)
+            self.assertFalse((output / 'release-manifest.json').exists())
 
     def test_unsafe_artifact_paths(self):
         with tempfile.TemporaryDirectory() as tmp:

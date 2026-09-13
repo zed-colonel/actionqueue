@@ -216,4 +216,6 @@ jobs:
       - run: python3 -B scripts/check-consumer.py
       - run: python3 -B scripts/check-packages.py --output "${{ runner.temp }}/crates"
       - run: cargo doc --locked --workspace --no-deps --features workflow,budget,actor,platform
+        env:
+          RUSTDOCFLAGS: -D warnings
       - run: python3 -B scripts/check-docs.py --api target/doc

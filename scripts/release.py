@@ -109,6 +109,7 @@ def metadata():
 def validate_report(report):
     m = read(ROOT / PACKAGE / 'manifest.yaml')
     coverage = read(ROOT / PACKAGE / m['coverage'])
+    require(report.get('schema_version') == 1, 'unsupported conformance report schema')
     require(report.get('passed') is True and report.get('profile') == 'full' and report.get('missing') == [], 'unsuccessful or partial conformance report')
     for key in ['package_revision', 'contract_revision', 'developmental_profile_revision']:
         require(report.get(key) == m[key], f'wrong report {key}')
@@ -202,6 +203,8 @@ def verify(path):
             require(sha(output / name) == sha(ROOT / name), 'published contract/conformance bytes differ')
     require(sha(output / 'release-notes.md') == sha(ROOT / 'docs/releases/0.2.0.md'), 'wrong release notes')
     require(sha(output / 'release-manifest.schema.json') == sha(ROOT / 'docs/releases/release-manifest.schema.json'), 'wrong release schema')
+    heads = subprocess.check_output(['git', 'bundle', 'list-heads', str(output / 'source.bundle')]).decode().splitlines()
+    require(heads == [manifest['source_commit'] + ' HEAD'], 'source bundle has wrong commit')
     validate_evidence(manifest, output)
     sums = ''.join(f'{sha(output / name)}  {name}\n' for name in sorted(paths | {'release-manifest.json'}))
     require((output / 'SHA256SUMS').read_text() == sums, 'inconsistent checksums')
