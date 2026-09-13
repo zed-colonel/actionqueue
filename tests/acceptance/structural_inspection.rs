@@ -390,7 +390,17 @@ async fn broad_wait_metrics_measure_live_candidates_without_replay_or_scrape_eve
             checkpoint: None,
             timestamp: 20,
         };
-        establish(&mut a, c).unwrap();
+        if run == broad {
+            actionqueue_runtime::disposition::commit(
+                &mut a,
+                c.expected,
+                actionqueue_core::disposition::AttemptDisposition::awaiting(c.wait, None),
+                20,
+            )
+            .unwrap();
+        } else {
+            establish(&mut a, c).unwrap();
+        }
     }
     assert_eq!(a.telemetry().snapshot().broad_waits_established, 1);
     assert_eq!(a.projection().waits().broad_active_count(), 1);

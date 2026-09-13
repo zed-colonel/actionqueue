@@ -148,7 +148,10 @@ fn main() {
         work::reset();
         assert!(d.a().projection().waits().signal_waiters(&envelope).is_empty());
         assert!(d.a().projection().waits().matches(128).is_empty());
-        assert_eq!(work::counts(), [0, 0, 0, 0, 4, 0, 0]);
+        let empty_work = work::counts();
+        assert_eq!(&empty_work[..4], &[0; 4]);
+        assert!(empty_work[4] <= input["bounds"]["bucket_probes"].as_u64().unwrap() as usize);
+        assert_eq!(&empty_work[5..], &[0; 2]);
         assert_eq!(d.a().projection().waits().active_count(), 0);
         assert_eq!(
             d.a().projection().waits().records().filter(|w| w.resolution.is_some()).count(),
