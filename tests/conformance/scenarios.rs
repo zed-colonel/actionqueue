@@ -41,6 +41,7 @@ fn immutable_scenarios_ordinary_wal_snapshot_tail_and_process_restart() {
                 driver.verify();
                 driver.apply_step(&Step::Snapshot);
                 driver.verify();
+                driver.verify_backup_corruption();
             }
         }
         drop(driver);
@@ -59,6 +60,7 @@ fn immutable_scenarios_ordinary_wal_snapshot_tail_and_process_restart() {
                     .unwrap();
             assert_eq!(driver.evidence(), evidence, "{} crash cut {cut}", fixture.id);
             driver.verify();
+            driver.verify_backup_corruption();
             for (index, step) in scenario.steps.iter().enumerate().skip(*cut) {
                 assert_eq!(driver.execute(step), expected[index]);
             }

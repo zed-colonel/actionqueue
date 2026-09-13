@@ -112,5 +112,33 @@ fn eleven_commit_boundaries_and_torn_frames_recover_only_complete_facts() {
         let before = d.evidence();
         d.execute(&Step::Reconcile { at: 100 });
         assert_eq!(before, d.evidence());
+        if ["signal", "wake"].contains(&cut.outcome.as_str()) {
+            d.finish_signal_wake(1);
+        } else if cut.outcome == "wait" {
+            assert_eq!(d.a().projection().get_run_state(&d.runs[&1]), Some(&RunState::Awaiting));
+            assert!(d.a().projection().pending_resume(d.runs[&1]).is_none());
+            d.execute(&Step::Signal { signal: 1 });
+            d.finish_signal_wake(1);
+        }
+        if cut.outcome == "accepted" {
+            let r = d.runs[&1];
+            let p = d.a().projection();
+            let h = p.get_attempt_history(&r).unwrap();
+            let original = p.attempt_resume(r, h[1].attempt_id()).unwrap();
+            assert_eq!(original.checkpoint.as_ref().unwrap().created_by_attempt, h[0].attempt_id());
+            d.expire(2000);
+            let p = d.a().projection();
+            let run = p.get_run_instance(&r).unwrap();
+            assert_eq!(run.state(), RunState::Failed);
+            assert_eq!(run.failure_attempt_count(), 1);
+            assert_eq!(run.attempt_count(), 2);
+            assert!(p.get_lease_metadata(&r).is_none());
+            assert!(p.pending_resume(r).is_none());
+            assert_eq!(
+                p.attempt_resume(r, p.get_attempt_history(&r).unwrap()[1].attempt_id()),
+                Some(original)
+            );
+        }
+        d.verify_backup_corruption();
     }
 }

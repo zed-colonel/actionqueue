@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "id": "AQ-CF-PROOF-WAIT",
+  "target": "acceptance_waits",
+  "case_ids": [
+    "AQ-H3",
+    "AQ-H4",
+    "AQ-H5"
+  ],
+  "minimum_passed": 1,
+  "evidence_kind": "complete_test_binary",
+  "assertions": "All tests in this named binary must pass; replay/crash assertions execute inside their test controllers."
+}

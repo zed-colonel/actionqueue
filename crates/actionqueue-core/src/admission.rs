@@ -210,6 +210,7 @@ impl EnsureTaskRequest {
 }
 #[cfg(feature = "serde")]
 #[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct EnsureTaskRequestWire {
     /// Admission key.
     admission_key: AdmissionKey,

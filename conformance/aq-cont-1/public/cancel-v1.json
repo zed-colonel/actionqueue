@@ -1,0 +1,23 @@
+{
+  "id": "AQ-CF-PUBLIC-CANCEL",
+  "mode": "cancel",
+  "required_features": [
+    "workflow",
+    "budget",
+    "actor",
+    "platform"
+  ],
+  "variants": [
+    "ordinary",
+    "replay",
+    "crash"
+  ],
+  "expected": {
+    "tasks": 1,
+    "parent_state": "canceled",
+    "parent_attempts": 1,
+    "parent_failures": 0,
+    "active_waits": 0,
+    "wake": null
+  }
+}

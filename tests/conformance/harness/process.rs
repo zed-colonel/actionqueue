@@ -67,3 +67,48 @@ pub fn halt(marker: &str) -> ! {
         std::thread::park();
     }
 }
+
+/// Bounded output capture for adapter/CLI processes, including malformed or hung peers.
+pub fn output(mut command: Command, input: Option<&[u8]>) -> std::process::Output {
+    use std::io::{Read, Write};
+    command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = Process(command.spawn().expect("spawn transport peer"));
+    if let Some(input) = input {
+        child.0.stdin.take().unwrap().write_all(input).unwrap();
+    } else {
+        child.0.stdin.take();
+    }
+    let stdout = child.0.stdout.take().unwrap();
+    let stderr = child.0.stderr.take().unwrap();
+    let out = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stdout.take(4 * 1024 * 1024).read_to_end(&mut bytes).unwrap();
+        bytes
+    });
+    let err = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stderr.take(1024 * 1024).read_to_end(&mut bytes).unwrap();
+        bytes
+    });
+    let deadline = std::time::Instant::now() + Duration::from_secs(35);
+    let status = loop {
+        if let Some(status) = child.0.try_wait().unwrap() {
+            break Some(status);
+        }
+        if std::time::Instant::now() >= deadline {
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    if status.is_none() {
+        let _ = child.0.kill();
+        let _ = child.0.wait();
+    }
+    let stdout = out.join().unwrap();
+    let stderr = err.join().unwrap();
+    std::process::Output {
+        status: status.expect("transport peer exceeded 35 seconds"),
+        stdout,
+        stderr,
+    }
+}

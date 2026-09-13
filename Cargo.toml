@@ -61,6 +61,8 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 axum = "0.7"
 tower = { version = "0.4", features = ["util"] }
 http-body-util = "0.1"
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
 serde_json = "1.0"
 serde = { version = "1", features = ["derive"] }
 tempfile = "3.10"
@@ -430,4 +432,14 @@ required-features = ["workflow", "budget", "actor", "platform"]
 [[test]]
 name = "conformance_developmental"
 path = "tests/conformance/developmental.rs"
+required-features = ["workflow", "budget", "actor", "platform"]
+
+[[test]]
+name = "conformance_public"
+path = "tests/conformance/public.rs"
+required-features = ["workflow", "budget", "actor", "platform"]
+
+[[example]]
+name = "aq_adapter"
+path = "conformance/aq-cont-1/drivers/adapter.rs"
 required-features = ["workflow", "budget", "actor", "platform"]

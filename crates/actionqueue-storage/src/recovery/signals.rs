@@ -4,6 +4,7 @@ use std::ops::Bound::{Excluded, Unbounded};
 
 use actionqueue_core::{bounded::OpaqueRef, continuation::*, ids::*, limits::*};
 
+use super::work::{visit, Visit};
 use crate::mutation::signal::*;
 type Identity = (Option<TenantId>, SignalId);
 type MatchKey =
@@ -106,6 +107,7 @@ impl SignalIndex {
             .into_iter()
             .flat_map(|set| set.range((Excluded(after), Unbounded)))
             .take(limit.min(MAX_SIGNAL_BATCH))
+            .inspect(|_| visit(Visit::SignalCandidate))
             .map(|s| &self.records[s])
             .collect()
     }
@@ -150,7 +152,7 @@ impl SignalIndex {
         self.stats
     }
     pub fn records(&self) -> impl Iterator<Item = &SignalRecord> {
-        self.records.values()
+        self.records.values().inspect(|_| visit(Visit::SignalHistory))
     }
     pub(crate) fn account_control(
         &mut self,

@@ -28,7 +28,7 @@ fn timed<T>(f: impl FnOnce() -> T) -> (T, u128) {
 fn main() {
     package::validate(&package::root()).unwrap();
     let input: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(package::root().join("performance/workloads.json")).unwrap(),
+        &std::fs::read(package::root().join("performance/workloads-v2.json")).unwrap(),
     )
     .unwrap();
     let mut results = Vec::new();
@@ -90,9 +90,65 @@ fn main() {
             }
         });
         assert_eq!(d.a().projection().waits().active_count(), n as usize);
+        use actionqueue_storage::recovery::work;
+        // Query-only bounds exclude the documented full-projection preparation and
+        // WAL verification costs. A scan of unrelated history fails these counters.
+        let mut missing = engine::reference_filter();
+        missing.correlation_id = Some(actionqueue_core::ids::CorrelationId::new("absent").unwrap());
+        work::reset();
+        assert!(unmatched
+            .a()
+            .projection()
+            .signals()
+            .retained_candidates(&missing, actionqueue_core::ids::SignalSequence::new(0), 128)
+            .is_empty());
+        assert_eq!(work::counts(), [0; 7]);
+        work::reset();
+        assert_eq!(
+            unmatched
+                .a()
+                .projection()
+                .signals()
+                .retained_candidates(
+                    &engine::reference_filter(),
+                    actionqueue_core::ids::SignalSequence::new(0),
+                    1
+                )
+                .len(),
+            1
+        );
+        assert_eq!(work::counts(), [0, 0, 0, 1, 0, 0, 0]);
+        let envelope = engine::reference_signal(1).envelope(&Default::default(), 25);
+        work::reset();
+        assert_eq!(d.a().projection().waits().signal_waiters(&envelope).len(), n as usize);
+        let bucket_work = work::counts();
+        assert_eq!(&bucket_work[..4], &[0; 4]);
+        assert!(bucket_work[4] <= input["bounds"]["bucket_probes"].as_u64().unwrap() as usize);
+        assert!(
+            bucket_work[5]
+                <= n as usize
+                    * input["bounds"]["waiter_visits_per_active_wait"].as_u64().unwrap() as usize
+        );
         let (_, fanout_ns) = timed(|| {
-            d.apply_step(&Step::Signal { signal: 1 });
+            d.raw_signal(1, 25);
+            let batch = input["bounds"]["match_batch"].as_u64().unwrap() as usize;
+            let mut remaining = n as usize;
+            while remaining > 0 {
+                work::reset();
+                assert_eq!(d.a().projection().waits().matches(batch).len(), remaining.min(batch));
+                assert_eq!(work::counts(), [0, 0, remaining.min(batch), 0, 0, 0, 0]);
+                work::reset();
+                d.reconcile_batch(25, batch);
+                // Preparation and publication each remove one indexed candidate.
+                assert_eq!(work::counts()[6], 2 * remaining.min(batch));
+                remaining = remaining.saturating_sub(batch);
+                assert_eq!(d.a().projection().waits().active_count(), remaining);
+            }
         });
+        work::reset();
+        assert!(d.a().projection().waits().signal_waiters(&envelope).is_empty());
+        assert!(d.a().projection().waits().matches(128).is_empty());
+        assert_eq!(work::counts(), [0, 0, 0, 0, 4, 0, 0]);
         assert_eq!(d.a().projection().waits().active_count(), 0);
         assert_eq!(
             d.a().projection().waits().records().filter(|w| w.resolution.is_some()).count(),
@@ -147,10 +203,10 @@ fn main() {
         drop(d);
         let (recovered, recovery_ns) = timed(|| Embedded::reopen(&path));
         assert_eq!(recovered.a().projection().projection_digest().unwrap(), digest);
-        results.push(json!({"tasks":n,"compound_children":batch,"ordinary_admission_ns":admission_ns,"ordinary_ready_selection_handler_dispatch_completion_ns":plain_completion_ns,"unmatched_signal_admission_ns":unmatched_signal_ns,"compound_serialization_ns":serialization_ns,"compound_serialization_bytes":compound_bytes,"admission_ready_and_accepted_start_ns":start_ns,"unmatched_wait_ns":wait_ns,"matching_fanout_ns":fanout_ns,"resumed_completion_ns":completion_ns,"snapshot_build_ns":snapshot_ns,"snapshot_bytes":snapshot_bytes,"wal_bytes":wal_bytes,"snapshot_tail_recovery_ns":recovery_ns}));
+        results.push(json!({"indexed_bucket_work":bucket_work,"tasks":n,"compound_children":batch,"ordinary_admission_ns":admission_ns,"ordinary_ready_selection_handler_dispatch_completion_ns":plain_completion_ns,"unmatched_signal_admission_ns":unmatched_signal_ns,"compound_serialization_ns":serialization_ns,"compound_serialization_bytes":compound_bytes,"admission_ready_and_accepted_start_ns":start_ns,"unmatched_wait_ns":wait_ns,"matching_fanout_ns":fanout_ns,"resumed_completion_ns":completion_ns,"snapshot_build_ns":snapshot_ns,"snapshot_bytes":snapshot_bytes,"wal_bytes":wal_bytes,"snapshot_tail_recovery_ns":recovery_ns}));
     }
     let rustc = std::process::Command::new("rustc").arg("-Vv").output().unwrap();
-    let report = json!({"schema_version":1,"workload_hash":package::hash(&std::fs::read(package::root().join("performance/workloads.json")).unwrap()),"rustc":String::from_utf8_lossy(&rustc.stdout),"os":std::env::consts::OS,"arch":std::env::consts::ARCH,"debug_assertions":cfg!(debug_assertions),"parallelism":std::thread::available_parallelism().map(|n|n.get()).unwrap_or(1),"features":{"workflow":cfg!(feature="workflow"),"budget":cfg!(feature="budget"),"actor":cfg!(feature="actor"),"platform":cfg!(feature="platform")},"measurements":results,"limitations":["Full projection preparation and full retained-WAL verification are included.","Elapsed-time measurements are informational; no machine-independent throughput gate."]});
+    let report = json!({"schema_version":1,"workload_hash":package::hash(&std::fs::read(package::root().join("performance/workloads-v2.json")).unwrap()),"rustc":String::from_utf8_lossy(&rustc.stdout),"os":std::env::consts::OS,"arch":std::env::consts::ARCH,"debug_assertions":cfg!(debug_assertions),"parallelism":std::thread::available_parallelism().map(|n|n.get()).unwrap_or(1),"features":{"workflow":cfg!(feature="workflow"),"budget":cfg!(feature="budget"),"actor":cfg!(feature="actor"),"platform":cfg!(feature="platform")},"measurements":results,"limitations":["Full projection preparation and full retained-WAL verification are included.","Elapsed-time measurements are informational; no machine-independent throughput gate."]});
     let path = std::env::var_os("AQ_PERFORMANCE_REPORT")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::env::temp_dir().join("aq-cont-1-performance.json"));

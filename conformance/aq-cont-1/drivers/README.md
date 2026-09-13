@@ -1,52 +1,75 @@
-# AQ-CONT-1 package runner
+# Executable conformance drivers
 
-Run from the repository root:
+Run the full gate from the repository root:
 
 ```sh
-cargo run --example aq_conformance -- --report "$TMPDIR/aq-conformance.json"
-cargo run --example aq_conformance -- --fixture AQ-CF-SCENARIO-EARLY
+cargo run --example aq_conformance --features workflow,budget,actor,platform -- \
+  --full --report "$TMPDIR/full.json"
 ```
 
-The embedded mutation-service driver exercises public admission, continuation,
-control, and inspection APIs. The separate reference-adapter test uses
-`BootstrappedEngine` and normal handlers in two independently owned stores.
-Generated run/attempt IDs remain exact within every store and its recovered
-copies. Fixture observations use task-number aliases only for cross-store run
-lookup; recovery also compares the exact projection digest and inspection
-history, controls, and causal edges without ID normalization.
+`--driver daemon`, `--driver cli`, and `--driver adapter` run the corresponding
+public-driver subset. They require the expanded feature profile. The default
+base-feature embedded subset runs the immutable storage scenarios. Only `--full`
+requires all invariant, developmental, and public-driver evidence. A subset cannot
+be promoted by changing its report label: missing evidence and input hashes are
+validated before success. Exit 1 indicates failed assertions; exit 2 indicates
+missing capabilities, coverage or evidence.
 
-Exit status 0 means the selected subset passed. Reports identify package revision,
-fixture SHA-256, compiled feature profile, variant, and crash cut. A caught assertion
-failure is exit 1. Missing capabilities, fixtures, or full-profile coverage is exit
-2. A base-profile report is never full conformance. `--full` currently fails closed
-because revision 10 is still in progress; it also requires
-`workflow,budget,actor,platform` and forbids fixture selection.
+| Driver | Execution and control surface |
+|---|---|
+| embedded | `BootstrappedEngine`, normal handlers and `run_until_idle` |
+| daemon | Real loopback TCP, production router/authentication, public remote actor claims/results |
+| cli | Actual `actionqueue` executable for admission, signal, cancellation and inspection; remote actor HTTP for execution |
+| adapter | External process implementing the protocol below; defaults to the built `aq_adapter` example |
 
-Each crash worker owns its own store and acknowledges the exact cut. The controller
-has a 30-second deadline and kills and reaps the child on success or failure. Worker
-stderr is drained and retained in failure diagnostics. Stores and comparison files
-are temporary and honor `TMPDIR`. Process kills do not model power loss. Torn-header
-and torn-payload injection are separate deterministic storage tests.
+The daemon host supplies a deterministic clock and synthetic authentication
+configuration. The router has its normal authentication, scope checks, typed
+errors, pagination and redaction. Test lifecycle control never becomes a production
+endpoint. The published public fixtures specify the expected terminal state,
+attempt accounting, wake kind, and active-wait count. Exact identities and lineage
+are additionally compared across recovery without normalizing the projection.
 
-The daemon, real CLI, and external adapter are not yet selectable runner drivers.
-Existing daemon and CLI acceptance tests remain supplementary evidence. No
-unavailable downstream repository is certified by this package.
+## External adapter protocol, version 1
 
-## Downstream adapter protocol (reserved, version 1)
+`--adapter /absolute/path/to/executable` selects a downstream adapter executable
+for the adapter driver. `AQ_ADAPTER` has the same effect for the test binary.
+`AQ_CLI` can select a prebuilt CLI. Neither value is evaluated by a shell.
 
-The intended adapter boundary is newline-delimited JSON over a controller-owned
-child's stdin/stdout, one request and response per line:
+For ordinary calls the adapter reads one JSON request from stdin, writes one JSON
+response to stdout, and exits. Diagnostics go to stderr. It must also accept
+`--request-file PATH` for the acknowledged process-crash controller.
 
 ```json
-{"schema_version":1,"request_id":1,"operation":"capabilities"}
-{"schema_version":1,"request_id":1,"capabilities":["admission","signals","waits","inspection"],"features":[]}
-{"schema_version":1,"request_id":2,"operation":"execute","step":{"op":"signal","signal":1}}
-{"schema_version":1,"request_id":2,"observation":{}}
-{"schema_version":1,"request_id":3,"operation":"inspect","query":{}}
-{"schema_version":1,"request_id":3,"observation":{}}
+{"schema_version":1,"store":"/controller/scratch/store","mode":"late","phase":"prepare","hold":false}
 ```
 
-Identity credentials are out-of-band driver configuration, never scenario metadata.
-Lifecycle, restart, clock control, and storage fault injection belong to the harness
-controller, never daemon endpoints. This reserved protocol is documentation only;
-revision 10 does not yet implement or certify an external protocol consumer.
+Modes are `early`, `late`, `deadline`, `cancel`, `admission`, and `fanout`.
+`prepare` runs the published workload to its durable preparation cut. `finish`
+opens that same store, supplies the remaining callback/control/time advancement,
+and checks the reviewed final result. The exact scripts are in the public driver
+source; the immutable mode/expectation definitions are in `public/*-v1.json`.
+The reference implementation is `adapter.rs` and `tests/conformance/harness/public.rs`.
+
+The response is `{ "digest": <projection digest>, "inspection": <structural views> }`,
+using the public inspection DTOs. The controller independently opens the target
+store to verify the response, WAL replay, snapshot/tail, backup and corruption
+behavior. This protocol tests an adapter to the ActionQueue store contract, not an
+arbitrary queue backend with a different persistence format.
+
+When `hold` is true, the adapter writes that response to the store path with the
+extension replaced by `evidence.json`, flushes the exact line
+`AQ_PUBLIC_PREPARED` to stdout, and remains alive with its store writer owned.
+The controller kills and reaps it at that acknowledgment. Completion and crash
+handshakes have bounded timeouts and output limits. The fixture driver then reopens
+and finishes the store, comparing its exact projection and lineage.
+
+## Evidence
+
+Reports include package and contract revisions, fixture ID and SHA-256, compiled
+feature profile, driver, variant, crash point, and assertion result. Full runs use
+a new `aq-full-evidence-*` directory under `TMPDIR`. Named proof binaries must exit
+successfully and report a positive passing-test count. Developmental reports are
+required individually for all 18 cases; public reports are required for all
+six workloads, four drivers, and three variants. Previous-run reports are never
+accepted. `suite` evidence identifies a complete named test binary and preserves
+its log; ordinary/replay/crash labels are reserved for executed workload variants.

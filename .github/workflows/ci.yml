@@ -146,10 +146,10 @@ jobs:
         env:
           TMPDIR: ${{ runner.temp }}/aq-conformance
         run: cargo aq-developmental
-      - name: Standalone embedded subset report
+      - name: Complete conformance and public-driver report
         env:
           TMPDIR: ${{ runner.temp }}/aq-conformance
-        run: cargo run --example aq_conformance --features workflow,budget,actor,platform -- --report "${{ runner.temp }}/aq-conformance/report.json"
+        run: cargo run --example aq_conformance --features workflow,budget,actor,platform -- --full --report "${{ runner.temp }}/aq-conformance/report.json"
       - name: Independent cross-feature persistence
         env:
           TMPDIR: ${{ runner.temp }}/aq-conformance
@@ -162,6 +162,7 @@ jobs:
             ${{ runner.temp }}/aq-conformance/report.json
             ${{ runner.temp }}/aq-conformance/aq-model-failure-*.json
             ${{ runner.temp }}/aq-conformance/aq-dd-*-report.json
+            ${{ runner.temp }}/aq-conformance/aq-full-evidence-*/
 
   production-feature-builds:
     name: Production feature boundaries (${{ matrix.features || 'base' }})

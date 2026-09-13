@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "package": "conformance/aq-cont-1",
-  "package_revision": 10,
-  "status": "in_progress",
+  "package_revision": 12,
+  "status": "executable",
   "contract": "AQ-CONT-1",
   "contract_revision": "STACK-2026-07-20-CLEAN-1",
   "planning_profile": "AQ-PLAN-2",
@@ -303,7 +303,9 @@
       "variants": [
         "ordinary",
         "replay",
-        "crash"
+        "crash",
+        "backup",
+        "corruption"
       ],
       "introduced_by": "AQ-13",
       "invariants": [
@@ -321,7 +323,9 @@
       "variants": [
         "ordinary",
         "replay",
-        "crash"
+        "crash",
+        "backup",
+        "corruption"
       ],
       "introduced_by": "AQ-13",
       "invariants": [
@@ -339,7 +343,9 @@
       "variants": [
         "ordinary",
         "replay",
-        "crash"
+        "crash",
+        "backup",
+        "corruption"
       ],
       "introduced_by": "AQ-13",
       "invariants": [
@@ -357,7 +363,9 @@
       "variants": [
         "ordinary",
         "replay",
-        "crash"
+        "crash",
+        "backup",
+        "corruption"
       ],
       "introduced_by": "AQ-13",
       "invariants": [
@@ -375,7 +383,9 @@
       "variants": [
         "ordinary",
         "replay",
-        "crash"
+        "crash",
+        "backup",
+        "corruption"
       ],
       "introduced_by": "AQ-13",
       "invariants": [
@@ -393,7 +403,9 @@
       "variants": [
         "ordinary",
         "replay",
-        "crash"
+        "crash",
+        "backup",
+        "corruption"
       ],
       "introduced_by": "AQ-13",
       "invariants": [
@@ -401,10 +413,538 @@
         "AQ-H3",
         "AQ-H5"
       ]
+    },
+    {
+      "id": "AQ-CF-DD-001",
+      "driver": "embedded",
+      "path": "developmental/case-001-v1.json",
+      "sha256": "fea5d87b902f89a016f7049a3da15f5023430778c54f6cb4fb37dceee94e43a7",
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ]
+    },
+    {
+      "id": "AQ-CF-DD-002",
+      "driver": "embedded",
+      "path": "developmental/case-002-v1.json",
+      "sha256": "cb1ac49236694764c8a88112021ee9069ca1f90604490c83491a7898b06250ae",
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ]
+    },
+    {
+      "id": "AQ-CF-DD-003",
+      "driver": "embedded",
+      "path": "developmental/case-003-v1.json",
+      "sha256": "06877a0b0ea83d275865398b7d5ac410a27d3fe59a44489dbb03e7a91209e1dc",
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ]
+    },
+    {
+      "id": "AQ-CF-DD-004",
+      "driver": "embedded",
+      "path": "developmental/case-004-v1.json",
+      "sha256": "2b3b5c284b164f266b5129f007dd6a812a43ef999615af80f790e41c6a587193",
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ]
+    },
+    {
+      "id": "AQ-CF-DD-005",
+      "driver": "embedded",
+      "path": "developmental/case-005-v1.json",
+      "sha256": "3a37bfee8545ebfd7970d43def72e8bcbcc173f8bb0ef7882719ecae4df19337",
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ]
+    },
+    {
+      "id": "AQ-CF-DD-006",
+      "driver": "embedded",
+      "path": "developmental/case-006-v1.json",
+      "sha256": "1c4ea4b0bd3b7044e3800d9aae776668822ee642890de24e32f8dc1ed35be6fc",
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ]
+    },
+    {
+      "id": "AQ-CF-DD-007",
+      "driver": "embedded",
+      "path": "developmental/case-007-v1.json",
+      "sha256": "759b58847bcb1c0261d2bdf9e55aa3a5f9755a0a72f524466c8c2cc84e9cc8f0",
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ]
+    },
+    {
+      "id": "AQ-CF-DD-008",
+      "driver": "embedded",
+      "path": "developmental/case-008-v1.json",
+      "sha256": "84834ccd7b16e2a814ed9ccdb04fa5346e29ca204ce2a4c1e16b5bd99d8f2b8e",
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ]
+    },
+    {
+      "id": "AQ-CF-DD-009",
+      "driver": "embedded",
+      "path": "developmental/case-009-v1.json",
+      "sha256": "1046afeae7a51943382c9cbbfa59e04021a0fd258cdf24bb28b93ed6038864d3",
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ]
+    },
+    {
+      "id": "AQ-CF-DD-010",
+      "driver": "embedded",
+      "path": "developmental/case-010-v1.json",
+      "sha256": "202a7947afd804a317eb651c7b9dad34e2a283a96f2ba0af23671b8bcf20630d",
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ]
+    },
+    {
+      "id": "AQ-CF-DD-011",
+      "driver": "embedded",
+      "path": "developmental/case-011-v1.json",
+      "sha256": "380a124cca667a0daa78419ebe636c37c95626b0e20c88f7909fc936ebc0ce8b",
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ]
+    },
+    {
+      "id": "AQ-CF-DD-012",
+      "driver": "embedded",
+      "path": "developmental/case-012-v1.json",
+      "sha256": "e44a4b9ef37326d4cd1718f2928ae546e7a3a3a7a2c6cc0e4647ac3d33128703",
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ]
+    },
+    {
+      "id": "AQ-CF-DD-013",
+      "driver": "embedded",
+      "path": "developmental/case-013-v1.json",
+      "sha256": "449c92745e1bb169280abc0ee64f5b2dc631c7a48669d89daa74d2f41699149e",
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ]
+    },
+    {
+      "id": "AQ-CF-DD-014",
+      "driver": "embedded",
+      "path": "developmental/case-014-v1.json",
+      "sha256": "35272e8dee1838e9d4ab93fd53647e1c0ab9461635aaa6f435f86fd2583729f1",
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ]
+    },
+    {
+      "id": "AQ-CF-DD-015",
+      "driver": "embedded",
+      "path": "developmental/case-015-v1.json",
+      "sha256": "2b56912ccb4ec57c1603e06a011d8d1bf2bfdf023e2edaa541b9a9fe75c489ad",
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ]
+    },
+    {
+      "id": "AQ-CF-DD-016",
+      "driver": "embedded",
+      "path": "developmental/case-016-v1.json",
+      "sha256": "e1f29ba79a381ca1755759390c2ad95d35cdd389d78388edc26e3515b94d7a6c",
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ]
+    },
+    {
+      "id": "AQ-CF-DD-017",
+      "driver": "embedded",
+      "path": "developmental/case-017-v1.json",
+      "sha256": "2460dce67eaddcfdfe64e7067b7e04833e13a81d7903024366901ef4d5389cb9",
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ]
+    },
+    {
+      "id": "AQ-CF-DD-018",
+      "driver": "embedded",
+      "path": "developmental/case-018-v1.json",
+      "sha256": "a26a335d4361f3a7e9ecc0c49ba1718e293365c7a41cfadbfc7ca7f47013f599",
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ]
+    },
+    {
+      "id": "AQ-CF-PROOF-BOUNDARY",
+      "path": "proofs/boundary-v1.json",
+      "sha256": "3b44f11e196795200539206d69f725cbf2cc3868fe0ef8aebcd245c8a9189c43",
+      "driver": "embedded",
+      "variants": [
+        "suite"
+      ]
+    },
+    {
+      "id": "AQ-CF-PROOF-CONCURRENT",
+      "path": "proofs/concurrent-v1.json",
+      "sha256": "b01df2cce8f89921b27ab878434a7f130bd42070b1a02ff9d1e1b9454a51b180",
+      "driver": "embedded",
+      "variants": [
+        "suite"
+      ]
+    },
+    {
+      "id": "AQ-CF-PROOF-WAIT",
+      "path": "proofs/wait-v1.json",
+      "sha256": "4ca9b8083fdd981cbe1d833152f1d400b04ae0aadc344df8166b83deb9c1f14c",
+      "driver": "embedded",
+      "variants": [
+        "suite"
+      ]
+    },
+    {
+      "id": "AQ-CF-PROOF-ADMISSION",
+      "path": "proofs/admission-v1.json",
+      "sha256": "5b5f6bb6542ee398c5b84b4363ed11a1dec303bd55d5e88758d8f45cdddca621",
+      "driver": "embedded",
+      "variants": [
+        "suite"
+      ]
+    },
+    {
+      "id": "AQ-CF-PROOF-CONFLICT",
+      "path": "proofs/conflict-v1.json",
+      "sha256": "2de03754917bb0e9c3b503d16f3839380bc7a3be18902cc69cf9f47f97521a70",
+      "driver": "embedded",
+      "variants": [
+        "suite"
+      ]
+    },
+    {
+      "id": "AQ-CF-PROOF-CHILD",
+      "path": "proofs/child-v1.json",
+      "sha256": "38e214a515a9592cd7200b5860dc535cae3578890105477ff4b35f032682ddb5",
+      "driver": "embedded",
+      "variants": [
+        "suite"
+      ]
+    },
+    {
+      "id": "AQ-CF-PROOF-DISPOSITION",
+      "path": "proofs/disposition-v1.json",
+      "sha256": "c6b40d60eb40da170023fc9cf2fbac3fc08702bbdefd7224a35d788ee45cbec6",
+      "driver": "embedded",
+      "variants": [
+        "suite"
+      ]
+    },
+    {
+      "id": "AQ-CF-PROOF-CONTROL",
+      "path": "proofs/control-v1.json",
+      "sha256": "a240ee2af97341170b0efffc6ae519a55cdac09a333d16acccb9c6719ab9c04a",
+      "driver": "embedded",
+      "variants": [
+        "suite"
+      ]
+    },
+    {
+      "id": "AQ-CF-PROOF-TRAITS",
+      "path": "proofs/traits-v1.json",
+      "sha256": "4a785aab423bd071602ca583b225ea684cf724c22f3afb500d385087ea35e985",
+      "driver": "embedded",
+      "variants": [
+        "suite"
+      ]
+    },
+    {
+      "id": "AQ-CF-PROOF-BUDGET",
+      "path": "proofs/budget-v1.json",
+      "sha256": "cf5d1c450f017e940047cf80d01502ea9d13d5f8047cd78ac24a7ecc7de8737e",
+      "driver": "embedded",
+      "variants": [
+        "suite"
+      ]
+    },
+    {
+      "id": "AQ-CF-PROOF-REFERENCE",
+      "path": "proofs/reference-v1.json",
+      "sha256": "9d2e287a3802c5f0c1e9276248cf3fb9c3faba821e278b73f65cbd6315643317",
+      "driver": "embedded",
+      "variants": [
+        "suite"
+      ]
+    },
+    {
+      "id": "AQ-CF-PROOF-PERSISTENCE",
+      "path": "proofs/persistence-v1.json",
+      "sha256": "85dff00408311a5f4175135ec40abbc0b6c24f2e83833557ba56f05290e3c57b",
+      "driver": "embedded",
+      "variants": [
+        "suite"
+      ]
+    },
+    {
+      "id": "AQ-CF-PROOF-CRON",
+      "path": "proofs/cron-v1.json",
+      "sha256": "9aa8cfdfffca46ea948419be251a60d641bb54513e90a3bbe3403aee2329666e",
+      "driver": "embedded",
+      "variants": [
+        "suite"
+      ]
+    },
+    {
+      "id": "AQ-CF-PROOF-NEUTRALITY",
+      "path": "proofs/neutrality-v1.json",
+      "sha256": "792e289b059f3f06cd7a114a4eb538963ecef0cef1e63f075a6ea616be147599",
+      "driver": "embedded",
+      "variants": [
+        "suite"
+      ]
+    },
+    {
+      "id": "AQ-CF-PROOF-MODEL",
+      "path": "proofs/model-v1.json",
+      "sha256": "a82e615533dc03904ef97db6df00e6b4552d820fb582a2fd1cd51c85b376e947",
+      "driver": "embedded",
+      "variants": [
+        "suite"
+      ]
+    },
+    {
+      "id": "AQ-CF-PROOF-CRASH",
+      "path": "proofs/crash-v1.json",
+      "sha256": "5176c1275b19d8b62acfc49bf855f44a0ffd5c72ccbc16c89d0b910dde660cfc",
+      "driver": "embedded",
+      "variants": [
+        "suite"
+      ]
+    },
+    {
+      "id": "AQ-CF-PROOF-SIGNAL-ADMISSION",
+      "path": "proofs/signal-admission-v1.json",
+      "sha256": "68373384c6bb9c827304e7d48b8cf1cc0a952af2814959b498066941c199f649",
+      "driver": "embedded",
+      "variants": [
+        "suite"
+      ]
+    },
+    {
+      "id": "AQ-CF-PROOF-SIGNAL-CRASH",
+      "path": "proofs/signal-crash-v1.json",
+      "sha256": "e002e217d60c1903a754719cbe5ce00de9cfa935640c8a39ee545e6e20c97c4a",
+      "driver": "embedded",
+      "variants": [
+        "suite"
+      ]
+    },
+    {
+      "id": "AQ-CF-PROOF-SIGNAL-RETENTION",
+      "path": "proofs/signal-retention-v1.json",
+      "sha256": "cb51ea476d31a44de4417376d3da4ed324250f5a7d4eaf5a5082355489f556d6",
+      "driver": "embedded",
+      "variants": [
+        "suite"
+      ]
+    },
+    {
+      "id": "AQ-CF-PROOF-WAIT-CRASH",
+      "path": "proofs/wait-crash-v1.json",
+      "sha256": "4bbfa3528cca4ba0012ef95a7e88de4f66783928a40085bfd94def8ad07b4a78",
+      "driver": "embedded",
+      "variants": [
+        "suite"
+      ]
+    },
+    {
+      "id": "AQ-CF-PROOF-RESUME-CRASH",
+      "path": "proofs/resume-crash-v1.json",
+      "sha256": "26afdcbdcf5d07756d17df37172729bb9a146f044fd77cd479334f5441c5effb",
+      "driver": "embedded",
+      "variants": [
+        "suite"
+      ]
+    },
+    {
+      "id": "AQ-CF-PROOF-CHECKPOINT",
+      "path": "proofs/checkpoint-v1.json",
+      "sha256": "794cca20e6d27ed36c4527aebcd749e530bd4174759d6583186d188a689492d7",
+      "driver": "embedded",
+      "variants": [
+        "suite"
+      ]
+    },
+    {
+      "id": "AQ-CF-PROOF-ADMISSION-CRASH",
+      "path": "proofs/admission-crash-v1.json",
+      "sha256": "23ca5a0e3aba918e95b270f8c3718a7200e8241bd729b44ff1da70a25698d91d",
+      "driver": "embedded",
+      "variants": [
+        "suite"
+      ]
+    },
+    {
+      "id": "AQ-CF-PROOF-TRANSACTIONAL-CHILD",
+      "path": "proofs/transactional-child-v1.json",
+      "sha256": "2c561c1a1ca8f06c90f9437907ef57c74d3a849b802ae8bf689d11af348f84d9",
+      "driver": "embedded",
+      "variants": [
+        "suite"
+      ]
+    },
+    {
+      "id": "AQ-CF-PROOF-REMOTE",
+      "path": "proofs/remote-v1.json",
+      "sha256": "f362409f1982ea2ad4d534641fda51f224f7f1f1c6c30b0334df1895babaef5c",
+      "driver": "embedded",
+      "variants": [
+        "suite"
+      ]
+    },
+    {
+      "id": "AQ-CF-PROOF-INSPECTION",
+      "path": "proofs/inspection-v1.json",
+      "sha256": "3e3278892e177b3720ca9c9265ed07800f0b0e75f18bfdaffea4e4b5b790188b",
+      "driver": "embedded",
+      "variants": [
+        "suite"
+      ]
+    },
+    {
+      "id": "AQ-CF-PROOF-FROZEN",
+      "path": "proofs/frozen-v1.json",
+      "sha256": "be4b35e65ede7d99b8bb0810c66d4e3a790adb624e8df778399de994d14184c6",
+      "driver": "embedded",
+      "variants": [
+        "suite"
+      ]
+    },
+    {
+      "id": "AQ-CF-PROOF-OLD-STORE",
+      "path": "proofs/old-store-v1.json",
+      "sha256": "5db434ccd4fa57ebd75098a36cdd7da6f1a6cfa42c8777709961a5db219c25ea",
+      "driver": "embedded",
+      "variants": [
+        "suite"
+      ]
+    },
+    {
+      "id": "AQ-CF-PROOF-PROCESS-LOCK",
+      "path": "proofs/process-lock-v1.json",
+      "sha256": "8cafd92f3772045b73db33de539e8e5dd8a33bfdd41c43e64d3080fd8e0b2e85",
+      "driver": "embedded",
+      "variants": [
+        "suite"
+      ]
+    },
+    {
+      "id": "AQ-CF-PUBLIC-EARLY",
+      "path": "public/early-v1.json",
+      "sha256": "2a6108a20ccc48662f0a632c2ad25270e5ce98421a7ce00d7fa863c1742c837d",
+      "driver": "embedded",
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ]
+    },
+    {
+      "id": "AQ-CF-PUBLIC-LATE",
+      "path": "public/late-v1.json",
+      "sha256": "130b534d658c7106dee56fc9981231a747a80dd1c33925c228d6882e9ef65058",
+      "driver": "embedded",
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ]
+    },
+    {
+      "id": "AQ-CF-PUBLIC-DEADLINE",
+      "path": "public/deadline-v1.json",
+      "sha256": "1d2fb82e4dee4ecfe2d52a4329474b79a887df69015bf5133e9efb239436ec52",
+      "driver": "embedded",
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ]
+    },
+    {
+      "id": "AQ-CF-PUBLIC-CANCEL",
+      "path": "public/cancel-v1.json",
+      "sha256": "51d9027ecf8dd7a617ffba8c615f08a248c6444b0a28cef6d67750b8c5429fa0",
+      "driver": "embedded",
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ]
+    },
+    {
+      "id": "AQ-CF-PUBLIC-ADMISSION",
+      "path": "public/admission-v1.json",
+      "sha256": "962f7c70ad6185e2a39441861def14b4f0b62e15961015a03a91e7f05ed2cba9",
+      "driver": "embedded",
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ]
+    },
+    {
+      "id": "AQ-CF-PUBLIC-FANOUT",
+      "path": "public/fanout-v1.json",
+      "sha256": "bd2eb7af552b2dc59a93731a938562ab6188cc16d003f39979814e9e98fa03ff",
+      "driver": "embedded",
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ]
     }
   ],
   "drivers": [
-    "embedded"
+    "embedded",
+    "daemon",
+    "cli",
+    "adapter"
   ],
   "acceptance_matrices": [
     {
@@ -609,9 +1149,21 @@
     {
       "path": "developmental/workloads.json",
       "sha256": "8a1859ec70a6a85245934c6771bd704f3b59ad96b1bd8ad67efd217bf3a78be7"
+    },
+    {
+      "path": "performance/workloads-v2.json",
+      "sha256": "c63fe3800b07376f7af11dfdb8e8e1f7766bf7ee77cdfc8ffbb6a967a8adac08"
+    },
+    {
+      "path": "public/workloads-v1.json",
+      "sha256": "e5520553684b0ea6dd2dc28c4d0b17c24f3f7dfe51c0e6e44228b99be159ea42"
+    },
+    {
+      "path": "coverage-v2.json",
+      "sha256": "4911c22d9a186a2ce8e78ef6c5367e1baa1a65fa220bd73a42c9defcaa272a4a"
     }
   ],
-  "coverage": "coverage.json",
+  "coverage": "coverage-v2.json",
   "full_feature_set": [
     "workflow",
     "budget",

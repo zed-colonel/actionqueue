@@ -7,6 +7,7 @@ use actionqueue_core::{
 };
 
 use super::reducer::{ReplayReducer, ReplayReducerError};
+use super::work::{visit, Visit};
 use crate::{
     mutation::wait::*,
     wal::event::{WalEvent, WalEventType},
@@ -35,6 +36,7 @@ pub struct WaitIndex {
     matching: HashMap<Key, BTreeSet<WaitId>>,
     deadlines: BTreeSet<(u64, WaitId)>,
     candidates: BTreeSet<(SignalSequence, WaitId)>,
+    candidate_by_wait: BTreeMap<WaitId, SignalSequence>,
     pub(crate) pending: BTreeMap<RunId, WaitId>,
     historical: BTreeSet<SignalSequence>,
     children: BTreeMap<TaskId, BTreeSet<WaitId>>,
@@ -45,7 +47,7 @@ impl WaitIndex {
         self.records.get(&id)
     }
     pub fn records(&self) -> impl Iterator<Item = &WaitRecord> {
-        self.records.values()
+        self.records.values().inspect(|_| visit(Visit::WaitHistory))
     }
     pub fn active(&self, run: RunId) -> Option<&WaitRecord> {
         self.active.get(&run).and_then(|id| self.get(*id))
@@ -61,7 +63,12 @@ impl WaitIndex {
     }
     /// Indexed, deterministic candidates with explicit remaining-work reporting at the service.
     pub fn matches(&self, limit: usize) -> Vec<(SignalSequence, WaitId)> {
-        self.candidates.iter().take(limit).copied().collect()
+        self.candidates
+            .iter()
+            .take(limit)
+            .inspect(|_| visit(Visit::MatchCandidate))
+            .copied()
+            .collect()
     }
     pub fn child_matches(&self, limit: usize) -> Vec<WaitId> {
         self.child_candidates.iter().take(limit).copied().collect()
@@ -78,6 +85,7 @@ impl WaitIndex {
         let mut ids = BTreeSet::new();
         for correlation in [None, e.correlation_id.clone()] {
             for source in [None, e.source_ref.clone()] {
+                visit(Visit::WaitBucket);
                 if let Some(bucket) = self.matching.get(&(
                     e.tenant_id,
                     e.namespace.clone(),
@@ -85,7 +93,7 @@ impl WaitIndex {
                     correlation.clone(),
                     source,
                 )) {
-                    ids.extend(bucket);
+                    ids.extend(bucket.iter().inspect(|_| visit(Visit::Waiter)));
                 }
             }
         }
@@ -135,7 +143,10 @@ impl WaitIndex {
         if let Some(d) = w.spec.deadline() {
             self.deadlines.remove(&(d.at, r.wait_id));
         }
-        self.candidates.retain(|(_, id)| *id != r.wait_id);
+        if let Some(sequence) = self.candidate_by_wait.remove(&r.wait_id) {
+            visit(Visit::CandidateRemoval);
+            self.candidates.remove(&(sequence, r.wait_id));
+        }
         if let WaitResolutionKind::Signal(s) = r.kind {
             self.historical.insert(s);
         }
@@ -182,7 +193,10 @@ impl ReplayReducer {
             .map(|r| r.sequence())
     }
     pub(crate) fn refresh_wait_candidate(&mut self, id: WaitId) {
-        self.waits.candidates.retain(|(_, w)| *w != id);
+        if let Some(sequence) = self.waits.candidate_by_wait.remove(&id) {
+            visit(Visit::CandidateRemoval);
+            self.waits.candidates.remove(&(sequence, id));
+        }
         self.waits.child_candidates.remove(&id);
         if let Some(w) = self.waits.get(id).cloned() {
             if w.resolution.is_none() {
@@ -191,6 +205,7 @@ impl ReplayReducer {
                 }
                 if let Some(s) = self.earliest_signal(&w.spec) {
                     self.waits.candidates.insert((s, id));
+                    self.waits.candidate_by_wait.insert(id, s);
                 }
             }
         }

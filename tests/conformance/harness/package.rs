@@ -43,6 +43,10 @@ pub struct Manifest {
 pub struct Coverage {
     pub schema_version: u32,
     pub cases: Vec<Case>,
+    #[serde(default)]
+    pub public_drivers: Vec<String>,
+    #[serde(default)]
+    pub public_fixtures: Vec<String>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -123,7 +127,10 @@ pub fn validate(root: &Path) -> Result<(Manifest, Coverage), String> {
     for f in &m.fixtures {
         let variants: BTreeSet<_> = f.variants.iter().map(String::as_str).collect();
         if variants.len() != f.variants.len()
-            || variants.iter().any(|v| !["ordinary", "replay", "crash", "race"].contains(v))
+            || variants.iter().any(|v| {
+                !["ordinary", "replay", "crash", "race", "backup", "corruption", "suite"]
+                    .contains(v)
+            })
         {
             return Err(format!("invalid fixture variants: {}", f.id));
         }
@@ -172,6 +179,11 @@ pub fn validate(root: &Path) -> Result<(Manifest, Coverage), String> {
         .map(|i| format!("AQ-H{i}"))
         .chain((1..=18).map(|i| format!("AQ-DD-{i:03}")))
         .collect();
+    if coverage.public_drivers.iter().any(|d| !drivers.contains(d.as_str()))
+        || coverage.public_fixtures.iter().any(|id| !ids.contains(id))
+    {
+        return Err("unregistered public-driver requirement".into());
+    }
     let mut cases = BTreeSet::new();
     for c in &coverage.cases {
         if !cases.insert(c.id.clone()) {
@@ -185,8 +197,10 @@ pub fn validate(root: &Path) -> Result<(Manifest, Coverage), String> {
         {
             return Err(format!("unresolved coverage: {}", c.id));
         }
-        if c.variants.iter().any(|v| !["ordinary", "replay", "crash", "race"].contains(&v.as_str()))
-        {
+        if c.variants.iter().any(|v| {
+            !["ordinary", "replay", "crash", "race", "backup", "corruption", "suite"]
+                .contains(&v.as_str())
+        }) {
             return Err("unknown variant".into());
         }
         if c.required_features.iter().any(|f| !m.full_feature_set.contains(f)) {

@@ -7,6 +7,7 @@ mod package;
 mod process;
 #[path = "../../../tests/conformance/harness/report.rs"]
 mod report;
+mod suites;
 use std::{fs, path::PathBuf, process::Command};
 
 use engine::{read_scenario, Embedded};
@@ -26,9 +27,9 @@ fn main() {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--help") {
         println!(
-            "aq_conformance [--fixture ID] [--driver embedded] [--full] [--report PATH]\nRuns \
-             ordinary, replay and acknowledged process-crash cuts. Full fails on missing coverage \
-             or features."
+            "aq_conformance [--fixture ID] [--driver embedded|daemon|cli|adapter] [--adapter \
+             PATH] [--full] [--report PATH]\nRuns ordinary, replay and acknowledged process-crash \
+             cuts. Full fails on missing coverage or features."
         );
         return;
     }
@@ -41,7 +42,7 @@ fn main() {
         }
         match flag.as_str() {
             "--full" => {}
-            "--fixture" | "--driver" | "--report" | "--worker" | "--cut" => {
+            "--fixture" | "--driver" | "--report" | "--worker" | "--cut" | "--adapter" => {
                 if words.next().is_none_or(|v| v.starts_with("--")) {
                     eprintln!("missing value for {flag}");
                     std::process::exit(2);
@@ -81,7 +82,7 @@ fn main() {
     let selected = value("--fixture");
     let driver = value("--driver").unwrap_or("embedded".into());
     let mut missing = Vec::new();
-    if driver != "embedded" {
+    if !["embedded", "daemon", "cli", "adapter"].contains(&driver.as_str()) {
         missing.push(format!("unsupported driver: {driver}"));
     }
     if full {
@@ -109,11 +110,12 @@ fn main() {
             f.path.starts_with("fixtures/") && selected.as_ref().is_none_or(|id| id == &f.id)
         })
         .collect();
-    if fixtures.is_empty() {
+    let public_selected = selected.as_ref().is_some_and(|id| id.starts_with("AQ-CF-PUBLIC-"));
+    if fixtures.is_empty() && driver == "embedded" && !public_selected {
         missing.push("no executable fixture selected".into());
     }
     let mut results = Vec::new();
-    if missing.is_empty() {
+    if missing.is_empty() && driver == "embedded" {
         for f in fixtures {
             let scenario = read_scenario(&root, &f.path);
             if scenario.required_features.iter().any(|n| !features().contains(&n.as_str())) {
@@ -134,10 +136,11 @@ fn main() {
                         d.verify();
                         d.apply_step(&engine::Step::Snapshot);
                         d.verify();
+                        d.verify_backup_corruption();
                     }
                 }
             });
-            for variant in ["ordinary", "replay"] {
+            for variant in ["ordinary", "replay", "backup", "corruption"] {
                 results.push(json!({"fixture_id":f.id,"fixture_hash":f.sha256,"feature_profile":features(),"driver":driver,"variant":variant,"crash_point":null,"assertion_result":if result.is_ok(){"passed"}else{"failed"}}));
             }
             for cut in &scenario.recovery_cuts {
@@ -169,6 +172,22 @@ fn main() {
                 results.push(json!({"fixture_id":f.id,"fixture_hash":f.sha256,"feature_profile":features(),"driver":driver,"variant":"crash","crash_point":cut,"assertion_result":if result.is_ok(){"passed"}else{"failed"}}));
             }
         }
+    }
+    if missing.is_empty() && (full || driver != "embedded" || public_selected) {
+        let evidence =
+            tempfile::Builder::new().prefix("aq-full-evidence-").tempdir().unwrap().keep();
+        eprintln!("Fresh conformance evidence: {}", evidence.display());
+        results.extend(suites::execute(
+            &manifest,
+            &evidence,
+            if full { None } else { Some((driver.as_str(), selected.as_deref())) },
+            full,
+            value("--adapter").as_deref(),
+        ));
+    }
+    missing.extend(report::invalid_hashes(&manifest, &results));
+    if results.is_empty() {
+        missing.push("no passing executable results".into());
     }
     if full {
         missing.extend(report::missing_evidence(&coverage, &results));

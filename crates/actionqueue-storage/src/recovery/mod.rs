@@ -25,3 +25,6 @@ mod task_status;
 mod reactivity;
 
 pub mod inspection;
+
+#[doc(hidden)]
+pub mod work;

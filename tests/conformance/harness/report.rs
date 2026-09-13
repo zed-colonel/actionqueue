@@ -33,5 +33,33 @@ pub fn missing_evidence(coverage: &Coverage, results: &[Value]) -> Vec<String> {
             }
         }
     }
+    for fixture in &coverage.public_fixtures {
+        for driver in &coverage.public_drivers {
+            for variant in ["ordinary", "replay", "crash"] {
+                if !results.iter().any(|r| {
+                    r["fixture_id"] == *fixture
+                        && r["driver"] == *driver
+                        && r["variant"] == variant
+                        && r["assertion_result"] == "passed"
+                }) {
+                    missing.push(format!("public workload: {fixture}/{driver}/{variant}"));
+                }
+            }
+        }
+    }
     missing
+}
+/// Evidence with the wrong revision's input hash must never satisfy a case.
+pub fn invalid_hashes(manifest: &super::package::Manifest, results: &[Value]) -> Vec<String> {
+    results
+        .iter()
+        .filter_map(|r| {
+            let f = manifest.fixtures.iter().find(|f| r["fixture_id"] == f.id);
+            if f.is_none_or(|f| r["fixture_hash"] != f.sha256) {
+                Some(format!("unknown fixture or incorrect evidence hash: {}", r["fixture_id"]))
+            } else {
+                None
+            }
+        })
+        .collect()
 }

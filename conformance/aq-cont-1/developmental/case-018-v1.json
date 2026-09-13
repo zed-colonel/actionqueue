@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "id": "AQ-CF-DD-018",
+  "steps": [
+    {
+      "op": "start",
+      "task": 1
+    },
+    {
+      "op": "start",
+      "task": 2
+    }
+  ],
+  "variants": [
+    "ordinary",
+    "replay",
+    "crash"
+  ]
+}

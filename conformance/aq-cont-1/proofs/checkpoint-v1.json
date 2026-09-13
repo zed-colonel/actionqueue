@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "id": "AQ-CF-PROOF-CHECKPOINT",
+  "target": "acceptance_checkpoint_resume",
+  "case_ids": [],
+  "minimum_passed": 1,
+  "evidence_kind": "complete_test_binary",
+  "assertions": "All tests in this named binary must pass; replay/crash assertions execute inside their test controllers."
+}

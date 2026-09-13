@@ -35,59 +35,59 @@ and opaque attribution. `cross-feature-persistence.sh` builds isolated base and
 expanded binaries, checks identical child wire bytes, and refuses unsupported
 store profiles without mutation. Scratch data honors `TMPDIR`.
 
-## AQ-13 revision 10 implementation status
+## AQ-13 package revision 12
 
-Revision 10 is **in progress, not release conformance**. `manifest.yaml` now uses
-JSON syntax (a YAML subset) so the runner and tests share structured validation.
-All previous fixture bytes and historical projection versions are preserved.
-`coverage.json` inventories all twenty invariants and eighteen developmental cases;
-unmapped entries are explicit release blockers, not passing evidence.
-
-New executable evidence:
-
-- Six immutable scenarios (early/late signal, deadline, cancellation, lost-response
-  admission, and required fan-out), reviewed expected structural observations,
-  WAL-only and snapshot/tail equality, and process restart at every declared cut.
-- Fourteen selected storage cuts covering all eleven planned commit/publication
-  boundaries, two torn-frame cuts, and accepted resume assignment. Snapshot
-  publication retains complete WAL history, as required by the accepted ADRs.
-- An independent one-to-three-task model with 192 short race sequences and sixteen
-  seeded longer sequences. Failures save a seed and deletion-minimized command
-  sequence under `TMPDIR`.
-- Dedicated persisted workloads for AQ-DD-001, 013, 014, 015, 016, and 018, each
-  checked live, after snapshot recovery, and after acknowledged process termination.
-  These are focused structural assertions; they do not complete the full eighteen
-  case exit gate or replace transport/authorization/metric matrix requirements.
-- A public-runtime two-store reference workload exercising uncertain external work,
-  lost admission responses, changed-meaning conflicts, early/duplicate callbacks,
-  restart of both sides, and application-owned output rejection.
-- Fixed-size performance inputs with ordinary admission and handler completion,
-  unmatched signals/waits, matching fan-out, snapshot bytes/time, recovery, and
-  compound encoding bytes/time. Timing is informational; current bounds cover
-  complete match drainage and hard frame limits, not a general complexity proof.
+Revision 12 is executable. The full gate combines independently checked fixture
+hashes, named invariant proof binaries, per-case developmental evidence, and four
+public drivers. All fixture bytes and hash entries present at revision 10 remain
+unchanged; additions have new paths. `coverage-v2.json` supersedes the preserved
+revision-10 coverage inventory.
 
 ```sh
+cargo run --example aq_conformance --features workflow,budget,actor,platform -- \
+  --full --report "$TMPDIR/aq-report.json"
 cargo aq-conformance
 cargo aq-developmental
-cargo run --example aq_conformance -- --report "$TMPDIR/aq-report.json"
 cargo bench --bench continuation
 bash conformance/aq-cont-1/cross-feature-persistence.sh
 ```
 
-`AQ_PERFORMANCE_REPORT` selects the benchmark JSON output; the default is under
-`TMPDIR`. Tests never regenerate expected results or fixture hashes. Additive
-fixtures require a new package revision and reviewed SHA-256 inventory updates.
+The full runner builds the actual CLI and reference adapter, builds the proof test
+binaries once, and executes them directly. It creates a fresh evidence directory
+under `TMPDIR`; it never accepts reports from previous runs. Missing cases,
+features, drivers, variants, incorrect input hashes, failed tests, and zero-test
+proof runs prevent certification. CI requires `--full`.
 
-Remaining AQ-13 work: executable daemon/CLI/external-adapter runner drivers;
-full per-case developmental attribution, permission, scheduling, metrics, and
-sensitive-content variants; parent/child and physical retry lineage in the pure
-model; per-fixture backup/corruption variants; stronger algorithmic cost bounds;
-and promotion to executable status only after complete coverage evidence passes.
-See [driver contract and reporting](drivers/README.md).
+Evidence includes:
 
-Two existing API boundaries shape these tests. Concrete signal causation IDs must
-resolve within the receiving store, so the two-store reference workload preserves
-remote producer IDs in the supported opaque external causation reference. The
-persistence probe's tenantless workload uses an explicitly non-platform store and
-an authenticated single-tenant host; a separate empty full-feature store proves
-that a base binary still rejects the platform-bearing manifest without writes.
+- All twenty AQ-H invariants mapped to complete named proof binaries. `suite`
+  records mean all tests in the named binary passed, including that binary's
+  internal replay/crash assertions; they do not invent per-variant results.
+- All eighteen AQ-DD cases with separately reported ordinary, replay, and process
+  crash variants, exact projection/inspection equality, backup/restore, and
+  checksum-corruption refusal. Physical recovery preserves the original resume
+  assignment. Attribution probes exercise priority, budgets and executor traits;
+  sensitive-content probes use synthetic external-reference canaries.
+- Six storage scenarios with immutable expected observations, every declared
+  crash prefix, WAL-only and snapshot/tail equality, backup and corruption checks.
+- Six public workloads through normal embedded handlers, authenticated TCP daemon
+  calls, actual CLI subprocesses, and the published reference adapter process.
+  Every driver supplies ordinary, replay and crash results. The daemon and CLI
+  drivers use the public remote-actor protocol to execute handler dispositions.
+- Fourteen acknowledged storage cuts, including all eleven planned boundaries,
+  torn headers/payloads, and accepted resume assignment. Reconciliation must
+  produce the exact original signal/checkpoint context and permit resumed execution.
+- An independent model: 192 exhaustive short races, 32 seeded longer sequences,
+  and guided wake/recovery/child-coordination sequences. It compares winners,
+  checkpoints, pending and assigned delivery, physical attempts, leases, accounting,
+  and terminal history after every prefix. Failing seeds are minimized in scratch.
+- Reproducible 8/129/257-task benchmarks. Thread-local test instrumentation rejects
+  unrelated history visits and bounds indexed candidate work across the 128-item
+  batch boundary. Candidate removal uses a reverse index. Measurements explicitly
+  include the accepted full-projection preparation and full-WAL validation costs;
+  elapsed timings remain informational. Instrumentation is absent in production.
+
+This is the ActionQueue-owned reference implementation. An external downstream
+adapter can run the same published workload protocol; this package does not claim
+that an unavailable WorldInterface checkout was tested. See
+[driver protocol and reporting](drivers/README.md).

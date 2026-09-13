@@ -14,6 +14,7 @@ use serde_json::{json, Value};
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Step {
+    Developmental { case: u32 },
     Start { task: u64 },
     Signal { signal: u64 },
     Wait { task: u64, deadline: Option<u64> },
@@ -79,6 +80,14 @@ pub struct Embedded {
     pub runs: BTreeMap<u64, RunId>,
 }
 impl Embedded {
+    pub fn raw_signal(&mut self, signal: u64, at: u64) {
+        let _ = s::submit(self.authority.as_mut().unwrap(), s::envelope(signal, at)).unwrap();
+    }
+
+    pub fn reconcile_batch(&mut self, at: u64, limit: usize) {
+        reconcile_batch(self.authority.as_mut().unwrap(), at, limit).unwrap();
+    }
+
     pub fn new(path: &Path) -> Self {
         Self { authority: Some(s::open(path)), path: path.into(), runs: BTreeMap::new() }
     }
@@ -104,6 +113,7 @@ impl Embedded {
     pub fn apply_step(&mut self, step: &Step) {
         let a = self.authority.as_mut().unwrap();
         match step {
+            Step::Developmental { case } => self.developmental_setup(*case),
             Step::Start { task } => {
                 let q = admission_support::request(*task);
                 let mut t = q.task_spec().clone();
@@ -253,6 +263,101 @@ pub fn read_scenario(root: &Path, path: &str) -> Scenario {
     scenario
 }
 impl Embedded {
+    /// Check complete backup inventory, exact restored lineage, and refusal of a
+    /// corrupted copy. Always release the source writer before the public backup API.
+    pub fn verify_backup_corruption(&mut self) {
+        use actionqueue_storage::store::{backup_store, inspect_store, restore_store};
+        let expected = self.evidence();
+        self.authority.take();
+        let dir = tempfile::tempdir().unwrap();
+        let backup = dir.path().join("backup");
+        let restored = dir.path().join("restored");
+        let descriptor = backup_store(&self.path, &backup).unwrap();
+        assert_eq!(
+            restore_store(&backup, &restored).unwrap().projection_digest,
+            descriptor.projection_digest
+        );
+        let copy = Self::reopen(&restored);
+        assert_eq!(copy.evidence(), expected);
+        copy.verify();
+        let wal_path = copy.a().store_session().unwrap().wal_path().to_path_buf();
+        drop(copy);
+        let mut bytes = std::fs::read(&wal_path).unwrap();
+        assert!(!bytes.is_empty());
+        let last = bytes.len() - 1;
+        bytes[last] ^= 0x80;
+        std::fs::write(&wal_path, &bytes).unwrap();
+        assert!(inspect_store(&restored).is_err(), "checksum corruption must fail closed");
+        assert_eq!(std::fs::read(&wal_path).unwrap(), bytes, "inspection is read-only");
+        let backup_wal = backup.join("wal/actionqueue.wal");
+        let mut bytes = std::fs::read(&backup_wal).unwrap();
+        bytes[0] ^= 0x80;
+        std::fs::write(&backup_wal, bytes).unwrap();
+        let refused = dir.path().join("refused");
+        assert!(restore_store(&backup, &refused).is_err());
+        assert!(!refused.exists());
+        self.authority = Some(s::reopen(&self.path));
+        assert_eq!(self.evidence(), expected);
+    }
+
+    /// Assert the independently expected signal wake and deliver it to a real handler.
+    pub fn finish_signal_wake(&mut self, task: u64) {
+        let run = self.runs[&task];
+        let p = self.a().projection();
+        assert_eq!(p.get_run_state(&run), Some(&RunState::Ready));
+        assert!(p.get_lease_metadata(&run).is_none());
+        let context = p.pending_resume(run).expect("reconciliation must publish resume context");
+        let wait = p.waits().records().find(|w| w.run_id == run).unwrap();
+        assert_eq!(context.checkpoint, wait.checkpoint);
+        assert_eq!(context.checkpoint.as_ref().unwrap().created_by_attempt, wait.attempt_id);
+        assert!(context
+            .checkpoint
+            .as_ref()
+            .unwrap()
+            .data
+            .verify_bytes(b"opaque checkpoint")
+            .is_ok());
+        let signal = p.signals().records().next().unwrap();
+        assert_eq!(
+            context.wake,
+            WakeReason::Signal {
+                wait_id: wait.spec.wait_id(),
+                signal_sequence: signal.sequence(),
+                envelope: Box::new(signal.envelope().clone()),
+            }
+        );
+        assert_eq!(p.get_run_instance(&run).unwrap().failure_attempt_count(), 0);
+        self.authority.take();
+        let seen = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let mut boot = actionqueue_runtime::engine::ActionQueueEngine::new(
+            actionqueue_runtime::config::RuntimeConfig {
+                data_dir: self.path.clone(),
+                ..Default::default()
+            },
+            Recording(seen.clone()),
+        )
+        .bootstrap_with_clock(MockClock::new(100))
+        .unwrap()
+        .with_host(host());
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let _ = rt.block_on(async {
+            tokio::time::timeout(std::time::Duration::from_secs(10), boot.run_until_idle())
+                .await
+                .unwrap()
+                .unwrap()
+        });
+        assert_eq!(boot.projection().get_run_state(&run), Some(&RunState::Completed));
+        assert!(boot.projection().get_lease_metadata(&run).is_none());
+        let inputs = seen.lock().unwrap();
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].resume_context, Some(context));
+        assert_eq!(boot.projection().get_run_instance(&run).unwrap().attempt_count(), 2);
+        assert_eq!(boot.projection().get_run_instance(&run).unwrap().failure_attempt_count(), 0);
+        boot.shutdown().unwrap();
+        self.authority = Some(s::reopen(&self.path));
+        self.verify();
+    }
+
     pub fn expire(&mut self, at: u64) {
         actionqueue_runtime::waits::recover_execution(self.authority.as_mut().unwrap(), at)
             .unwrap();
@@ -320,3 +425,7 @@ impl Embedded {
         assert_eq!(before, a.projection().projection_digest().unwrap());
     }
 }
+
+include!("model_ops.rs");
+
+include!("developmental_ops.rs");

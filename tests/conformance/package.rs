@@ -90,3 +90,19 @@ fn passing_subset_cannot_satisfy_missing_variants_drivers_or_features() {
         assert_eq!(report::missing_evidence(&coverage, &records).len(), 1);
     }
 }
+
+#[test]
+fn evidence_hashes_and_public_driver_variants_are_required() {
+    use serde_json::json;
+    let (manifest, mut coverage) = package::validate(&package::root()).unwrap();
+    let fixture = &manifest.fixtures[0];
+    let good = json!({"fixture_id":fixture.id,"fixture_hash":fixture.sha256,"driver":"embedded","variant":"ordinary","assertion_result":"passed"});
+    assert!(report::invalid_hashes(&manifest, std::slice::from_ref(&good)).is_empty());
+    let mut bad = good.clone();
+    bad["fixture_hash"] = json!("0".repeat(64));
+    assert_eq!(report::invalid_hashes(&manifest, &[bad]).len(), 1);
+    coverage.cases.clear();
+    coverage.public_fixtures = vec![fixture.id.clone()];
+    coverage.public_drivers = vec!["embedded".into(), "daemon".into()];
+    assert_eq!(report::missing_evidence(&coverage, &[good]).len(), 5);
+}

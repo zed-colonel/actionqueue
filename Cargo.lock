@@ -19,6 +19,8 @@ dependencies = [
  "actionqueue-workflow",
  "axum",
  "http-body-util",
+ "hyper",
+ "hyper-util",
  "proc-macro2",
  "proptest",
  "quote",

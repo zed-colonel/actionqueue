@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "id": "AQ-CF-DD-015",
+  "steps": [
+    {
+      "op": "start",
+      "task": 1
+    },
+    {
+      "op": "start",
+      "task": 2
+    },
+    {
+      "op": "start",
+      "task": 3
+    },
+    {
+      "op": "finish",
+      "task": 1,
+      "success": true
+    },
+    {
+      "op": "finish",
+      "task": 2,
+      "success": false
+    },
+    {
+      "op": "cancel",
+      "task": 3
+    }
+  ],
+  "variants": [
+    "ordinary",
+    "replay",
+    "crash"
+  ]
+}
