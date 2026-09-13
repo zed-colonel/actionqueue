@@ -45,9 +45,14 @@ fn check(case: u32, d: &mut Embedded) {
             assert!(!text.contains(forbidden));
         }
         for line in text.lines().filter(|l| !l.starts_with('#')) {
-            if let Some((_, labels)) = line.split_once('{') {
+            if let Some((metric, labels)) = line.split_once('{') {
                 for pair in labels.split('}').next().unwrap().split(',') {
                     let key = pair.split('=').next().unwrap();
+                    if key == "direction" {
+                        assert_eq!(metric, "actionqueue_signal_match_candidates_total");
+                        assert!(["direction=\"waits\"", "direction=\"signals\""].contains(&pair));
+                        continue;
+                    }
                     assert!(
                         ["state", "result", "outcome", "namespace", "kind", "reason", "le"]
                             .contains(&key),
