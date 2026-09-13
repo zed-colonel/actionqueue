@@ -1,5 +1,7 @@
 # actionqueue-runtime
 
+Release 0.2.0 implements AQ-CONT-1. See the [release and compatibility notes](../../docs/releases/0.2.0.md).
+
 Embedded execution, host-authenticated controls, and structural inspection for
 AQ-CONT-1. Configure `HostControlContext` on the engine before admissions,
 signals, cancellation or inspection. Missing context fails closed.

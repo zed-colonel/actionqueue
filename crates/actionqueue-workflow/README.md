@@ -1,5 +1,7 @@
 # actionqueue-workflow
 
+Release 0.2.0 implements AQ-CONT-1. See the [release and compatibility notes](../../docs/releases/0.2.0.md).
+
 Workflow primitives for ActionQueue: DAG dependencies, task hierarchy, cron scheduling, and transactional child admission.
 
 ## Overview
@@ -30,8 +32,8 @@ children do neither; explicit DAG dependencies and tenant checks still apply.
 A parent may complete after a required child fails or is canceled. The coordinator
 chooses its own final result. Ongoing cron tasks remain nonterminal between windows.
 
-AQ-09 writes task/admission WAL schema 3, wait/disposition schema 2, and snapshot /
-projection version 7. Earlier stores are refused by the manifest boundary; there is
+The target uses task/admission WAL schema 3, wait/disposition schema 2, and snapshot /
+projection version 9. Earlier stores are refused by the manifest boundary; there is
 no in-place migration.
 
 ## Part of the ActionQueue workspace

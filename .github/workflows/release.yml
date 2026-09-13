@@ -1,0 +1,50 @@
+name: Prepare exact release candidate
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: Exact integrated release SHA (40 lowercase hex characters)
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit }}
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.89.0
+          components: clippy,rustfmt
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            target
+          key: ${{ runner.os }}-release-${{ hashFiles('Cargo.lock') }}
+      - name: Fetch locked external dependencies
+        run: cargo fetch --locked
+      - name: Execute all gates and prepare artifacts
+        env:
+          RELEASE_COMMIT: ${{ inputs.commit }}
+          TMPDIR: ${{ runner.temp }}
+        run: python3 -B scripts/release.py prepare --version 0.2.0 --commit "$RELEASE_COMMIT" --output "${{ runner.temp }}/release"
+      - name: Verify candidate
+        run: python3 -B scripts/release.py verify --manifest "${{ runner.temp }}/release/release-manifest.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-preparation-${{ inputs.commit }}
+          path: |
+            ${{ runner.temp }}/release/
+            !${{ runner.temp }}/release/scratch/
+          if-no-files-found: error
+      # Operator owns cutover, tag, crates.io and GitHub publication.

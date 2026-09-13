@@ -1850,7 +1850,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
             self.clock.now(),
         )
     }
-    /// Idempotent convenience admission using stable task/<uuid> key, trace, and correlation.
+    /// Idempotent convenience admission using stable `task/<uuid>` key, trace, and correlation.
     /// Retain the task UUID on retry. Outbox callers should supply explicit ensure_task requests.
     pub fn submit_task(&mut self, spec: TaskSpec) -> Result<EnsureTaskOutcome, AdmissionError> {
         self.ensure_task(

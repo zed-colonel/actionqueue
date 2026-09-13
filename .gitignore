@@ -32,5 +32,6 @@ CLAUDE.md
 plans/
 dev-output/
 
-# ── Local scripts ───────────────────────────────────────────
-scripts/
+# Python bytecode
+__pycache__/
+*.pyc

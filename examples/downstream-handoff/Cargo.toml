@@ -1,0 +1,18 @@
+[package]
+name = "actionqueue-downstream-handoff"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+actionqueue-core = { version = "=0.2.0", features = ["serde"] }
+actionqueue-runtime = "=0.2.0"
+actionqueue-executor-local = "=0.2.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[dev-dependencies]
+tempfile = "3"

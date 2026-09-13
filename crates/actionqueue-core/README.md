@@ -1,5 +1,7 @@
 # actionqueue-core
 
+Release 0.2.0 implements AQ-CONT-1. See the [release and compatibility notes](../../docs/releases/0.2.0.md).
+
 Pure domain types and state machine for the ActionQueue durable task queue engine.
 
 ## Overview
@@ -9,7 +11,7 @@ This crate defines the fundamental types used throughout the ActionQueue system 
 - **ids** -- UUID identities and bounded caller-supplied admission, signal, trace and correlation identifiers
 - **run** -- Run state machine with validated transitions and typed rejection reasons
 - **task** -- Task specifications, run policies, constraints, and metadata
-- **mutation** -- Mutation authority boundary contracts and provisional compound command shapes
+- **mutation** -- Mutation authority boundary contracts and compound commands
 - **bounded / limits** -- Validated opaque values and hard byte/count ceilings
 - **executor** -- Canonical executor routing traits, separate from RBAC
 - **causal** -- Immutable bounded attribution; references grant no authority
@@ -35,16 +37,16 @@ Scheduled -> Ready -> Leased -> Running -> Completed
 
 ## AQ-CONT-1 integration
 
-`Awaiting` is non-terminal and may originate only from `Running`, after the active
-attempt is finished. Generic mutation commands reject Awaiting transitions until
-AQ-06 supplies the compound continuation record. Existing WAL-embedded layouts
-remain unchanged in AQ-02; the new state and attempt result are appended variants.
-`ConcurrencyKeyWaitPolicy` defaults to release; its constraints field arrives in AQ-03.
+`Awaiting` is nonterminal and is established by a compound attempt disposition
+that finishes the physical attempt and durably records its wait/checkpoint.
+Generic state transitions cannot bypass this boundary. A matching signal, deadline
+or explicit host control resolves the wait and records resume input. The default
+concurrency-key wait policy releases the key; hold-until-terminal is explicit.
 
-Caller references are attribution only. Core neither dereferences them nor computes
-content hashes. Canonical admission hashing is an AQ-04 obligation; inline hash
-verification is an AQ-07 obligation. New command types are not yet members of
-`MutationCommand`.
+Caller references are attribution only. Core validates bounded data and computes
+canonical admission/content hashes; it never dereferences application locators.
+Storage owns commit ordering, durable effects and recovery. Queue outcomes express
+execution results and do not establish application correctness.
 
 ## Part of the ActionQueue workspace
 

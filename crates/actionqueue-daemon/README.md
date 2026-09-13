@@ -1,5 +1,7 @@
 # actionqueue-daemon
 
+Release 0.2.0 implements AQ-CONT-1. See the [release and compatibility notes](../../docs/releases/0.2.0.md).
+
 HTTP v2 hosting for AQ-CONT-1. Object inspection requires a host authentication
 hook. Mutations additionally require `enable_control`; bootstrap rejects that
 setting without authentication. Health/readiness, aggregate statistics and

@@ -360,7 +360,7 @@ pub enum WalEventType {
         timestamp: u64,
     },
 
-    // ── WAL v5: Actor events (discriminants 23-25) ─────────────────────────
+    // ── Actor events (explicit storage-owned wire kinds) ─────────────────────────
     /// A remote actor has registered with the hub.
     ActorRegistered {
         actor_id: ActorId,
@@ -384,7 +384,7 @@ pub enum WalEventType {
         timestamp: u64,
     },
 
-    // ── WAL v5: Platform events (discriminants 26-31) ──────────────────────
+    // ── Platform events (explicit storage-owned wire kinds) ──────────────────────
     /// An organizational tenant was created.
     TenantCreated {
         tenant_id: TenantId,

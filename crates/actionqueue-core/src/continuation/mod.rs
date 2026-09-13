@@ -1,4 +1,4 @@
-//! Pure continuation shapes; persistence and execution arrive in later work items.
+//! Validated continuation contracts used by durable storage and runtime dispatch.
 pub mod signal;
 pub use signal::*;
 pub mod wait;
