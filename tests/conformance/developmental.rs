@@ -165,7 +165,6 @@ fn check(case: u32, d: &mut Embedded) {
             );
         }
         2 => {
-            neutrality::check();
             let tasks: Vec<_> = p.tasks().collect();
             assert_eq!(tasks.len(), 3);
             let first = i.get_task(tasks[0].id()).unwrap();
@@ -342,6 +341,12 @@ fn developmental_worker() {
         .unwrap();
     process::halt(&format!("AQ_DD_COMMITTED {case}"));
 }
+#[test]
+#[ignore = "invoked by paired neutrality crash controller"]
+fn neutrality_worker() {
+    neutrality::worker();
+}
+
 fn run(case: u32) {
     assert!(CASES.contains(&case));
     package::validate(&package::root()).unwrap();
@@ -375,11 +380,29 @@ fn run(case: u32) {
     check(case, &mut d);
     d.verify();
     d.verify_backup_corruption();
+    if case == 2 {
+        neutrality::check();
+    }
     let (manifest, _) = package::validate(&package::root()).unwrap();
     let hash = package::hash(
         &fs::read(package::root().join(format!("developmental/case-{case:03}-v1.json"))).unwrap(),
     );
-    let results:Vec<_>=["ordinary","replay","crash"].iter().map(|variant|json!({"package_revision":manifest.package_revision,"case_id":format!("AQ-DD-{case:03}"),"fixture_id":format!("AQ-CF-DD-{case:03}"),"fixture_hash":hash,"feature_profile":manifest.full_feature_set,"variant":variant,"driver":"embedded","crash_point":if *variant=="crash" {Some("after_workload_commit")}else{None},"assertion_result":"passed"})).collect();
+    let mut results:Vec<_>=["ordinary","replay","crash"].iter().map(|variant|json!({"package_revision":manifest.package_revision,"case_id":format!("AQ-DD-{case:03}"),"fixture_id":format!("AQ-CF-DD-{case:03}"),"fixture_hash":hash,"feature_profile":manifest.full_feature_set,"variant":variant,"driver":"embedded","crash_point":if *variant=="crash" {Some("after_workload_commit")}else{None},"assertion_result":"passed"})).collect();
+    if case == 2 {
+        let fixture = manifest.fixtures.iter().find(|f| f.id == "AQ-CF-DD-002-NEUTRALITY").unwrap();
+        for mut result in results.clone() {
+            result["fixture_id"] = json!(fixture.id);
+            result["fixture_hash"] = json!(fixture.sha256);
+            if result["variant"] == "crash" {
+                result["crash_point"] = json!([
+                    "before_dispatch",
+                    "awaiting_before_deadline",
+                    "deadline_before_retention"
+                ]);
+            }
+            results.push(result);
+        }
+    }
     let report = std::env::var_os("AQ_EVIDENCE_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(std::env::temp_dir)

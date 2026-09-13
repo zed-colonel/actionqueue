@@ -35,13 +35,13 @@ and opaque attribution. `cross-feature-persistence.sh` builds isolated base and
 expanded binaries, checks identical child wire bytes, and refuses unsupported
 store profiles without mutation. Scratch data honors `TMPDIR`.
 
-## AQ-13 package revision 12
+## AQ-13 package revision 13
 
-Revision 12 is executable. The full gate combines independently checked fixture
+Revision 13 is executable. The full gate combines independently checked fixture
 hashes, named invariant proof binaries, per-case developmental evidence, and four
-public drivers. All fixture bytes and hash entries present at revision 10 remain
-unchanged; additions have new paths. `coverage-v2.json` supersedes the preserved
-revision-10 coverage inventory.
+public drivers. All fixture bytes and hash entries present at revision 12 remain
+unchanged; additions have new paths. `coverage-v3.json` adds the paired AQ-DD-002 workload to the preserved
+revision-12 coverage inventory.
 
 ```sh
 cargo run --example aq_conformance --features workflow,budget,actor,platform -- \
@@ -66,10 +66,18 @@ Evidence includes:
 - All eighteen AQ-DD cases with separately reported ordinary, replay, and process
   crash variants, exact projection/inspection equality, backup/restore, and
   checksum-corruption refusal. Physical recovery preserves the original resume
-  assignment. Attribution probes exercise priority, budgets and executor traits;
+  assignment. AQ-DD-002 additionally compares paired public workloads through
+  priority dispatch, budgets, executor traits, deadline resumption, and signal
+  retirement with age/window and pin protection. Each pair retains its stores
+  across the workload: replay reopens them between phases, and three acknowledged
+  kills cover admission before dispatch, active waits before deadlines, and
+  resolved deadlines before retention. Exact per-store digests are checked on
+  reopen; phase observations must agree across attribution and recovery variants.
+  The additive `developmental/neutrality-v2.json` fixture supplies the timing,
+  retention policy, expected dispatch order, and crash boundaries;
   sensitive-content probes use synthetic external-reference canaries.
 - Six storage scenarios with immutable expected observations, every declared
-  crash prefix, WAL-only and snapshot/tail equality, backup and corruption checks.
+  crash prefix required independently by the full coverage validator, WAL-only and snapshot/tail equality, backup and corruption checks.
 - Six public workloads through normal embedded handlers, authenticated TCP daemon
   calls, actual CLI subprocesses, and the published reference adapter process.
   Every driver supplies ordinary, replay and crash results. The daemon and CLI

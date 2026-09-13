@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "package": "conformance/aq-cont-1",
-  "package_revision": 12,
+  "package_revision": 13,
   "status": "executable",
   "contract": "AQ-CONT-1",
   "contract_revision": "STACK-2026-07-20-CLEAN-1",
@@ -938,6 +938,19 @@
         "replay",
         "crash"
       ]
+    },
+    {
+      "id": "AQ-CF-DD-002-NEUTRALITY",
+      "title": "Paired dispatch, deadline and retention recovery neutrality",
+      "driver": "embedded",
+      "path": "developmental/neutrality-v2.json",
+      "sha256": "24667db834267f497bdb0feab553ae985ea29060b5de92a12c803380ee39469a",
+      "variants": [
+        "ordinary",
+        "replay",
+        "crash"
+      ],
+      "introduced_by": "AQ-13"
     }
   ],
   "drivers": [
@@ -1161,9 +1174,13 @@
     {
       "path": "coverage-v2.json",
       "sha256": "4911c22d9a186a2ce8e78ef6c5367e1baa1a65fa220bd73a42c9defcaa272a4a"
+    },
+    {
+      "path": "coverage-v3.json",
+      "sha256": "594798d46de1bd4f2322ff833bb34b8fd340ac160b5c519f7192dc275edfad51"
     }
   ],
-  "coverage": "coverage-v2.json",
+  "coverage": "coverage-v3.json",
   "full_feature_set": [
     "workflow",
     "budget",
