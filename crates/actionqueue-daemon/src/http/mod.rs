@@ -270,20 +270,20 @@ pub fn build_router(state: RouterState) -> axum::Router {
     // Feature adapters run behind the blocking adapter; the shared V2 mutation
     // handlers publish through `mutate`. Nothing mutating exists when control is off.
     let controls = if control_enabled {
-        #[allow(unused_mut)]
-        let mut adapters: axum::Router<RouterState> = axum::Router::new();
-        #[cfg(feature = "actor")]
-        {
-            adapters = actors::register_routes(adapters);
-        }
-        #[cfg(feature = "platform")]
-        {
-            adapters = platform::register_routes(adapters);
-        }
-        adapters
-            .route_layer(axum::middleware::from_fn_with_state(state.clone(), api::blocking_adapter))
-            .merge(api::writes())
-            .route_layer(axum::middleware::from_fn_with_state(state.clone(), auth::authenticate))
+        let writes = api::writes();
+        #[cfg(any(feature = "actor", feature = "platform"))]
+        let writes = {
+            let adapters: axum::Router<RouterState> = axum::Router::new();
+            #[cfg(feature = "actor")]
+            let adapters = actors::register_routes(adapters);
+            #[cfg(feature = "platform")]
+            let adapters = platform::register_routes(adapters);
+            writes.merge(adapters.route_layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                api::blocking_adapter,
+            )))
+        };
+        writes.route_layer(axum::middleware::from_fn_with_state(state.clone(), auth::authenticate))
     } else {
         axum::Router::new()
     };

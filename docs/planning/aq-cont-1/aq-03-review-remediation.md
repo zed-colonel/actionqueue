@@ -59,10 +59,11 @@ including five FIFO substitutions in the bounded restore test. Stable rustfmt em
 
 ## Operator attention
 
-Append preparation now builds and validates a temporary projection image in
-addition to the existing projection clone. Snapshot encoding also decodes and
-validates the encoded payload before publication. These checks add traversal and
-allocation costs; no throughput benchmark is claimed. The existing full-WAL
+Snapshot encoding decodes and validates the encoded payload before publication.
+The per-append projection-image check introduced here was later consolidated
+(finalization, F-028): the mutation authority runs the shared target-event
+validation once on its prepared copy, and recovery validates the projection image
+once per open. No throughput benchmark is claimed. The existing full-WAL
 validation and immutable feature-profile policy remain in place.
 
 This remediation adds no format migration, feature-profile upgrade, or new durable
