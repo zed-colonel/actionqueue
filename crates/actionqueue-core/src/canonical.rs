@@ -2,7 +2,7 @@
 //! disposition). Integers are little endian, strings/bytes carry u64 lengths,
 //! options carry a 0/1 tag, and every tag is a protocol constant, never a Rust
 //! discriminant. Callers own the domain prefix and version.
-pub(crate) struct Encoder(pub(crate) Vec<u8>);
+pub(crate) struct Encoder(Vec<u8>);
 impl Encoder {
     pub(crate) fn new(prefix: &[u8]) -> Self {
         Self(prefix.to_vec())
@@ -18,6 +18,10 @@ impl Encoder {
     }
     pub(crate) fn bytes(&mut self, v: &[u8]) {
         self.u64(v.len() as u64);
+        self.0.extend(v);
+    }
+    /// Appends already-canonical bytes without a length prefix.
+    pub(crate) fn raw(&mut self, v: &[u8]) {
         self.0.extend(v);
     }
     pub(crate) fn text(&mut self, v: &str) {

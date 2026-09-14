@@ -62,7 +62,7 @@ impl CanonicalSignalV1 {
         });
         e.option(hash.as_ref(), Encoder::hash);
         e.option(s.occurred_at, Encoder::u64);
-        Ok(Self(e.0))
+        Ok(Self(e.finish()))
     }
     /// Independent implementations can compare these bytes against published vectors.
     pub fn bytes(&self) -> &[u8] {

@@ -198,7 +198,6 @@ pub enum DispatchError {
     InvalidBackoffConfig,
     /// Dependency declaration would introduce a cycle in the task DAG.
     DependencyCycle(actionqueue_workflow::dag::CycleError),
-    /// Retry decision from attempt outcome violated retry invariants.
     /// A dynamically submitted task was rejected (parent not found or terminal).
     SubmissionRejected {
         /// Task that was rejected.

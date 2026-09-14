@@ -27,7 +27,7 @@ impl CanonicalAdmissionV1 {
         crate::limits::AdmissionLimits::default().validate_spec(s, r.dependencies().len())?;
         let mut e = Encoder::new(b"AQ-CONT-1\0admission\0");
         e.u32(1);
-        e.0.extend(task_bytes(s, r.dependencies()));
+        e.raw(&task_bytes(s, r.dependencies()));
         let c = r.causal_context();
         e.text(c.trace_id().as_str());
         e.text(c.correlation_id().as_str());
@@ -98,7 +98,7 @@ pub fn scoped_child_key(
     e.uuid(parent.as_uuid());
     e.uuid(run.as_uuid());
     e.text(local.as_str());
-    crate::ids::AdmissionKey::new(format!("child/v1/{:x}", Sha256::digest(&e.0)))
+    crate::ids::AdmissionKey::new(format!("child/v1/{:x}", Sha256::digest(e.finish())))
         .expect("bounded hash key")
 }
 
@@ -107,7 +107,7 @@ pub(crate) fn task_bytes(
     s: &crate::task::task_spec::TaskSpec,
     dependencies: &[crate::ids::TaskId],
 ) -> Vec<u8> {
-    let mut e = Encoder(Vec::new());
+    let mut e = Encoder::new(&[]);
     e.uuid(s.id().as_uuid());
     e.bytes(s.task_payload().bytes());
     e.option(s.task_payload().content_type(), Encoder::text);
@@ -148,7 +148,7 @@ pub(crate) fn task_bytes(
             e.text(value.as_str());
         }
     });
-    e.0.extend(s.metadata().priority().to_le_bytes());
+    e.raw(&s.metadata().priority().to_le_bytes());
     e.option(s.metadata().description(), Encoder::text);
     let mut tags: Vec<_> = s.metadata().tags().iter().map(String::as_str).collect();
     tags.sort_unstable();
@@ -163,5 +163,5 @@ pub(crate) fn task_bytes(
         e.uuid(id.as_uuid());
     }
     e.option(s.tenant_id(), |e, id| e.uuid(id.as_uuid()));
-    e.0
+    e.finish()
 }

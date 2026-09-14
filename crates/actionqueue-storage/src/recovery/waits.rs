@@ -646,8 +646,8 @@ impl ReplayReducer {
         Ok(Some(WaitPreparation::Event(Box::new(WalEvent::new(r.sequence, event)), applied)))
     }
     /// Completed work is immutable history: a run or task that already reached its
-    /// outcome is never rewritten. A repeated cancel of an already-canceled target is
-    /// acknowledged by `prepare_cancel` as a no-op before this check applies.
+    /// outcome is never rewritten. A target that this history already canceled passes,
+    /// so preparation can acknowledge the repeat as an append-free no-op.
     fn validate_cancel(&self, r: &CancelRecord) -> Result<(), WaitRejection> {
         use actionqueue_core::continuation::TaskTerminalStatus as T;
         let (tenant, terminal) = match r.target {

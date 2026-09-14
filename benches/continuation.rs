@@ -139,8 +139,9 @@ fn main() {
                 assert_eq!(work::counts(), [0, 0, remaining.min(batch), 0, 0, 0, 0]);
                 work::reset();
                 d.reconcile_batch(25, batch);
-                // Preparation and publication each remove one indexed candidate.
-                assert_eq!(work::counts()[6], 2 * remaining.min(batch));
+                // Preparation removes each matched candidate from its index exactly
+                // once; publication swaps the prepared copy in without re-applying.
+                assert_eq!(work::counts()[6], remaining.min(batch));
                 remaining = remaining.saturating_sub(batch);
                 assert_eq!(d.a().projection().waits().active_count(), remaining);
             }

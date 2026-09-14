@@ -88,8 +88,8 @@ impl Encoder {
 }
 /// Encodes every producer-proposed field, excluding transport/server commit data.
 pub fn canonical_disposition(disposition: &AttemptDisposition) -> Vec<u8> {
-    let mut e = Encoder(b"AQ-CONT-1\0disposition\0".to_vec());
-    e.0.extend(1u32.to_le_bytes());
+    let mut e = Encoder::new(b"AQ-CONT-1\0disposition\0");
+    e.u32(1);
     e.byte(1);
     match disposition.outcome() {
         DispositionOutcome::Complete => e.byte(0),
@@ -157,7 +157,7 @@ pub fn canonical_disposition(disposition: &AttemptDisposition) -> Vec<u8> {
         });
         e.u64(c.amount);
     }
-    e.0
+    e.finish()
 }
 /// Computes the digest without incidental serialization or enum discriminants.
 pub fn disposition_digest(disposition: &AttemptDisposition) -> DispositionDigest {
