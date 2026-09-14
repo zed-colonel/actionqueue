@@ -11,7 +11,7 @@ use super::{
     writer::{WalWriter, WalWriterError},
 };
 use crate::{
-    recovery::reducer::ReplayReducer,
+    recovery::bootstrap::RecoveredProjection,
     store::{StoreError, StoreSession},
 };
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,13 +36,14 @@ impl From<StoreError> for WalFsWriterInitError {
         Self::Store(e)
     }
 }
+/// The writer owns framing and durability only. Semantic validation belongs to the
+/// mutation authority before append and to recovery before writable access.
 #[derive(Debug)]
 pub struct WalFsWriter {
     file: File,
     current_sequence: u64,
     poisoned: bool,
     session: Option<StoreSession>,
-    projection: Option<ReplayReducer>,
 }
 impl WalFsWriter {
     pub fn new(session: StoreSession) -> Result<Self, WalFsWriterInitError> {
@@ -54,9 +55,17 @@ impl WalFsWriter {
     ) -> Result<Self, WalFsWriterInitError> {
         session.require_write()?;
         let recovered = crate::recovery::bootstrap::recover_read_only(&session, policy)?;
+        Self::from_recovered(session, &recovered)
+    }
+    /// Reuses a completed recovery of the same session instead of replaying the WAL again.
+    pub fn from_recovered(
+        session: StoreSession,
+        recovered: &RecoveredProjection,
+    ) -> Result<Self, WalFsWriterInitError> {
+        session.require_write()?;
         session.claim_writer()?;
         let mut file = OpenOptions::new().read(true).write(true).open(session.wal_path())?;
-        if let Some(tail) = recovered.incomplete_tail {
+        if let Some(tail) = &recovered.incomplete_tail {
             file.set_len(tail.offset)?;
             file.sync_all()?;
         }
@@ -66,7 +75,6 @@ impl WalFsWriter {
             current_sequence: recovered.projection.latest_sequence(),
             poisoned: false,
             session: Some(session),
-            projection: Some(recovered.projection),
         })
     }
     pub fn session(&self) -> Option<&StoreSession> {
@@ -97,13 +105,7 @@ impl WalFsWriter {
         let mut file =
             OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path)?;
         file.seek(SeekFrom::End(0))?;
-        Ok(Self {
-            file,
-            current_sequence: sequence,
-            poisoned: false,
-            session: None,
-            projection: None,
-        })
+        Ok(Self { file, current_sequence: sequence, poisoned: false, session: None })
     }
 }
 impl WalWriter for WalFsWriter {
@@ -121,7 +123,6 @@ impl WalWriter for WalFsWriter {
         if event.sequence() < expected || (self.session.is_some() && event.sequence() != expected) {
             return Err(WalWriterError::SequenceViolation { expected, provided: event.sequence() });
         }
-        let mut prepared = self.projection.clone();
         if let Some(session) = &self.session {
             crate::store::check_event_profile(event.event(), &session.manifest().features)
                 .map_err(|e| WalWriterError::EncodeError(e.to_string()))?;
@@ -130,13 +131,6 @@ impl WalWriter for WalFsWriter {
                     "StoreInitialized is only valid at sequence one".into(),
                 ));
             }
-        }
-        if let Some(p) = &mut prepared {
-            p.validate_target_event(event.event())
-                .map_err(|e| WalWriterError::EncodeError(e.to_string()))?;
-            p.apply(event).map_err(|e| WalWriterError::EncodeError(e.to_string()))?;
-            // An accepted durable prefix must also be inspectable and snapshotable.
-            p.projection_image().map_err(|e| WalWriterError::EncodeError(e.to_string()))?;
         }
         let bytes = super::codec::encode_for_store(
             event,
@@ -187,7 +181,6 @@ impl WalWriter for WalFsWriter {
             return Err(WalWriterError::IoError(e.to_string()));
         }
         self.current_sequence = event.sequence();
-        self.projection = prepared;
         Ok(())
     }
     fn flush(&mut self) -> Result<(), WalWriterError> {

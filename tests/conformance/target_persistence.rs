@@ -502,12 +502,6 @@ fn cancellation_before_creation_is_rejected_before_append_and_projection_publica
         assert_eq!(tree(&source), before);
     }
     drop(authority);
-    let session = open_store(&source, OpenOptions::ReadWrite).unwrap();
-    let mut w = WalFsWriter::new(session).unwrap();
-    assert!(w.append(&WalEvent::new(3, E::TaskCanceled { task_id: t, timestamp: 50 })).is_err());
-    assert_eq!(w.current_sequence(), 2);
-    assert_eq!(tree(&source), before);
-    drop(w);
     // Equality is valid, and a rejected attempt must leave sequence 3 available.
     let mut authority =
         open_store(&source, OpenOptions::ReadWrite).unwrap().into_authority().unwrap().with_host(
@@ -1137,6 +1131,32 @@ fn malformed_backup_descriptors_refuse_before_destination_creation() {
     }
 }
 
+/// The writer owns framing only; the authority's prepared copy runs the same
+/// semantic validation as replay, so a record that recovery would refuse is
+/// rejected before any durable write and the store tree is unchanged.
+#[test]
+fn authority_preparation_validates_target_events_like_replay() {
+    use actionqueue_core::mutation::{DurabilityPolicy, MutationAuthority, MutationCommand};
+    use actionqueue_storage::mutation::authority::MutationProjection;
+    let dir = tempfile::tempdir().unwrap();
+    let mut authority = init(dir.path()).into_authority().unwrap();
+    let t = TaskId::new();
+    let self_edge = E::DependencyDeclared { task_id: t, depends_on: vec![t], timestamp: 1 };
+    let mut replay = authority.projection().clone();
+    assert!(MutationProjection::apply_event(&mut replay, &WalEvent::new(2, self_edge)).is_err());
+    let before = tree(dir.path());
+    assert!(authority
+        .submit_command(
+            MutationCommand::DependencyDeclare(
+                actionqueue_core::mutation::DependencyDeclareCommand::new(2, t, vec![t], 1)
+            ),
+            DurabilityPolicy::Immediate,
+        )
+        .is_err());
+    assert_eq!(authority.projection().latest_sequence(), 1);
+    assert!(!authority.recovery_required());
+    assert_eq!(tree(dir.path()), before);
+}
 #[test]
 fn canonical_projection_matches_independent_sha256_vector() {
     let vector: serde_json::Value =

@@ -81,7 +81,7 @@ impl StoreSession {
             &self,
             crate::wal::repair::RepairPolicy::Strict,
         )?;
-        let writer = crate::wal::fs_writer::WalFsWriter::new(self)
+        let writer = crate::wal::fs_writer::WalFsWriter::from_recovered(self, &recovered)
             .map_err(|e| StoreError::InvalidStore(e.to_string()))?;
         Ok(crate::mutation::authority::StorageMutationAuthority::new(writer, recovered.projection))
     }

@@ -187,8 +187,8 @@ pub fn load_projection_with_features(
         .map_err(|e| RecoveryBootstrapError::WalReplay(e.to_string()))?;
     let wal_path = session.wal_path();
     let snapshot_path = session.snapshot_path();
-    let writer =
-        WalFsWriter::new(session).map_err(|e| RecoveryBootstrapError::WalInit(e.to_string()))?;
+    let writer = WalFsWriter::from_recovered(session, &recovered)
+        .map_err(|e| RecoveryBootstrapError::WalInit(e.to_string()))?;
     let wal_append_telemetry = WalAppendTelemetry::new();
     let latest = recovered.projection.latest_sequence();
     Ok(RecoveryBootstrap {

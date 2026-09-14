@@ -379,7 +379,10 @@ impl MutationProjection for ReplayReducer {
     {
         ReplayReducer::prepare_disposition(self, c, a, cl, s)
     }
+    /// The same semantic validation as replay runs once here, on the prepared copy,
+    /// before any durable write.
     fn apply_event(&mut self, event: &WalEvent) -> Result<(), Self::Error> {
+        self.validate_target_event(event.event())?;
         self.apply(event)
     }
 }
