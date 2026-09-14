@@ -21,6 +21,29 @@ pub enum ControlOperation {
     CancelWait { run_id: actionqueue_core::ids::RunId, wait_id: actionqueue_core::ids::WaitId },
     /// Resolve an identified wait.
     ResolveWait { run_id: actionqueue_core::ids::RunId, wait_id: actionqueue_core::ids::WaitId },
+    /// Pause store-wide dispatch.
+    PauseEngine,
+    /// Resume store-wide dispatch.
+    ResumeEngine,
+}
+/// Engine control acknowledgement; repeats are idempotent and append nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EngineControlOutcome {
+    Paused,
+    AlreadyPaused,
+    Resumed,
+    AlreadyResumed,
+}
+impl EngineControlOutcome {
+    /// Locked public status vocabulary.
+    pub fn status(self) -> &'static str {
+        match self {
+            Self::Paused => "paused",
+            Self::AlreadyPaused => "already_paused",
+            Self::Resumed => "resumed",
+            Self::AlreadyResumed => "already_resumed",
+        }
+    }
 }
 /// Successful control response.
 #[derive(Debug)]
@@ -31,6 +54,8 @@ pub enum ControlOutcome {
     Signal(actionqueue_core::continuation::AdmitSignalOutcome),
     /// Applied mutation.
     Mutation(MutationOutcome),
+    /// Engine pause or resume acknowledgement.
+    Engine(EngineControlOutcome),
 }
 /// Authenticates scope and authorizes before idempotency/target inspection.
 pub fn execute_control<W: WalWriter>(
@@ -158,6 +183,40 @@ fn execute_bound_control<W: WalWriter>(
             )
             .map(ControlOutcome::Mutation)
             .map_err(err)
+        }
+        ControlOperation::PauseEngine => {
+            use EngineControlOutcome as O;
+            authorize(a, host, QueueAction::PauseEngine)?;
+            if a.projection().is_engine_paused() {
+                return Ok(ControlOutcome::Engine(O::AlreadyPaused));
+            }
+            let sequence = a.projection().latest_sequence().saturating_add(1);
+            let command =
+                MutationCommand::EnginePause(EnginePauseCommand::new(sequence, clock.now()));
+            match a.submit_command(command.with_control(host), DurabilityPolicy::Immediate) {
+                Ok(_) => Ok(ControlOutcome::Engine(O::Paused)),
+                Err(MutationAuthorityError::Validation(
+                    MutationValidationError::EngineAlreadyPaused,
+                )) => Ok(ControlOutcome::Engine(O::AlreadyPaused)),
+                Err(e) => Err(err(e)),
+            }
+        }
+        ControlOperation::ResumeEngine => {
+            use EngineControlOutcome as O;
+            authorize(a, host, QueueAction::ResumeEngine)?;
+            if !a.projection().is_engine_paused() {
+                return Ok(ControlOutcome::Engine(O::AlreadyResumed));
+            }
+            let sequence = a.projection().latest_sequence().saturating_add(1);
+            let command =
+                MutationCommand::EngineResume(EngineResumeCommand::new(sequence, clock.now()));
+            match a.submit_command(command.with_control(host), DurabilityPolicy::Immediate) {
+                Ok(_) => Ok(ControlOutcome::Engine(O::Resumed)),
+                Err(MutationAuthorityError::Validation(
+                    MutationValidationError::EngineNotPaused,
+                )) => Ok(ControlOutcome::Engine(O::AlreadyResumed)),
+                Err(e) => Err(err(e)),
+            }
         }
     }
 }

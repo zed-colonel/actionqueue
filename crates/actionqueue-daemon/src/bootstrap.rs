@@ -309,7 +309,7 @@ pub fn bootstrap_with_authenticator(
     actionqueue_runtime::waits::reconcile(&mut authority, SystemClock.now())
         .map_err(|e| BootstrapError::Dependency(format!("wait_reconciliation: {e}")))?;
     let projection = authority.projection().clone();
-    let control_authority = Some(std::sync::Arc::new(std::sync::Mutex::new(authority)));
+    let control_authority = std::sync::Arc::new(std::sync::Mutex::new(authority));
 
     // Create a single authoritative daemon clock handle for router and metrics wiring.
     let clock: SharedDaemonClock = std::sync::Arc::new(SystemClock);
@@ -327,22 +327,13 @@ pub fn bootstrap_with_authenticator(
         recovery_observations,
     };
     let shared_projection = std::sync::Arc::new(std::sync::RwLock::new(projection.clone()));
-    let mut router_state_inner = if let Some(authority) = control_authority {
-        crate::http::RouterStateInner::with_control_authority(
-            router_config,
-            shared_projection,
-            observability,
-            authority,
-            ready_status,
-        )
-    } else {
-        crate::http::RouterStateInner::new(
-            router_config,
-            shared_projection,
-            observability,
-            ready_status,
-        )
-    };
+    let mut router_state_inner = crate::http::RouterStateInner::with_control_authority(
+        router_config,
+        shared_projection,
+        observability,
+        control_authority,
+        ready_status,
+    );
     #[cfg(feature = "actor")]
     {
         router_state_inner.remote_policy = config.remote_policy;

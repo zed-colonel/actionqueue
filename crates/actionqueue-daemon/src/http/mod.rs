@@ -185,29 +185,11 @@ impl RouterStateInner {
         control_authority: ControlMutationAuthority,
         ready_status: ReadyStatus,
     ) -> Self {
-        Self {
-            #[cfg(feature = "actor")]
-            remote_policy: Default::default(),
-            maintenance_started: AtomicBool::new(false),
-            maintenance_stopping: AtomicBool::new(false),
-            maintenance_task: Mutex::new(None),
-            background_maintenance: true,
-            disclosure_policy: Default::default(),
-            admission_throttle: Mutex::new(Default::default()),
-            authority_lane: Arc::new(tokio::sync::Semaphore::new(32)),
-            operational_failed: AtomicBool::new(false),
-            host_authenticator: None,
-            store_session: control_authority.lock().ok().and_then(|a| a.store_session().cloned()),
-            router_config,
-            shared_projection,
-            control_authority: Some(control_authority),
-            metrics: observability.metrics,
-            wal_append_telemetry: observability.wal_append_telemetry,
-            clock: observability.clock,
-            recovery_observations: observability.recovery_observations,
-            recovery_histogram_observed: AtomicBool::new(false),
-            ready_status,
-        }
+        let mut state = Self::new(router_config, shared_projection, observability, ready_status);
+        state.store_session =
+            control_authority.lock().ok().and_then(|a| a.store_session().cloned());
+        state.control_authority = Some(control_authority);
+        state
     }
 }
 
@@ -216,7 +198,6 @@ pub mod actors;
 mod admission_throttle;
 pub mod api;
 pub mod auth;
-pub mod control;
 pub mod health;
 pub mod maintenance;
 pub mod metrics;
@@ -286,24 +267,25 @@ pub fn build_router(state: RouterState) -> axum::Router {
     ));
     let router = router.merge(inspection);
     let router = metrics::register_routes(router, metrics_enabled);
-    let controls = axum::Router::new();
-    let controls = control::register_routes(controls, control_enabled);
-    #[cfg(feature = "actor")]
-    let controls = if control_enabled { actors::register_routes(controls) } else { controls };
-    #[cfg(feature = "platform")]
-    let controls = if control_enabled { platform::register_routes(controls) } else { controls };
+    // Feature adapters run behind the blocking adapter; the shared V2 mutation
+    // handlers publish through `mutate`. Nothing mutating exists when control is off.
     let controls = if control_enabled {
-        controls
+        #[allow(unused_mut)]
+        let mut adapters: axum::Router<RouterState> = axum::Router::new();
+        #[cfg(feature = "actor")]
+        {
+            adapters = actors::register_routes(adapters);
+        }
+        #[cfg(feature = "platform")]
+        {
+            adapters = platform::register_routes(adapters);
+        }
+        adapters
             .route_layer(axum::middleware::from_fn_with_state(state.clone(), api::blocking_adapter))
             .merge(api::writes())
-    } else {
-        controls
-    };
-    let controls = if control_enabled {
-        controls
             .route_layer(axum::middleware::from_fn_with_state(state.clone(), auth::authenticate))
     } else {
-        controls
+        axum::Router::new()
     };
     router
         .merge(controls)

@@ -20,15 +20,13 @@ pub type HostAuthenticator = Arc<
 /// The host could not authenticate this request.
 #[derive(Debug, Clone, Copy)]
 pub struct AuthenticationError;
-/// Authentication middleware for actor/platform/control routes.
+/// Authentication middleware for actor/platform/control routes, which are
+/// registered only when control is enabled.
 pub async fn authenticate(
     State(state): State<RouterState>,
     mut request: Request,
     next: Next,
 ) -> Response {
-    if !state.router_config.control_enabled {
-        return StatusCode::NOT_FOUND.into_response();
-    }
     super::maintenance::start(&state);
     let Some(hook) = &state.host_authenticator else {
         return StatusCode::UNAUTHORIZED.into_response();

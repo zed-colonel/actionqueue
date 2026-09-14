@@ -48,6 +48,9 @@ pub(crate) fn service_response(result: Result<ControlOutcome, ServiceError>) -> 
         Ok(ControlOutcome::Mutation(_)) => {
             Json(serde_json::json!({"status":"applied"})).into_response()
         }
+        Ok(ControlOutcome::Engine(outcome)) => {
+            Json(serde_json::json!({"status":outcome.status()})).into_response()
+        }
         Err(e) => {
             let code = e.code();
             let status = match code {
@@ -67,14 +70,12 @@ pub(crate) fn service_response(result: Result<ControlOutcome, ServiceError>) -> 
         }
     }
 }
+/// Mutating routes are registered only when control is enabled.
 async fn mutate(
     state: RouterState,
     host: HostControlContext,
     operation: ControlOperation,
 ) -> Response {
-    if !state.router_config.control_enabled {
-        return StatusCode::NOT_FOUND.into_response();
-    }
     if !state.operational_failed.load(std::sync::atomic::Ordering::Acquire) {
         if let ControlOperation::AdmitTask(q) = &operation {
             if super::admission_throttle::throttled(&state, &host, q) {
@@ -406,6 +407,18 @@ pub fn reads() -> axum::Router<RouterState> {
         .route("/api/v2/traces/:id", get(trace))
         .route("/api/v2/inspect", get(trace_query))
 }
+async fn engine_pause(
+    State(s): State<RouterState>,
+    Extension(h): Extension<HostControlContext>,
+) -> Response {
+    mutate(s, h, ControlOperation::PauseEngine).await
+}
+async fn engine_resume(
+    State(s): State<RouterState>,
+    Extension(h): Extension<HostControlContext>,
+) -> Response {
+    mutate(s, h, ControlOperation::ResumeEngine).await
+}
 pub fn writes() -> axum::Router<RouterState> {
     use axum::routing::post;
     axum::Router::new()
@@ -414,6 +427,8 @@ pub fn writes() -> axum::Router<RouterState> {
         .route("/api/v2/tasks/:id", post(task_cancel))
         .route("/api/v2/runs/:id", post(run_cancel))
         .route("/api/v2/waits/:id", post(wait_control))
+        .route("/api/v2/engine/pause", post(engine_pause))
+        .route("/api/v2/engine/resume", post(engine_resume))
 }
 
 /// Framework extractor failures also use redacted error bodies; rejected values are never echoed.

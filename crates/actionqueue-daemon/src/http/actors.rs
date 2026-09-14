@@ -172,11 +172,20 @@ async fn deregister_actor(
     }
 }
 
-/// Lists eligible work in the authenticated actor's explicit namespace.
-async fn claimable_runs(
-    State(state): State<RouterState>,
-    axum::Extension(host): axum::Extension<actionqueue_core::control::HostControlContext>,
-    Path(actor_id): Path<ActorId>,
+/// Actor-scoped remote operations share one shape: the authenticated principal
+/// must own the path actor, the remote scheduler settles before the operation,
+/// and a durable change settles again. The blocking adapter publishes the
+/// projection (with the equal-revision tripwire) after every adapter route.
+fn actor_operation<T: serde::Serialize>(
+    state: &RouterState,
+    host: &actionqueue_core::control::HostControlContext,
+    actor_id: ActorId,
+    rejection: StatusCode,
+    operation: impl FnOnce(
+        &mut ControlAuthority,
+        &actionqueue_core::control::HostControlContext,
+        u64,
+    ) -> Result<Option<T>, actionqueue_core::control::ControlError>,
 ) -> axum::response::Response {
     if host.actor_id != Some(actor_id) {
         return StatusCode::FORBIDDEN.into_response();
@@ -187,13 +196,38 @@ async fn claimable_runs(
     let Ok(mut a) = a.lock() else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
-    if crate::http::maintenance::maintain_locked(&state, &mut a).is_err() {
+    if crate::http::maintenance::maintain_locked(state, &mut a).is_err() {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     }
-    match actionqueue_runtime::remote::claimable(&a, &host, state.clock.now()) {
-        Ok(runs) => Json(serde_json::json!({"runs":runs})).into_response(),
-        Err(_) => StatusCode::FORBIDDEN.into_response(),
+    let value = match operation(&mut a, host, state.clock.now()) {
+        Ok(value) => value,
+        Err(_) => return rejection.into_response(),
+    };
+    if value.is_none() && crate::http::maintenance::maintain_locked(state, &mut a).is_err() {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
     }
+    match value {
+        Some(value) => Json(value).into_response(),
+        None => StatusCode::OK.into_response(),
+    }
+}
+type ControlAuthority = actionqueue_storage::mutation::StorageMutationAuthority<
+    actionqueue_storage::wal::InstrumentedWalWriter<
+        actionqueue_storage::wal::fs_writer::WalFsWriter,
+    >,
+    actionqueue_storage::recovery::reducer::ReplayReducer,
+>;
+
+/// Lists eligible work in the authenticated actor's explicit namespace.
+async fn claimable_runs(
+    State(state): State<RouterState>,
+    axum::Extension(host): axum::Extension<actionqueue_core::control::HostControlContext>,
+    Path(actor_id): Path<ActorId>,
+) -> axum::response::Response {
+    actor_operation(&state, &host, actor_id, StatusCode::FORBIDDEN, |a, host, now| {
+        actionqueue_runtime::remote::claimable(a, host, now)
+            .map(|runs| Some(serde_json::json!({"runs":runs})))
+    })
 }
 async fn claim_run(
     State(state): State<RouterState>,
@@ -201,33 +235,10 @@ async fn claim_run(
     Path(actor_id): Path<ActorId>,
     Json(request): Json<actionqueue_actor::protocol::RemoteClaim>,
 ) -> axum::response::Response {
-    if host.actor_id != Some(actor_id) {
-        return StatusCode::FORBIDDEN.into_response();
-    }
-    let Some(a) = state.control_authority.as_ref() else {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
-    };
-    let Ok(mut a) = a.lock() else {
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    };
-    if crate::http::maintenance::maintain_locked(&state, &mut a).is_err() {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
-    }
-    match actionqueue_runtime::remote::claim_with_policy(
-        &mut a,
-        &host,
-        request,
-        state.clock.now(),
-        state.remote_policy,
-    ) {
-        Ok(work) => {
-            if let Err(e) = crate::http::sync_projection(&state, &a) {
-                return e;
-            }
-            Json(work).into_response()
-        }
-        Err(_) => StatusCode::CONFLICT.into_response(),
-    }
+    let policy = state.remote_policy;
+    actor_operation(&state, &host, actor_id, StatusCode::CONFLICT, |a, host, now| {
+        actionqueue_runtime::remote::claim_with_policy(a, host, request, now, policy).map(Some)
+    })
 }
 async fn submit_result(
     State(state): State<RouterState>,
@@ -235,30 +246,9 @@ async fn submit_result(
     Path(actor_id): Path<ActorId>,
     Json(request): Json<actionqueue_actor::protocol::RemoteAttemptResult>,
 ) -> axum::response::Response {
-    if host.actor_id != Some(actor_id) {
-        return StatusCode::FORBIDDEN.into_response();
-    }
-    let Some(a) = state.control_authority.as_ref() else {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
-    };
-    let Ok(mut a) = a.lock() else {
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    };
-    if crate::http::maintenance::maintain_locked(&state, &mut a).is_err() {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
-    }
-    match actionqueue_runtime::remote::submit_result(&mut a, &host, request, state.clock.now()) {
-        Ok(()) => {
-            if crate::http::maintenance::maintain_locked(&state, &mut a).is_err() {
-                return StatusCode::SERVICE_UNAVAILABLE.into_response();
-            }
-            if let Err(e) = crate::http::sync_projection(&state, &a) {
-                return e;
-            }
-            StatusCode::OK.into_response()
-        }
-        Err(_) => StatusCode::CONFLICT.into_response(),
-    }
+    actor_operation(&state, &host, actor_id, StatusCode::CONFLICT, |a, host, now| {
+        actionqueue_runtime::remote::submit_result(a, host, request, now).map(|()| None::<()>)
+    })
 }
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -274,36 +264,16 @@ async fn renew_lease(
     Path(actor_id): Path<ActorId>,
     Json(request): Json<RenewRequest>,
 ) -> axum::response::Response {
-    if host.actor_id != Some(actor_id) {
-        return StatusCode::FORBIDDEN.into_response();
-    }
-    let Some(a) = state.control_authority.as_ref() else {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
-    };
-    let Ok(mut a) = a.lock() else {
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    };
-    if crate::http::maintenance::maintain_locked(&state, &mut a).is_err() {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
-    }
-    match actionqueue_runtime::remote::renew(
-        &mut a,
-        &host,
-        request.run_id,
-        request.attempt_id,
-        request.lease_fence,
-        state.clock.now(),
-        request.expiry,
-    ) {
-        Ok(()) => {
-            if crate::http::maintenance::maintain_locked(&state, &mut a).is_err() {
-                return StatusCode::SERVICE_UNAVAILABLE.into_response();
-            }
-            if let Err(e) = crate::http::sync_projection(&state, &a) {
-                return e;
-            }
-            StatusCode::OK.into_response()
-        }
-        Err(_) => StatusCode::CONFLICT.into_response(),
-    }
+    actor_operation(&state, &host, actor_id, StatusCode::CONFLICT, |a, host, now| {
+        actionqueue_runtime::remote::renew(
+            a,
+            host,
+            request.run_id,
+            request.attempt_id,
+            request.lease_fence,
+            now,
+            request.expiry,
+        )
+        .map(|()| None::<()>)
+    })
 }
