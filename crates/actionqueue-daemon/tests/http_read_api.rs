@@ -390,7 +390,17 @@ async fn same_revision_projection_divergence_fails_closed_and_counts_once() {
         .without_background_maintenance(),
     );
     let router = build_router(state.clone());
-    assert!(maintenance::tick(&state).is_err());
+    // An idle maintenance pass publishes nothing and performs no digest work.
+    assert!(maintenance::tick(&state).is_ok());
+    assert_eq!(a.lock().unwrap().telemetry().snapshot().projection_mismatches, 0);
+    // The first mutation attempt (an exact duplicate that appends nothing) runs the
+    // equal-revision tripwire; the daemon then fails closed.
+    assert_eq!(
+        send(&router, "POST", "/api/v2/admissions:ensure", serde_json::to_vec(&q).unwrap(), true)
+            .await
+            .0,
+        200
+    );
     assert_eq!(send(&router, "GET", "/ready", Body::empty(), false).await.0, 503);
     assert_eq!(
         send(&router, "POST", "/api/v2/admissions:ensure", serde_json::to_vec(&q).unwrap(), true)

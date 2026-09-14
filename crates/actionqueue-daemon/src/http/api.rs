@@ -172,26 +172,25 @@ async fn inspect(
     };
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        let p = match super::read_inspection_projection(&s) {
-            Ok(p) => p,
-            Err(e) => return *e,
-        };
         let platform = s
             .store_session
             .as_ref()
             .is_some_and(|s| s.manifest().features.iter().any(|f| f == "platform"));
-        let result = Inspector::new(
-            &p,
-            &h,
-            platform,
-            s.disclosure_policy,
-            q.display_references,
-            s.clock.now(),
-        )
-        .and_then(|i| operation(&i));
+        let result = super::with_inspection_projection(&s, |p| {
+            Inspector::new(
+                p,
+                &h,
+                platform,
+                s.disclosure_policy,
+                q.display_references,
+                s.clock.now(),
+            )
+            .and_then(|i| operation(&i))
+        });
         match result {
-            Ok(v) => Json(v).into_response(),
-            Err(e) => inspection_error(e),
+            Ok(Ok(v)) => Json(v).into_response(),
+            Ok(Err(e)) => inspection_error(e),
+            Err(e) => *e,
         }
     })
     .await

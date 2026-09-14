@@ -234,6 +234,57 @@ fn daemon_maintenance_resolves_deadlines_without_actor_requirement() {
     ));
 }
 
+/// An idle maintenance pass publishes nothing: no projection copy and no digest
+/// (which would walk every retained wait record). Publication resumes on progress.
+#[test]
+fn idle_daemon_maintenance_performs_no_projection_image_or_digest_work() {
+    use std::sync::{Arc, Mutex, RwLock};
+
+    use actionqueue_daemon::{
+        bootstrap::{ReadyStatus, RouterConfig},
+        http::{RouterObservability, RouterStateInner},
+    };
+    use actionqueue_storage::{
+        recovery::work,
+        wal::{InstrumentedWalWriter, WalAppendTelemetry},
+    };
+    let dir = resume_dir();
+    let mut a = s::open(dir.path());
+    let r = running(&mut a, 1, None, false);
+    establish_wait(&mut a, r, spec(WaitId::new(), None));
+    let (writer, projection) = a.into_parts();
+    let telemetry = WalAppendTelemetry::new();
+    let a = Arc::new(Mutex::new(actionqueue_storage::mutation::StorageMutationAuthority::new(
+        InstrumentedWalWriter::new(writer, telemetry.clone()),
+        projection.clone(),
+    )));
+    let state = Arc::new(
+        RouterStateInner::with_control_authority(
+            RouterConfig { control_enabled: true, metrics_enabled: false },
+            Arc::new(RwLock::new(projection)),
+            RouterObservability {
+                metrics: Arc::new(
+                    actionqueue_daemon::metrics::registry::MetricsRegistry::new(None).unwrap(),
+                ),
+                wal_append_telemetry: telemetry,
+                clock: Arc::new(MockClock::new(40)),
+                recovery_observations:
+                    actionqueue_storage::recovery::bootstrap::RecoveryObservations::zero(),
+            },
+            a.clone(),
+            ReadyStatus::ready(),
+        )
+        .without_background_maintenance(),
+    );
+    let sequence = a.lock().unwrap().projection().latest_sequence();
+    assert_eq!(a.lock().unwrap().projection().waits().active_count(), 1);
+    for _ in 0..3 {
+        work::reset();
+        actionqueue_daemon::http::maintenance::tick(&state).unwrap();
+        assert_eq!(a.lock().unwrap().projection().latest_sequence(), sequence);
+        assert_eq!(work::counts()[0], 0, "idle tick walked wait history");
+    }
+}
 #[test]
 fn control_target_history_is_exact_at_equal_times_and_rebuilt_from_retained_wal() {
     use actionqueue_runtime::control::{execute_control, ControlOperation};

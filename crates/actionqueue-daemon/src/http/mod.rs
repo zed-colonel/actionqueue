@@ -312,6 +312,9 @@ pub fn build_router(state: RouterState) -> axum::Router {
         .with_state(state)
 }
 
+/// Publishes after a mutation attempt. Equal revisions must describe the same
+/// authoritative facts, so an attempt that appended nothing runs the digest
+/// tripwire instead of copying; a newly committed prefix is copied as-is.
 // The caller returns this response directly to Axum on the exceptional path.
 #[allow(clippy::result_large_err)]
 pub(crate) fn sync_projection<W: actionqueue_storage::wal::writer::WalWriter>(
@@ -319,17 +322,29 @@ pub(crate) fn sync_projection<W: actionqueue_storage::wal::writer::WalWriter>(
     a: &StorageMutationAuthority<W, ReplayReducer>,
 ) -> Result<(), axum::response::Response> {
     let mut published = write_projection(state).map_err(|e| *e)?;
-    // Equal revisions must describe the same authoritative facts. Different
-    // revisions are expected while publishing a newly committed prefix.
-    if published.latest_sequence() == a.projection().latest_sequence()
-        && !matches!((published.projection_digest(), a.projection().projection_digest()), (Ok(left), Ok(right)) if left == right)
-    {
+    if published.latest_sequence() == a.projection().latest_sequence() {
+        if matches!((published.projection_digest(), a.projection().projection_digest()), (Ok(left), Ok(right)) if left == right)
+        {
+            return Ok(());
+        }
         if !state.operational_failed.swap(true, Ordering::AcqRel) {
             a.telemetry().projection_mismatch();
         }
         return Err(projection_poison_response());
     }
     *published = a.projection().clone();
+    Ok(())
+}
+/// Publishes a maintenance pass. An idle pass leaves the revision unchanged and
+/// performs no projection copy or digest work; the tripwire belongs to mutations.
+pub(crate) fn publish_progress<W: actionqueue_storage::wal::writer::WalWriter>(
+    state: &RouterState,
+    a: &StorageMutationAuthority<W, ReplayReducer>,
+) -> Result<(), Box<axum::response::Response>> {
+    let mut published = write_projection(state)?;
+    if published.latest_sequence() != a.projection().latest_sequence() {
+        *published = a.projection().clone();
+    }
     Ok(())
 }
 #[cfg(feature = "actor")]
@@ -358,17 +373,19 @@ pub(crate) fn execute_host_mutation<W: actionqueue_storage::wal::writer::WalWrit
     result
 }
 
-/// Inspection snapshots and grant checks use the same authoritative revision.
-pub(crate) fn read_inspection_projection(
+/// Inspection snapshots and grant checks use the same authoritative revision,
+/// read in place under the authority guard rather than through a copy.
+pub(crate) fn with_inspection_projection<T>(
     state: &RouterState,
-) -> Result<ReplayReducer, Box<axum::response::Response>> {
+    inspect: impl FnOnce(&ReplayReducer) -> T,
+) -> Result<T, Box<axum::response::Response>> {
     if let Some(authority) = &state.control_authority {
         return authority
             .lock()
-            .map(|a| a.projection().clone())
+            .map(|a| inspect(a.projection()))
             .map_err(|_| Box::new(projection_poison_response()));
     }
-    read_projection(state).map(|p| p.clone())
+    read_projection(state).map(|p| inspect(&p))
 }
 
 #[cfg(all(test, feature = "platform"))]

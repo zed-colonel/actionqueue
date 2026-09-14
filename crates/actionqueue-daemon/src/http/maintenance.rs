@@ -24,7 +24,7 @@ pub(crate) fn maintain_locked<W: WalWriter>(
         state.operational_failed.store(true, std::sync::atomic::Ordering::Release);
     }
     // Even a failed multi-record pass may have made durable progress.
-    super::sync_projection(state, a)
+    super::publish_progress(state, a)
         .map_err(|_| ControlError::Mutation("projection unavailable".into()))?;
     result
 }
