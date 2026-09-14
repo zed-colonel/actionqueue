@@ -104,11 +104,7 @@ impl ReplayReducer {
                 resumed_at: w.timestamp,
             };
         }
-        let w = self
-            .waits
-            .records()
-            .find(|w| w.run_id == run && w.resolution.as_ref().is_some_and(|r| r.sequence == id.0))
-            .expect("validated immutable wake source");
+        let w = self.waits.resolved_wait(run, id.0).expect("validated immutable wake source");
         self.wait_resume_context(w)
     }
     pub(crate) fn validate_accepted_start(
@@ -122,7 +118,7 @@ impl ReplayReducer {
             || run.state() != RunState::Running
             || run.current_attempt_id().is_some()
             || self.is_task_canceled(run.task_id())
-            || self.attempt_history.values().flatten().any(|a| a.attempt_id() == s.attempt_id)
+            || self.attempt_entry(s.attempt_id).is_some()
             || self.next_resume_assignment(s.run_id) != s.assignment
         {
             return Err(bad);
@@ -146,9 +142,7 @@ impl ReplayReducer {
         if d != DurabilityPolicy::Immediate {
             return Err(WaitRejection::ImmediateDurabilityRequired);
         }
-        if let Some(old) =
-            self.attempt_history.values().flatten().find(|a| a.attempt_id() == c.attempt_id())
-        {
+        if let Some(old) = self.attempt_entry(c.attempt_id()) {
             let s = old.accepted_start.as_ref().ok_or(WaitRejection::StaleAttempt)?;
             if s.run_id != c.run_id()
                 || &s.fence != c.fence()

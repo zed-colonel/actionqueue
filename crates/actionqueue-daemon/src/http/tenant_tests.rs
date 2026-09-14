@@ -285,6 +285,9 @@ fn http_remote_capacity_retry_expiry_and_revocation_before_retransmission() {
         let (status, work) = post(router.clone(), &path, "one", claim(&run)).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(work["lease_expiry"], 13);
+        let ControlScope::Tenant(tenant) = one.scope else { panic!("tenant principal") };
+        assert_eq!(work["tenant_id"], serde_json::json!(tenant));
+        assert!(work["causal_context"]["trace_id"].is_string());
         assert_eq!(post(router.clone(), &other_path, "two", claim(&other)).await.0, StatusCode::CONFLICT);
         let result_path = format!("/api/v2/actors/{}/result",one.actor_id.unwrap());
         let disposition = actionqueue_core::disposition::AttemptDisposition::retryable_failure(BoundedError::new("retry").unwrap());

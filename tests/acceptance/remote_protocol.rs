@@ -95,6 +95,9 @@ fn accepted_claim_and_result_retries_are_append_free_after_recovery() {
     let (mut a, h, r) = setup(dir.path());
     let q = request(r);
     let w = remote::claim(&mut a, &h, q.clone(), 11, 30).unwrap();
+    // AQ-11: claimed work carries the admission's namespace and opaque causal context.
+    assert_eq!(w.tenant_id, None);
+    assert_eq!(&w.causal_context, admission_support::request(1).causal_context());
     let before = seq(&a);
     assert_eq!(remote::claim(&mut a, &h, q.clone(), 12, 30).unwrap().lease_fence, w.lease_fence);
     assert_eq!(before, seq(&a));
@@ -796,6 +799,8 @@ fn platform_remote_operations_reject_missing_cross_tenant_and_revoked_principals
     assert_eq!(before, a.projection().projection_digest().unwrap());
     permission(&mut a, &h, QueueAction::ClaimRun, true);
     let w = remote::claim(&mut a, &h, request(run), 11, 30).unwrap();
+    assert_eq!(w.tenant_id, Some(tenant));
+    assert_eq!(&w.causal_context, q.causal_context());
     for action in [QueueAction::RenewLease, QueueAction::SubmitResult] {
         let invoke = |a: &mut s::Authority, h: &HostControlContext| {
             if action == QueueAction::RenewLease {

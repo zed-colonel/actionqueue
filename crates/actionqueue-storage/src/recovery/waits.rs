@@ -42,6 +42,13 @@ pub struct WaitIndex {
     historical: BTreeSet<SignalSequence>,
     children: BTreeMap<TaskId, BTreeSet<WaitId>>,
     child_candidates: BTreeSet<WaitId>,
+    /// (run, resolution sequence) -> resolved wait; one run has at most one wait per sequence.
+    resolved: BTreeMap<(RunId, u64), WaitId>,
+    broad_active: usize,
+}
+/// A signal wait lacking both an exact correlation and an exact source.
+fn is_broad(spec: &WaitSpec) -> bool {
+    spec.filter().is_some_and(|f| f.correlation_id.is_none() && f.source_ref.is_none())
 }
 impl WaitIndex {
     pub fn get(&self, id: WaitId) -> Option<&WaitRecord> {
@@ -58,15 +65,11 @@ impl WaitIndex {
     }
     /// Active signal waits lacking both an exact correlation and an exact source.
     pub fn broad_active_count(&self) -> usize {
-        self.active
-            .values()
-            .filter_map(|(id, _)| self.get(*id))
-            .filter(|w| {
-                w.spec
-                    .filter()
-                    .is_some_and(|f| f.correlation_id.is_none() && f.source_ref.is_none())
-            })
-            .count()
+        self.broad_active
+    }
+    /// The wait a run's wake at `sequence` refers to, without scanning history.
+    pub(crate) fn resolved_wait(&self, run: RunId, sequence: u64) -> Option<&WaitRecord> {
+        self.resolved.get(&(run, sequence)).and_then(|id| self.get(*id))
     }
     /// Active waits in exactly one namespace; historical waits do not consume capacity.
     pub fn active_count_for_tenant(&self, tenant: Option<TenantId>) -> usize {
@@ -130,9 +133,12 @@ impl WaitIndex {
     }
     pub(crate) fn insert(&mut self, r: WaitRecord, tenant: Option<TenantId>) {
         let id = r.spec.wait_id();
-        if r.resolution.is_none() {
+        if let Some(resolution) = &r.resolution {
+            self.resolved.insert((r.run_id, resolution.sequence), id);
+        } else {
             self.active.insert(r.run_id, (id, tenant));
             *self.active_by_tenant.entry(tenant).or_default() += 1;
+            self.broad_active += usize::from(is_broad(&r.spec));
             if let Some(f) = r.spec.filter() {
                 self.matching.entry(key(f)).or_default().insert(id);
             }
@@ -144,9 +150,8 @@ impl WaitIndex {
             if let Some(d) = r.spec.deadline() {
                 self.deadlines.insert((d.at, id));
             }
-        } else if let Some(WaitResolution { kind: WaitResolutionKind::Signal(s), .. }) =
-            &r.resolution
-        {
+        }
+        if let Some(WaitResolution { kind: WaitResolutionKind::Signal(s), .. }) = &r.resolution {
             self.historical.insert(*s);
         }
         self.records.insert(id, r);
@@ -159,6 +164,8 @@ impl WaitIndex {
         if *count == 0 {
             self.active_by_tenant.remove(&tenant);
         }
+        self.broad_active -= usize::from(is_broad(&w.spec));
+        self.resolved.insert((w.run_id, r.sequence), r.wait_id);
         if let Some(k) = w.spec.filter().map(key) {
             if let Some(bucket) = self.matching.get_mut(&k) {
                 bucket.remove(&r.wait_id);

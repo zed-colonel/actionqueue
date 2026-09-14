@@ -486,6 +486,15 @@ impl ReplayReducer {
         self.run_instances.values()
     }
 
+    /// Indexed lookup by attempt identity, independent of any caller-supplied run.
+    pub(crate) fn attempt_entry(
+        &self,
+        attempt: actionqueue_core::ids::AttemptId,
+    ) -> Option<&AttemptHistoryEntry> {
+        let run = self.attempt_owner(attempt)?;
+        self.attempt_history.get(&run)?.iter().find(|a| a.attempt_id() == attempt)
+    }
+
     /// Every run, grouped by task in creation order (the order `runs_for_task` yields).
     pub(crate) fn runs_in_index_order(
         &self,
