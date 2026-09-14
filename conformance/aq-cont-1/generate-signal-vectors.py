@@ -33,14 +33,3 @@ cases = [base, dict(base, signal_id='event/inline', correlation_id='job/λ', pay
     dict(base,signal_id='event/external',tenant_id=str(uuid.UUID(int=5)),correlation_id='job/1',causation=dict(parent_task_id=str(uuid.UUID(int=1)),parent_run_id=str(uuid.UUID(int=2)),parent_attempt_id=str(uuid.UUID(int=3)),external_ref='origin/1'),source_ref='source/1',payload={'External':dict(scheme='blob',locator='opaque/object',hash=h,size_bytes=2**64-1,content_type='application/octet-stream')},payload_hash=h,occurred_at=100),
     dict(base,signal_id='hash-only',payload_hash=h)]
 (root/'signal-v1-vector.json').write_text(json.dumps({'cases':[dict(envelope=e,canonical_hex=canonical(e).hex(),sha256=hashlib.sha256(canonical(e)).hexdigest()) for e in cases]},indent=2,ensure_ascii=False)+'\n')
-def tree(v):
-    if v is None: return b'\0'
-    if isinstance(v,bool): return b'\1'+bytes([v])
-    if isinstance(v,int): return bytes([2 if v>=0 else 3])+struct.pack('<Q' if v>=0 else '<q',v)
-    if isinstance(v,str): return b'\4'+text(v)
-    if isinstance(v,list): return b'\5'+u64(len(v))+b''.join(tree(x) for x in v)
-    return b'\6'+u64(len(v))+b''.join(tree(k)+tree(v[k]) for k in sorted(v))
-p = json.loads((root/'projection-v2-vector.json').read_text())['projection']
-p['version'] = p['metadata']['schema_version'] = 3
-p['signals'] = []; p['last_signal_sequence'] = 0
-(root/'projection-v3-vector.json').write_text(json.dumps({'projection':p,'sha256':hashlib.sha256(b'AQ-CONT-1\0projection\0v3\0'+tree(p)).hexdigest()},indent=2,sort_keys=True)+'\n')

@@ -7,7 +7,7 @@ Queue completion describes execution. Application verification and acceptance
 remain the caller's responsibility; opaque references grant no authority.
 
 The breaking release targets contract `AQ-CONT-1`, revision
-`STACK-2026-07-20-CLEAN-1`, and conformance package revision **15**. The additive
+`STACK-2026-07-20-CLEAN-1`, and conformance package revision **16**. The additive
 developmental profile changes only bounded attribution; it introduces no protocol
 primitive, persistence authority, scheduler semantics, or authorization path.
 See [release notes and cutover](docs/releases/0.2.0.md).

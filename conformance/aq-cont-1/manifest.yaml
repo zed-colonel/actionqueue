@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "package": "conformance/aq-cont-1",
-  "package_revision": 15,
+  "package_revision": 16,
   "status": "executable",
   "contract": "AQ-CONT-1",
   "contract_revision": "STACK-2026-07-20-CLEAN-1",
@@ -83,44 +83,6 @@
       "introduced_by": "AQ-04"
     },
     {
-      "id": "AQ-CF-ADMISSION-003",
-      "title": "Projection v2 known-answer vector",
-      "invariants": [
-        "AQ-H2",
-        "AQ-H6",
-        "AQ-H7",
-        "AQ-H10"
-      ],
-      "driver": "embedded",
-      "path": "projection-v2-vector.json",
-      "sha256": "7a50d107a210b2052694f1ab68a461179711bb58e45948fea83bbae58956f662",
-      "variants": [
-        "replay",
-        "crash",
-        "race"
-      ],
-      "introduced_by": "AQ-04"
-    },
-    {
-      "id": "AQ-CF-ADMISSION-004",
-      "title": "Retained AQ-03 projection evidence",
-      "invariants": [
-        "AQ-H2",
-        "AQ-H6",
-        "AQ-H7",
-        "AQ-H10"
-      ],
-      "driver": "embedded",
-      "path": "projection-v1-vector.json",
-      "sha256": "ceeb2d5999182cbc807597743fdd0da604322ca4ced6772dc86a1106fa50f73a",
-      "variants": [
-        "replay",
-        "crash",
-        "race"
-      ],
-      "introduced_by": "AQ-04"
-    },
-    {
       "id": "AQ-CF-SIGNAL-001",
       "title": "Canonical signal bytes and SHA-256",
       "invariants": [
@@ -137,78 +99,6 @@
         "race"
       ],
       "introduced_by": "AQ-05"
-    },
-    {
-      "id": "AQ-CF-SIGNAL-002",
-      "title": "Projection v3 known-answer vector",
-      "invariants": [
-        "AQ-H3",
-        "AQ-H5",
-        "AQ-H10"
-      ],
-      "driver": "embedded",
-      "path": "projection-v3-vector.json",
-      "sha256": "bc045ace9a2ae82ccf095287580172f79c2bdde9f189bdf9241c9c57962b6904",
-      "variants": [
-        "replay",
-        "crash",
-        "race"
-      ],
-      "introduced_by": "AQ-05"
-    },
-    {
-      "id": "AQ-CF-WAIT-001",
-      "title": "Projection v4 known-answer vector",
-      "invariants": [
-        "AQ-H2",
-        "AQ-H5",
-        "AQ-H13"
-      ],
-      "driver": "embedded",
-      "path": "projection-v4-vector.json",
-      "sha256": "15bb1d8266f6e8f53f24340a904ca3637ebbb43886b040b8370645889e0897eb",
-      "variants": [
-        "replay",
-        "crash",
-        "race"
-      ],
-      "introduced_by": "AQ-06"
-    },
-    {
-      "id": "AQ-CF-RESUME-001",
-      "title": "Projection v5 known-answer vector",
-      "invariants": [
-        "AQ-H2",
-        "AQ-H9",
-        "AQ-H13"
-      ],
-      "driver": "embedded",
-      "path": "projection-v5-vector.json",
-      "sha256": "77084e88c8c26c94ede01e331fd0d054d1a73e8f346df4fb0e6cbf8c67ebbc5e",
-      "variants": [
-        "replay",
-        "crash",
-        "race"
-      ],
-      "introduced_by": "AQ-07"
-    },
-    {
-      "id": "AQ-CF-DISPOSITION-001",
-      "title": "Projection v6 known-answer vector",
-      "invariants": [
-        "AQ-H2",
-        "AQ-H9",
-        "AQ-H13"
-      ],
-      "driver": "embedded",
-      "path": "projection-v6-vector.json",
-      "sha256": "3f1d07c8ed2d08065ba01c413afc43f6e5e81dc6b16cf82a78f3262408d61574",
-      "variants": [
-        "replay",
-        "crash",
-        "race"
-      ],
-      "introduced_by": "AQ-08"
     },
     {
       "id": "AQ-CF-CHILD-001",
@@ -239,24 +129,6 @@
       "driver": "embedded",
       "path": "child-coordination-v1-vector.json",
       "sha256": "54cf09a0a50a515d448b6cf42d114fe0f38b810bc2e3ab162a507c487f796719",
-      "variants": [
-        "replay",
-        "crash",
-        "race"
-      ],
-      "introduced_by": "AQ-09"
-    },
-    {
-      "id": "AQ-CF-CHILD-003",
-      "title": "Projection v7 known-answer vector",
-      "invariants": [
-        "AQ-H2",
-        "AQ-H8",
-        "AQ-H10"
-      ],
-      "driver": "embedded",
-      "path": "projection-v7-vector.json",
-      "sha256": "e4e8da534ece9f7fdfdc2519d35f919d84bb61f82e8e74e2c3287dcb0f095c44",
       "variants": [
         "replay",
         "crash",
@@ -988,7 +860,7 @@
       "tests/acceptance/wal_corruption_recovery.rs"
     ],
     "cross_build_driver": "conformance/aq-cont-1/cross-feature-persistence.sh",
-    "canonical_vector": "conformance/aq-cont-1/projection-v1-vector.json",
+    "canonical_vector": "projection-v9-vector.json",
     "guarantees": [
       "manifest_and_frame_lineage_rejection_without_writes",
       "exclusive_lifetime_ownership_and_process_crash_release",
@@ -1061,7 +933,6 @@
     "wal_frame_version": 1,
     "snapshot_schema": 4,
     "projection_version": 4,
-    "canonical_vector": "projection-v4-vector.json",
     "tests": [
       "tests/acceptance/waits.rs",
       "tests/acceptance/wait_crash.rs"
@@ -1084,7 +955,6 @@
     "historical_schema": 1,
     "snapshot_schema": 5,
     "projection_version": 5,
-    "canonical_vector": "projection-v5-vector.json",
     "tests": [
       "crates/actionqueue-core/tests/data_integrity.rs",
       "tests/acceptance/checkpoint_resume.rs",
@@ -1102,7 +972,6 @@
     "wal_record_schema": 1,
     "snapshot_schema": 6,
     "projection_version": 6,
-    "canonical_vector": "projection-v6-vector.json",
     "tests": [
       "tests/acceptance/attempt_disposition.rs"
     ]
@@ -1123,10 +992,6 @@
     ]
   },
   "assets": [
-    {
-      "path": "coverage.json",
-      "sha256": "b4e239bf01e66138fc15db54557defb25b302afb6ebb8b38ae881c4af4f09b81"
-    },
     {
       "path": "expected-projections/admission.json",
       "sha256": "464959c6b607a229173f93a606479362d9639f46f7bb41ad733e0f5c2df12e3d"
@@ -1156,24 +1021,12 @@
       "sha256": "ec0eb22db4e1165268b6c456da599ad61cac2f274eeefe623cab2a93a240d250"
     },
     {
-      "path": "performance/workloads.json",
-      "sha256": "b01352f94f73c9d28a4b3860ffa1beeebe4cad73d8d2a4bb5403efb03b71072a"
-    },
-    {
-      "path": "developmental/workloads.json",
-      "sha256": "8a1859ec70a6a85245934c6771bd704f3b59ad96b1bd8ad67efd217bf3a78be7"
-    },
-    {
       "path": "performance/workloads-v2.json",
       "sha256": "c63fe3800b07376f7af11dfdb8e8e1f7766bf7ee77cdfc8ffbb6a967a8adac08"
     },
     {
       "path": "public/workloads-v1.json",
       "sha256": "e5520553684b0ea6dd2dc28c4d0b17c24f3f7dfe51c0e6e44228b99be159ea42"
-    },
-    {
-      "path": "coverage-v2.json",
-      "sha256": "4911c22d9a186a2ce8e78ef6c5367e1baa1a65fa220bd73a42c9defcaa272a4a"
     },
     {
       "path": "coverage-v3.json",

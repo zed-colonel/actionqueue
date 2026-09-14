@@ -76,35 +76,7 @@ six workloads, four drivers, and three variants. Previous-run reports are never
 accepted. `suite` evidence identifies a complete named test binary and preserves
 its log; ordinary/replay/crash labels are reserved for executed workload variants.
 
-## Release handoff
+## Release handoff and revision history
 
-Release 0.2.0 pins package revision 15 and publishes this package, the unchanged
-developmental profile and matrix, and exact source/evidence hashes in a separate
-release manifest. See [release procedure](../../../docs/releases/0.2.0.md).
-Download the complete `source.bundle` and check out the manifest SHA before running
-the drivers: they import `tests/conformance/harness`, and boundary checks require
-Git-tracked files. A directory-only copy cannot run the complete suite.
-
-The reference adapter certifies ActionQueue-owned protocol behavior only; it does
-not certify a WorldInterface or Exoskeleton revision. Downstream implementers run
-the full driver with `--adapter PATH_TO_EXECUTABLE` for their own adapter evidence.
-See the [independent outbox example](../../../docs/examples/downstream-handoff.md)
-for a production consumer without repository test helpers.
-
-## Finalization coverage (package revision 14)
-
-Revision 14 adds admission-bypass, remote-priority, and aggregate active-wait
-quota regressions (F-017–F-019) to the existing complete-binary proof suites.
-It preserves the normative contract and all frozen fixtures. The full feature
-matrix additionally exercises the authenticated HTTP priority path and isolated
-triad fixture (F-021).
-
-## Local wait-capacity closure (package revision 15)
-
-Revision 15 adds F-022 real-handler regressions to `acceptance_attempt_disposition`:
-zero and saturated store/tenant limits, bounded terminal failure, discarded
-subordinate effects, queued-work progress, released lease/key ownership, and
-WAL/snapshot/restart parity. `acceptance_remote_protocol` separately proves that
-remote capacity rejection preserves the active attempt for an executor retry.
-The existing full proof binaries execute this coverage. Normative semantics and
-frozen fixture bytes remain unchanged.
+See the [package README](../README.md) for release handoff, downstream adapter
+certification scope, and the per-revision coverage notes.

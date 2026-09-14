@@ -42,17 +42,3 @@ b += b'\1' + uuid.UUID(int=5).bytes + text('trace') + text('corr')
 b += b'\1' + b''.join(b'\1' + uuid.UUID(int=i).bytes for i in [6, 7, 8]) + b'\1' + text('external')
 b += b''.join(b'\1' + text(f'ref/{i}') for i in range(8))
 (root / 'admission-v1-vector.json').write_text(json.dumps({'request': request, 'canonical_hex': b.hex(), 'sha256': hashlib.sha256(b).hexdigest()}, indent=2) + '\n')
-
-def tree(v):
-    if v is None: return b'\0'
-    if isinstance(v, bool): return b'\1' + bytes([v])
-    if isinstance(v, int): return bytes([2 if v >= 0 else 3]) + struct.pack('<Q' if v >= 0 else '<q', v)
-    if isinstance(v, str): return b'\4' + text(v)
-    if isinstance(v, list): return b'\5' + u64(len(v)) + b''.join(tree(x) for x in v)
-    return b'\6' + u64(len(v)) + b''.join(tree(k) + tree(v[k]) for k in sorted(v))
-
-projection = json.loads((root / 'projection-v1-vector.json').read_text())['projection']
-projection['version'] = projection['metadata']['schema_version'] = 2
-projection['admissions'] = []
-b = b'AQ-CONT-1\0projection\0v2\0' + tree(projection)
-(root / 'projection-v2-vector.json').write_text(json.dumps({'projection': projection, 'sha256': hashlib.sha256(b).hexdigest()}, indent=2, sort_keys=True) + '\n')

@@ -10,28 +10,19 @@ continuation semantics.
 | `aq-cont-1-developmental-campaign-acceptance-matrix.yaml` | Eighteen `AQ-DD-*` developmental-neutrality cases (attribution neutrality, durable execution, recovery and idempotency, semantic non-ownership, privacy and observability); executed with replay and crash variants by `AQ-13` |
 | `contract-boundaries.json` | Policy driving the repository boundary checks in `tests/conformance/contract_boundaries.rs`; run with `cargo aq-conformance` |
 
-The fixture inventory began empty at `AQ-01`; subsequent revisions preserve the
-historical vectors while adding executable coverage.
+The fixture inventory contains only executed evidence: root known-answer vectors
+consumed by named proof binaries (`admission-v1/v2`, `signal-v1`, `disposition-v1`,
+`child-coordination-v1`, `projection-v9`, `developmental-admission`), storage
+scenarios under `fixtures/`, public workloads under `public/`, proof records under
+`proofs/`, and the eighteen developmental cases. The `generate-*.py` scripts
+recompute every root vector independently of the Rust implementation. Coverage is
+`coverage-v3.json`; the benchmark reads `performance/workloads-v2.json`.
 
-AQ-05 adds signal canonical and projection-v3 vectors while preserving v1/v2
-evidence. `generate-signal-vectors.py` independently computes the bytes/digests.
-The signal admission, retention and crash acceptance binaries are included in
-`cargo aq-conformance`; full feature tests cover tenant/profile isolation.
-These prove retained signal admission/indexing and explicit protection, not wait
-resolution or physical WAL compaction.
-
-AQ-06 activates wait/control records, task/admission schema 2, and projection v4.
 `acceptance_waits` and `acceptance_wait_crash` are continuation gates; the latter
 is separate to avoid inherited store-lock descriptors during process spawning.
-
-AQ-09 adds canonical admission v2 (lifecycle policy), parent-run scoped child keys,
-typed child waits/wakes, and projection v7. Task/admission WAL schema 3 and
-wait/disposition schema 2 leave prior payload layouts intact. The manifest refuses
-older stores. `generate-child-vectors.py` preserves earlier vectors and independently
-computes the new vectors. `acceptance_transactional_child_admission` and
-`acceptance_parent_wait_child_atomicity` are included in `cargo aq-conformance`.
-They cover `AQ-DD-005` with ordinary bounded child batches, checkpoints, DAG gates,
-and opaque attribution. `cross-feature-persistence.sh` builds isolated base and
+`acceptance_transactional_child_admission` and `acceptance_parent_wait_child_atomicity`
+cover `AQ-DD-005` with ordinary bounded child batches, checkpoints, DAG gates, and
+opaque attribution. `cross-feature-persistence.sh` builds isolated base and
 expanded binaries, checks identical child wire bytes, and refuses unsupported
 store profiles without mutation. Scratch data honors `TMPDIR`.
 
@@ -39,9 +30,7 @@ store profiles without mutation. Scratch data honors `TMPDIR`.
 
 Revision 13 is executable. The full gate combines independently checked fixture
 hashes, named invariant proof binaries, per-case developmental evidence, and four
-public drivers. All fixture bytes and hash entries present at revision 12 remain
-unchanged; additions have new paths. `coverage-v3.json` adds the paired AQ-DD-002 workload to the preserved
-revision-12 coverage inventory.
+public drivers.
 
 ```sh
 cargo run --example aq_conformance --features workflow,budget,actor,platform -- \
@@ -102,7 +91,7 @@ that an unavailable WorldInterface checkout was tested. See
 
 ## Release handoff
 
-Release 0.2.0 pins package revision 15 and publishes this package, the unchanged
+Release 0.2.0 pins package revision 16 and publishes this package, the unchanged
 developmental profile and matrix, and exact source/evidence hashes in a separate
 release manifest. See [release procedure](../../docs/releases/0.2.0.md).
 Download the complete `source.bundle` and check out the manifest SHA before running
@@ -132,3 +121,12 @@ WAL/snapshot/restart parity. `acceptance_remote_protocol` separately proves that
 remote capacity rejection preserves the active attempt for an executor retry.
 The existing full proof binaries execute this coverage. Normative semantics and
 frozen fixture bytes remain unchanged.
+
+## Executed-evidence inventory (package revision 16)
+
+Revision 16 removes package entries that nothing executed: the superseded
+projection image vectors v1–v7 (only `projection-v9` matches the current
+schema), the superseded `coverage.json` and `coverage-v2.json`, and the unread
+`performance/workloads.json` and `developmental/workloads.json`. Proof entries
+name only existing vectors. Every retained fixture, asset, and normative document
+hash is unchanged.
