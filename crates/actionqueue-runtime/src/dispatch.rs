@@ -1176,9 +1176,8 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         let should_release = if target_state.is_terminal() {
             true
         } else if target_state == RunState::Awaiting {
-            // AQ-03 adds the persisted per-task wait policy (AQ-ADR-009). Until
-            // then the accessor always returns the default, ReleaseWhileAwaiting,
-            // so HoldWhileAwaiting is not selectable here yet.
+            // The persisted per-task wait policy (AQ-ADR-009) controls whether
+            // the key is released or retained while the run is Awaiting.
             authority.projection().get_task(&task_id).is_some_and(|task| {
                 task.constraints().concurrency_key_wait_policy().releases_while_awaiting()
             })

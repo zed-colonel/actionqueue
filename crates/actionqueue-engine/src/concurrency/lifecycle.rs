@@ -197,9 +197,9 @@ pub fn evaluate_state_transition(
         };
     }
 
-    // When leaving Running for Awaiting, consult the wait policy (AQ-ADR-009).
-    // The dispatch loop applies the same rule; the persisted per-task field
-    // arrives in AQ-03, so today only the default is selectable there.
+    // When leaving Running for Awaiting, release or retain the key according to
+    // the persisted per-task wait policy (AQ-ADR-009). The dispatch loop applies
+    // the same rule.
     if from == RunState::Running && to == RunState::Awaiting {
         return if wait_policy.releases_while_awaiting() {
             release_key(concurrency_key, run_id, key_gate)
