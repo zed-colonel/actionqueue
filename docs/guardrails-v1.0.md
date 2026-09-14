@@ -27,7 +27,7 @@ The following have been implemented and are covered by acceptance tests:
 2. **DAG dependency scheduling** -- `DependencyGate` with cycle detection and failure propagation (`workflow` feature)
 3. **Task hierarchy** -- parent-child cascade cancellation and completion gating (`workflow` feature)
 4. **Budget enforcement** -- per-task budget tracking, suspend/resume, event subscriptions (`budget` feature)
-5. **Remote actor coordination** -- registration, heartbeat monitoring, capability routing, department grouping (`actor` feature)
+5. **Remote actor coordination** -- registration, heartbeat monitoring, executor-trait routing, department grouping (`actor` feature)
 6. **Multi-tenant platform** -- tenant isolation, RBAC, append-only ledgers, approval workflows (`platform` feature)
 
 ## Decision check before accepting work

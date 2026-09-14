@@ -96,28 +96,7 @@ Legacy dispatch deliberately leaves pending continuations Ready until AQ-07/AQ-0
 supply their input. The optional checkpoint reference is already part of atomic
 yield; it is not a final handler output.
 
-## Original implementation validation record (2026-09-11)
-
-All commands completed successfully from this worktree:
-
-| Check | Result |
-|---|---|
-| `cargo test --workspace` | 959 passed |
-| `cargo test --workspace --features workflow` | 995 passed |
-| `cargo test --workspace --features workflow,budget,actor,platform` | 1,037 passed |
-| `cargo aq-conformance` | 121 passed |
-| `cargo fmt --all -- --check` | Passed |
-| `cargo build --workspace` | Passed |
-| `bash conformance/aq-cont-1/cross-feature-persistence.sh` | Passed |
-
-Each test configuration lists three ignored subprocess entry points; their parent
-tests invoke them and verify the actual process-kill outcomes. The continuation
-suite has 16 base tests, one additional platform isolation test, and a separate
-process-kill parent test. The 131-wait fan-out crosses the 128-record batch boundary.
-
-Conformance revision 4 adds one v4 vector. Its fixture-count assertion is advanced
-accordingly. The legacy handler ratchet permits one additional acceptance-test
-file solely to prove pending input is blocked, with removal assigned to AQ-08.
+## Implementation notes
 
 Implementation choices dictated by the existing code: ordinary key acquisition
 remains at `Running`, while existing reservations survive `Ready` and `Leased`;

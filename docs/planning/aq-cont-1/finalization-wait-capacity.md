@@ -14,10 +14,8 @@ and one withdrawn dispositions are unchanged, including the operator corrections
 and withdrawn optional refactor. This record makes implementation claims for the
 next reviewer; it does not independently close findings.
 
-Initial Git status, including all untracked files, was clean. The source-run
-journal records verification output only in controller scratch, so there were no
-worktree artifacts to remove or unrelated files to stage. The complete candidate
-was compared with `main`, including the previously integrated implementation.
+The complete candidate was compared with `main`, including the previously
+integrated implementation.
 
 ## Finding dispositions
 
@@ -96,69 +94,17 @@ or normative acceptance criteria changed.
 
 ## Verification
 
-Verification uses Rust 1.89.0 and a reused copy of the existing Cargo cache in
-controller scratch. Test stores, logs and generated package artifacts also stay
-in scratch. Loopback tests require sandbox escalation: a socket capability probe
-returned `Operation not permitted` under the default sandbox.
+The same release gate set as the polish round (`scripts/release.py::gates()`:
+eight-profile test, clippy and production builds, formatting, serde and
+no-default-feature suites, conformance and developmental runners, cross-feature
+persistence, benchmarks, release, documentation, consumer and package checks)
+passed on the remediation commit. The full conformance report validated at
+package revision 15 with every evidence row passing, and the fresh proof logs
+contain the two local quota regressions and the remote quota retry regression.
+Generated `EnsureTaskRequest` rustdoc states canonical v2. Evidence is retained
+in the controller run bundle, not in source.
 
-All **51 command gates passed** on implementation commit
-`2922f390c6bd02023a7c5c75c9fd9905ece50c93`. The subsequent documentation-only
-commit records these results. Each gate checked that the source commit and Git
-status were unchanged; `release.metadata` and `release.clean` passed before and
-after the matrix.
-
-The following commands passed for each of the eight profiles: default,
-`workflow`, `budget`, `workflow,budget`, `actor`, `platform`, `actor,platform`, and
-`workflow,budget,actor,platform`:
-
-- `cargo test --locked --workspace [--features PROFILE] -- --test-threads=1`
-- `cargo clippy --locked --all --all-targets [--features PROFILE] -- -D warnings`
-- `cargo build --locked -p actionqueue-cli --no-default-features [--features PROFILE]`
-- `cargo build --locked -p actionqueue-daemon --no-default-features [--features PROFILE]`
-
-Additional passing gates:
-
-- `cargo build --locked --workspace`
-- `cargo build --locked -p actionqueue-cli --features workflow,budget,actor,platform`
-- `cargo build --locked --example aq_adapter --features workflow,budget,actor,platform`
-- `cargo fmt --all -- --check` and `cargo +nightly fmt --all -- --check`
-- `cargo fmt --manifest-path examples/downstream-handoff/Cargo.toml -- --check`
-- `cargo test --locked -p actionqueue-core --features serde`
-- `cargo test --locked -p actionqueue-storage --features serde`
-- `cargo test --locked -p actionqueue-core --no-default-features`
-- `cargo aq-conformance` and `cargo aq-developmental`
-- `cargo run --locked --example aq_conformance --features workflow,budget,actor,platform -- --full --report SCRATCH/verification/conformance-report.json`
-- `bash conformance/aq-cont-1/cross-feature-persistence.sh`
-- `cargo bench --locked --bench continuation`
-- `cargo doc --locked --workspace --no-deps --features workflow,budget,actor,platform`, with `RUSTDOCFLAGS=-D warnings`
-- `python3 -B -m unittest discover -s tests/release`
-- `python3 -B scripts/check-docs.py --api TARGET/doc`
-- `python3 -B scripts/check-consumer.py --report SCRATCH/verification/consumer-resolution.json`
-- `python3 -B scripts/check-packages.py --output SCRATCH/verification/crates`
-
-The actual full report passed `release.validate_report`: `passed=true`, package
-revision 15, 214 evidence rows and `missing=[]`. Its fresh complete-binary logs
-explicitly contain the two local quota regressions and the remote quota retry
-regression. All eleven crate archives, their production builds and their
-independent consumer passed. Benchmarks passed indexed-work bounds at 8, 129 and
-257 tasks; elapsed timings remain informational and include the documented full
-projection and retained-WAL costs. Generated `EnsureTaskRequest` rustdoc was
-inspected and says canonical v2, with no stale v1 digest description. Stable
-rustfmt emitted only its existing notices about nightly-only options.
-
-Controller run `d39b8769-3eeb-4a50-a155-19e1533f8153` retains command logs,
-`results.json`, `report-validation.json`, the full report, performance measurements,
-consumer resolution and eleven crate archives in `scratch/verification/`.
-The full runner's detailed proof logs are in
-`scratch/aq-full-evidence-LTnEqV/`. Focused, default-profile and intentional
-without-fix regression logs remain directly under scratch. No verification
-artifacts are source files or staged content.
-
-Results inventory SHA-256:
-`ad0a8c591c2ea26ed51d64987ab77eeb852d7d06f45642cfe6228c7e91b3d7d3`.
-
-Both open findings have implementation fixes and passing evidence; neither is
-disagreed or deferred. The plan-wide table above has current combined-tree
-verification. Independent review verifies these claims; actual publication,
+Both findings have implementation fixes and passing evidence; neither is
+disagreed or deferred. Independent review verifies these claims; publication,
 tagging, downstream certification and operator-approved integration remain
-outside this implementation step. No merge or push occurred.
+outside implementation.

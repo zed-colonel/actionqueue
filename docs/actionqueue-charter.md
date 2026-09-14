@@ -367,5 +367,5 @@ This is a living document. Additions must preserve the foundational property:
 
 ---
 
-**Document Last Updated:** `2026-02-11`  
-**Version:** `0.1.0-alpha`
+**Document Last Updated:** `2026-09-14`  
+**Version:** `0.2.0`

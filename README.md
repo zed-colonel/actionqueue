@@ -47,8 +47,8 @@ The `testing` feature is for proof drivers and fault injection only.
 
 Target stores use manifest schema 1, WAL framing 1, and snapshot/projection
 version 9. They reject pre-contract and earlier development stores without
-migration. The complete WAL is retained and verified during recovery. Snapshots
-accelerate hydration but do not replace history. Mutation preparation currently
+migration. The complete WAL is retained and replayed during recovery; a snapshot is
+cross-checked against its WAL prefix and never replaces history. Mutation preparation currently
 clones the full projection; no general throughput claim is made.
 
 Embedded callers configure `HostControlContext` explicitly. HTTP object inspection

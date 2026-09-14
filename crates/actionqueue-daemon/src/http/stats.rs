@@ -3,8 +3,7 @@
 //! This module provides the aggregate statistics endpoint (`GET /api/v2/stats`)
 //! for the daemon. The stats endpoint returns read-only operational summaries
 //! derived from authoritative state without speculation, consistent with
-//! `actionqueue-charter.md`, `actionqueue-scope-appendix-v0.1.md`, and invariant
-//! boundaries in `invariant-boundaries-v0.1.md`.
+//! `docs/actionqueue-charter.md` and `docs/invariant-boundaries-v1.0.md`.
 //!
 //! # Overview
 //!

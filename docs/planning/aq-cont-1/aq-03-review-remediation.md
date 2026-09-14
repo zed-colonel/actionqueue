@@ -1,7 +1,6 @@
 # AQ-03 review remediation
 
-Date: 2026-09-10. Branch: `ct/aq-03-61ef4a57`.
-Review source: `c98c58e7-4087-4c00-bab8-1e72d5d80f1d`.
+Date: 2026-09-10.
 
 ## Finding dispositions
 
@@ -56,14 +55,7 @@ equivalence, including the new review regressions.
 
 Target persistence has 27 passing tests in the base conformance invocation and
 29 with all production features. CLI smoke coverage has seven passing tests,
-including five FIFO substitutions in the bounded restore test. All tests and
-dependency operations used the existing worktree-local Cargo cache and scratch
-directory. Stable rustfmt emits the existing nightly-option configuration warnings.
-
-Logs and exit codes are in `.aq-checks/remediation-results.txt` and
-`.aq-checks/remediation-final-*.log`. The focused runtime subscription test was
-also rerun after explicitly discarding its unused run summary to remove
-an unused-result compiler warning.
+including five FIFO substitutions in the bounded restore test. Stable rustfmt emits the existing nightly-option configuration warnings.
 
 ## Operator attention
 
@@ -74,12 +66,12 @@ allocation costs; no throughput benchmark is claimed. The existing full-WAL
 validation and immutable feature-profile policy remain in place.
 
 This remediation adds no format migration, feature-profile upgrade, or new durable
-record family. Nothing was pushed.
+record family.
 
 ## F-005 follow-up: isolate process spawning
 
-Review source: `9d168477-c88c-4837-b070-682892d162c9`, dated 2026-09-10.
-That review verified F-001 through F-004 as resolved and retained only F-005.
+The follow-up review of 2026-09-10 verified F-001 through F-004 as resolved and
+retained only F-005.
 
 **F-005 disposition: Fixed.** The process-kill lock test and its child helper now
 live in the separate `conformance_store_process_lock` test executable. Spawning a
@@ -110,7 +102,4 @@ Verification after the split:
 The intermittent failure did not reproduce in the 20 pre-change workflow
 repetitions run here; the reviewer recorded the earlier failures. The fix follows
 the recommended process isolation, with the stress results as supporting evidence.
-Logs are in `.aq-checks/f005-before.log`, `.aq-checks/f005-stress-*.log`, and
-`.aq-checks/f005-*.log`; exit summaries are in `.aq-checks/f005-stress-results.txt`
-and `.aq-checks/f005-results.txt`. Cargo cache, test scratch files, and logs stayed
-inside this worktree. No findings are deferred.
+No findings are deferred.

@@ -1,8 +1,6 @@
 # AQ-04 review remediation
 
-Date: 2026-09-10. Branch: `ct/aq-04-2d704923`.
-Latest review source: `a0dbf8b4-028e-4a78-8578-7763bf8287c3`.
-Original review source: `47842317-afae-4bff-833d-0e5918d0bfec`.
+Date: 2026-09-10.
 
 ## Finding disposition
 
@@ -64,9 +62,8 @@ scan sees the complete proposed tree.
 
 ## Verification (F-002 remediation)
 
-All Cargo commands run from the worktree root with the worktree-local Cargo cache,
-build directory, and temporary directory. Dependency resolution uses `--offline`;
-debug symbols and incremental compilation are disabled for these checks.
+Dependency resolution used `--offline`; debug symbols and incremental compilation
+were disabled for these checks.
 
 | Command | Result |
 |---|---|
@@ -82,6 +79,3 @@ debug symbols and incremental compilation are disabled for these checks.
 
 The admission conflict, race, crash, and replay exit gate passes. All three F-001
 regressions execute in every workspace configuration and standalone conformance.
-
-Focused before/after logs and workspace check logs for this remediation are retained
-as `f002-*.log` in the ignored worktree-local `.aq-checks/` directory.

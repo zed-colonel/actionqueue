@@ -67,7 +67,7 @@ These are non-negotiable — never weaken them in a contribution:
 4. Lease and concurrency constraints are core-enforced
 5. External extensions cannot mutate persisted state directly
 
-See `invariant-boundaries-v0.1.md` for the full invariant specification.
+See `docs/invariant-boundaries-v1.0.md` for the full invariant specification.
 
 ## AQ-CONT-1 boundary checks
 

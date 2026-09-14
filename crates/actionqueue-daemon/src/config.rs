@@ -13,7 +13,7 @@
 //! # Invariant boundaries
 //!
 //! Configuration must not introduce any mutation lane outside the validated
-//! mutation authority defined in `invariant-boundaries-v0.1.md`. Configuration
+//! mutation authority defined in `docs/invariant-boundaries-v1.0.md`. Configuration
 //! values must be explicit and inspectable to preserve auditability required by
 //! external systems.
 //!
