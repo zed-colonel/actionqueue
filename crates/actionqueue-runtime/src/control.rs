@@ -184,40 +184,39 @@ fn execute_bound_control<W: WalWriter>(
             .map(ControlOutcome::Mutation)
             .map_err(err)
         }
-        ControlOperation::PauseEngine => {
-            use EngineControlOutcome as O;
-            authorize(a, host, QueueAction::PauseEngine)?;
-            if a.projection().is_engine_paused() {
-                return Ok(ControlOutcome::Engine(O::AlreadyPaused));
-            }
-            let sequence = a.projection().latest_sequence().saturating_add(1);
-            let command =
-                MutationCommand::EnginePause(EnginePauseCommand::new(sequence, clock.now()));
-            match a.submit_command(command.with_control(host), DurabilityPolicy::Immediate) {
-                Ok(_) => Ok(ControlOutcome::Engine(O::Paused)),
-                Err(MutationAuthorityError::Validation(
-                    MutationValidationError::EngineAlreadyPaused,
-                )) => Ok(ControlOutcome::Engine(O::AlreadyPaused)),
-                Err(e) => Err(err(e)),
-            }
-        }
-        ControlOperation::ResumeEngine => {
-            use EngineControlOutcome as O;
-            authorize(a, host, QueueAction::ResumeEngine)?;
-            if !a.projection().is_engine_paused() {
-                return Ok(ControlOutcome::Engine(O::AlreadyResumed));
-            }
-            let sequence = a.projection().latest_sequence().saturating_add(1);
-            let command =
-                MutationCommand::EngineResume(EngineResumeCommand::new(sequence, clock.now()));
-            match a.submit_command(command.with_control(host), DurabilityPolicy::Immediate) {
-                Ok(_) => Ok(ControlOutcome::Engine(O::Resumed)),
-                Err(MutationAuthorityError::Validation(
-                    MutationValidationError::EngineNotPaused,
-                )) => Ok(ControlOutcome::Engine(O::AlreadyResumed)),
-                Err(e) => Err(err(e)),
-            }
-        }
+        ControlOperation::PauseEngine => engine_control(a, host, clock, true),
+        ControlOperation::ResumeEngine => engine_control(a, host, clock, false),
+    }
+}
+/// Pause or resume store-wide dispatch; a repeat is acknowledged without a record.
+fn engine_control<W: WalWriter>(
+    a: &mut StorageMutationAuthority<W, ReplayReducer>,
+    host: &HostControlContext,
+    clock: &(impl Clock + ?Sized),
+    pause: bool,
+) -> Result<ControlOutcome, ServiceError> {
+    use EngineControlOutcome as O;
+    let (action, applied, repeated) = if pause {
+        (QueueAction::PauseEngine, O::Paused, O::AlreadyPaused)
+    } else {
+        (QueueAction::ResumeEngine, O::Resumed, O::AlreadyResumed)
+    };
+    authorize(a, host, action)?;
+    if a.projection().is_engine_paused() == pause {
+        return Ok(ControlOutcome::Engine(repeated));
+    }
+    let sequence = a.projection().latest_sequence().saturating_add(1);
+    let command = if pause {
+        MutationCommand::EnginePause(EnginePauseCommand::new(sequence, clock.now()))
+    } else {
+        MutationCommand::EngineResume(EngineResumeCommand::new(sequence, clock.now()))
+    };
+    match a.submit_command(command.with_control(host), DurabilityPolicy::Immediate) {
+        Ok(_) => Ok(ControlOutcome::Engine(applied)),
+        Err(MutationAuthorityError::Validation(
+            MutationValidationError::EngineAlreadyPaused | MutationValidationError::EngineNotPaused,
+        )) => Ok(ControlOutcome::Engine(repeated)),
+        Err(e) => Err(ServiceError::Storage(e)),
     }
 }
 

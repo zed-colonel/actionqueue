@@ -624,7 +624,7 @@ impl ReplayReducer {
         }
         let r = cancel.expect("cancel command");
         self.validate_cancel(&r)?;
-        if let Some(old) = self.cancellations.iter().find(|old| old.target == r.target) {
+        if let Some(old) = self.cancellations.get(&r.target) {
             return Ok(Some(WaitPreparation::Noop(MutationOutcome::new(
                 old.sequence,
                 AppliedMutation::NoOp,
@@ -662,7 +662,7 @@ impl ReplayReducer {
         if tenant != r.tenant_id {
             return Err(WaitRejection::TenantMismatch);
         }
-        if terminal && !self.cancellations.iter().any(|old| old.target == r.target) {
+        if terminal && !self.cancellations.contains_key(&r.target) {
             return Err(WaitRejection::AlreadyTerminal);
         }
         Ok(())
@@ -743,7 +743,8 @@ impl ReplayReducer {
                 p.apply_run_canceled(&id, r.timestamp)?;
             }
         }
-        p.cancellations.push(r.clone());
+        // The first committed cancellation is the one that canceled the target.
+        p.cancellations.entry(r.target).or_insert_with(|| r.clone());
         *self = p;
         Ok(())
     }
@@ -765,9 +766,14 @@ impl ReplayReducer {
     ) -> Result<(), WaitRejection> {
         use WaitRejection as E;
         let mut index = WaitIndex::default();
-        // Historical evidence can refer to another wait's terminal resolution.
-        // Load the read-only history before independently validating every record.
+        // Historical evidence can refer to another wait's terminal resolution or to
+        // its own committed cancellation. Load the read-only history before
+        // independently validating every record.
         self.waits.records = records.iter().map(|r| (r.spec.wait_id(), r.clone())).collect();
+        self.cancellations.clear();
+        for c in cancels {
+            self.cancellations.entry(c.target).or_insert_with(|| c.clone());
+        }
         for r in records {
             if r.sequence == 0
                 || r.sequence > self.latest_sequence
@@ -949,7 +955,6 @@ impl ReplayReducer {
         }
         self.waits = index;
         self.key_reservations = claims;
-        self.cancellations = cancels.to_vec();
         let ids: Vec<_> = self.waits.active.values().map(|(id, _)| *id).collect();
         for id in ids {
             self.refresh_wait_candidate(id);

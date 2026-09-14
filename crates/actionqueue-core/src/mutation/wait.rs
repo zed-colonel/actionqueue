@@ -24,7 +24,7 @@ pub struct WaitResolveCommand {
     pub timestamp: u64,
 }
 /// A compound cancellation target. Task cancellation includes every owned nonterminal run.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CancelTarget {
     Run(RunId),
     Task(TaskId),

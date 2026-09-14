@@ -173,9 +173,9 @@ async fn deregister_actor(
 }
 
 /// Actor-scoped remote operations share one shape: the authenticated principal
-/// must own the path actor, the remote scheduler settles before the operation,
-/// and a durable change settles again. The blocking adapter publishes the
-/// projection (with the equal-revision tripwire) after every adapter route.
+/// must own the path actor, and the remote scheduler settles before and after
+/// the operation. The blocking adapter publishes the projection (with the
+/// equal-revision tripwire) after every adapter route.
 fn actor_operation<T: serde::Serialize>(
     state: &RouterState,
     host: &actionqueue_core::control::HostControlContext,
@@ -203,7 +203,7 @@ fn actor_operation<T: serde::Serialize>(
         Ok(value) => value,
         Err(_) => return rejection.into_response(),
     };
-    if value.is_none() && crate::http::maintenance::maintain_locked(state, &mut a).is_err() {
+    if crate::http::maintenance::maintain_locked(state, &mut a).is_err() {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     }
     match value {

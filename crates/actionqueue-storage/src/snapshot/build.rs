@@ -182,7 +182,11 @@ pub fn build_snapshot_from_projection(
     let snapshot = Snapshot {
         control_history: reducer.control_history.iter().map(|(s, c)| (*s, c.clone())).collect(),
         waits: reducer.waits.records().cloned().collect(),
-        cancellations: reducer.cancellations.clone(),
+        cancellations: {
+            let mut c: Vec<_> = reducer.cancellations.values().cloned().collect();
+            c.sort_by_key(|c| c.sequence);
+            c
+        },
         dispatch_sequences: reducer.dispatch_sequences.iter().map(|(r, s)| (*r, *s)).collect(),
         administrative_wakes: reducer.administrative_wakes.values().cloned().collect(),
         administrative_pending: reducer

@@ -305,7 +305,9 @@ pub struct ReplayReducer {
     pub(crate) administrative_pending:
         std::collections::BTreeMap<RunId, actionqueue_core::continuation::ResumeContextId>,
     pub(crate) waits: super::waits::WaitIndex,
-    pub(crate) cancellations: Vec<crate::mutation::wait::CancelRecord>,
+    /// Committed cancellations by target; a repeated cancel is acknowledged without a record.
+    pub(crate) cancellations:
+        HashMap<actionqueue_core::mutation::CancelTarget, crate::mutation::wait::CancelRecord>,
     pub(crate) key_reservations: std::collections::BTreeMap<RunId, String>,
     pub(crate) signals: super::signals::SignalIndex,
     pub(crate) admissions: HashMap<
@@ -373,7 +375,7 @@ impl ReplayReducer {
             administrative_pending: Default::default(),
             dispatch_sequences: Default::default(),
             waits: Default::default(),
-            cancellations: Vec::new(),
+            cancellations: HashMap::new(),
             key_reservations: Default::default(),
             signals: super::signals::SignalIndex::default(),
             admissions: HashMap::new(),

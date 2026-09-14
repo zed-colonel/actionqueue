@@ -4,6 +4,11 @@ use sha2::{Digest, Sha256};
 use super::{AdmissionDigest, AdmissionRejection, EnsureTaskRequest};
 use crate::bounded::{ContentHash, HashAlgorithm};
 use crate::canonical::Encoder;
+use crate::task::{
+    constraints::{ConcurrencyKeyHoldPolicy, ConcurrencyKeyWaitPolicy},
+    run_policy::RunPolicy,
+    safety::SafetyLevel,
+};
 
 /// The canonical version produced for new admissions.
 pub const CURRENT_VERSION: u32 = 2;
@@ -11,11 +16,6 @@ fn sha256(bytes: &[u8]) -> ContentHash {
     ContentHash::new(HashAlgorithm::Sha256, Sha256::digest(bytes).to_vec())
         .expect("SHA-256 output length")
 }
-use crate::task::{
-    constraints::{ConcurrencyKeyHoldPolicy, ConcurrencyKeyWaitPolicy},
-    run_policy::RunPolicy,
-    safety::SafetyLevel,
-};
 
 /// Owned, bounded canonical bytes. Collection ordering has already been normalized.
 #[derive(Debug, Clone, PartialEq, Eq)]

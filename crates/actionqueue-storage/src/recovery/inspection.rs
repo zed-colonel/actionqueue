@@ -53,10 +53,8 @@ impl super::reducer::ReplayReducer {
     pub fn task_control_sequence(&self, task: TaskId) -> Option<u64> {
         self.control_sequences(ControlTarget::Task(task)).next_back().or_else(|| {
             self.cancellations
-                .iter()
-                .filter(|c| c.target == actionqueue_core::mutation::CancelTarget::Task(task))
+                .get(&actionqueue_core::mutation::CancelTarget::Task(task))
                 .map(|c| c.sequence)
-                .max()
                 .or_else(|| self.task_admission(task).map(|a| a.sequence()))
         })
     }

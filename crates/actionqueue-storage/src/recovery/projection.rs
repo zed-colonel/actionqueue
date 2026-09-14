@@ -204,7 +204,6 @@ impl ReplayReducer {
         for record in r.signals.records() {
             r.validate_signal_references(record.envelope()).map_err(invalid)?;
         }
-        r.cancellations = s.cancellations.clone();
         r.hydrate_waits(&s.waits, &s.pending_resumes, &s.key_reservations, &s.cancellations)
             .map_err(invalid)?;
         for (run, seq) in s.dispatch_sequences {

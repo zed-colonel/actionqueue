@@ -38,6 +38,15 @@ already-canceled target is an append-free acknowledgement. The daemon returns
 | F-035 | Fixed. Resume wakes use a `(run, sequence)` resolved-wait index; accepted starts and stale-attempt checks use the attempt-owner index; the broad-wait gauge is maintained incrementally. Remote claims are asserted to carry the admission's tenant and causal context, including a platform tenant. | `acceptance_remote_protocol`, daemon tenant tests, storage suites, benchmark bounds. |
 | F-036 | Fixed as described above. | `acceptance_parent_wait_child_atomicity::completed_work_is_immutable_history_and_never_cascades`; `exhausted_zero_run_cron_task_is_terminal_and_cannot_be_canceled`; replayed fixtures unchanged. |
 
+## Simplification after the findings
+
+Committed cancellations are indexed by target, so cancel preparation, the
+terminal guard, historical task status and control-sequence inspection look a
+target up instead of scanning cancellation history. Engine pause and resume share
+one control path parameterised by direction. Actor-scoped remote routes settle
+the remote scheduler before and after every operation rather than deciding from
+the response shape. No wire, fixture or snapshot byte changed.
+
 ## Verification
 
 The release gate set (`scripts/release.py::gates()`: eight-profile test, clippy

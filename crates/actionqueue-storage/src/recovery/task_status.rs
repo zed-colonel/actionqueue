@@ -117,9 +117,11 @@ impl ReplayReducer {
         timestamp: u64,
     ) -> Option<TaskTerminalStatus> {
         use actionqueue_core::mutation::CancelTarget;
-        if self.cancellations.iter().any(|c| {
-            c.target == CancelTarget::Task(id) && c.sequence < sequence && c.timestamp <= timestamp
-        }) {
+        if self
+            .cancellations
+            .get(&CancelTarget::Task(id))
+            .is_some_and(|c| c.sequence < sequence && c.timestamp <= timestamp)
+        {
             return Some(TaskTerminalStatus::Canceled);
         }
         for run in self.runs_for_task(id) {
@@ -136,10 +138,9 @@ impl ReplayReducer {
                 return None;
             }
             if run.state() == RunState::Canceled
-                && self.cancellations.iter().any(|c| {
-                    (c.target == CancelTarget::Run(run.id()) || c.target == CancelTarget::Task(id))
-                        && c.sequence >= sequence
-                })
+                && [CancelTarget::Run(run.id()), CancelTarget::Task(id)]
+                    .iter()
+                    .any(|t| self.cancellations.get(t).is_some_and(|c| c.sequence >= sequence))
             {
                 return None;
             }
