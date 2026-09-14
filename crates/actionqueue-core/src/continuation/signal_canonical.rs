@@ -2,7 +2,7 @@
 use sha2::{Digest, Sha256};
 
 use super::{effective_payload_hash, SignalEnvelope, SignalRejection};
-use crate::{bounded::ContentHash, data_ref::DataRef};
+use crate::{canonical::Encoder, data_ref::DataRef};
 /// SHA-256 of domain-separated CanonicalSignalV1 bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignalDigest([u8; 32]);
@@ -26,41 +26,12 @@ impl SignalDigest {
 /// Owned canonical representation with fixed field order and explicit tags.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CanonicalSignalV1(Vec<u8>);
-struct Encoder(Vec<u8>);
-impl Encoder {
-    fn byte(&mut self, n: u8) {
-        self.0.push(n);
-    }
-    fn u64(&mut self, n: u64) {
-        self.0.extend(n.to_le_bytes());
-    }
-    fn bytes(&mut self, b: &[u8]) {
-        self.u64(b.len() as u64);
-        self.0.extend(b);
-    }
-    fn text(&mut self, s: &str) {
-        self.bytes(s.as_bytes());
-    }
-    fn uuid(&mut self, id: &uuid::Uuid) {
-        self.0.extend(id.as_bytes());
-    }
-    fn option<T>(&mut self, v: Option<T>, f: impl FnOnce(&mut Self, T)) {
-        self.byte(u8::from(v.is_some()));
-        if let Some(v) = v {
-            f(self, v);
-        }
-    }
-    fn hash(&mut self, h: &ContentHash) {
-        self.byte(1);
-        self.bytes(h.bytes());
-    }
-}
 impl CanonicalSignalV1 {
     /// Includes scope and producer content; excludes receipt, sequence and control context.
     pub fn new(s: &SignalEnvelope) -> Result<Self, SignalRejection> {
         let hash = effective_payload_hash(s.payload.as_ref(), s.payload_hash.as_ref())?;
-        let mut e = Encoder(b"AQ-CONT-1\0signal\0".to_vec());
-        e.0.extend(1u32.to_le_bytes());
+        let mut e = Encoder::new(b"AQ-CONT-1\0signal\0");
+        e.u32(1);
         e.option(s.tenant_id, |e, id| e.uuid(id.as_uuid()));
         e.text(s.signal_id.as_str());
         e.text(s.namespace.as_str());

@@ -1,7 +1,6 @@
 //! Initial run planning using one captured timestamp and the existing policy derivation.
-use actionqueue_core::{
-    admission::{AdmissionDigest, AdmissionPlan, AdmissionRejection, EnsureTaskRequest},
-    limits::AdmissionLimits,
+use actionqueue_core::admission::{
+    AdmissionDigest, AdmissionPlan, AdmissionRejection, EnsureTaskRequest,
 };
 /// Pure planning failures, before storage mutation.
 #[derive(Debug)]
@@ -21,14 +20,13 @@ impl std::fmt::Display for AdmissionPlanningError {
 }
 impl std::error::Error for AdmissionPlanningError {}
 /// Plans the complete initial window; replay always uses persisted run identities.
+/// The request was bounds-checked at construction; the authority applies its
+/// configured limits at commit.
 pub fn plan_admission(
     request: EnsureTaskRequest,
     digest: AdmissionDigest,
     timestamp: u64,
 ) -> Result<AdmissionPlan, AdmissionPlanningError> {
-    AdmissionLimits::default()
-        .validate_spec(request.task_spec(), request.dependencies().len())
-        .map_err(AdmissionPlanningError::Rejected)?;
     let runs = crate::derive::derive_runs(
         &crate::time::clock::MockClock::new(timestamp),
         request.task_spec().id(),

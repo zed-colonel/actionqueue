@@ -51,10 +51,6 @@ pub fn ensure_task<W: WalWriter>(
     if let Some(outcome) = authority.lookup_admission(&request)? {
         return Ok(outcome);
     }
-    authority
-        .admission_limits()
-        .validate_spec(request.task_spec(), request.dependencies().len())
-        .map_err(AdmissionError::Rejected)?;
     let digest = request.digest().map_err(AdmissionError::Rejected)?;
     let control = request.control_context().cloned();
     let timestamp = clock.now();

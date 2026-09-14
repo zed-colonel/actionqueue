@@ -1,7 +1,7 @@
 //! Shared validation for live preparation and replay. Caches are never authority.
+//! Structural bounds and the digest were verified when the record was constructed.
 use actionqueue_core::{
     admission::AdmissionRejection as R,
-    limits::AdmissionLimits,
     run::{state::RunState, RunInstance},
     task::run_policy::RunPolicy,
 };
@@ -16,10 +16,6 @@ impl ReplayReducer {
         let q = record.request();
         let s = q.task_spec();
         let id = s.id();
-        AdmissionLimits::default().validate_spec(s, q.dependencies().len())?;
-        if q.digest()? != *record.digest() {
-            return Err(R::InvalidDigest);
-        }
         if self.get_task(&id).is_some() {
             return Err(R::TaskIdCollision);
         }

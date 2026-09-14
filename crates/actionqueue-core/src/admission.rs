@@ -14,9 +14,10 @@ pub struct AdmissionDigest {
     hash: ContentHash,
 }
 impl AdmissionDigest {
-    /// Declares a v1 SHA-256 digest. Commit always recomputes and verifies it.
+    /// Declares a SHA-256 digest of the current canonical version (v2). Commit
+    /// always recomputes and verifies it.
     pub fn new(hash: ContentHash) -> Self {
-        Self { canonical_version: 1, hash }
+        Self { canonical_version: canonical::CURRENT_VERSION, hash }
     }
     /// Validates a declared canonical version. Unsupported algorithms are rejected by ContentHash.
     pub fn versioned(version: u32, hash: ContentHash) -> Result<Self, AdmissionRejection> {
@@ -168,7 +169,7 @@ impl EnsureTaskRequest {
     }
     /// Computes canonical v2 meaning, ignoring lookup key and control attribution.
     pub fn digest(&self) -> Result<AdmissionDigest, AdmissionRejection> {
-        canonical::CanonicalAdmissionV2::new(self)?.digest()
+        Ok(canonical::CanonicalAdmissionV2::new(self)?.digest())
     }
     /// Stable convenience identity for callers retaining a preallocated task UUID.
     pub fn for_task(

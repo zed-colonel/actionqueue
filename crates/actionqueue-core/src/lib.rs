@@ -50,6 +50,7 @@ pub mod task;
 pub mod time;
 
 pub mod bounded;
+pub(crate) mod canonical;
 pub mod executor;
 pub mod limits;
 

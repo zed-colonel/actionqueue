@@ -31,7 +31,7 @@ impl AdmissionRecord {
                 == actionqueue_core::task::task_spec::ChildLifecyclePolicy::Required =>
             {
                 actionqueue_core::admission::canonical::CanonicalAdmissionV1::new(&request)?
-                    .digest()?
+                    .digest()
             }
             2 => request.digest()?,
             _ => return Err(AdmissionRejection::InvalidDigest),

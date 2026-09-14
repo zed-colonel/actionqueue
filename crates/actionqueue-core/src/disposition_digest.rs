@@ -14,44 +14,18 @@ use crate::{
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DispositionDigest(pub [u8; 32]);
 
-struct Encoder(Vec<u8>);
+use crate::canonical::Encoder;
 impl Encoder {
-    fn tag(&mut self, value: u8) {
-        self.0.push(value);
-    }
-    fn u64(&mut self, value: u64) {
-        self.0.extend(value.to_le_bytes());
-    }
-    fn bytes(&mut self, value: &[u8]) {
-        self.u64(value.len() as u64);
-        self.0.extend(value);
-    }
-    fn text(&mut self, value: &str) {
-        self.bytes(value.as_bytes());
-    }
-    fn uuid(&mut self, value: &uuid::Uuid) {
-        self.0.extend(value.as_bytes());
-    }
-    fn option<T>(&mut self, value: Option<T>, encode: impl FnOnce(&mut Self, T)) {
-        self.tag(u8::from(value.is_some()));
-        if let Some(value) = value {
-            encode(self, value);
-        }
-    }
-    fn hash(&mut self, value: &crate::bounded::ContentHash) {
-        self.tag(1);
-        self.bytes(value.bytes());
-    }
     fn data(&mut self, value: &DataRef) {
         match value {
             DataRef::Inline(d) => {
-                self.tag(0);
+                self.byte(0);
                 self.option(d.content_type(), |e, v| e.text(v.as_str()));
                 self.bytes(d.bytes());
                 self.hash(d.hash());
             }
             DataRef::External(d) => {
-                self.tag(1);
+                self.byte(1);
                 self.text(d.scheme.as_str());
                 self.text(d.locator.expose());
                 self.hash(&d.hash);
@@ -72,28 +46,28 @@ impl Encoder {
                 match_policy: WaitMatchPolicy::FirstMatch,
                 eligible_from,
             } => {
-                self.tag(0);
+                self.byte(0);
                 self.option(filter.tenant_id, |e, v| e.uuid(v.as_uuid()));
                 self.text(filter.namespace.as_str());
                 self.text(filter.kind.as_str());
                 self.option(filter.correlation_id.as_ref(), |e, v| e.text(v.as_str()));
                 self.option(filter.source_ref.as_ref(), |e, v| e.text(v.expose()));
-                self.tag(0);
+                self.byte(0);
                 match eligible_from {
-                    SignalEligibility::AnyRetained => self.tag(0),
+                    SignalEligibility::AnyRetained => self.byte(0),
                     SignalEligibility::After(s) => {
-                        self.tag(1);
+                        self.byte(1);
                         self.u64(s.get());
                     }
                 }
             }
             WaitTarget::Children { task_ids, policy } => {
-                self.tag(1);
+                self.byte(1);
                 self.u64(task_ids.len() as u64);
                 for id in task_ids {
                     self.uuid(id.as_uuid());
                 }
-                self.tag(match policy {
+                self.byte(match policy {
                     ChildWaitPolicy::AllTerminal => 0,
                     ChildWaitPolicy::AllSucceededOrAnyFailed => 1,
                 });
@@ -102,12 +76,12 @@ impl Encoder {
         self.option(value.deadline(), |e, d| {
             e.u64(d.at);
             match &d.policy {
-                WaitTimeoutPolicy::ResumeWithTimeout => e.tag(0),
+                WaitTimeoutPolicy::ResumeWithTimeout => e.byte(0),
                 WaitTimeoutPolicy::FailRun { code } => {
-                    e.tag(1);
+                    e.byte(1);
                     e.text(code.as_str());
                 }
-                WaitTimeoutPolicy::CancelRun => e.tag(2),
+                WaitTimeoutPolicy::CancelRun => e.byte(2),
             }
         });
     }
@@ -116,43 +90,43 @@ impl Encoder {
 pub fn canonical_disposition(disposition: &AttemptDisposition) -> Vec<u8> {
     let mut e = Encoder(b"AQ-CONT-1\0disposition\0".to_vec());
     e.0.extend(1u32.to_le_bytes());
-    e.tag(1);
+    e.byte(1);
     match disposition.outcome() {
-        DispositionOutcome::Complete => e.tag(0),
+        DispositionOutcome::Complete => e.byte(0),
         DispositionOutcome::RetryableFailure { error } => {
-            e.tag(1);
+            e.byte(1);
             e.error(error);
         }
         DispositionOutcome::TerminalFailure { error } => {
-            e.tag(2);
+            e.byte(2);
             e.error(error);
         }
         DispositionOutcome::Timeout { error } => {
-            e.tag(3);
+            e.byte(3);
             e.error(error);
         }
         DispositionOutcome::Suspended { reason } => {
-            e.tag(4);
+            e.byte(4);
             e.option(reason.as_ref(), |e, v| e.text(v.as_str()));
         }
-        DispositionOutcome::Awaiting => e.tag(5),
+        DispositionOutcome::Awaiting => e.byte(5),
     }
-    e.tag(2);
+    e.byte(2);
     e.option(disposition.output(), Encoder::data);
-    e.tag(3);
+    e.byte(3);
     e.option(disposition.checkpoint(), |e, c| {
         e.uuid(c.checkpoint_id.as_uuid());
         e.data(&c.data);
         e.uuid(c.created_by_attempt.as_uuid());
     });
-    e.tag(4);
+    e.byte(4);
     e.option(disposition.wait(), Encoder::wait);
-    e.tag(5);
+    e.byte(5);
     e.u64(disposition.child_admissions().len() as u64);
     for c in disposition.child_admissions() {
         e.text(c.admission_key().as_str());
         e.bytes(&crate::admission::canonical::task_bytes(c.task_spec(), c.dependencies()));
-        e.tag(match c.task_spec().child_lifecycle_policy() {
+        e.byte(match c.task_spec().child_lifecycle_policy() {
             crate::task::task_spec::ChildLifecyclePolicy::Required => 0,
             crate::task::task_spec::ChildLifecyclePolicy::Detached => 1,
         });
@@ -161,7 +135,7 @@ pub fn canonical_disposition(disposition: &AttemptDisposition) -> Vec<u8> {
         e.option(overrides.requesting_actor_ref.as_ref(), |e, v| e.text(v.expose()));
         e.option(overrides.origin_ref.as_ref(), |e, v| e.text(v.expose()));
     }
-    e.tag(6);
+    e.byte(6);
     e.u64(disposition.emitted_signals().len() as u64);
     for s in disposition.emitted_signals() {
         e.text(s.signal_id.as_str());
@@ -172,11 +146,11 @@ pub fn canonical_disposition(disposition: &AttemptDisposition) -> Vec<u8> {
         e.option(s.payload_hash.as_ref(), Encoder::hash);
         e.option(s.occurred_at, Encoder::u64);
     }
-    e.tag(7);
+    e.byte(7);
     e.u64(disposition.consumption().len() as u64);
     for c in disposition.consumption() {
         use crate::budget::BudgetDimension;
-        e.tag(match c.dimension {
+        e.byte(match c.dimension {
             BudgetDimension::Token => 0,
             BudgetDimension::CostCents => 1,
             BudgetDimension::TimeSecs => 2,

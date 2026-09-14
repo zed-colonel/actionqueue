@@ -3,6 +3,14 @@ use sha2::{Digest, Sha256};
 
 use super::{AdmissionDigest, AdmissionRejection, EnsureTaskRequest};
 use crate::bounded::{ContentHash, HashAlgorithm};
+use crate::canonical::Encoder;
+
+/// The canonical version produced for new admissions.
+pub const CURRENT_VERSION: u32 = 2;
+fn sha256(bytes: &[u8]) -> ContentHash {
+    ContentHash::new(HashAlgorithm::Sha256, Sha256::digest(bytes).to_vec())
+        .expect("SHA-256 output length")
+}
 use crate::task::{
     constraints::{ConcurrencyKeyHoldPolicy, ConcurrencyKeyWaitPolicy},
     run_policy::RunPolicy,
@@ -12,40 +20,12 @@ use crate::task::{
 /// Owned, bounded canonical bytes. Collection ordering has already been normalized.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CanonicalAdmissionV1(Vec<u8>);
-struct Encoder(Vec<u8>);
-impl Encoder {
-    fn byte(&mut self, v: u8) {
-        self.0.push(v);
-    }
-    fn u32(&mut self, v: u32) {
-        self.0.extend(v.to_le_bytes());
-    }
-    fn u64(&mut self, v: u64) {
-        self.0.extend(v.to_le_bytes());
-    }
-    fn bytes(&mut self, v: &[u8]) {
-        self.u64(v.len() as u64);
-        self.0.extend(v);
-    }
-    fn text(&mut self, v: &str) {
-        self.bytes(v.as_bytes());
-    }
-    fn option<T>(&mut self, v: Option<T>, f: impl FnOnce(&mut Self, T)) {
-        self.byte(u8::from(v.is_some()));
-        if let Some(v) = v {
-            f(self, v);
-        }
-    }
-    fn uuid(&mut self, v: &uuid::Uuid) {
-        self.0.extend(v.as_bytes());
-    }
-}
 impl CanonicalAdmissionV1 {
     /// Validates bounds on borrowed input before copying or sorting any field.
     pub fn new(r: &EnsureTaskRequest) -> Result<Self, AdmissionRejection> {
         let s = r.task_spec();
         crate::limits::AdmissionLimits::default().validate_spec(s, r.dependencies().len())?;
-        let mut e = Encoder(b"AQ-CONT-1\0admission\0".to_vec());
+        let mut e = Encoder::new(b"AQ-CONT-1\0admission\0");
         e.u32(1);
         e.0.extend(task_bytes(s, r.dependencies()));
         let c = r.causal_context();
@@ -69,18 +49,15 @@ impl CanonicalAdmissionV1 {
         ] {
             e.option(value, |e, v| e.text(v.expose()));
         }
-        Ok(Self(e.0))
+        Ok(Self(e.finish()))
     }
     /// Canonical v1 bytes, suitable for independent implementations and vectors.
     pub fn bytes(&self) -> &[u8] {
         &self.0
     }
-    /// Computes SHA-256 with its explicit canonical version and algorithm tag.
-    pub fn digest(&self) -> Result<AdmissionDigest, AdmissionRejection> {
-        Ok(AdmissionDigest::new(
-            ContentHash::new(HashAlgorithm::Sha256, Sha256::digest(&self.0).to_vec())
-                .expect("SHA-256 output length"),
-        ))
+    /// SHA-256 with the explicit v1 canonical version; only frozen evidence declares it.
+    pub fn digest(&self) -> AdmissionDigest {
+        AdmissionDigest { canonical_version: 1, hash: sha256(&self.0) }
     }
 }
 
@@ -104,12 +81,8 @@ impl CanonicalAdmissionV2 {
         &self.0
     }
     /// Versioned SHA-256 digest.
-    pub fn digest(&self) -> Result<AdmissionDigest, AdmissionRejection> {
-        AdmissionDigest::versioned(
-            2,
-            ContentHash::new(HashAlgorithm::Sha256, Sha256::digest(&self.0).to_vec())
-                .expect("SHA-256"),
-        )
+    pub fn digest(&self) -> AdmissionDigest {
+        AdmissionDigest { canonical_version: CURRENT_VERSION, hash: sha256(&self.0) }
     }
 }
 /// Parent-run local key namespace. Attempts and observational attribution are excluded.
@@ -119,7 +92,7 @@ pub fn scoped_child_key(
     run: crate::ids::RunId,
     local: &crate::ids::AdmissionKey,
 ) -> crate::ids::AdmissionKey {
-    let mut e = Encoder(b"AQ-CONT-1\0child-key\0".to_vec());
+    let mut e = Encoder::new(b"AQ-CONT-1\0child-key\0");
     e.u32(1);
     e.option(tenant, |e, id| e.uuid(id.as_uuid()));
     e.uuid(parent.as_uuid());
