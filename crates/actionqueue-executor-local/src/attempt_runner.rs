@@ -2,10 +2,10 @@
 //!
 //! The runner composes three concerns for a single attempt execution:
 //! - handler invocation with explicit run/attempt identity,
-//! - timeout classification and enforcement with explicit cancellation-poll cadence evidence,
-//! - retry-decision input generation from the terminal attempt outcome.
+//! - timeout classification and enforcement with explicit cancellation-poll cadence evidence.
 //!
-//! This module intentionally does not mutate run derivation/accounting state.
+//! This module intentionally does not decide run state: the durable authority
+//! accounts for the disposition (`DispositionOutcome::accounting`).
 
 use std::time::{Duration, Instant};
 use std::{
@@ -13,11 +13,9 @@ use std::{
     sync::Arc,
 };
 
-use actionqueue_core::disposition::DispositionOutcome;
 use actionqueue_core::ids::{AttemptId, RunId};
 
 use crate::handler::{AttemptDisposition, AttemptMetadata, ExecutorHandler, HandlerInput};
-use crate::retry::{decide_retry_transition, RetryDecision, RetryDecisionError};
 use crate::timeout::{TimeoutClassification, TimeoutClock, TimeoutFailure, TimeoutGuard};
 use crate::types::ExecutorRequest;
 
@@ -65,51 +63,6 @@ where
     fn elapsed_since(&self, mark: Self::Mark) -> Duration {
         self.timer.elapsed_since(mark)
     }
-}
-
-/// Classification of a terminal attempt outcome for retry-decision inputs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AttemptOutcomeKind {
-    /// The attempt completed successfully.
-    Success,
-    /// The attempt failed and may be retried.
-    RetryableFailure,
-    /// The attempt failed permanently.
-    TerminalFailure,
-    /// The attempt exceeded timeout constraints.
-    Timeout,
-    /// The attempt was voluntarily suspended (budget exhaustion / preemption).
-    Suspended,
-    /// Yielded to a durable continuation.
-    Awaiting,
-}
-
-impl AttemptOutcomeKind {
-    pub fn from_disposition(response: &AttemptDisposition) -> Self {
-        match response.outcome() {
-            DispositionOutcome::Complete => Self::Success,
-            DispositionOutcome::RetryableFailure { .. } => Self::RetryableFailure,
-            DispositionOutcome::TerminalFailure { .. } => Self::TerminalFailure,
-            DispositionOutcome::Timeout { .. } => Self::Timeout,
-            DispositionOutcome::Suspended { .. } => Self::Suspended,
-            DispositionOutcome::Awaiting => Self::Awaiting,
-        }
-    }
-}
-
-/// Retry input payload derived from one completed attempt.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RetryDecisionInput {
-    /// Run identifier for the attempt.
-    pub run_id: RunId,
-    /// Attempt identifier for the attempt.
-    pub attempt_id: AttemptId,
-    /// Candidate failure ordinal (prior durable failures plus one), not physical starts.
-    pub attempt_number: u32,
-    /// Hard cap for attempts from task constraints snapshot.
-    pub max_attempts: u32,
-    /// Terminal outcome classification for retry policy evaluation.
-    pub outcome_kind: AttemptOutcomeKind,
 }
 
 /// Cooperative-cancellation status for timeout enforcement.
@@ -213,13 +166,6 @@ pub struct AttemptOutcomeRecord {
     pub timeout_classification: TimeoutClassification,
     /// Timeout enforcement report including cadence-aware cooperation classification.
     pub timeout_enforcement: TimeoutEnforcementReport,
-    /// Retry input derived from this exact attempt outcome.
-    pub retry_decision_input: RetryDecisionInput,
-    /// Retry transition decision derived via [`crate::retry::decide_retry_transition`].
-    ///
-    /// An error indicates invalid attempt-counter inputs (for example `N + 1`
-    /// attempts beyond the configured hard cap).
-    pub retry_decision: Result<RetryDecision, RetryDecisionError>,
 }
 
 /// Monotonic timer abstraction used for timeout enforcement.
@@ -393,15 +339,6 @@ where
         self.timeout_metrics.record(timeout_enforcement.cooperation);
 
         let disposition = classify_disposition(handler_output, &timeout_classification);
-        let retry_decision_input = RetryDecisionInput {
-            run_id,
-            attempt_id,
-            attempt_number: request.failure_attempt_count.saturating_add(1),
-            max_attempts,
-            outcome_kind: AttemptOutcomeKind::from_disposition(&disposition),
-        };
-        let retry_decision = decide_retry_transition(&retry_decision_input);
-
         AttemptOutcomeRecord {
             lease_fence: request.lease_fence,
             run_id,
@@ -410,8 +347,6 @@ where
             elapsed,
             timeout_classification,
             timeout_enforcement,
-            retry_decision_input,
-            retry_decision,
         }
     }
 }
@@ -465,11 +400,10 @@ mod tests {
     use actionqueue_core::task::constraints::TaskConstraints;
 
     use super::{
-        AttemptOutcomeKind, AttemptRunner, AttemptTimer, TimeoutCadencePolicy, TimeoutCooperation,
+        AttemptRunner, AttemptTimer, TimeoutCadencePolicy, TimeoutCooperation,
         TimeoutCooperationMetrics, TimeoutCooperationMetricsSnapshot,
     };
     use crate::handler::{ExecutorContext, ExecutorHandler, HandlerInput};
-    use crate::retry::RetryDecision;
     use crate::timeout::{TimeoutClassification, TimeoutFailure, TimeoutReasonCode};
     use crate::types::ExecutorRequest;
 
@@ -545,8 +479,6 @@ mod tests {
                 actionqueue_core::data_ref::DataRef::from_bytes(vec![1, 2, 3]).unwrap()
             ))
         );
-        assert_eq!(record.retry_decision, Ok(RetryDecision::Complete));
-        assert_eq!(record.retry_decision_input.outcome_kind, AttemptOutcomeKind::Success);
         assert_eq!(record.timeout_enforcement.cooperation, TimeoutCooperation::NotApplicable);
         assert_eq!(record.timeout_enforcement.cancellation_observation_latency, None);
         assert_eq!(
@@ -610,8 +542,6 @@ mod tests {
                 .unwrap()
             )
         );
-        assert_eq!(record.retry_decision, Ok(RetryDecision::Retry));
-        assert_eq!(record.retry_decision_input.outcome_kind, AttemptOutcomeKind::Timeout);
         assert_eq!(record.timeout_enforcement.cooperation, TimeoutCooperation::NonCooperative);
         assert_eq!(record.timeout_enforcement.cancellation_observation_latency, None);
         assert_eq!(
@@ -664,11 +594,11 @@ mod tests {
                     .unwrap()
             )
         );
-        assert_eq!(record.retry_decision, Ok(RetryDecision::Retry));
-        assert_eq!(record.retry_decision_input.outcome_kind, AttemptOutcomeKind::RetryableFailure);
         // Two prior yields do not consume the failure allowance.
-        assert_eq!(record.retry_decision_input.attempt_number, 1);
-        assert_eq!(record.retry_decision_input.max_attempts, 5);
+        assert_eq!(
+            record.disposition.outcome().accounting(0, 5).unwrap().target_state,
+            actionqueue_core::run::RunState::RetryWait
+        );
         assert_eq!(record.timeout_enforcement.cooperation, TimeoutCooperation::NotApplicable);
         assert_eq!(record.timeout_enforcement.cancellation_observation_latency, None);
     }
@@ -829,7 +759,6 @@ mod tests {
                     .unwrap()
             );
             assert_eq!(record.disposition.consumption(), consumption);
-            assert_eq!(record.retry_decision, Ok(RetryDecision::Retry));
             assert!(record.timeout_classification.is_timed_out());
         }
     }
@@ -857,7 +786,6 @@ mod tests {
             cancellation_context: Some(cancellation),
         });
         assert!(matches!(record.disposition.outcome(), DispositionOutcome::Suspended { .. }));
-        assert_eq!(record.retry_decision, Ok(RetryDecision::Suspend));
         assert!(!record.timeout_classification.is_timed_out());
     }
 }

@@ -19,10 +19,9 @@ use actionqueue_core::mutation::{
 };
 use actionqueue_core::run::run_instance::{RunInstance, RunInstanceError};
 use actionqueue_core::run::state::RunState;
-use actionqueue_core::task::constraints::ConcurrencyKeyHoldPolicy;
 use actionqueue_core::task::safety::SafetyLevel;
 use actionqueue_core::task::task_spec::TaskSpec;
-use actionqueue_engine::concurrency::key_gate::{ConcurrencyKey, KeyGate, ReleaseResult};
+use actionqueue_engine::concurrency::key_gate::KeyGate;
 use actionqueue_engine::derive::DerivationError;
 use actionqueue_engine::index::ready::ReadyIndex;
 use actionqueue_engine::index::scheduled::ScheduledIndex;
@@ -193,13 +192,6 @@ pub enum DispatchError {
     SnapshotWrite(SnapshotWriterError),
     /// Snapshot writer initialization failed.
     SnapshotInit(String),
-    /// Internal state inconsistency (e.g., task not found after run transition).
-    StateInconsistency {
-        /// Run that triggered the inconsistency.
-        run_id: RunId,
-        /// Human-readable context for diagnostics.
-        context: String,
-    },
     /// Continuation limits cannot guarantee durable attempt closure.
     InvalidContinuationLimits(crate::config::ConfigError),
     /// Backoff strategy configuration is invalid (e.g., base exceeds max).
@@ -207,7 +199,6 @@ pub enum DispatchError {
     /// Dependency declaration would introduce a cycle in the task DAG.
     DependencyCycle(actionqueue_workflow::dag::CycleError),
     /// Retry decision from attempt outcome violated retry invariants.
-    RetryDecision(actionqueue_executor_local::RetryDecisionError),
     /// A dynamically submitted task was rejected (parent not found or terminal).
     SubmissionRejected {
         /// Task that was rejected.
@@ -233,13 +224,9 @@ impl std::fmt::Display for DispatchError {
             DispatchError::SnapshotBuild(e) => write!(f, "snapshot build error: {e}"),
             DispatchError::SnapshotWrite(e) => write!(f, "snapshot write error: {e}"),
             DispatchError::SnapshotInit(e) => write!(f, "snapshot init error: {e}"),
-            DispatchError::StateInconsistency { run_id, context } => {
-                write!(f, "state inconsistency for run {run_id}: {context}")
-            }
             DispatchError::InvalidBackoffConfig => {
                 write!(f, "invalid backoff configuration")
             }
-            DispatchError::RetryDecision(e) => write!(f, "retry decision error: {e}"),
             DispatchError::DependencyCycle(e) => write!(f, "dependency cycle: {e}"),
             DispatchError::SubmissionRejected { task_id, context } => {
                 write!(f, "submission rejected for task {task_id}: {context}")
@@ -793,18 +780,20 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         )
         .map_err(DispatchError::Authority)?;
         let target_state = *self.projection().get_run_state(&run_id).expect("committed run");
+        // The accepted execution has returned durably: release process-local
+        // ownership before any fallible post-commit notification.
+        let finished = self.in_flight.remove(&run_id);
         // Refresh before any fallible post-commit notifications. Never replay consumption.
         #[cfg(feature = "budget")]
         self.restore_task_budgets(self.projection().get_run_instance(&run_id).unwrap().task_id());
         self.dependency_gate = build_dependency_gate(self.authority.projection());
         self.hierarchy_tracker = build_hierarchy_tracker(self.authority.projection());
         {
-            // Capture task_id before the in_flight borrow for use in the gate notification.
-            let task_id = self.in_flight.get(&run_id).map(|inf| inf.task_id);
+            let task_id = finished.as_ref().map(|inf| inf.task_id);
 
             // Release concurrency key for terminal runs, on RetryWait if the hold
             // policy is ReleaseOnRetry, or on Suspended (same semantics as RetryWait).
-            if let Some(inf) = self.in_flight.get(&run_id) {
+            if let Some(inf) = &finished {
                 tracing::debug!(
                     %run_id,
                     attempt_id = %inf.attempt_id,
@@ -828,7 +817,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
                 result.completed += 1;
                 if let Some(tid) = task_id {
                     // Notify the dependency gate so dependents can be unblocked.
-                    self.notify_dependency_gate_terminal(tid, current_time)?;
+                    self.notify_dependency_gate_terminal(tid)?;
                 }
             }
 
@@ -840,7 +829,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         }
 
         #[cfg(feature = "budget")]
-        if let Some(inf) = self.in_flight.get(&run_id) {
+        if let Some(inf) = &finished {
             let task_id = inf.task_id;
             let consumption = self
                 .projection()
@@ -855,22 +844,19 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         }
         crate::waits::reconcile(&mut self.authority, current_time)
             .map_err(DispatchError::Authority)?;
-        self.rebuild_key_gate()?;
-        // Remove from in-flight tracking
-        self.in_flight.remove(&run_id);
-        Ok(())
+        self.rebuild_key_gate()
     }
 
     /// Notifies the dependency gate when a task's run reaches a terminal state.
     ///
     /// When a task has completed (all runs terminal + at least one Completed),
     /// marks dependent tasks as eligible. When a task has permanently failed
-    /// (all runs terminal, none Completed), marks dependent tasks as failed
-    /// and cancels their non-terminal runs.
+    /// (all runs terminal, none Completed), marks dependent tasks as failed in
+    /// memory; the durable task-level cancellation of those dependents is the
+    /// same cascade bootstrap and every tick run (`waits::recover_cancellations`).
     fn notify_dependency_gate_terminal(
         &mut self,
         task_id: actionqueue_core::ids::TaskId,
-        current_time: u64,
     ) -> Result<(), DispatchError> {
         // Check if all runs for this task are now terminal (O(R_task) via index).
         let all_runs_terminal = self.authority.projection().task_terminal_status(task_id).is_some();
@@ -902,26 +888,15 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
                 );
             }
         } else {
-            // Task permanently failed — cascade failure and cancel blocked runs.
-            let newly_blocked = self.dependency_gate.notify_failed(task_id);
-            for blocked_id in newly_blocked {
+            // Task permanently failed. Step 0c commits the durable cascade this tick.
+            for blocked_id in self.dependency_gate.notify_failed(task_id) {
                 tracing::debug!(
                     failed_prerequisite = %task_id,
                     blocked_task = %blocked_id,
                     "dependency gate: cascading failure to dependent task"
                 );
-                // Cancel all non-terminal runs of the permanently blocked task (O(R_task)).
-                let runs_to_cancel: Vec<_> = self
-                    .authority
-                    .projection()
-                    .runs_for_task(blocked_id)
-                    .filter(|r| !r.state().is_terminal())
-                    .map(|r| (r.id(), r.state()))
-                    .collect();
-                for (run_id, prev_state) in runs_to_cancel {
-                    self.cancel_run_and_release_key(run_id, blocked_id, prev_state, current_time)?;
-                }
             }
+            self.pending_hierarchy_cascade.insert(task_id);
         }
 
         Ok(())
@@ -949,6 +924,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         {
             self.hierarchy_tracker = build_hierarchy_tracker(self.authority.projection());
             self.dependency_gate = build_dependency_gate(self.authority.projection());
+            self.rebuild_key_gate()?;
         }
         self.pending_hierarchy_cascade.clear();
         Ok(())
@@ -1028,7 +1004,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
             let target = run.state();
             if target.is_terminal() {
                 result.completed += 1;
-                self.notify_dependency_gate_terminal(task_id, current_time)?;
+                self.notify_dependency_gate_terminal(task_id)?;
             }
             #[cfg(feature = "budget")]
             self.fire_events_for_transition(task_id, target)?;
@@ -1103,69 +1079,9 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         Ok(())
     }
 
-    /// Durably cancels a non-terminal run, then releases its concurrency key.
-    ///
-    /// Every cancellation cascade goes through this method so that release is
-    /// inseparable from cancellation for runs without an executing worker. The
-    /// key is released only when this run actually holds it: Scheduled and
-    /// Ready runs never acquired one, so they release nothing and emit no
-    /// warning.
-    ///
-    /// A run whose worker is still executing (present in `in_flight`) keeps
-    /// the key. Releasing it here would let a competitor start under the same
-    /// key while the worker runs, violating the mutual exclusion the key
-    /// exists for. The canceled worker receives no further lease heartbeats;
-    /// observing its result releases the slot and key without changing the
-    /// cancellation history. Other stale worker dispositions remain AQ-08.
-    fn cancel_run_and_release_key(
-        &mut self,
-        run_id: RunId,
-        task_id: TaskId,
-        prev_state: RunState,
-        current_time: u64,
-    ) -> Result<(), DispatchError> {
-        let seq = self.next_sequence()?;
-        let _ = self
-            .authority
-            .submit_command(
-                MutationCommand::RunStateTransition(RunStateTransitionCommand::new(
-                    seq,
-                    run_id,
-                    prev_state,
-                    RunState::Canceled,
-                    current_time,
-                )),
-                DurabilityPolicy::Immediate,
-            )
-            .map_err(DispatchError::Authority)?;
-
-        if self.in_flight.contains_key(&run_id) {
-            tracing::debug!(
-                %run_id, %task_id, ?prev_state,
-                "run canceled while in flight; concurrency key held until the worker is reconciled"
-            );
-            return Ok(());
-        }
-        let holds_key = self
-            .authority
-            .projection()
-            .get_task(&task_id)
-            .and_then(|task| task.constraints().concurrency_key().map(ConcurrencyKey::new))
-            .is_some_and(|key| self.key_gate.key_holder(&key) == Some(run_id));
-        if holds_key {
-            Self::try_release_concurrency_key(
-                &self.authority,
-                &mut self.key_gate,
-                run_id,
-                task_id,
-                RunState::Canceled,
-            );
-        }
-        Ok(())
-    }
-
-    /// Attempts to release the concurrency key for a run entering a terminal or
-    /// RetryWait, Suspended, or Awaiting state, depending on the task's policies.
+    /// Releases the concurrency key for a run leaving Running for a terminal,
+    /// RetryWait, Suspended, or Awaiting state. The policy lives in
+    /// [`actionqueue_engine::concurrency::lifecycle::evaluate_state_transition`].
     fn try_release_concurrency_key(
         authority: &StorageMutationAuthority<W, ReplayReducer>,
         key_gate: &mut KeyGate,
@@ -1173,51 +1089,35 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         task_id: TaskId,
         target_state: RunState,
     ) {
-        let should_release = if target_state.is_terminal() {
-            true
-        } else if target_state == RunState::Awaiting {
-            // The persisted per-task wait policy (AQ-ADR-009) controls whether
-            // the key is released or retained while the run is Awaiting.
-            authority.projection().get_task(&task_id).is_some_and(|task| {
-                task.constraints().concurrency_key_wait_policy().releases_while_awaiting()
-            })
-        } else if target_state == RunState::RetryWait || target_state == RunState::Suspended {
-            // Suspended follows the same hold policy as RetryWait: the run is paused
-            // and may resume, so whether the key is held depends on the task's policy.
-            authority
-                .projection()
-                .get_task(&task_id)
-                .map(|task| {
-                    task.constraints().concurrency_key_hold_policy()
-                        == ConcurrencyKeyHoldPolicy::ReleaseOnRetry
-                })
-                .unwrap_or(false)
-        } else {
-            return;
+        use actionqueue_engine::concurrency::lifecycle::{
+            evaluate_state_transition, KeyLifecycleContext, LifecycleResult,
         };
-
-        if !should_release {
+        if !(target_state.is_terminal()
+            || matches!(
+                target_state,
+                RunState::RetryWait | RunState::Suspended | RunState::Awaiting
+            ))
+        {
             return;
         }
-
         let Some(task) = authority.projection().get_task(&task_id) else {
             tracing::warn!(%run_id, %task_id, "skipping key release: task not found");
             return;
         };
-
-        let Some(key_str) = task.constraints().concurrency_key() else {
+        let Some(key) = task.constraints().concurrency_key() else {
             return; // No concurrency key — nothing to release
         };
-
-        let key = ConcurrencyKey::new(key_str);
-        match key_gate.release(key, run_id) {
-            ReleaseResult::Released { .. } => {}
-            ReleaseResult::NotHeld { key: k, attempting_run_id } => {
-                tracing::warn!(
-                    %attempting_run_id, key = %k,
-                    "concurrency key release failed — key not held by this run"
-                );
-            }
+        let context = KeyLifecycleContext::new(
+            Some(key.to_string()),
+            run_id,
+            key_gate,
+            task.constraints().concurrency_key_hold_policy(),
+        )
+        .with_wait_policy(task.constraints().concurrency_key_wait_policy());
+        if let LifecycleResult::NoAction { key: Some(key) } =
+            evaluate_state_transition(RunState::Running, target_state, context)
+        {
+            tracing::warn!(%run_id, key, "concurrency key release failed — key not held by this run");
         }
     }
 
@@ -1427,20 +1327,6 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
             // Cache payload and constraints before state transitions
             let payload = task.payload().to_vec();
             let constraints = task.constraints().clone();
-
-            // Step 6a: Check budget gate — skip if any dimension is exhausted.
-            #[cfg(feature = "budget")]
-            {
-                let gate = actionqueue_budget::BudgetGate::new(&self.budget_tracker);
-                if !gate.can_dispatch(run.task_id()) {
-                    tracing::debug!(
-                        run_id = %run.id(),
-                        task_id = %run.task_id(),
-                        "skipping run: budget exhausted"
-                    );
-                    continue;
-                }
-            }
 
             // Check concurrency key gate (using cached task)
             let acquired_key = if let Some(key_str) = constraints.concurrency_key() {
@@ -1663,39 +1549,9 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         Ok(())
     }
 
-    /// Cancels all non-terminal runs of tasks whose dependencies have permanently
-    /// failed. Called once after bootstrap to close the recovery gap where a crash
-    /// occurred between a prerequisite failing and the cascade cancellation being
-    /// committed.
-    fn cancel_dependency_failed_runs(&mut self, current_time: u64) -> Result<(), DispatchError> {
-        let failed_tasks: Vec<TaskId> = self
-            .authority
-            .projection()
-            .task_records()
-            .map(|tr| tr.task_spec().id())
-            .filter(|&tid| self.dependency_gate.is_dependency_failed(tid))
-            .collect();
-        for task_id in failed_tasks {
-            let runs_to_cancel: Vec<_> = self
-                .authority
-                .projection()
-                .runs_for_task(task_id)
-                .filter(|r| !r.state().is_terminal())
-                .map(|r| (r.id(), r.state()))
-                .collect();
-            for (run_id, prev_state) in runs_to_cancel {
-                self.cancel_run_and_release_key(run_id, task_id, prev_state, current_time)?;
-            }
-        }
-        Ok(())
-    }
-
     /// Loops `tick()` until no work remains (no in-flight, no promotions, no dispatches).
     pub async fn run_until_idle(&mut self) -> Result<RunSummary, DispatchError> {
         let mut summary = RunSummary::default();
-
-        let current_time = self.clock.now();
-        self.cancel_dependency_failed_runs(current_time)?;
 
         loop {
             let tick = self.tick().await?;
@@ -2358,63 +2214,6 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
             expiry,
         )
     }
-    /// Authenticated remote claim sharing this loop's worker slots and key gate.
-    #[cfg(feature = "actor")]
-    pub fn claim_remote(
-        &mut self,
-        host: &actionqueue_core::control::HostControlContext,
-        request: actionqueue_actor::protocol::RemoteClaim,
-    ) -> Result<crate::remote::RemoteWork, actionqueue_core::control::ControlError> {
-        use actionqueue_core::control::{ControlError, QueueAction};
-        crate::control::authorize(&self.authority, host, QueueAction::ClaimRun)?;
-        let retry = self
-            .projection()
-            .get_run_instance(&request.run_id)
-            .is_some_and(|r| r.current_attempt_id() == Some(request.attempt_id));
-        if !retry {
-            let occupied = self
-                .projection()
-                .run_instances()
-                .filter(|r| matches!(r.state(), RunState::Leased | RunState::Running))
-                .count()
-                + self
-                    .in_flight
-                    .keys()
-                    .filter(|id| {
-                        self.projection().get_run_instance(id).is_some_and(|r| {
-                            !matches!(r.state(), RunState::Leased | RunState::Running)
-                        })
-                    })
-                    .count();
-            if occupied >= self.max_concurrent || self.draining {
-                return Err(ControlError::Mutation("dispatch capacity unavailable".into()));
-            }
-            self.rebuild_key_gate().map_err(|e| ControlError::Mutation(e.to_string()))?;
-            if let Some(key) = self
-                .projection()
-                .get_run_instance(&request.run_id)
-                .and_then(|r| self.projection().get_task(&r.task_id()))
-                .and_then(|t| t.constraints().concurrency_key())
-            {
-                if self
-                    .key_gate
-                    .key_holder(&ConcurrencyKey::new(key))
-                    .is_some_and(|holder| holder != request.run_id)
-                {
-                    return Err(ControlError::Mutation("concurrency key occupied".into()));
-                }
-            }
-        }
-        let result = crate::remote::claim(
-            &mut self.authority,
-            host,
-            request,
-            self.clock.now(),
-            self.lease_timeout_secs,
-        )?;
-        self.rebuild_key_gate().map_err(|e| ControlError::Mutation(e.to_string()))?;
-        Ok(result)
-    }
     /// Applies a remote disposition then refreshes derived runtime coordination.
     #[cfg(feature = "actor")]
     pub fn submit_remote_result(
@@ -2432,7 +2231,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         if self.projection().latest_sequence() != before {
             let task_id =
                 self.projection().get_run_instance(&run_id).expect("accepted remote run").task_id();
-            self.notify_dependency_gate_terminal(task_id, self.clock.now())
+            self.notify_dependency_gate_terminal(task_id)
                 .map_err(|e| actionqueue_core::control::ControlError::Mutation(e.to_string()))?;
             #[cfg(feature = "budget")]
             {
@@ -2737,10 +2536,12 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
 mod tests {
     use std::time::Duration;
 
+    use actionqueue_core::task::constraints::ConcurrencyKeyHoldPolicy;
     use actionqueue_core::task::constraints::TaskConstraints;
     use actionqueue_core::task::metadata::TaskMetadata;
     use actionqueue_core::task::run_policy::RunPolicy;
     use actionqueue_core::task::task_spec::TaskPayload;
+    use actionqueue_engine::concurrency::key_gate::ConcurrencyKey;
     use actionqueue_engine::time::clock::MockClock;
     use actionqueue_executor_local::handler::{AttemptDisposition, ExecutorContext};
     use actionqueue_storage::recovery::bootstrap::load_projection_from_storage;
@@ -2776,7 +2577,10 @@ mod tests {
         .unwrap()
     }
 
-    async fn dependency_cancellation_releases_held_key(catch_up: bool) {
+    /// A durable dependency failure cancels the dependent's suspended run through the
+    /// same task-level cascade bootstrap uses, and the held key is freed live.
+    #[tokio::test]
+    async fn dependency_failure_cascade_releases_suspended_key() {
         let dir = tempfile::tempdir().unwrap();
         let mut dispatch = new_dispatch(dir.path(), DependencyHandler);
 
@@ -2794,16 +2598,10 @@ mod tests {
         let competitor_run = dispatch.projection().run_ids_for_task(competitor_id)[0];
         assert_eq!(dispatch.projection().get_run_state(&competitor_run), Some(&RunState::Ready));
 
-        if catch_up {
-            // Model the gap between a gate learning of dependency failure and
-            // committing cancellation, keeping the existing key owner in memory.
-            dispatch.dependency_gate.force_fail(suspended_id);
-        } else {
-            let prerequisite = task(b"fail", None);
-            let prerequisite_id = prerequisite.id();
-            dispatch.submit_task(prerequisite).unwrap();
-            dispatch.declare_dependency(suspended_id, vec![prerequisite_id]).unwrap();
-        }
+        let prerequisite = task(b"fail", None);
+        let prerequisite_id = prerequisite.id();
+        dispatch.submit_task(prerequisite).unwrap();
+        dispatch.declare_dependency(suspended_id, vec![prerequisite_id]).unwrap();
         let _ = dispatch.run_until_idle().await.unwrap();
         assert_eq!(dispatch.projection().get_run_state(&suspended_run), Some(&RunState::Canceled));
         assert_eq!(
@@ -2811,16 +2609,6 @@ mod tests {
             Some(&RunState::Completed),
             "dependency cancellation must free the held key without a restart"
         );
-    }
-
-    #[tokio::test]
-    async fn dependency_failure_cascade_releases_suspended_key() {
-        dependency_cancellation_releases_held_key(false).await;
-    }
-
-    #[tokio::test]
-    async fn dependency_failure_catch_up_releases_suspended_key() {
-        dependency_cancellation_releases_held_key(true).await;
     }
 
     /// Collects log lines written by a thread-local tracing subscriber.
@@ -3296,42 +3084,6 @@ mod tests {
             let _ = self.release.lock().unwrap().recv();
             actionqueue_core::disposition::AttemptDisposition::complete(None)
         }
-    }
-
-    #[tokio::test]
-    async fn dependency_cascade_keeps_key_while_worker_is_still_executing() {
-        let (release_tx, release_rx) = std::sync::mpsc::channel();
-        let dir = tempfile::tempdir().unwrap();
-        let mut dispatch = new_dispatch(
-            dir.path(),
-            BlockingHandler { release: std::sync::Mutex::new(release_rx) },
-        );
-
-        let blocked = task(b"block", Some("shared"));
-        let blocked_id = blocked.id();
-        dispatch.submit_task(blocked).unwrap();
-        for _ in 0..3 {
-            if !dispatch.in_flight.is_empty() {
-                break;
-            }
-            let _ = dispatch.tick().await.unwrap();
-        }
-        let blocked_run = dispatch.projection().run_ids_for_task(blocked_id)[0];
-        assert!(dispatch.in_flight.contains_key(&blocked_run), "worker must be in flight");
-        assert_eq!(dispatch.projection().get_run_state(&blocked_run), Some(&RunState::Running));
-        let key = ConcurrencyKey::new("shared");
-        assert_eq!(dispatch.key_gate.key_holder(&key), Some(blocked_run));
-
-        dispatch.dependency_gate.force_fail(blocked_id);
-        dispatch.cancel_dependency_failed_runs(1000).unwrap();
-
-        assert_eq!(dispatch.projection().get_run_state(&blocked_run), Some(&RunState::Canceled));
-        assert_eq!(
-            dispatch.key_gate.key_holder(&key),
-            Some(blocked_run),
-            "an in-flight run keeps its key so no competitor starts under it"
-        );
-        release_tx.send(()).unwrap();
     }
 
     #[cfg(feature = "workflow")]

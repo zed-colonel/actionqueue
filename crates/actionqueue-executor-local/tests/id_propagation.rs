@@ -82,8 +82,6 @@ fn handler_receives_exact_run_and_attempt_ids_for_initial_attempt() {
     assert_eq!(captured[0], (run_id, attempt_id));
     assert_eq!(record.run_id, run_id);
     assert_eq!(record.attempt_id, attempt_id);
-    assert_eq!(record.retry_decision_input.run_id, run_id);
-    assert_eq!(record.retry_decision_input.attempt_id, attempt_id);
 }
 
 #[test]

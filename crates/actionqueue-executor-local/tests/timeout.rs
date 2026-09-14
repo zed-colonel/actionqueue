@@ -1,4 +1,4 @@
-//! Timeout behavior tests for attempt outcomes and retry interactions.
+//! Timeout behavior tests for attempt outcomes and durable accounting interactions.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -7,12 +7,21 @@ use std::time::{Duration, Instant};
 use std::{panic::catch_unwind, panic::AssertUnwindSafe};
 
 use actionqueue_core::ids::{AttemptId, RunId};
+use actionqueue_core::run::RunState;
 use actionqueue_core::task::constraints::TaskConstraints;
 use actionqueue_executor_local::{
-    AttemptDisposition, AttemptOutcomeKind, AttemptRunner, AttemptTimer, ExecutorContext,
-    ExecutorHandler, ExecutorRequest, RetryDecision, TimeoutCadencePolicy, TimeoutClassification,
-    TimeoutCooperation, TimeoutCooperationMetrics,
+    AttemptDisposition, AttemptRunner, AttemptTimer, ExecutorContext, ExecutorHandler,
+    ExecutorRequest, TimeoutCadencePolicy, TimeoutClassification, TimeoutCooperation,
+    TimeoutCooperationMetrics,
 };
+/// The durable authority accounts for the disposition; the runner decides nothing.
+fn target_state(
+    record: &actionqueue_executor_local::AttemptOutcomeRecord,
+    previous_failures: u32,
+    max_attempts: u32,
+) -> RunState {
+    record.disposition.outcome().accounting(previous_failures, max_attempts).unwrap().target_state
+}
 
 #[derive(Debug, Clone)]
 enum TimerMode {
@@ -114,7 +123,7 @@ fn on_time_completion_stays_success_and_completed_in_time() {
             ..
         } if elapsed == Duration::from_secs(1)
     ));
-    assert_eq!(record.retry_decision, Ok(RetryDecision::Complete));
+    assert_eq!(target_state(&record, 0, 3), RunState::Completed);
 }
 
 #[test]
@@ -132,8 +141,7 @@ fn timeout_overrides_handler_success_with_explicit_timeout_outcome() {
         )
     );
     assert!(matches!(record.timeout_classification, TimeoutClassification::TimedOut(_)));
-    assert_eq!(record.retry_decision_input.outcome_kind, AttemptOutcomeKind::Timeout);
-    assert_eq!(record.retry_decision, Ok(RetryDecision::Retry));
+    assert_eq!(target_state(&record, 0, 4), RunState::RetryWait);
 }
 
 #[test]
@@ -150,7 +158,7 @@ fn timeout_interacts_with_cap_under_cap_retries_at_cap_fails() {
                 .unwrap()
         )
     );
-    assert_eq!(under_cap.retry_decision, Ok(RetryDecision::Retry));
+    assert_eq!(target_state(&under_cap, 0, 2), RunState::RetryWait);
 
     let at_cap_runner = AttemptRunner::with_timer(
         RetryableFailureHandler,
@@ -164,7 +172,7 @@ fn timeout_interacts_with_cap_under_cap_retries_at_cap_fails() {
                 .unwrap()
         )
     );
-    assert_eq!(at_cap.retry_decision, Ok(RetryDecision::Fail));
+    assert_eq!(target_state(&at_cap, 1, 2), RunState::Failed);
 }
 
 #[test]
@@ -326,8 +334,7 @@ fn d01_t_p3_timeout_precedence_overrides_handler_success_payload() {
                 .unwrap()
         )
     );
-    assert_eq!(record.retry_decision, Ok(RetryDecision::Retry));
-    assert_eq!(record.retry_decision_input.outcome_kind, AttemptOutcomeKind::Timeout);
+    assert_eq!(target_state(&record, 0, 3), RunState::RetryWait);
 }
 
 #[test]

@@ -179,15 +179,6 @@ impl<H: ExecutorHandler + 'static, C: Clock> BootstrappedEngine<H, C> {
     ) -> Result<(), actionqueue_core::control::ControlError> {
         self.dispatch.renew_remote(host, run_id, attempt_id, fence, expiry)
     }
-    /// Claims remote execution under the embedded loop's coordination gates.
-    #[cfg(feature = "actor")]
-    pub fn claim_remote(
-        &mut self,
-        host: &actionqueue_core::control::HostControlContext,
-        request: actionqueue_actor::protocol::RemoteClaim,
-    ) -> Result<crate::remote::RemoteWork, actionqueue_core::control::ControlError> {
-        self.dispatch.claim_remote(host, request)
-    }
     /// Commits an authenticated remote result and refreshes runtime coordination.
     #[cfg(feature = "actor")]
     pub fn submit_remote_result(
