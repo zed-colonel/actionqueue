@@ -39,7 +39,8 @@ deserialized from request JSON. Current durable permissions are checked before
 an idempotent acknowledgement, and the host replaces request control attribution.
 
 Task and signal creates return 201; exact duplicates return 200; conflicts return
-409. Invalid JSON is 400, structural rejection is 422, missing authentication is
+409. Cancelling a task or run whose outcome is already history returns 409 with
+`error_code: already_terminal` and appends nothing. Invalid JSON is 400, structural rejection is 422, missing authentication is
 401, permission denial is 403, absent or out-of-scope lookup is 404, oversized
 bodies are 413, repeated admission conflicts are 429, and storage uncertainty/backpressure is 503. Service errors use
 fixed `error_code` values, never display-string classification. A signal that

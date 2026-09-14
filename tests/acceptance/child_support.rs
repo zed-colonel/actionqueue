@@ -42,6 +42,22 @@ fn finish_child(a: &mut s::Authority, id: TaskId, success: bool, now: u64) {
         execute_run(a, run, if success { AttemptDisposition::complete(None) } else { AttemptDisposition::terminal_failure(BoundedError::new("child_failed").unwrap()) }, now);
     }
 }
+/// Completed work is immutable history: cancel is rejected and nothing is appended.
+fn reject_terminal_cancel(a: &mut s::Authority, target: CancelTarget, now: u64) {
+    let before = a.projection().projection_digest().unwrap();
+    let sequence = seq(a);
+    let tenant_id = match target {
+        CancelTarget::Task(id) => a.projection().get_task(&id).unwrap().tenant_id(),
+        CancelTarget::Run(id) => a.projection().get_task(&a.projection().get_run_instance(&id).unwrap().task_id()).unwrap().tenant_id(),
+    };
+    let c = MutationCommand::Cancel(CancelCommand { expected_sequence: sequence, target, tenant_id, control_context: None, timestamp: now });
+    assert!(matches!(
+        a.submit_command(fixture_control(c), DurabilityPolicy::Immediate),
+        Err(actionqueue_storage::mutation::MutationAuthorityError::Wait(WaitRejection::AlreadyTerminal))
+    ));
+    assert_eq!(a.projection().latest_sequence() + 1, sequence);
+    assert_eq!(a.projection().projection_digest().unwrap(), before);
+}
 fn control_task(a: &mut s::Authority, id: TaskId, now: u64) {
     let _ = apply(a, MutationCommand::Cancel(CancelCommand { expected_sequence: seq(a), target: CancelTarget::Task(id), tenant_id: a.projection().get_task(&id).unwrap().tenant_id(), control_context: None, timestamp: now }));
 }

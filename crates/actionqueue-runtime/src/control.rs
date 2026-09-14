@@ -242,6 +242,9 @@ impl ServiceError {
             Self::Storage(MutationAuthorityError::Wait(
                 actionqueue_core::mutation::WaitRejection::WaitAlreadyResolved,
             )) => "conflict",
+            Self::Storage(MutationAuthorityError::Wait(
+                actionqueue_core::mutation::WaitRejection::AlreadyTerminal,
+            )) => "already_terminal",
             Self::Storage(
                 MutationAuthorityError::Wait(_) | MutationAuthorityError::Validation(_),
             ) => "invalid_request",

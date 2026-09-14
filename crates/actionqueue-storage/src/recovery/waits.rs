@@ -638,15 +638,25 @@ impl ReplayReducer {
         };
         Ok(Some(WaitPreparation::Event(Box::new(WalEvent::new(r.sequence, event)), applied)))
     }
+    /// Completed work is immutable history: a run or task that already reached its
+    /// outcome is never rewritten. A repeated cancel of an already-canceled target is
+    /// acknowledged by `prepare_cancel` as a no-op before this check applies.
     fn validate_cancel(&self, r: &CancelRecord) -> Result<(), WaitRejection> {
-        let tenant = match r.target {
-            CancelTarget::Run(id) => self.tenant_for_run(id)?,
-            CancelTarget::Task(id) => {
-                self.get_task(&id).ok_or(WaitRejection::NotFound)?.tenant_id()
+        use actionqueue_core::continuation::TaskTerminalStatus as T;
+        let (tenant, terminal) = match r.target {
+            CancelTarget::Run(id) => {
+                (self.tenant_for_run(id)?, self.get_run_state(&id).is_some_and(|s| s.is_terminal()))
             }
+            CancelTarget::Task(id) => (
+                self.get_task(&id).ok_or(WaitRejection::NotFound)?.tenant_id(),
+                matches!(self.task_terminal_status(id), Some(T::Succeeded | T::Failed)),
+            ),
         };
         if tenant != r.tenant_id {
             return Err(WaitRejection::TenantMismatch);
+        }
+        if terminal && !self.cancellations.iter().any(|old| old.target == r.target) {
+            return Err(WaitRejection::AlreadyTerminal);
         }
         Ok(())
     }

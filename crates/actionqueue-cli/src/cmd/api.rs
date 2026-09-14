@@ -233,6 +233,7 @@ async fn execute(args: Vec<String>) -> Result<CommandOutput, CliError> {
     if !status.is_success() {
         let code = match value.get("error_code").and_then(|v| v.as_str()) {
             Some("conflict") => "conflict",
+            Some("already_terminal") => "already_terminal",
             Some("stale_cursor") => "stale_cursor",
             Some("not_found") => "not_found",
             Some("forbidden") => "forbidden",

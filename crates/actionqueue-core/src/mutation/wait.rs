@@ -48,6 +48,8 @@ pub enum WaitRejection {
     StaleAttempt,
     StaleLease,
     TaskCanceled,
+    /// The target task or run already reached its outcome; completed work is immutable history.
+    AlreadyTerminal,
     InvalidState,
     ActiveWaitExists,
     /// The store or tenant active-wait creation quota is exhausted.

@@ -77,8 +77,64 @@ fn failure_witness_is_sorted_and_original_wake_survives_later_child_changes() {
         }
     );
     finish_child(&mut a, xid, false, 32);
-    control_task(&mut a, yid, 33);
+    reject_terminal_cancel(&mut a, CancelTarget::Task(yid), 33);
     assert_eq!(a.projection().pending_resume(r), Some(wake));
+    parity(&a);
+}
+/// Operator decision: a succeeded or failed task, and a terminal run, are history.
+/// Cancel is rejected without an append, dependents keep their gate, and only
+/// unfinished work remains cancelable; a repeated cancel of a canceled task is a no-op.
+#[test]
+fn completed_work_is_immutable_history_and_never_cascades() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = s::open(dir.path());
+    let r = running(&mut a, 1, None, false);
+    let p = parent(&a, r);
+    let x = child(2, vec![], ChildLifecyclePolicy::Detached, p);
+    let xid = x.task_spec().id();
+    let y = child(3, vec![xid], ChildLifecyclePolicy::Detached, p);
+    let yid = y.task_spec().id();
+    let d = child_disposition(&a, r, vec![x, y], vec![xid], ChildWaitPolicy::AllTerminal);
+    put(&mut a, r, d, 20);
+    finish_child(&mut a, xid, true, 30);
+    assert_eq!(a.projection().task_terminal_status(xid), Some(TaskTerminalStatus::Succeeded));
+    let completed_run = a.projection().runs_for_task(xid).next().unwrap().id();
+    reject_terminal_cancel(&mut a, CancelTarget::Task(xid), 31);
+    reject_terminal_cancel(&mut a, CancelTarget::Run(completed_run), 32);
+    reconcile(&mut a, 33).unwrap();
+    recover_cancellations(&mut a, 34).unwrap();
+    assert_eq!(a.projection().task_terminal_status(xid), Some(TaskTerminalStatus::Succeeded));
+    assert!(!a.projection().is_task_canceled(yid));
+    assert!(a.projection().runs_for_task(yid).all(|run| !run.state().is_terminal()));
+    let wake = a.projection().pending_resume(r).unwrap();
+    assert_eq!(
+        wake.wake,
+        WakeReason::Children {
+            wait_id: wake.wait_id().unwrap(),
+            outcomes: vec![ChildOutcome { task_id: xid, status: TaskTerminalStatus::Succeeded }]
+        }
+    );
+    // Unfinished dependents remain cancelable directly, and repeats are idempotent.
+    let cancel_sequence = seq(&a);
+    control_task(&mut a, yid, 35);
+    let after = a.projection().latest_sequence();
+    assert_eq!(after, cancel_sequence);
+    let repeat_sequence = seq(&a);
+    let repeat = apply(
+        &mut a,
+        MutationCommand::Cancel(CancelCommand {
+            expected_sequence: repeat_sequence,
+            target: CancelTarget::Task(yid),
+            tenant_id: None,
+            control_context: None,
+            timestamp: 36,
+        }),
+    );
+    assert_eq!(repeat.sequence(), cancel_sequence);
+    assert_eq!(a.projection().latest_sequence(), after);
+    assert_eq!(a.projection().task_terminal_status(yid), Some(TaskTerminalStatus::Canceled));
+    assert!(a.projection().runs_for_task(yid).all(|run| run.state() == RunState::Canceled));
+    assert_eq!(a.projection().task_terminal_status(xid), Some(TaskTerminalStatus::Succeeded));
     parity(&a);
 }
 #[test]
@@ -446,7 +502,7 @@ fn child_deadline_failure_is_a_terminal_fact() {
 }
 #[cfg(feature = "workflow")]
 #[test]
-fn exhausted_zero_run_cron_cancellation_is_a_terminal_fact() {
+fn exhausted_zero_run_cron_task_is_terminal_and_cannot_be_canceled() {
     let dir = tempfile::tempdir().unwrap();
     let mut a = s::open(dir.path());
     let r = running(&mut a, 1, None, false);
@@ -466,8 +522,8 @@ fn exhausted_zero_run_cron_cancellation_is_a_terminal_fact() {
     admission_support::ensure(&mut a, q, 32).unwrap();
     assert_eq!(a.projection().runs_for_task(zid).count(), 0);
     assert_eq!(a.projection().task_terminal_status(zid), Some(TaskTerminalStatus::Failed));
-    control_task(&mut a, zid, 33);
-    assert_eq!(a.projection().task_terminal_status(zid), Some(TaskTerminalStatus::Canceled));
+    reject_terminal_cancel(&mut a, CancelTarget::Task(zid), 33);
+    assert_eq!(a.projection().task_terminal_status(zid), Some(TaskTerminalStatus::Failed));
     parity(&a);
 }
 #[test]

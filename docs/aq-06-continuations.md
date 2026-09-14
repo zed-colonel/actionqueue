@@ -27,9 +27,15 @@ and storage error. Exact signal retries preserve original receipt and attributio
 and remain clock-free. A fenced authority must be reopened before any retry.
 
 Compound run/task controls close active waits and remove pending delivery. Task
-cancellation includes every owned nonterminal run. Descendant and dependency
-cascades are resumable across task boundaries and complete before bootstrap
-matching. Cancellation after a signal wake preserves the signal winner in history.
+cancellation includes every owned nonterminal run. Completed work is immutable
+history: cancelling a task that already succeeded or failed, or a run that is
+already terminal, is rejected with `AlreadyTerminal` (HTTP 409 `already_terminal`)
+and appends nothing, so a satisfied prerequisite stays satisfied and dependents
+are never cascaded by a later control. Unfinished dependents remain cancelable
+directly; repeating a cancel of an already-canceled target is an append-free
+acknowledgement. Descendant and dependency cascades reach only unfinished tasks,
+are resumable across task boundaries and complete before bootstrap matching.
+Cancellation after a signal wake preserves the signal winner in history.
 Generic `Awaiting` transitions and transitions bypassing pending wake delivery are
 rejected. Administrative suspension resume cannot resolve an active wait.
 

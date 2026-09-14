@@ -251,7 +251,8 @@ pub fn recover_cancellations<W: WalWriter>(
             if a.projection().is_task_canceled(id) && unfinished {
                 targets.insert(id);
             }
-            if !a.projection().is_task_canceled(id)
+            // Completed work is immutable: cascades reach only unfinished tasks.
+            if a.projection().task_terminal_status(id).is_none()
                 && task.task_spec().child_lifecycle_policy()
                     == actionqueue_core::task::task_spec::ChildLifecyclePolicy::Required
                 && task
@@ -263,7 +264,7 @@ pub fn recover_cancellations<W: WalWriter>(
             }
         }
         for (task, deps) in a.projection().dependency_declarations() {
-            if a.projection().is_task_canceled(task) {
+            if a.projection().task_terminal_status(task).is_some() {
                 continue;
             }
             let failed = deps.iter().any(|dep| {

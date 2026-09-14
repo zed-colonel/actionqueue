@@ -51,7 +51,7 @@ pub(crate) fn service_response(result: Result<ControlOutcome, ServiceError>) -> 
         Err(e) => {
             let code = e.code();
             let status = match code {
-                "conflict" => StatusCode::CONFLICT,
+                "conflict" | "already_terminal" => StatusCode::CONFLICT,
                 "invalid_request" => StatusCode::UNPROCESSABLE_ENTITY,
                 "forbidden" => StatusCode::FORBIDDEN,
                 "not_found" => StatusCode::NOT_FOUND,
