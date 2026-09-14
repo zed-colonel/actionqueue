@@ -261,6 +261,92 @@ fn canonical_offline_admission_retry_conflict_and_redaction() {
     }
     std::fs::remove_dir_all(base).unwrap();
 }
+#[test]
+fn cancel_of_completed_work_passes_already_terminal_through_unchanged() {
+    use actionqueue_core::{
+        continuation::TaskTerminalStatus,
+        ids::{AttemptId, RunId, TaskId},
+        mutation::AttemptResultKind,
+        run::{run_instance::RunInstance, RunState},
+        task::{
+            constraints::TaskConstraints, metadata::TaskMetadata, run_policy::RunPolicy,
+            task_spec::*,
+        },
+    };
+    use actionqueue_storage::{
+        recovery::bootstrap::load_projection_from_storage,
+        wal::{
+            event::{WalEvent, WalEventType as E},
+            writer::WalWriter,
+        },
+    };
+    let base = unique_data_dir("aq12-terminal");
+    let store = base.join("store");
+    let mut recovered = load_projection_from_storage(&store).unwrap();
+    let task = TaskId::new();
+    let run = RunId::new();
+    let attempt = AttemptId::new();
+    let spec = TaskSpec::new(
+        task,
+        TaskPayload::new(vec![]),
+        RunPolicy::Once,
+        TaskConstraints::default(),
+        TaskMetadata::default(),
+    )
+    .unwrap();
+    let step = |from, to| E::RunStateChanged {
+        run_id: run,
+        previous_state: from,
+        new_state: to,
+        timestamp: 2,
+    };
+    for event in [
+        E::TaskCreated { task_spec: spec, timestamp: 1 },
+        E::RunCreated {
+            run_instance: RunInstance::new_scheduled_with_id(run, task, 1, 1).unwrap(),
+        },
+        step(RunState::Scheduled, RunState::Ready),
+        step(RunState::Ready, RunState::Leased),
+        step(RunState::Leased, RunState::Running),
+        E::AttemptStarted { run_id: run, attempt_id: attempt, timestamp: 2 },
+        E::AttemptFinished {
+            run_id: run,
+            attempt_id: attempt,
+            result: AttemptResultKind::Success,
+            error: None,
+            output: None,
+            timestamp: 3,
+        },
+        step(RunState::Running, RunState::Completed),
+    ] {
+        let event = WalEvent::new(recovered.projection.latest_sequence() + 1, event);
+        recovered.projection.apply(&event).unwrap_or_else(|e| panic!("{event:?}: {e:?}"));
+        recovered.wal_writer.append(&event).unwrap();
+    }
+    assert_eq!(
+        recovered.projection.task_terminal_status(task),
+        Some(TaskTerminalStatus::Succeeded)
+    );
+    let sequence = recovered.projection.latest_sequence();
+    drop(recovered);
+    for (kind, id) in [("task", task.to_string()), ("run", run.to_string())] {
+        let out = cli()
+            .args([kind, "cancel", &id, "--offline", "--data-dir"])
+            .arg(&store)
+            .arg("--json")
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(4), "{kind}: {}", String::from_utf8_lossy(&out.stderr));
+        let error: serde_json::Value = serde_json::from_slice(&out.stderr).unwrap();
+        assert_eq!(error["error_kind"], "runtime", "{kind}");
+        assert_eq!(error["error_code"], "already_terminal", "{kind}");
+    }
+    let reloaded = load_projection_from_storage(&store).unwrap();
+    assert_eq!(reloaded.projection.latest_sequence(), sequence);
+    assert_eq!(reloaded.projection.task_terminal_status(task), Some(TaskTerminalStatus::Succeeded));
+    drop(reloaded);
+    std::fs::remove_dir_all(base).unwrap();
+}
 #[cfg(unix)]
 #[test]
 fn daemon_serves_authenticated_cli_requests_and_releases_store_on_sigterm() {

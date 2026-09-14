@@ -61,16 +61,72 @@ fn request(priority: i32) -> EnsureTaskRequest {
     .unwrap()
 }
 fn fixture(auth: bool, control: bool) -> (axum::Router, ControlMutationAuthority, RouterState) {
+    fixture_from(auth, control, ReplayReducer::new())
+}
+/// A `Once` task whose single run already completed: terminal history on both routes.
+fn completed_history() -> (ReplayReducer, TaskId, RunId) {
+    use actionqueue_core::{
+        mutation::AttemptResultKind,
+        run::{run_instance::RunInstance, RunState},
+    };
+    use actionqueue_storage::wal::event::{WalEvent, WalEventType as E};
+    let mut p = ReplayReducer::new();
+    let task = TaskId::new();
+    let run = RunId::new();
+    let attempt = AttemptId::new();
+    let spec = TaskSpec::new(
+        task,
+        TaskPayload::new(vec![]),
+        RunPolicy::Once,
+        TaskConstraints::default(),
+        TaskMetadata::default(),
+    )
+    .unwrap();
+    let step = |from, to| E::RunStateChanged {
+        run_id: run,
+        previous_state: from,
+        new_state: to,
+        timestamp: 2,
+    };
+    for event in [
+        E::TaskCreated { task_spec: spec, timestamp: 1 },
+        E::RunCreated {
+            run_instance: RunInstance::new_scheduled_with_id(run, task, 1, 1).unwrap(),
+        },
+        step(RunState::Scheduled, RunState::Ready),
+        step(RunState::Ready, RunState::Leased),
+        step(RunState::Leased, RunState::Running),
+        E::AttemptStarted { run_id: run, attempt_id: attempt, timestamp: 2 },
+        E::AttemptFinished {
+            run_id: run,
+            attempt_id: attempt,
+            result: AttemptResultKind::Success,
+            error: None,
+            output: None,
+            timestamp: 3,
+        },
+        step(RunState::Running, RunState::Completed),
+    ] {
+        let event = WalEvent::new(p.latest_sequence() + 1, event);
+        p.apply(&event).unwrap_or_else(|e| panic!("{event:?}: {e:?}"));
+    }
+    (p, task, run)
+}
+fn fixture_from(
+    auth: bool,
+    control: bool,
+    projection: ReplayReducer,
+) -> (axum::Router, ControlMutationAuthority, RouterState) {
     let path = std::env::temp_dir().join(format!("aq12-http-{}.wal", TaskId::new()));
     let telemetry = WalAppendTelemetry::new();
     let writer =
         InstrumentedWalWriter::new(WalFsWriter::new_raw_for_test(path).unwrap(), telemetry.clone());
     let a = Arc::new(Mutex::new(
-        StorageMutationAuthority::new(writer, ReplayReducer::new()).with_host(host()),
+        StorageMutationAuthority::new(writer, projection.clone()).with_host(host()),
     ));
     let state = RouterStateInner::with_control_authority(
         RouterConfig { control_enabled: control, metrics_enabled: true },
-        Arc::new(RwLock::new(ReplayReducer::new())),
+        Arc::new(RwLock::new(projection)),
         RouterObservability {
             metrics: Arc::new(
                 actionqueue_daemon::metrics::registry::MetricsRegistry::new(Some(
@@ -175,6 +231,33 @@ async fn created_duplicate_conflict_and_embedded_http_parity() {
             200
         );
     }
+}
+#[tokio::test]
+async fn cancel_of_completed_work_is_409_already_terminal_on_both_routes_and_appends_nothing() {
+    use actionqueue_core::{continuation::TaskTerminalStatus, mutation::CancelTarget};
+    let (p, task, run) = completed_history();
+    assert_eq!(p.task_terminal_status(task), Some(TaskTerminalStatus::Succeeded));
+    let (router, a, _) = fixture_from(true, true, p);
+    let before = a.lock().unwrap().projection().projection_digest().unwrap();
+    for (path, target) in [
+        (format!("/api/v2/tasks/{task}:cancel"), CancelTarget::Task(task)),
+        (format!("/api/v2/runs/{run}:cancel"), CancelTarget::Run(run)),
+    ] {
+        let embedded = execute_control(
+            &mut a.lock().unwrap(),
+            &host(),
+            ControlOperation::Cancel(target),
+            &MockClock::new(10),
+        )
+        .unwrap_err();
+        assert_eq!(embedded.code(), "already_terminal", "{path}");
+        let (status, body, _) = send(&router, "POST", &path, Body::empty(), true).await;
+        assert_eq!(status, 409, "{path}");
+        assert_eq!(body, serde_json::json!({"error_code":"already_terminal"}), "{path}");
+    }
+    let a = a.lock().unwrap();
+    assert_eq!(a.projection().projection_digest().unwrap(), before);
+    assert_eq!(a.projection().task_terminal_status(task), Some(TaskTerminalStatus::Succeeded));
 }
 #[tokio::test]
 async fn all_object_routes_require_auth_and_removed_routes_are_absent() {

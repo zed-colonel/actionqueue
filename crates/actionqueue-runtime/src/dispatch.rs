@@ -901,19 +901,20 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         Ok(())
     }
 
-    /// Cascades cancellation from canceled tasks to their non-terminal descendants.
+    /// Commits the durable cancellation cascade and refreshes the derived gates.
     ///
-    /// Called each tick (step 0c). For each task marked as canceled in the projection
-    /// that has non-terminal descendants in the hierarchy tracker, this method:
-    /// 1. Marks the canceled ancestor as terminal in the tracker (its runs were
-    ///    already canceled by the control API or dependency cascade).
-    /// 2. Collects all non-terminal descendants via `collect_cancellation_cascade`.
-    /// 3. WAL-appends `TaskCancel` + `RunStateTransition → Canceled` for each
-    ///    descendant that is not yet canceled.
-    /// 4. Marks each newly-canceled descendant as terminal in the tracker.
+    /// Called each tick (step 0c). The cascade itself is `waits::recover_cancellations`,
+    /// the same routine recovery runs at open. It commits one task-level `Cancel`
+    /// record per target and repeats until nothing remains: canceled tasks that still
+    /// have unfinished runs, unfinished required children of a canceled parent, and
+    /// unfinished dependents of a prerequisite that did not succeed.
+    /// Completed work is never touched. When the cascade appended anything, or a
+    /// dependency failure was noted this tick, the hierarchy tracker, dependency gate
+    /// and key gate are rebuilt from the projection so released keys and settled
+    /// dependents are visible to the same tick's dispatch.
     ///
-    /// The self-quenching property: once all descendants are terminal, repeated
-    /// calls return immediately with no WAL writes.
+    /// Self-quenching: once every reachable task is terminal, repeated calls append
+    /// nothing and leave the gates untouched.
     fn cascade_hierarchy_cancellations(&mut self, current_time: u64) -> Result<(), DispatchError> {
         let before = self.authority.projection().latest_sequence();
         crate::waits::recover_cancellations(&mut self.authority, current_time)
