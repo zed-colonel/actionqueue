@@ -35,8 +35,10 @@ pub fn build_snapshot_from_projection(
         })
         .collect();
 
+    // Emit runs in per-task index order so hydration rebuilds `runs_by_task` exactly
+    // as WAL replay did; cascades then emit records in the same order on every replica.
     let runs: Vec<SnapshotRun> = reducer
-        .run_instances()
+        .runs_in_index_order()
         .map(|ri| {
             let run_id = ri.id();
             let state_history = reducer

@@ -486,6 +486,13 @@ impl ReplayReducer {
         self.run_instances.values()
     }
 
+    /// Every run, grouped by task in creation order (the order `runs_for_task` yields).
+    pub(crate) fn runs_in_index_order(
+        &self,
+    ) -> impl Iterator<Item = &actionqueue_core::run::run_instance::RunInstance> {
+        self.runs_by_task.values().flatten().filter_map(|id| self.run_instances.get(id))
+    }
+
     /// Returns run identifiers owned by the provided task in deterministic order.
     pub fn run_ids_for_task(&self, task_id: TaskId) -> Vec<RunId> {
         let mut run_ids = self.runs_by_task.get(&task_id).cloned().unwrap_or_default();

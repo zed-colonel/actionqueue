@@ -1157,6 +1157,46 @@ fn authority_preparation_validates_target_events_like_replay() {
     assert!(!authority.recovery_required());
     assert_eq!(tree(dir.path()), before);
 }
+/// Snapshot hydration must yield the same per-task run order as WAL-only replay,
+/// because cancellation cascades emit one durable record per run in that order.
+#[test]
+fn snapshot_hydration_preserves_per_task_run_order() {
+    use actionqueue_storage::wal::{fs_reader::WalFsReader, reader::WalReader};
+    let dir = tempfile::tempdir().unwrap();
+    let session = init(dir.path());
+    let mut p = recover_read_only(&session, RepairPolicy::Strict).unwrap().projection;
+    let mut w = WalFsWriter::new(session.clone()).unwrap();
+    let t = TaskId::new();
+    append(&mut w, &mut p, E::TaskCreated { task_spec: task(t), timestamp: 1 });
+    // Creation order deliberately disagrees with identifier order.
+    let runs: Vec<RunId> = (0..8)
+        .rev()
+        .map(|n| format!("00000000-0000-4000-8000-00000000100{n}").parse().unwrap())
+        .collect();
+    for (n, r) in runs.iter().enumerate() {
+        append(
+            &mut w,
+            &mut p,
+            E::RunCreated {
+                run_instance: RunInstance::new_scheduled_with_id(*r, t, 2 + n as u64, 10).unwrap(),
+            },
+        );
+    }
+    snapshot(&session, &p);
+    append(&mut w, &mut p, E::EnginePaused { timestamp: 20 });
+    drop(w);
+    let ids = |r: &ReplayReducer| r.runs_for_task(t).map(|run| run.id()).collect::<Vec<_>>();
+    assert_eq!(ids(&p), runs);
+    let hydrated = recover_read_only(&session, RepairPolicy::Strict).unwrap();
+    assert!(hydrated.snapshot_loaded);
+    let mut reader = WalFsReader::for_session(&session).unwrap();
+    let mut replayed = ReplayReducer::new();
+    while let Some(e) = reader.read_next().unwrap() {
+        replayed.apply(&e).unwrap();
+    }
+    assert_eq!(ids(&replayed), runs);
+    assert_eq!(ids(&hydrated.projection), runs);
+}
 #[test]
 fn canonical_projection_matches_independent_sha256_vector() {
     let vector: serde_json::Value =
