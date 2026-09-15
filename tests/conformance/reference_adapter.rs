@@ -10,6 +10,7 @@ use actionqueue_executor_local::handler::{ExecutorContext, ExecutorHandler};
 use actionqueue_runtime::{
     config::RuntimeConfig,
     engine::{ActionQueueEngine, BootstrappedEngine},
+    inspection::DisclosurePolicy,
 };
 #[derive(Clone)]
 struct Handler {
@@ -198,4 +199,34 @@ async fn two_stores_lost_admission_duplicate_callback_early_signal_and_uncertain
         assert_eq!(local.projection().projection_digest().unwrap(), digest);
         local.shutdown().unwrap();
     }
+}
+/// The bound host alone never discloses references; resolving a wait through the
+/// embedded surface settles it without a signal and keeps the run resumable.
+#[tokio::test]
+async fn embedded_disclosure_and_wait_resolution_use_the_bound_host() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut b = boot(dir.path(), true);
+    let q = engine::reference_request(1);
+    let mut once = q.task_spec().clone();
+    once.set_run_policy(RunPolicy::Once).unwrap();
+    let q = engine::reference_with_spec(&q, once);
+    let task = q.task_spec().id();
+    b.ensure_task(q).unwrap();
+    idle(&mut b).await;
+    let run = b.projection().run_instances().next().unwrap().id();
+    let wait = b.projection().waits().active(run).unwrap().spec.wait_id();
+    let redacted = serde_json::to_string(&b.inspector().unwrap().get_task(task).unwrap()).unwrap();
+    assert!(b.inspector_with_disclosure(DisclosurePolicy::default()).is_err());
+    let disclosed =
+        b.inspector_with_disclosure(DisclosurePolicy { allow_references: true }).unwrap();
+    assert_ne!(serde_json::to_string(&disclosed.get_task(task).unwrap()).unwrap(), redacted);
+    b.resolve_wait(run, wait).unwrap();
+    assert!(b.projection().waits().active(run).is_none());
+    let record = b.projection().waits().records().find(|w| w.run_id == run).unwrap();
+    assert!(matches!(
+        record.resolution.as_ref().unwrap().kind,
+        actionqueue_storage::mutation::wait::WaitResolutionKind::Control(_)
+    ));
+    assert!(b.projection().pending_resume(run).is_some());
+    b.shutdown().unwrap();
 }

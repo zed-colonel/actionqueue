@@ -20,6 +20,10 @@ use actionqueue_engine::concurrency::lifecycle::{
     evaluate_state_transition, KeyLifecycleContext, LifecycleResult,
 };
 use actionqueue_engine::index::scheduled::ScheduledIndex;
+// Binaries that also include the wait fixtures load this helper twice.
+#[allow(clippy::duplicate_mod)]
+#[path = "lease_support.rs"]
+mod lease_support;
 #[path = "legacy_attempt_finish.rs"]
 mod legacy_attempt_finish;
 use actionqueue_engine::scheduler::promotion::{
@@ -29,6 +33,7 @@ use actionqueue_executor_local::AttemptDisposition;
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
 use http_body_util::BodyExt;
+pub use lease_support::fence_for;
 use legacy_attempt_finish::submit_attempt_finish_via_authority;
 use serde_json::Value;
 use tower::Service;
@@ -706,18 +711,7 @@ pub fn execute_attempt_outcome_sequence_via_authority(
                     run_id,
                     attempt_id,
                     attempt_start_sequence,
-                    authority
-                        .projection()
-                        .get_lease_metadata(&run_id)
-                        .map(|l| {
-                            actionqueue_core::mutation::LeaseFence::new(
-                                l.owner().into(),
-                                l.granted_at_sequence(),
-                            )
-                        })
-                        .unwrap_or_else(|| {
-                            actionqueue_core::mutation::LeaseFence::new("missing".into(), 0)
-                        }),
+                    fence_for(authority.projection(), run_id),
                     authority.projection().pending_resume(run_id).map(|c| c.context_id),
                 )),
                 DurabilityPolicy::Immediate,
@@ -1112,18 +1106,7 @@ pub fn complete_once_run_via_authority(data_dir: &Path, task_id: TaskId) -> Comp
                 run_id,
                 attempt_id,
                 attempt_start_sequence,
-                authority
-                    .projection()
-                    .get_lease_metadata(&run_id)
-                    .map(|l| {
-                        actionqueue_core::mutation::LeaseFence::new(
-                            l.owner().into(),
-                            l.granted_at_sequence(),
-                        )
-                    })
-                    .unwrap_or_else(|| {
-                        actionqueue_core::mutation::LeaseFence::new("missing".into(), 0)
-                    }),
+                fence_for(authority.projection(), run_id),
                 authority.projection().pending_resume(run_id).map(|c| c.context_id),
             )),
             DurabilityPolicy::Immediate,
@@ -1280,18 +1263,7 @@ pub fn complete_all_task_runs_via_authority(
                     run_id,
                     attempt_id,
                     attempt_start_sequence,
-                    authority
-                        .projection()
-                        .get_lease_metadata(&run_id)
-                        .map(|l| {
-                            actionqueue_core::mutation::LeaseFence::new(
-                                l.owner().into(),
-                                l.granted_at_sequence(),
-                            )
-                        })
-                        .unwrap_or_else(|| {
-                            actionqueue_core::mutation::LeaseFence::new("missing".into(), 0)
-                        }),
+                    fence_for(authority.projection(), run_id),
                     authority.projection().pending_resume(run_id).map(|c| c.context_id),
                 )),
                 DurabilityPolicy::Immediate,
@@ -1635,18 +1607,7 @@ pub fn submit_attempt_start_via_authority(
                 run_id,
                 attempt_id,
                 sequence,
-                authority
-                    .projection()
-                    .get_lease_metadata(&run_id)
-                    .map(|l| {
-                        actionqueue_core::mutation::LeaseFence::new(
-                            l.owner().into(),
-                            l.granted_at_sequence(),
-                        )
-                    })
-                    .unwrap_or_else(|| {
-                        actionqueue_core::mutation::LeaseFence::new("missing".into(), 0)
-                    }),
+                fence_for(authority.projection(), run_id),
                 authority.projection().pending_resume(run_id).map(|c| c.context_id),
             )),
             DurabilityPolicy::Immediate,

@@ -7,6 +7,8 @@
 //!   4. Verifying recovered state matches expectations,
 //!   5. Verifying new operations succeed after recovery.
 
+#[path = "../acceptance/lease_support.rs"]
+mod lease_support;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -315,18 +317,7 @@ fn crash_during_state_transitions_running() {
                     run_id,
                     attempt_id,
                     seq,
-                    authority
-                        .projection()
-                        .get_lease_metadata(&run_id)
-                        .map(|l| {
-                            actionqueue_core::mutation::LeaseFence::new(
-                                l.owner().into(),
-                                l.granted_at_sequence(),
-                            )
-                        })
-                        .unwrap_or_else(|| {
-                            actionqueue_core::mutation::LeaseFence::new("missing".into(), 0)
-                        }),
+                    lease_support::fence_for(authority.projection(), run_id),
                     authority.projection().pending_resume(run_id).map(|c| c.context_id),
                 )),
                 DurabilityPolicy::Immediate,
@@ -470,18 +461,7 @@ fn crash_with_mixed_terminal_and_active_runs() {
                         run_a,
                         aid,
                         seq,
-                        authority
-                            .projection()
-                            .get_lease_metadata(&run_a)
-                            .map(|l| {
-                                actionqueue_core::mutation::LeaseFence::new(
-                                    l.owner().into(),
-                                    l.granted_at_sequence(),
-                                )
-                            })
-                            .unwrap_or_else(|| {
-                                actionqueue_core::mutation::LeaseFence::new("missing".into(), 0)
-                            }),
+                        lease_support::fence_for(authority.projection(), run_a),
                         authority.projection().pending_resume(run_a).map(|c| c.context_id),
                     )),
                     DurabilityPolicy::Immediate,
@@ -527,18 +507,7 @@ fn crash_with_mixed_terminal_and_active_runs() {
                         run_b,
                         aid,
                         seq,
-                        authority
-                            .projection()
-                            .get_lease_metadata(&run_b)
-                            .map(|l| {
-                                actionqueue_core::mutation::LeaseFence::new(
-                                    l.owner().into(),
-                                    l.granted_at_sequence(),
-                                )
-                            })
-                            .unwrap_or_else(|| {
-                                actionqueue_core::mutation::LeaseFence::new("missing".into(), 0)
-                            }),
+                        lease_support::fence_for(authority.projection(), run_b),
                         authority.projection().pending_resume(run_b).map(|c| c.context_id),
                     )),
                     DurabilityPolicy::Immediate,
@@ -617,18 +586,7 @@ fn crash_with_mixed_terminal_and_active_runs() {
                     run_c,
                     attempt_id,
                     seq,
-                    authority
-                        .projection()
-                        .get_lease_metadata(&run_c)
-                        .map(|l| {
-                            actionqueue_core::mutation::LeaseFence::new(
-                                l.owner().into(),
-                                l.granted_at_sequence(),
-                            )
-                        })
-                        .unwrap_or_else(|| {
-                            actionqueue_core::mutation::LeaseFence::new("missing".into(), 0)
-                        }),
+                    lease_support::fence_for(authority.projection(), run_c),
                     authority.projection().pending_resume(run_c).map(|c| c.context_id),
                 )),
                 DurabilityPolicy::Immediate,
@@ -823,18 +781,7 @@ fn sequential_crashes_with_incremental_progress() {
                     run_id,
                     attempt_id,
                     seq,
-                    authority
-                        .projection()
-                        .get_lease_metadata(&run_id)
-                        .map(|l| {
-                            actionqueue_core::mutation::LeaseFence::new(
-                                l.owner().into(),
-                                l.granted_at_sequence(),
-                            )
-                        })
-                        .unwrap_or_else(|| {
-                            actionqueue_core::mutation::LeaseFence::new("missing".into(), 0)
-                        }),
+                    lease_support::fence_for(authority.projection(), run_id),
                     authority.projection().pending_resume(run_id).map(|c| c.context_id),
                 )),
                 DurabilityPolicy::Immediate,
@@ -1020,18 +967,7 @@ fn crash_during_retry_wait_preserves_state() {
                     run_id,
                     attempt_1,
                     seq,
-                    authority
-                        .projection()
-                        .get_lease_metadata(&run_id)
-                        .map(|l| {
-                            actionqueue_core::mutation::LeaseFence::new(
-                                l.owner().into(),
-                                l.granted_at_sequence(),
-                            )
-                        })
-                        .unwrap_or_else(|| {
-                            actionqueue_core::mutation::LeaseFence::new("missing".into(), 0)
-                        }),
+                    lease_support::fence_for(authority.projection(), run_id),
                     authority.projection().pending_resume(run_id).map(|c| c.context_id),
                 )),
                 DurabilityPolicy::Immediate,
@@ -1126,18 +1062,7 @@ fn crash_during_retry_wait_preserves_state() {
                     run_id,
                     attempt_2,
                     seq,
-                    authority
-                        .projection()
-                        .get_lease_metadata(&run_id)
-                        .map(|l| {
-                            actionqueue_core::mutation::LeaseFence::new(
-                                l.owner().into(),
-                                l.granted_at_sequence(),
-                            )
-                        })
-                        .unwrap_or_else(|| {
-                            actionqueue_core::mutation::LeaseFence::new("missing".into(), 0)
-                        }),
+                    lease_support::fence_for(authority.projection(), run_id),
                     authority.projection().pending_resume(run_id).map(|c| c.context_id),
                 )),
                 DurabilityPolicy::Immediate,

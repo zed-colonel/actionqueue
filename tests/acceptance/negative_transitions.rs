@@ -278,18 +278,7 @@ fn duplicate_attempt_finished_is_rejected() {
                 run_id,
                 attempt_id,
                 start_seq,
-                authority
-                    .projection()
-                    .get_lease_metadata(&run_id)
-                    .map(|l| {
-                        actionqueue_core::mutation::LeaseFence::new(
-                            l.owner().into(),
-                            l.granted_at_sequence(),
-                        )
-                    })
-                    .unwrap_or_else(|| {
-                        actionqueue_core::mutation::LeaseFence::new("missing".into(), 0)
-                    }),
+                support::fence_for(authority.projection(), run_id),
                 authority.projection().pending_resume(run_id).map(|c| c.context_id),
             )),
             DurabilityPolicy::Immediate,

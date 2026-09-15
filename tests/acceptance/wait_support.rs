@@ -1,6 +1,9 @@
 use sha2::Digest;
 mod admission_support;
 mod signal_support;
+#[allow(clippy::duplicate_mod)]
+#[path = "lease_support.rs"]
+mod lease_support;
 use actionqueue_core::{
     bounded::*,
     causal::*,
@@ -81,7 +84,7 @@ fn running_scoped(a:&mut s::Authority,n:u64,key:Option<&str>,hold:bool,tenant:Op
     transition(a, run, RunState::Running, 13);
     commit!(
         a,
-        MutationCommand::AttemptStart(AttemptStartCommand::new(seq(a), run, AttemptId::new(), 13, a.projection().get_lease_metadata(&run).map(|l| actionqueue_core::mutation::LeaseFence::new(l.owner().into(), l.granted_at_sequence())).unwrap_or_else(|| actionqueue_core::mutation::LeaseFence::new("missing".into(), 0)), a.projection().pending_resume(run).map(|c| c.context_id)))
+        MutationCommand::AttemptStart(AttemptStartCommand::new(seq(a), run, AttemptId::new(), 13, lease_support::fence_for(a.projection(), run), a.projection().pending_resume(run).map(|c| c.context_id)))
     );
     run
 }

@@ -13,7 +13,16 @@ impl Drop for Process {
         let _ = self.0.wait();
     }
 }
-pub fn kill_at(mut command: Command, expected: &str) -> String {
+/// Kills the child once it prints exactly `expected` on stdout.
+pub fn kill_at(command: Command, expected: &str) -> String {
+    kill_when(command, expected, |line| line == expected)
+}
+/// Kills the child once a stdout line starts with `prefix`; the child may append a
+/// variable suffix such as the WAL kind of the interrupted commit.
+pub fn kill_at_prefix(command: Command, prefix: &str) -> String {
+    kill_when(command, prefix, |line| line.starts_with(prefix))
+}
+fn kill_when(mut command: Command, expected: &str, accept: impl Fn(&str) -> bool) -> String {
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = Process(command.spawn().expect("spawn crash worker"));
     let stdout = child.0.stdout.take().unwrap();
@@ -44,7 +53,7 @@ pub fn kill_at(mut command: Command, expected: &str) -> String {
         let Ok(line) = rx.recv_timeout(remaining) else { break };
         output.push_str(&line);
         output.push('\n');
-        if line == expected {
+        if accept(&line) {
             acknowledged = true;
             break;
         }

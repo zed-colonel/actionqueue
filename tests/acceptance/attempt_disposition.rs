@@ -1,5 +1,7 @@
 #![allow(dead_code, unused_imports)]
 include!("resume_support.rs");
+#[path = "../conformance/harness/process.rs"]
+mod process;
 use actionqueue_core::disposition::*;
 use actionqueue_storage::mutation::disposition::DispositionRejection;
 
@@ -419,10 +421,6 @@ fn disposition_crash_child() {
 }
 #[test]
 fn killed_compound_commit_recovers_every_effect_or_none_at_each_boundary() {
-    use std::{
-        io::{BufRead, BufReader},
-        process::{Command, Stdio},
-    };
     for point in [
         "wal_before_append",
         "wal_partial_frame",
@@ -432,28 +430,11 @@ fn killed_compound_commit_recovers_every_effect_or_none_at_each_boundary() {
     ] {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("store");
-        let mut child = Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "disposition_crash_child", "--ignored", "--nocapture"])
+        let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
+        cmd.args(["--exact", "disposition_crash_child", "--ignored", "--nocapture"])
             .env("AQ_DISPOSITION_CRASH_ROOT", &path)
-            .env("AQ_DISPOSITION_CRASH_POINT", point)
-            .stdout(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let output = child.stdout.take().unwrap();
-        let (tx, rx) = std::sync::mpsc::channel();
-        let reader = std::thread::spawn(move || {
-            for line in BufReader::new(output).lines() {
-                if line.unwrap().contains("AQ_CRASH_BOUNDARY") {
-                    let _ = tx.send(());
-                    break;
-                }
-            }
-        });
-        let ready = rx.recv_timeout(std::time::Duration::from_secs(15));
-        child.kill().unwrap();
-        child.wait().unwrap();
-        reader.join().unwrap();
-        ready.unwrap();
+            .env("AQ_DISPOSITION_CRASH_POINT", point);
+        process::kill_at_prefix(cmd, &format!("AQ_CRASH_BOUNDARY {point} "));
         let a = s::reopen(&path);
         let run = a
             .projection()

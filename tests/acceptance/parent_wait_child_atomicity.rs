@@ -1,5 +1,7 @@
 #![allow(dead_code, unused_imports)]
 include!("child_support.rs");
+#[path = "../conformance/harness/process.rs"]
+mod process;
 #[test]
 fn child_termination_wakes_once_and_redelivers_original_evidence_after_restart() {
     let dir = tempfile::tempdir().unwrap();
@@ -378,10 +380,6 @@ fn child_wait_crash_process() {
 }
 #[test]
 fn killed_compound_commit_recovers_every_effect_or_none_at_each_boundary() {
-    use std::{
-        io::{BufRead, BufReader},
-        process::{Command, Stdio},
-    };
     for point in [
         "wal_before_append",
         "wal_partial_frame",
@@ -391,28 +389,11 @@ fn killed_compound_commit_recovers_every_effect_or_none_at_each_boundary() {
     ] {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("store");
-        let mut child = Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "child_wait_crash_process", "--ignored", "--nocapture"])
+        let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
+        cmd.args(["--exact", "child_wait_crash_process", "--ignored", "--nocapture"])
             .env("AQ_CHILD_WAIT_CRASH_ROOT", &path)
-            .env("AQ_CHILD_WAIT_CRASH_POINT", point)
-            .stdout(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let output = child.stdout.take().unwrap();
-        let (tx, rx) = std::sync::mpsc::channel();
-        let reader = std::thread::spawn(move || {
-            for line in BufReader::new(output).lines() {
-                if line.unwrap().contains("AQ_CRASH_BOUNDARY") {
-                    let _ = tx.send(());
-                    break;
-                }
-            }
-        });
-        let ready = rx.recv_timeout(std::time::Duration::from_secs(15));
-        child.kill().unwrap();
-        child.wait().unwrap();
-        reader.join().unwrap();
-        ready.unwrap();
+            .env("AQ_CHILD_WAIT_CRASH_POINT", point);
+        process::kill_at_prefix(cmd, &format!("AQ_CRASH_BOUNDARY {point} "));
         let a = s::reopen(&path);
         let run = a
             .projection()
@@ -558,37 +539,16 @@ fn continuation_crash_process() {
 }
 #[test]
 fn killed_child_termination_resolution_and_resume_acceptance_recover_original_wake() {
-    use std::{
-        io::{BufRead, BufReader},
-        process::{Command, Stdio},
-    };
     for phase in ["termination", "resolution", "acceptance"] {
         for point in ["wal_partial_frame", "authority_before_publish"] {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("store");
-            let mut process = Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", "continuation_crash_process", "--ignored", "--nocapture"])
+            let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
+            cmd.args(["--exact", "continuation_crash_process", "--ignored", "--nocapture"])
                 .env("AQ_CHILD_PHASE_ROOT", &path)
                 .env("AQ_CHILD_PHASE", phase)
-                .env("AQ_CHILD_POINT", point)
-                .stdout(Stdio::piped())
-                .spawn()
-                .unwrap();
-            let output = process.stdout.take().unwrap();
-            let (tx, rx) = std::sync::mpsc::channel();
-            let reader = std::thread::spawn(move || {
-                for line in BufReader::new(output).lines() {
-                    if line.unwrap().contains("AQ_CRASH_BOUNDARY") {
-                        let _ = tx.send(());
-                        break;
-                    }
-                }
-            });
-            let ready = rx.recv_timeout(std::time::Duration::from_secs(15));
-            process.kill().unwrap();
-            process.wait().unwrap();
-            reader.join().unwrap();
-            ready.unwrap();
+                .env("AQ_CHILD_POINT", point);
+            process::kill_at_prefix(cmd, &format!("AQ_CRASH_BOUNDARY {point} "));
             let mut a = s::reopen(&path);
             recover_execution(&mut a, 40).unwrap();
             reconcile(&mut a, 41).unwrap();

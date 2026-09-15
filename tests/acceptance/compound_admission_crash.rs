@@ -1,4 +1,6 @@
 mod admission_support;
+#[path = "../conformance/harness/process.rs"]
+mod process;
 use std::sync::Mutex;
 
 use actionqueue_core::mutation::{DurabilityPolicy, MutationAuthority, MutationCommand};
@@ -179,38 +181,14 @@ fn crash_child() {
 }
 #[test]
 fn subprocess_kill_at_each_boundary_recovers_complete_admission_or_none() {
-    use std::{
-        io::{BufRead, BufReader},
-        process::{Command, Stdio},
-        time::Duration,
-    };
     let _guard = SERIAL.lock().unwrap();
     for point in POINTS {
         let dir = tempfile::tempdir().unwrap();
-        let mut child = Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "crash_child", "--ignored", "--nocapture"])
+        let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
+        cmd.args(["--exact", "crash_child", "--ignored", "--nocapture"])
             .env("AQ_ADMISSION_CRASH_ROOT", dir.path())
-            .env("AQ_ADMISSION_CRASH_POINT", point)
-            .stdout(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let output = child.stdout.take().unwrap();
-        let (tx, rx) = std::sync::mpsc::channel();
-        let reader = std::thread::spawn(move || {
-            for line in BufReader::new(output).lines() {
-                let line = line.unwrap();
-                if line.contains("AQ_CRASH_BOUNDARY") {
-                    tx.send(()).unwrap();
-                    break;
-                }
-            }
-        });
-        let ready = rx.recv_timeout(Duration::from_secs(15));
-        child.kill().unwrap();
-        let status = child.wait().unwrap();
-        reader.join().unwrap();
-        ready.expect("child must reach crash boundary before kill");
-        assert!(!status.success());
+            .env("AQ_ADMISSION_CRASH_POINT", point);
+        process::kill_at_prefix(cmd, &format!("AQ_CRASH_BOUNDARY {point} "));
         let mut a = reopen(&dir.path().join("store"));
         let current = image(&a);
         let mut expected: actionqueue_storage::snapshot::model::Snapshot = serde_json::from_slice(

@@ -1,3 +1,5 @@
+#[path = "../conformance/harness/process.rs"]
+mod process;
 mod signal_support;
 use std::sync::Mutex;
 
@@ -74,37 +76,14 @@ fn crash_child() {
 }
 #[test]
 fn subprocess_kill_at_each_commit_boundary_preserves_signal_identity_and_order() {
-    use std::{
-        io::{BufRead, BufReader},
-        process::{Command, Stdio},
-        time::Duration,
-    };
     let _guard = SERIAL.lock().unwrap();
     for point in POINTS {
         let dir = tempfile::tempdir().unwrap();
-        let mut child = Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "crash_child", "--ignored", "--nocapture"])
+        let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
+        cmd.args(["--exact", "crash_child", "--ignored", "--nocapture"])
             .env("AQ_SIGNAL_CRASH_ROOT", dir.path())
-            .env("AQ_SIGNAL_CRASH_POINT", point)
-            .stdout(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let output = child.stdout.take().unwrap();
-        let (tx, rx) = std::sync::mpsc::channel();
-        let reader = std::thread::spawn(move || {
-            for line in BufReader::new(output).lines() {
-                if line.unwrap().contains("AQ_CRASH_BOUNDARY") {
-                    tx.send(()).unwrap();
-                    break;
-                }
-            }
-        });
-        let ready = rx.recv_timeout(Duration::from_secs(15));
-        child.kill().unwrap();
-        let status = child.wait().unwrap();
-        reader.join().unwrap();
-        ready.unwrap();
-        assert!(!status.success());
+            .env("AQ_SIGNAL_CRASH_POINT", point);
+        process::kill_at_prefix(cmd, &format!("AQ_CRASH_BOUNDARY {point} "));
         let mut a = reopen(&dir.path().join("store"));
         let committed = a.projection().signals().get_signal(None, &id(2)).is_some();
         if matches!(*point, "wal_before_append" | "wal_partial_frame") {

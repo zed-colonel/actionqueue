@@ -1,5 +1,7 @@
 #![allow(dead_code, unused_imports)]
 include!("resume_support.rs");
+#[path = "../conformance/harness/process.rs"]
+mod process;
 fn pause() -> ! {
     use std::io::Write;
     println!("AQ_CRASH_BOUNDARY resumed execution");
@@ -110,10 +112,6 @@ fn resume_crash_child() {
 }
 #[test]
 fn exactly_once_assignment_and_recovery_redelivery_at_every_prefix_aq_dd_011_012() {
-    use std::{
-        io::{BufRead, BufReader},
-        process::{Command, Stdio},
-    };
     let limits = [
         actionqueue_core::limits::ContinuationLimits::default().disposition_bytes,
         actionqueue_runtime::config::RuntimeConfig::minimum_disposition_bytes(),
@@ -121,29 +119,12 @@ fn exactly_once_assignment_and_recovery_redelivery_at_every_prefix_aq_dd_011_012
     for (stage, limit) in (0..10).flat_map(|stage| limits.map(|limit| (stage, limit))) {
         let dir = resume_dir();
         let path = dir.path().join("store");
-        let mut child = Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "resume_crash_child", "--ignored", "--nocapture"])
+        let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
+        cmd.args(["--exact", "resume_crash_child", "--ignored", "--nocapture"])
             .env("AQ_RESUME_ROOT", &path)
             .env("AQ_RESUME_STAGE", stage.to_string())
-            .env("AQ_RESUME_LIMIT", limit.to_string())
-            .stdout(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let output = child.stdout.take().unwrap();
-        let (tx, rx) = std::sync::mpsc::channel();
-        let reader = std::thread::spawn(move || {
-            for line in BufReader::new(output).lines() {
-                if line.unwrap().contains("AQ_CRASH_BOUNDARY") {
-                    let _ = tx.send(());
-                    break;
-                }
-            }
-        });
-        let ready = rx.recv_timeout(std::time::Duration::from_secs(15));
-        let _ = child.kill();
-        child.wait().unwrap();
-        reader.join().unwrap();
-        ready.unwrap();
+            .env("AQ_RESUME_LIMIT", limit.to_string());
+        process::kill_at_prefix(cmd, "AQ_CRASH_BOUNDARY ");
         let mut a = s::reopen(&path);
         a.set_continuation_limits(actionqueue_core::limits::ContinuationLimits {
             output_bytes: 0,
