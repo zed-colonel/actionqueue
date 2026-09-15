@@ -166,6 +166,8 @@ pub enum ConfigErrorCode {
     InvalidDataDir,
     /// The metrics bind address is invalid.
     InvalidMetricsBind,
+    /// The signal metric namespace/kind allowlist is invalid.
+    InvalidSignalMetricAllowlist,
     /// The metrics bind address conflicts with the main bind address.
     PortConflict,
 }
@@ -176,6 +178,9 @@ impl std::fmt::Display for ConfigErrorCode {
             ConfigErrorCode::InvalidBindAddress => write!(f, "invalid_bind_address"),
             ConfigErrorCode::InvalidDataDir => write!(f, "invalid_data_dir"),
             ConfigErrorCode::InvalidMetricsBind => write!(f, "invalid_metrics_bind"),
+            ConfigErrorCode::InvalidSignalMetricAllowlist => {
+                write!(f, "invalid_signal_metric_allowlist")
+            }
             ConfigErrorCode::PortConflict => write!(f, "port_conflict"),
         }
     }
@@ -191,12 +196,13 @@ impl DaemonConfig {
     ///
     /// Returns a `ConfigError` if any field contains an invalid value.
     pub fn validate(&self) -> Result<(), ConfigError> {
-        if actionqueue_storage::mutation::telemetry::QueueTelemetry::default()
-            .set_signal_allowlist(self.signal_metric_allowlist.clone())
-            .is_err()
+        if actionqueue_storage::mutation::telemetry::validate_signal_allowlist(
+            &self.signal_metric_allowlist,
+        )
+        .is_err()
         {
             return Err(ConfigError {
-                code: ConfigErrorCode::InvalidMetricsBind,
+                code: ConfigErrorCode::InvalidSignalMetricAllowlist,
                 message: "invalid signal metric allowlist".into(),
             });
         }
@@ -265,6 +271,17 @@ mod tests {
     fn test_validate_valid_config() {
         let config = DaemonConfig::default();
         assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn invalid_signal_allowlist_names_its_configuration_field() {
+        let config = DaemonConfig {
+            signal_metric_allowlist: [("invalid namespace".into(), "event".into())].into(),
+            ..Default::default()
+        };
+        let error = config.validate().unwrap_err();
+        assert_eq!(error.code, ConfigErrorCode::InvalidSignalMetricAllowlist);
+        assert_eq!(error.code.to_string(), "invalid_signal_metric_allowlist");
     }
 
     #[test]

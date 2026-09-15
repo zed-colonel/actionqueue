@@ -30,6 +30,9 @@ pub(crate) fn maintain_locked<W: WalWriter>(
 }
 /// Executes one pass explicitly, also useful for hosts with their own timer.
 pub fn tick(state: &RouterState) -> Result<(), ControlError> {
+    if state.operational_failed.load(std::sync::atomic::Ordering::Acquire) {
+        return Err(ControlError::Mutation("recovery required".into()));
+    }
     let Some(authority): Option<&ControlMutationAuthority> = state.control_authority.as_ref()
     else {
         return Ok(());
@@ -65,7 +68,9 @@ pub(crate) fn start(state: &RouterState) {
             let Some(state) = weak.upgrade() else {
                 break;
             };
-            if state.maintenance_stopping.load(std::sync::atomic::Ordering::Acquire) {
+            if state.maintenance_stopping.load(std::sync::atomic::Ordering::Acquire)
+                || state.operational_failed.load(std::sync::atomic::Ordering::Acquire)
+            {
                 break;
             }
             let _ = tokio::task::spawn_blocking(move || {

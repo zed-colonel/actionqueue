@@ -30,6 +30,17 @@ pub struct Observations {
     allowlist: BTreeSet<(String, String)>,
     waits: HashMap<WaitId, u64>,
 }
+/// Validates the finite namespace/kind metric configuration without allocating telemetry.
+pub fn validate_signal_allowlist(pairs: &BTreeSet<(String, String)>) -> Result<(), &'static str> {
+    if pairs.len() > 64
+        || pairs
+            .iter()
+            .any(|(ns, k)| SignalNamespace::new(ns).is_err() || SignalKind::new(k).is_err())
+    {
+        return Err("invalid metric allowlist");
+    }
+    Ok(())
+}
 impl QueueTelemetry {
     pub fn snapshot(&self) -> Observations {
         self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
@@ -39,13 +50,7 @@ impl QueueTelemetry {
         &self,
         pairs: BTreeSet<(String, String)>,
     ) -> Result<(), &'static str> {
-        if pairs.len() > 64
-            || pairs
-                .iter()
-                .any(|(ns, k)| SignalNamespace::new(ns).is_err() || SignalKind::new(k).is_err())
-        {
-            return Err("invalid metric allowlist");
-        }
+        validate_signal_allowlist(&pairs)?;
         let mut o = self.0.lock().unwrap_or_else(|e| e.into_inner());
         if !o.signals.is_empty() {
             return Err("telemetry already active");

@@ -181,6 +181,7 @@ fn admit_via_cli(
         file.path().to_str().unwrap().into(),
         "--json".into(),
     ];
+    drop(actionqueue_storage::recovery::bootstrap::load_projection_from_storage(data_dir).unwrap());
     let out = std::thread::spawn(move || actionqueue_cli::cmd::api::run(args))
         .join()
         .unwrap()

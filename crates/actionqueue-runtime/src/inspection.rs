@@ -71,7 +71,7 @@ impl<'a> Inspector<'a> {
         if request_references && !policy.allow_references {
             return Err(InspectionError::Unauthorized);
         }
-        Ok(Self { p, host, platform, disclose: request_references && policy.allow_references, now })
+        Ok(Self { p, host, platform, disclose: request_references, now })
     }
     fn scope(&self, action: QueueAction) -> Result<Option<TenantId>, InspectionError> {
         authorize_projection(self.p, self.platform, self.host, action)

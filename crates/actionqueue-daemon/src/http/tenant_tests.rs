@@ -280,8 +280,9 @@ fn http_remote_capacity_retry_expiry_and_revocation_before_retransmission() {
         let path = format!("/api/v2/actors/{}/claim", one.actor_id.unwrap());
         let other_path = format!("/api/v2/actors/{}/claim", two.actor_id.unwrap());
         let claim = |run: &str| serde_json::json!({"protocol_version":1,"contract_revision":"AQ-CONT-1-r2","run_id":run,"attempt_id":AttemptId::new()});
+        assert_eq!(post(router.clone(), &path, "one", claim(&RunId::new().to_string())).await.0, StatusCode::NOT_FOUND);
         // A real principal with grants still cannot claim another tenant's run.
-        assert_eq!(post(router.clone(), &path, "one", claim(&other)).await.0, StatusCode::CONFLICT);
+        assert_eq!(post(router.clone(), &path, "one", claim(&other)).await.0, StatusCode::FORBIDDEN);
         let (status, work) = post(router.clone(), &path, "one", claim(&run)).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(work["lease_expiry"], 13);
@@ -311,7 +312,7 @@ fn http_remote_capacity_retry_expiry_and_revocation_before_retransmission() {
             let _ = execute_mutation(&mut a,&host(ControlScope::Store,None),MutationCommand::CapabilityRevoke(CapabilityRevokeCommand::new(seq,one.actor_id.unwrap(),QueueAction::SubmitResult.permission(),tenant,15))).unwrap();
         }
         let before = state.control_authority.as_ref().unwrap().lock().unwrap().projection().projection_digest().unwrap();
-        assert_eq!(post(router,&result_path,"one",result).await.0,StatusCode::CONFLICT);
+        assert_eq!(post(router,&result_path,"one",result).await.0,StatusCode::FORBIDDEN);
         assert_eq!(before,state.control_authority.as_ref().unwrap().lock().unwrap().projection().projection_digest().unwrap());
     });
     runtime.block_on(maintenance::shutdown(&state));
@@ -651,5 +652,64 @@ fn admission_throttle_uses_authenticated_scope_and_preserves_other_tenant_retrie
         assert_eq!(std::fs::read(root.join("wal/actionqueue.wal")).unwrap(), wal_before);
     });
     drop(state);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn actor_operation_reports_storage_uncertainty_on_the_failing_request() {
+    let (root, state, one, _) = fixture();
+    let actor_id = one.actor_id.unwrap();
+    let response =
+        actors::actor_operation(&state, &one, actor_id, StatusCode::CONFLICT, |a, host, now| {
+            let run =
+                actionqueue_runtime::remote::claimable(a, host, now)?.into_iter().next().unwrap();
+            actionqueue_storage::store::fault::fail_once("wal_partial_frame");
+            actionqueue_runtime::remote::claim_with_policy(
+                a,
+                host,
+                actionqueue_actor::protocol::RemoteClaim {
+                    protocol_version: 1,
+                    contract_revision: "AQ-CONT-1-r2".into(),
+                    run_id: run,
+                    attempt_id: AttemptId::new(),
+                },
+                now,
+                state.remote_policy,
+            )
+            .map(Some)
+        });
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert!(state.operational_failed.load(std::sync::atomic::Ordering::Acquire));
+    assert!(state.control_authority.as_ref().unwrap().lock().unwrap().recovery_required());
+    drop(state);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn failed_maintenance_exits_without_locking_or_repeating() {
+    let (root, state, _, _) = fixture();
+    let authority = state.control_authority.as_ref().unwrap().clone();
+    assert!(std::thread::spawn(move || {
+        let _guard = authority.lock().unwrap();
+        panic!("poison authority for fail-closed test");
+    })
+    .join()
+    .is_err());
+    state.operational_failed.store(true, std::sync::atomic::Ordering::Release);
+    assert!(
+        matches!(maintenance::tick(&state), Err(ControlError::Mutation(message)) if message == "recovery required")
+    );
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    runtime.block_on(async {
+        maintenance::start(&state);
+        let task = state.maintenance_task.lock().unwrap().take().unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), task)
+            .await
+            .expect("failed maintenance must exit without shutdown")
+            .unwrap();
+        maintenance::shutdown(&state).await;
+    });
+    drop(state);
+    drop(runtime);
     std::fs::remove_dir_all(root).unwrap();
 }

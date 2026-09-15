@@ -176,3 +176,8 @@ work counts as work, even when a later append fails. These are work measurements
 not distinct signals, successful wakeups, or durable history totals. Empty index
 lookups contribute zero. Replay, snapshot hydration, inspection and metrics scrapes
 do not increment these counters. All labels are fixed and contain no identifiers.
+
+Offline operational commands require an existing target store and never initialize
+an absent or empty data directory. Provision a store through daemon or embedded
+bootstrap before using these commands. HTTP 429 `admission_conflict_throttled`
+is a retryable CLI connectivity error (exit 5), preserving the daemon error code.

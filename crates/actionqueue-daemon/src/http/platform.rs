@@ -36,32 +36,21 @@ async fn create_tenant(
     axum::Extension(host): axum::Extension<actionqueue_core::control::HostControlContext>,
     Json(body): Json<CreateTenantRequest>,
 ) -> impl IntoResponse {
-    let Some(authority) = state.control_authority.as_ref() else {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
-    };
-    let mut auth = match authority.lock() {
-        Ok(a) => a,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
-    if body.name.is_empty() {
-        return StatusCode::BAD_REQUEST.into_response();
-    }
-    let seq = auth.projection().latest_sequence() + 1;
-    let ts = state.clock.now();
-    match crate::http::execute_host_mutation(
+    host_mutation(
         &state,
-        &mut auth,
         &host,
-        MutationCommand::TenantCreate(TenantCreateCommand::new(
-            seq,
-            TenantRegistration::new(body.tenant_id, body.name),
-            ts,
-        )),
-    ) {
-        Ok(_) => (StatusCode::CREATED, Json(serde_json::json!({ "tenant_id": body.tenant_id })))
-            .into_response(),
-        Err(e) => super::api::service_response(Err(e)),
-    }
+        |seq, ts| {
+            if body.name.is_empty() {
+                return Err(StatusCode::BAD_REQUEST.into_response());
+            }
+            Ok(MutationCommand::TenantCreate(TenantCreateCommand::new(
+                seq,
+                TenantRegistration::new(body.tenant_id, body.name),
+                ts,
+            )))
+        },
+        (StatusCode::CREATED, Json(serde_json::json!({ "tenant_id": body.tenant_id }))),
+    )
 }
 
 #[derive(serde::Deserialize)]
@@ -76,34 +65,23 @@ async fn assign_role(
     axum::extract::Path(actor_id): axum::extract::Path<ActorId>,
     Json(body): Json<AssignRoleRequest>,
 ) -> impl IntoResponse {
-    let Some(authority) = state.control_authority.as_ref() else {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
-    };
-    if body.role.is_empty() {
-        return StatusCode::BAD_REQUEST.into_response();
-    }
-    let role = parse_role(&body.role);
-    let mut auth = match authority.lock() {
-        Ok(a) => a,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
-    let seq = auth.projection().latest_sequence() + 1;
-    let ts = state.clock.now();
-    match crate::http::execute_host_mutation(
+    host_mutation(
         &state,
-        &mut auth,
         &host,
-        MutationCommand::RoleAssign(RoleAssignCommand::new(
-            seq,
-            actor_id,
-            role,
-            body.tenant_id,
-            ts,
-        )),
-    ) {
-        Ok(_) => StatusCode::OK.into_response(),
-        Err(e) => super::api::service_response(Err(e)),
-    }
+        |seq, ts| {
+            if body.role.is_empty() {
+                return Err(StatusCode::BAD_REQUEST.into_response());
+            }
+            Ok(MutationCommand::RoleAssign(RoleAssignCommand::new(
+                seq,
+                actor_id,
+                parse_role(&body.role),
+                body.tenant_id,
+                ts,
+            )))
+        },
+        StatusCode::OK,
+    )
 }
 
 #[derive(serde::Deserialize)]
@@ -118,31 +96,20 @@ async fn grant_capability(
     axum::extract::Path(actor_id): axum::extract::Path<ActorId>,
     Json(body): Json<GrantCapabilityRequest>,
 ) -> impl IntoResponse {
-    let Some(authority) = state.control_authority.as_ref() else {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
-    };
-    let capability = body.capability;
-    let mut auth = match authority.lock() {
-        Ok(a) => a,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
-    let seq = auth.projection().latest_sequence() + 1;
-    let ts = state.clock.now();
-    match crate::http::execute_host_mutation(
+    host_mutation(
         &state,
-        &mut auth,
         &host,
-        MutationCommand::CapabilityGrant(CapabilityGrantCommand::new(
-            seq,
-            actor_id,
-            capability,
-            body.tenant_id,
-            ts,
-        )),
-    ) {
-        Ok(_) => StatusCode::OK.into_response(),
-        Err(e) => super::api::service_response(Err(e)),
-    }
+        |seq, ts| {
+            Ok(MutationCommand::CapabilityGrant(CapabilityGrantCommand::new(
+                seq,
+                actor_id,
+                body.capability,
+                body.tenant_id,
+                ts,
+            )))
+        },
+        StatusCode::OK,
+    )
 }
 
 #[derive(serde::Deserialize)]
@@ -158,44 +125,46 @@ async fn append_ledger_entry(
     axum::Extension(host): axum::Extension<actionqueue_core::control::HostControlContext>,
     Json(body): Json<AppendLedgerRequest>,
 ) -> impl IntoResponse {
+    let entry_id = LedgerEntryId::new();
+    host_mutation(
+        &state,
+        &host,
+        |seq, ts| {
+            let payload = base64_decode(&body.payload_base64).map_err(|_| {
+                (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "invalid_base64" })))
+                    .into_response()
+            })?;
+            if body.ledger_key.is_empty() {
+                return Err(StatusCode::BAD_REQUEST.into_response());
+            }
+            let entry = LedgerEntry::new(entry_id, body.tenant_id, body.ledger_key, payload, ts);
+            let entry = if let Some(aid) = host.actor_id { entry.with_actor(aid) } else { entry };
+            Ok(MutationCommand::LedgerAppend(LedgerAppendCommand::new(seq, entry, ts)))
+        },
+        (StatusCode::CREATED, Json(serde_json::json!({ "entry_id": entry_id }))),
+    )
+}
+
+/// Keep sequence allocation, host attribution and response mapping in one lane.
+fn host_mutation(
+    state: &RouterState,
+    host: &actionqueue_core::control::HostControlContext,
+    build: impl FnOnce(u64, u64) -> Result<MutationCommand, axum::response::Response>,
+    success: impl IntoResponse,
+) -> axum::response::Response {
     let Some(authority) = state.control_authority.as_ref() else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
-
-    let payload = match base64_decode(&body.payload_base64) {
-        Ok(p) => p,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": "invalid_base64" })),
-            )
-                .into_response()
-        }
+    let Ok(mut authority) = authority.lock() else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
-
-    let entry_id = LedgerEntryId::new();
-    let ts = state.clock.now();
-    if body.ledger_key.is_empty() {
-        return StatusCode::BAD_REQUEST.into_response();
-    }
-    let entry = LedgerEntry::new(entry_id, body.tenant_id, body.ledger_key, payload, ts);
-    let entry = if let Some(aid) = host.actor_id { entry.with_actor(aid) } else { entry };
-
-    let mut auth = match authority.lock() {
-        Ok(a) => a,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    let command = match build(authority.projection().latest_sequence() + 1, state.clock.now()) {
+        Ok(command) => command,
+        Err(response) => return response,
     };
-    let seq = auth.projection().latest_sequence() + 1;
-    match crate::http::execute_host_mutation(
-        &state,
-        &mut auth,
-        &host,
-        MutationCommand::LedgerAppend(LedgerAppendCommand::new(seq, entry, ts)),
-    ) {
-        Ok(_) => {
-            (StatusCode::CREATED, Json(serde_json::json!({ "entry_id": entry_id }))).into_response()
-        }
-        Err(e) => super::api::service_response(Err(e)),
+    match super::execute_host_mutation(state, &mut authority, host, command) {
+        Ok(_) => success.into_response(),
+        Err(error) => super::api::service_response(Err(error)),
     }
 }
 

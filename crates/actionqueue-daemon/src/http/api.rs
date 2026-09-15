@@ -163,9 +163,7 @@ async fn inspect(
     s: RouterState,
     h: HostControlContext,
     q: Query,
-    operation: impl FnOnce(&Inspector<'_>) -> Result<serde_json::Value, InspectionError>
-        + Send
-        + 'static,
+    operation: impl FnOnce(&Inspector<'_>) -> Result<Vec<u8>, InspectionError> + Send + 'static,
 ) -> Response {
     let permit = match s.authority_lane.clone().try_acquire_owned() {
         Ok(p) => p,
@@ -189,7 +187,9 @@ async fn inspect(
             .and_then(|i| operation(&i))
         });
         match result {
-            Ok(Ok(v)) => Json(v).into_response(),
+            Ok(Ok(bytes)) => {
+                ([(axum::http::header::CONTENT_TYPE, "application/json")], bytes).into_response()
+            }
             Ok(Err(e)) => inspection_error(e),
             Err(e) => *e,
         }
@@ -197,12 +197,12 @@ async fn inspect(
     .await
     .unwrap_or_else(|_| error(StatusCode::SERVICE_UNAVAILABLE, "storage_unavailable"))
 }
-fn value(v: impl serde::Serialize) -> Result<serde_json::Value, InspectionError> {
+fn value(v: impl serde::Serialize) -> Result<Vec<u8>, InspectionError> {
     let bytes = serde_json::to_vec(&v).map_err(|_| InspectionError::TooLarge)?;
     if bytes.len() > 2 * 1024 * 1024 {
         return Err(InspectionError::TooLarge);
     }
-    serde_json::from_slice(&bytes).map_err(|_| InspectionError::TooLarge)
+    Ok(bytes)
 }
 macro_rules! get {
     ($name:ident, $id:ty, $method:ident) => {

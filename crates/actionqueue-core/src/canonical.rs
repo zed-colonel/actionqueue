@@ -2,6 +2,8 @@
 //! disposition). Integers are little endian, strings/bytes carry u64 lengths,
 //! options carry a 0/1 tag, and every tag is a protocol constant, never a Rust
 //! discriminant. Callers own the domain prefix and version.
+use crate::data_ref::DataRef;
+
 pub(crate) struct Encoder(Vec<u8>);
 impl Encoder {
     pub(crate) fn new(prefix: &[u8]) -> Self {
@@ -39,6 +41,24 @@ impl Encoder {
     pub(crate) fn hash(&mut self, h: &crate::bounded::ContentHash) {
         self.byte(1);
         self.bytes(h.bytes());
+    }
+    pub(crate) fn data(&mut self, value: &DataRef) {
+        match value {
+            DataRef::Inline(d) => {
+                self.byte(0);
+                self.option(d.content_type(), |e, v| e.text(v.as_str()));
+                self.bytes(d.bytes());
+                self.hash(d.hash());
+            }
+            DataRef::External(d) => {
+                self.byte(1);
+                self.text(d.scheme.as_str());
+                self.text(d.locator.expose());
+                self.hash(&d.hash);
+                self.option(d.size_bytes, Self::u64);
+                self.option(d.content_type.as_ref(), |e, v| e.text(v.as_str()));
+            }
+        }
     }
     pub(crate) fn finish(self) -> Vec<u8> {
         self.0

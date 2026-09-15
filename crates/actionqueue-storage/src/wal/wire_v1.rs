@@ -613,91 +613,42 @@ pub fn decode_payload(kind: u16, payload: &[u8]) -> Result<WalEventType, DecodeE
             })
         }
         288 => {
-            if payload.len() + 52 > actionqueue_core::limits::MAX_SIGNAL_RECORD_BYTES {
-                return Err(DecodeError::Decode("signal frame too large".into()));
-            }
-            let (v, rest) = postcard::take_from_bytes::<super::signal_v1::SignalRecordV1>(payload)
-                .map_err(|e| DecodeError::Decode(e.to_string()))?;
-            if !rest.is_empty() {
-                return Err(DecodeError::Decode("trailing signal bytes".into()));
-            }
+            let v = signal_take::<super::signal_v1::SignalRecordV1>(payload)?;
             Ok(WalEventType::SignalAdmitted { record: v.try_into()? })
         }
         289 => {
-            if payload.len() + 52 > actionqueue_core::limits::MAX_SIGNAL_RECORD_BYTES {
-                return Err(DecodeError::Decode("signal frame too large".into()));
-            }
-            let (v, rest) = postcard::take_from_bytes::<super::signal_v1::PinV1>(payload)
-                .map_err(|e| DecodeError::Decode(e.to_string()))?;
-            if !rest.is_empty() {
-                return Err(DecodeError::Decode("trailing signal bytes".into()));
-            }
+            let v = signal_take::<super::signal_v1::PinV1>(payload)?;
             Ok(WalEventType::SignalPinned { record: v.try_into()? })
         }
         290 => {
-            if payload.len() + 52 > actionqueue_core::limits::MAX_SIGNAL_RECORD_BYTES {
-                return Err(DecodeError::Decode("signal frame too large".into()));
-            }
-            let (v, rest) = postcard::take_from_bytes::<super::signal_v1::PinV1>(payload)
-                .map_err(|e| DecodeError::Decode(e.to_string()))?;
-            if !rest.is_empty() {
-                return Err(DecodeError::Decode("trailing signal bytes".into()));
-            }
+            let v = signal_take::<super::signal_v1::PinV1>(payload)?;
             Ok(WalEventType::SignalUnpinned { record: v.try_into()? })
         }
         291 => {
-            if payload.len() + 52 > actionqueue_core::limits::MAX_SIGNAL_RECORD_BYTES {
-                return Err(DecodeError::Decode("signal frame too large".into()));
-            }
-            let (v, rest) = postcard::take_from_bytes::<super::signal_v1::RetiredV1>(payload)
-                .map_err(|e| DecodeError::Decode(e.to_string()))?;
-            if !rest.is_empty() {
-                return Err(DecodeError::Decode("trailing signal bytes".into()));
-            }
+            let v = signal_take::<super::signal_v1::RetiredV1>(payload)?;
             Ok(WalEventType::SignalsRetired { record: v.try_into()? })
         }
         256 => {
-            let (v, rest) =
-                postcard::take_from_bytes::<super::admission_v1::AdmissionCommittedV1>(payload)
-                    .map_err(|e| DecodeError::Decode(e.to_string()))?;
-            if !rest.is_empty() {
-                return Err(DecodeError::Decode("trailing payload bytes".into()));
-            }
+            let v = take::<super::admission_v1::AdmissionCommittedV1>(payload)?;
             v.into_event()
         }
         1 => {
-            let (v, rest) = postcard::take_from_bytes::<StoreInitializedV1>(payload)
-                .map_err(|e| DecodeError::Decode(e.to_string()))?;
-            if !rest.is_empty() {
-                return Err(DecodeError::Decode("trailing payload bytes".into()));
-            }
+            let v = take::<StoreInitializedV1>(payload)?;
             Ok(WalEventType::StoreInitialized { manifest_digest: v.manifest_digest })
         }
         16 => {
-            let (v, rest) = postcard::take_from_bytes::<TaskCreatedV1>(payload)
-                .map_err(|e| DecodeError::Decode(e.to_string()))?;
-            if !rest.is_empty() {
-                return Err(DecodeError::Decode("trailing payload bytes".into()));
-            }
+            let v = take::<TaskCreatedV1>(payload)?;
             Ok(WalEventType::TaskCreated {
                 task_spec: v.task_spec.try_into()?,
                 timestamp: v.timestamp,
             })
         }
         17 => {
-            let (v, rest) = postcard::take_from_bytes::<RunCreatedV1>(payload)
-                .map_err(|e| DecodeError::Decode(e.to_string()))?;
-            if !rest.is_empty() {
-                return Err(DecodeError::Decode("trailing payload bytes".into()));
-            }
+            let v = take::<RunCreatedV1>(payload)?;
             Ok(WalEventType::RunCreated { run_instance: v.run_instance.try_into()? })
         }
         18 => {
-            let (v, rest) = postcard::take_from_bytes::<RunStateChangedV1>(payload)
-                .map_err(|e| DecodeError::Decode(e.to_string()))?;
-            if !rest.is_empty() {
-                return Err(DecodeError::Decode("trailing payload bytes".into()));
-            }
+            let v = take::<RunStateChangedV1>(payload)?;
             Ok(WalEventType::RunStateChanged {
                 run_id: v.run_id,
                 previous_state: v.previous_state,
@@ -706,11 +657,7 @@ pub fn decode_payload(kind: u16, payload: &[u8]) -> Result<WalEventType, DecodeE
             })
         }
         19 => {
-            let (v, rest) = postcard::take_from_bytes::<AttemptStartedV1>(payload)
-                .map_err(|e| DecodeError::Decode(e.to_string()))?;
-            if !rest.is_empty() {
-                return Err(DecodeError::Decode("trailing payload bytes".into()));
-            }
+            let v = take::<AttemptStartedV1>(payload)?;
             Ok(WalEventType::AttemptStarted {
                 run_id: v.run_id,
                 attempt_id: v.attempt_id,
@@ -718,11 +665,7 @@ pub fn decode_payload(kind: u16, payload: &[u8]) -> Result<WalEventType, DecodeE
             })
         }
         20 => {
-            let (v, rest) = postcard::take_from_bytes::<AttemptFinishedV1>(payload)
-                .map_err(|e| DecodeError::Decode(e.to_string()))?;
-            if !rest.is_empty() {
-                return Err(DecodeError::Decode("trailing payload bytes".into()));
-            }
+            let v = take::<AttemptFinishedV1>(payload)?;
             Ok(WalEventType::AttemptFinished {
                 run_id: v.run_id,
                 attempt_id: v.attempt_id,
@@ -733,27 +676,15 @@ pub fn decode_payload(kind: u16, payload: &[u8]) -> Result<WalEventType, DecodeE
             })
         }
         21 => {
-            let (v, rest) = postcard::take_from_bytes::<TaskCanceledV1>(payload)
-                .map_err(|e| DecodeError::Decode(e.to_string()))?;
-            if !rest.is_empty() {
-                return Err(DecodeError::Decode("trailing payload bytes".into()));
-            }
+            let v = take::<TaskCanceledV1>(payload)?;
             Ok(WalEventType::TaskCanceled { task_id: v.task_id, timestamp: v.timestamp })
         }
         22 => {
-            let (v, rest) = postcard::take_from_bytes::<RunCanceledV1>(payload)
-                .map_err(|e| DecodeError::Decode(e.to_string()))?;
-            if !rest.is_empty() {
-                return Err(DecodeError::Decode("trailing payload bytes".into()));
-            }
+            let v = take::<RunCanceledV1>(payload)?;
             Ok(WalEventType::RunCanceled { run_id: v.run_id, timestamp: v.timestamp })
         }
         23 => {
-            let (v, rest) = postcard::take_from_bytes::<LeaseAcquiredV1>(payload)
-                .map_err(|e| DecodeError::Decode(e.to_string()))?;
-            if !rest.is_empty() {
-                return Err(DecodeError::Decode("trailing payload bytes".into()));
-            }
+            let v = take::<LeaseAcquiredV1>(payload)?;
             Ok(WalEventType::LeaseAcquired {
                 run_id: v.run_id,
                 owner: v.owner,
@@ -762,11 +693,7 @@ pub fn decode_payload(kind: u16, payload: &[u8]) -> Result<WalEventType, DecodeE
             })
         }
         24 => {
-            let (v, rest) = postcard::take_from_bytes::<LeaseHeartbeatV1>(payload)
-                .map_err(|e| DecodeError::Decode(e.to_string()))?;
-            if !rest.is_empty() {
-                return Err(DecodeError::Decode("trailing payload bytes".into()));
-            }
+            let v = take::<LeaseHeartbeatV1>(payload)?;
             Ok(WalEventType::LeaseHeartbeat {
                 run_id: v.run_id,
                 owner: v.owner,
@@ -775,11 +702,7 @@ pub fn decode_payload(kind: u16, payload: &[u8]) -> Result<WalEventType, DecodeE
             })
         }
         25 => {
-            let (v, rest) = postcard::take_from_bytes::<LeaseExpiredV1>(payload)
-                .map_err(|e| DecodeError::Decode(e.to_string()))?;
-            if !rest.is_empty() {
-                return Err(DecodeError::Decode("trailing payload bytes".into()));
-            }
+            let v = take::<LeaseExpiredV1>(payload)?;
             Ok(WalEventType::LeaseExpired {
                 run_id: v.run_id,
                 owner: v.owner,
@@ -788,11 +711,7 @@ pub fn decode_payload(kind: u16, payload: &[u8]) -> Result<WalEventType, DecodeE
             })
         }
         26 => {
-            let (v, rest) = postcard::take_from_bytes::<LeaseReleasedV1>(payload)
-                .map_err(|e| DecodeError::Decode(e.to_string()))?;
-            if !rest.is_empty() {
-                return Err(DecodeError::Decode("trailing payload bytes".into()));
-            }
+            let v = take::<LeaseReleasedV1>(payload)?;
             Ok(WalEventType::LeaseReleased {
                 run_id: v.run_id,
                 owner: v.owner,
@@ -801,27 +720,15 @@ pub fn decode_payload(kind: u16, payload: &[u8]) -> Result<WalEventType, DecodeE
             })
         }
         27 => {
-            let (v, rest) = postcard::take_from_bytes::<EnginePausedV1>(payload)
-                .map_err(|e| DecodeError::Decode(e.to_string()))?;
-            if !rest.is_empty() {
-                return Err(DecodeError::Decode("trailing payload bytes".into()));
-            }
+            let v = take::<EnginePausedV1>(payload)?;
             Ok(WalEventType::EnginePaused { timestamp: v.timestamp })
         }
         28 => {
-            let (v, rest) = postcard::take_from_bytes::<EngineResumedV1>(payload)
-                .map_err(|e| DecodeError::Decode(e.to_string()))?;
-            if !rest.is_empty() {
-                return Err(DecodeError::Decode("trailing payload bytes".into()));
-            }
+            let v = take::<EngineResumedV1>(payload)?;
             Ok(WalEventType::EngineResumed { timestamp: v.timestamp })
         }
         29 => {
-            let (v, rest) = postcard::take_from_bytes::<DependencyDeclaredV1>(payload)
-                .map_err(|e| DecodeError::Decode(e.to_string()))?;
-            if !rest.is_empty() {
-                return Err(DecodeError::Decode("trailing payload bytes".into()));
-            }
+            let v = take::<DependencyDeclaredV1>(payload)?;
             Ok(WalEventType::DependencyDeclared {
                 task_id: v.task_id,
                 depends_on: v.depends_on,
@@ -829,11 +736,7 @@ pub fn decode_payload(kind: u16, payload: &[u8]) -> Result<WalEventType, DecodeE
             })
         }
         30 => {
-            let (v, rest) = postcard::take_from_bytes::<RunSuspendedV1>(payload)
-                .map_err(|e| DecodeError::Decode(e.to_string()))?;
-            if !rest.is_empty() {
-                return Err(DecodeError::Decode("trailing payload bytes".into()));
-            }
+            let v = take::<RunSuspendedV1>(payload)?;
             Ok(WalEventType::RunSuspended {
                 run_id: v.run_id,
                 reason: v.reason,
@@ -841,19 +744,11 @@ pub fn decode_payload(kind: u16, payload: &[u8]) -> Result<WalEventType, DecodeE
             })
         }
         31 => {
-            let (v, rest) = postcard::take_from_bytes::<RunResumedV1>(payload)
-                .map_err(|e| DecodeError::Decode(e.to_string()))?;
-            if !rest.is_empty() {
-                return Err(DecodeError::Decode("trailing payload bytes".into()));
-            }
+            let v = take::<RunResumedV1>(payload)?;
             Ok(WalEventType::RunResumed { run_id: v.run_id, timestamp: v.timestamp })
         }
         32 => {
-            let (v, rest) = postcard::take_from_bytes::<BudgetAllocatedV1>(payload)
-                .map_err(|e| DecodeError::Decode(e.to_string()))?;
-            if !rest.is_empty() {
-                return Err(DecodeError::Decode("trailing payload bytes".into()));
-            }
+            let v = take::<BudgetAllocatedV1>(payload)?;
             Ok(WalEventType::BudgetAllocated {
                 task_id: v.task_id,
                 dimension: v.dimension,
@@ -862,11 +757,7 @@ pub fn decode_payload(kind: u16, payload: &[u8]) -> Result<WalEventType, DecodeE
             })
         }
         33 => {
-            let (v, rest) = postcard::take_from_bytes::<BudgetConsumedV1>(payload)
-                .map_err(|e| DecodeError::Decode(e.to_string()))?;
-            if !rest.is_empty() {
-                return Err(DecodeError::Decode("trailing payload bytes".into()));
-            }
+            let v = take::<BudgetConsumedV1>(payload)?;
             Ok(WalEventType::BudgetConsumed {
                 task_id: v.task_id,
                 dimension: v.dimension,
@@ -875,11 +766,7 @@ pub fn decode_payload(kind: u16, payload: &[u8]) -> Result<WalEventType, DecodeE
             })
         }
         34 => {
-            let (v, rest) = postcard::take_from_bytes::<BudgetExhaustedV1>(payload)
-                .map_err(|e| DecodeError::Decode(e.to_string()))?;
-            if !rest.is_empty() {
-                return Err(DecodeError::Decode("trailing payload bytes".into()));
-            }
+            let v = take::<BudgetExhaustedV1>(payload)?;
             Ok(WalEventType::BudgetExhausted {
                 task_id: v.task_id,
                 dimension: v.dimension,
@@ -887,11 +774,7 @@ pub fn decode_payload(kind: u16, payload: &[u8]) -> Result<WalEventType, DecodeE
             })
         }
         35 => {
-            let (v, rest) = postcard::take_from_bytes::<BudgetReplenishedV1>(payload)
-                .map_err(|e| DecodeError::Decode(e.to_string()))?;
-            if !rest.is_empty() {
-                return Err(DecodeError::Decode("trailing payload bytes".into()));
-            }
+            let v = take::<BudgetReplenishedV1>(payload)?;
             Ok(WalEventType::BudgetReplenished {
                 task_id: v.task_id,
                 dimension: v.dimension,
@@ -900,11 +783,7 @@ pub fn decode_payload(kind: u16, payload: &[u8]) -> Result<WalEventType, DecodeE
             })
         }
         36 => {
-            let (v, rest) = postcard::take_from_bytes::<SubscriptionCreatedV1>(payload)
-                .map_err(|e| DecodeError::Decode(e.to_string()))?;
-            if !rest.is_empty() {
-                return Err(DecodeError::Decode("trailing payload bytes".into()));
-            }
+            let v = take::<SubscriptionCreatedV1>(payload)?;
             Ok(WalEventType::SubscriptionCreated {
                 subscription_id: v.subscription_id,
                 task_id: v.task_id,
@@ -913,33 +792,21 @@ pub fn decode_payload(kind: u16, payload: &[u8]) -> Result<WalEventType, DecodeE
             })
         }
         37 => {
-            let (v, rest) = postcard::take_from_bytes::<SubscriptionTriggeredV1>(payload)
-                .map_err(|e| DecodeError::Decode(e.to_string()))?;
-            if !rest.is_empty() {
-                return Err(DecodeError::Decode("trailing payload bytes".into()));
-            }
+            let v = take::<SubscriptionTriggeredV1>(payload)?;
             Ok(WalEventType::SubscriptionTriggered {
                 subscription_id: v.subscription_id,
                 timestamp: v.timestamp,
             })
         }
         38 => {
-            let (v, rest) = postcard::take_from_bytes::<SubscriptionCanceledV1>(payload)
-                .map_err(|e| DecodeError::Decode(e.to_string()))?;
-            if !rest.is_empty() {
-                return Err(DecodeError::Decode("trailing payload bytes".into()));
-            }
+            let v = take::<SubscriptionCanceledV1>(payload)?;
             Ok(WalEventType::SubscriptionCanceled {
                 subscription_id: v.subscription_id,
                 timestamp: v.timestamp,
             })
         }
         39 => {
-            let (v, rest) = postcard::take_from_bytes::<ActorRegisteredV1>(payload)
-                .map_err(|e| DecodeError::Decode(e.to_string()))?;
-            if !rest.is_empty() {
-                return Err(DecodeError::Decode("trailing payload bytes".into()));
-            }
+            let v = take::<ActorRegisteredV1>(payload)?;
             Ok(WalEventType::ActorRegistered {
                 actor_id: v.actor_id,
                 identity: v.identity,
@@ -951,27 +818,15 @@ pub fn decode_payload(kind: u16, payload: &[u8]) -> Result<WalEventType, DecodeE
             })
         }
         40 => {
-            let (v, rest) = postcard::take_from_bytes::<ActorDeregisteredV1>(payload)
-                .map_err(|e| DecodeError::Decode(e.to_string()))?;
-            if !rest.is_empty() {
-                return Err(DecodeError::Decode("trailing payload bytes".into()));
-            }
+            let v = take::<ActorDeregisteredV1>(payload)?;
             Ok(WalEventType::ActorDeregistered { actor_id: v.actor_id, timestamp: v.timestamp })
         }
         41 => {
-            let (v, rest) = postcard::take_from_bytes::<ActorHeartbeatV1>(payload)
-                .map_err(|e| DecodeError::Decode(e.to_string()))?;
-            if !rest.is_empty() {
-                return Err(DecodeError::Decode("trailing payload bytes".into()));
-            }
+            let v = take::<ActorHeartbeatV1>(payload)?;
             Ok(WalEventType::ActorHeartbeat { actor_id: v.actor_id, timestamp: v.timestamp })
         }
         42 => {
-            let (v, rest) = postcard::take_from_bytes::<TenantCreatedV1>(payload)
-                .map_err(|e| DecodeError::Decode(e.to_string()))?;
-            if !rest.is_empty() {
-                return Err(DecodeError::Decode("trailing payload bytes".into()));
-            }
+            let v = take::<TenantCreatedV1>(payload)?;
             Ok(WalEventType::TenantCreated {
                 tenant_id: v.tenant_id,
                 name: v.name,
@@ -979,11 +834,7 @@ pub fn decode_payload(kind: u16, payload: &[u8]) -> Result<WalEventType, DecodeE
             })
         }
         43 => {
-            let (v, rest) = postcard::take_from_bytes::<RoleAssignedV1>(payload)
-                .map_err(|e| DecodeError::Decode(e.to_string()))?;
-            if !rest.is_empty() {
-                return Err(DecodeError::Decode("trailing payload bytes".into()));
-            }
+            let v = take::<RoleAssignedV1>(payload)?;
             Ok(WalEventType::RoleAssigned {
                 actor_id: v.actor_id,
                 role: v.role,
@@ -992,11 +843,7 @@ pub fn decode_payload(kind: u16, payload: &[u8]) -> Result<WalEventType, DecodeE
             })
         }
         44 => {
-            let (v, rest) = postcard::take_from_bytes::<CapabilityGrantedV1>(payload)
-                .map_err(|e| DecodeError::Decode(e.to_string()))?;
-            if !rest.is_empty() {
-                return Err(DecodeError::Decode("trailing payload bytes".into()));
-            }
+            let v = take::<CapabilityGrantedV1>(payload)?;
             Ok(WalEventType::CapabilityGranted {
                 actor_id: v.actor_id,
                 capability: v.capability,
@@ -1005,11 +852,7 @@ pub fn decode_payload(kind: u16, payload: &[u8]) -> Result<WalEventType, DecodeE
             })
         }
         45 => {
-            let (v, rest) = postcard::take_from_bytes::<CapabilityRevokedV1>(payload)
-                .map_err(|e| DecodeError::Decode(e.to_string()))?;
-            if !rest.is_empty() {
-                return Err(DecodeError::Decode("trailing payload bytes".into()));
-            }
+            let v = take::<CapabilityRevokedV1>(payload)?;
             Ok(WalEventType::CapabilityRevoked {
                 actor_id: v.actor_id,
                 capability: v.capability,
@@ -1018,11 +861,7 @@ pub fn decode_payload(kind: u16, payload: &[u8]) -> Result<WalEventType, DecodeE
             })
         }
         46 => {
-            let (v, rest) = postcard::take_from_bytes::<LedgerEntryAppendedV1>(payload)
-                .map_err(|e| DecodeError::Decode(e.to_string()))?;
-            if !rest.is_empty() {
-                return Err(DecodeError::Decode("trailing payload bytes".into()));
-            }
+            let v = take::<LedgerEntryAppendedV1>(payload)?;
             Ok(WalEventType::LedgerEntryAppended {
                 entry_id: v.entry_id,
                 tenant_id: v.tenant_id,
@@ -1104,27 +943,25 @@ pub(crate) fn decode_schema(
         }),
         20 => Ok(WalEventType::AttemptClosed { record: take(payload)? }),
         16 => {
-            let (v, rest) = postcard::take_from_bytes::<TaskCreatedV2>(payload)
-                .map_err(|e| DecodeError::Decode(e.to_string()))?;
-            if !rest.is_empty() {
-                return Err(DecodeError::Decode("trailing payload".into()));
-            }
+            let v = take::<TaskCreatedV2>(payload)?;
             Ok(WalEventType::TaskCreated {
                 task_spec: v.task_spec.try_into()?,
                 timestamp: v.timestamp,
             })
         }
         256 => {
-            let (v, rest) =
-                postcard::take_from_bytes::<super::admission_v2::AdmissionCommittedV2>(payload)
-                    .map_err(|e| DecodeError::Decode(e.to_string()))?;
-            if !rest.is_empty() {
-                return Err(DecodeError::Decode("trailing payload".into()));
-            }
+            let v = take::<super::admission_v2::AdmissionCommittedV2>(payload)?;
             v.into_event()
         }
         _ => Err(DecodeError::UnsupportedRecordSchema { kind, found: schema }),
     }
+}
+
+fn signal_take<T: serde::de::DeserializeOwned>(payload: &[u8]) -> Result<T, DecodeError> {
+    if payload.len() + 52 > actionqueue_core::limits::MAX_SIGNAL_RECORD_BYTES {
+        return Err(DecodeError::Decode("signal frame too large".into()));
+    }
+    take(payload)
 }
 
 fn take<T: serde::de::DeserializeOwned>(payload: &[u8]) -> Result<T, DecodeError> {

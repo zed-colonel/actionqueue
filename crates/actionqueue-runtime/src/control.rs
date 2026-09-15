@@ -133,17 +133,7 @@ fn execute_bound_control<W: WalWriter>(
             .map_err(err)
         }
         ControlOperation::CancelWait { run_id, wait_id } => {
-            let tenant = authorize(a, host, QueueAction::CancelWait)?;
-            let wait = a.projection().waits().get(wait_id).ok_or(ControlError::NotFound)?;
-            if wait.run_id != run_id {
-                return Err(ControlError::NotFound.into());
-            }
-            let task =
-                a.projection().get_run_instance(&run_id).ok_or(ControlError::NotFound)?.task_id();
-            check_scope(
-                tenant,
-                a.projection().get_task(&task).ok_or(ControlError::NotFound)?.tenant_id(),
-            )?;
+            let tenant = wait_scope(a, host, QueueAction::CancelWait, run_id, wait_id)?;
             let c = MutationCommand::WaitCancel(
                 WaitCancelCommand::new(
                     a.projection().latest_sequence().saturating_add(1),
@@ -159,17 +149,7 @@ fn execute_bound_control<W: WalWriter>(
                 .map_err(ServiceError::Storage)
         }
         ControlOperation::ResolveWait { run_id, wait_id } => {
-            let tenant = authorize(a, host, QueueAction::ResolveWait)?;
-            let wait = a.projection().waits().get(wait_id).ok_or(ControlError::NotFound)?;
-            if wait.run_id != run_id {
-                return Err(ControlError::NotFound.into());
-            }
-            let task =
-                a.projection().get_run_instance(&run_id).ok_or(ControlError::NotFound)?.task_id();
-            check_scope(
-                tenant,
-                a.projection().get_task(&task).ok_or(ControlError::NotFound)?.tenant_id(),
-            )?;
+            let tenant = wait_scope(a, host, QueueAction::ResolveWait, run_id, wait_id)?;
             a.submit_command(
                 MutationCommand::WaitResolve(WaitResolveCommand {
                     expected_sequence: a.projection().latest_sequence().saturating_add(1),
@@ -333,3 +313,20 @@ impl std::fmt::Display for ServiceError {
     }
 }
 impl std::error::Error for ServiceError {}
+
+fn wait_scope<W: WalWriter>(
+    a: &StorageMutationAuthority<W, ReplayReducer>,
+    host: &HostControlContext,
+    action: QueueAction,
+    run_id: actionqueue_core::ids::RunId,
+    wait_id: actionqueue_core::ids::WaitId,
+) -> Result<Option<actionqueue_core::ids::TenantId>, ServiceError> {
+    let tenant = authorize(a, host, action)?;
+    let wait = a.projection().waits().get(wait_id).ok_or(ControlError::NotFound)?;
+    if wait.run_id != run_id {
+        return Err(ControlError::NotFound.into());
+    }
+    let task = a.projection().get_run_instance(&run_id).ok_or(ControlError::NotFound)?.task_id();
+    check_scope(tenant, a.projection().get_task(&task).ok_or(ControlError::NotFound)?.tenant_id())?;
+    Ok(tenant)
+}

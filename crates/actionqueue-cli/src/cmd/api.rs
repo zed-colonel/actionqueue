@@ -144,10 +144,9 @@ async fn execute(args: Vec<String>) -> Result<CommandOutput, CliError> {
         };
         let hook: actionqueue_daemon::http::auth::HostAuthenticator =
             std::sync::Arc::new(move |_, _| Ok(host.clone()));
-        let recovered = actionqueue_storage::recovery::bootstrap::load_projection_from_storage(
-            &config.data_dir,
-        )
-        .map_err(|_| unavailable())?;
+        let recovered =
+            actionqueue_storage::recovery::bootstrap::load_existing_projection(&config.data_dir)
+                .map_err(|_| unavailable())?;
         let authority = actionqueue_storage::mutation::StorageMutationAuthority::new(
             recovered.wal_writer,
             recovered.projection.clone(),
@@ -240,6 +239,7 @@ async fn execute(args: Vec<String>) -> Result<CommandOutput, CliError> {
             Some("unauthenticated") => "unauthenticated",
             Some("storage_unavailable") => "storage_unavailable",
             Some("backpressure") => "backpressure",
+            Some("admission_conflict_throttled") => "admission_conflict_throttled",
             Some("recovery_required") => "recovery_required",
             Some("invalid_query") => "invalid_query",
             Some("invalid_json") => "invalid_json",
@@ -248,7 +248,7 @@ async fn execute(args: Vec<String>) -> Result<CommandOutput, CliError> {
             Some("signal_committed_recovery_required") => "signal_committed_recovery_required",
             _ => "invalid_request",
         };
-        let mut error = if status.as_u16() == 503 {
+        let mut error = if matches!(status.as_u16(), 429 | 503) {
             CliError::connectivity(code, "service requires recovery or retry")
         } else if status.as_u16() == 409 {
             CliError::runtime(code, "conflicting request")

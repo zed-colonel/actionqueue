@@ -2,7 +2,7 @@
 use sha2::{Digest, Sha256};
 
 use super::{effective_payload_hash, SignalEnvelope, SignalRejection};
-use crate::{canonical::Encoder, data_ref::DataRef};
+use crate::canonical::Encoder;
 /// SHA-256 of domain-separated CanonicalSignalV1 bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignalDigest([u8; 32]);
@@ -44,22 +44,7 @@ impl CanonicalSignalV1 {
             e.option(c.external_ref(), |e, v| e.text(v.expose()));
         });
         e.option(s.source_ref.as_ref(), |e, v| e.text(v.expose()));
-        e.option(s.payload.as_ref(), |e, p| match p {
-            DataRef::Inline(d) => {
-                e.byte(0);
-                e.option(d.content_type(), |e, v| e.text(v.as_str()));
-                e.bytes(d.bytes());
-                e.hash(d.hash());
-            }
-            DataRef::External(d) => {
-                e.byte(1);
-                e.text(d.scheme.as_str());
-                e.text(d.locator.expose());
-                e.hash(&d.hash);
-                e.option(d.size_bytes, Encoder::u64);
-                e.option(d.content_type.as_ref(), |e, v| e.text(v.as_str()));
-            }
-        });
+        e.option(s.payload.as_ref(), Encoder::data);
         e.option(hash.as_ref(), Encoder::hash);
         e.option(s.occurred_at, Encoder::u64);
         Ok(Self(e.finish()))

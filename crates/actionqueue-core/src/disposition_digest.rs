@@ -5,7 +5,6 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     continuation::*,
-    data_ref::DataRef,
     disposition::{AttemptDisposition, DispositionOutcome},
 };
 
@@ -16,24 +15,6 @@ pub struct DispositionDigest(pub [u8; 32]);
 
 use crate::canonical::Encoder;
 impl Encoder {
-    fn data(&mut self, value: &DataRef) {
-        match value {
-            DataRef::Inline(d) => {
-                self.byte(0);
-                self.option(d.content_type(), |e, v| e.text(v.as_str()));
-                self.bytes(d.bytes());
-                self.hash(d.hash());
-            }
-            DataRef::External(d) => {
-                self.byte(1);
-                self.text(d.scheme.as_str());
-                self.text(d.locator.expose());
-                self.hash(&d.hash);
-                self.option(d.size_bytes, Self::u64);
-                self.option(d.content_type.as_ref(), |e, v| e.text(v.as_str()));
-            }
-        }
-    }
     fn error(&mut self, value: &crate::bounded::BoundedError) {
         self.text(value.code.as_str());
         self.text(value.message.as_str());

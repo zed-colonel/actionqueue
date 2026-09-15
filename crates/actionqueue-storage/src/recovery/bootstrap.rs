@@ -178,8 +178,20 @@ pub fn load_projection_with_features(
     data_root: &std::path::Path,
     features: Vec<String>,
 ) -> Result<RecoveryBootstrap, RecoveryBootstrapError> {
+    load_projection_with_options(data_root, OpenOptions::Initialize { features })
+}
+/// Opens and recovers an existing store without provisioning a missing directory.
+pub fn load_existing_projection(
+    data_root: &std::path::Path,
+) -> Result<RecoveryBootstrap, RecoveryBootstrapError> {
+    load_projection_with_options(data_root, OpenOptions::ReadWrite)
+}
+fn load_projection_with_options(
+    data_root: &std::path::Path,
+    options: OpenOptions,
+) -> Result<RecoveryBootstrap, RecoveryBootstrapError> {
     let started = Instant::now();
-    let session = open_store(data_root, OpenOptions::Initialize { features })
+    let session = open_store(data_root, options)
         .map_err(|e| RecoveryBootstrapError::WalInit(e.to_string()))?;
     let recovered = recover_read_only(&session, RepairPolicy::Strict)
         .map_err(|e| RecoveryBootstrapError::WalReplay(e.to_string()))?;

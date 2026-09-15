@@ -29,6 +29,7 @@ fn storage_commands_verify_roundtrip_and_never_initialize_inspection() {
         .unwrap();
     assert!(!refused.status.success());
     assert!(!source.exists());
+    initialize_store(&source);
     let request_file = base.join("request.json");
     std::fs::create_dir_all(&base).unwrap();
     std::fs::write(&request_file, serde_json::to_vec(&request()).unwrap()).unwrap();
@@ -209,6 +210,7 @@ fn canonical_offline_admission_retry_conflict_and_redaction() {
     let base = unique_data_dir("aq12-offline");
     std::fs::create_dir_all(&base).unwrap();
     let store = base.join("store");
+    initialize_store(&store);
     let file = base.join("request.json");
     let q = request();
     std::fs::write(&file, serde_json::to_vec(&q).unwrap()).unwrap();
@@ -452,5 +454,101 @@ fn daemon_serves_authenticated_cli_requests_and_releases_store_on_sigterm() {
         cli().args(["store", "inspect", "--data-dir"]).arg(&store).arg("--json").output().unwrap();
     assert!(after.status.success(), "{}", String::from_utf8_lossy(&after.stderr));
     assert!(!String::from_utf8_lossy(&out.stdout).contains(secret));
+    std::fs::remove_dir_all(base).unwrap();
+}
+
+fn initialize_store(path: &std::path::Path) {
+    drop(actionqueue_storage::recovery::bootstrap::load_projection_from_storage(path).unwrap());
+}
+
+#[test]
+fn offline_inspection_never_initializes_an_absent_or_empty_store() {
+    let base = unique_data_dir("offline-missing");
+    std::fs::create_dir_all(&base).unwrap();
+    for existing in [false, true] {
+        let store = base.join(if existing { "empty" } else { "absent" });
+        if existing {
+            std::fs::create_dir(&store).unwrap();
+        }
+        let output = cli()
+            .args([
+                "task",
+                "inspect",
+                &actionqueue_core::ids::TaskId::new().to_string(),
+                "--offline",
+                "--data-dir",
+            ])
+            .arg(&store)
+            .arg("--json")
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(5));
+        let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(error["error_code"], "storage_unavailable");
+        if existing {
+            assert_eq!(std::fs::read_dir(&store).unwrap().count(), 0);
+        } else {
+            assert!(!store.exists());
+        }
+    }
+    std::fs::remove_dir_all(base).unwrap();
+}
+
+#[test]
+fn daemon_admission_throttle_is_retryable_and_preserves_its_code() {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket.set_read_timeout(Some(std::time::Duration::from_secs(10))).unwrap();
+        let mut request = Vec::new();
+        let mut buffer = [0; 4096];
+        loop {
+            let count = socket.read(&mut buffer).unwrap();
+            assert_ne!(count, 0);
+            request.extend_from_slice(&buffer[..count]);
+            if let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                let headers = String::from_utf8_lossy(&request[..end]);
+                let length: usize = headers
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse().unwrap())
+                    })
+                    .unwrap();
+                if request.len() >= end + 4 + length {
+                    break;
+                }
+            }
+        }
+        assert!(request.starts_with(b"POST /api/v2/admissions:ensure "));
+        let body = r#"{"error_code":"admission_conflict_throttled"}"#;
+        write!(
+            socket,
+            "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nContent-Length: \
+             {}\r\nRetry-After: 30\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .unwrap();
+    });
+    let base = unique_data_dir("cli-throttle");
+    std::fs::create_dir_all(&base).unwrap();
+    let file = base.join("request.json");
+    std::fs::write(&file, serde_json::to_vec(&request()).unwrap()).unwrap();
+    let output = cli()
+        .args(["ensure-task", "--daemon", &format!("http://{address}"), "--file"])
+        .arg(&file)
+        .arg("--json")
+        .env("ACTIONQUEUE_TOKEN", "x".repeat(32))
+        .output()
+        .unwrap();
+    server.join().unwrap();
+    assert_eq!(output.status.code(), Some(5));
+    let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error_code"], "admission_conflict_throttled");
+    assert_eq!(error["error_kind"], "connectivity");
     std::fs::remove_dir_all(base).unwrap();
 }

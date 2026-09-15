@@ -170,7 +170,7 @@ async fn deregister_actor(
 /// must own the path actor, and the remote scheduler settles before and after
 /// the operation. The blocking adapter publishes the projection (with the
 /// equal-revision tripwire) after every adapter route.
-fn actor_operation<T: serde::Serialize>(
+pub(super) fn actor_operation<T: serde::Serialize>(
     state: &RouterState,
     host: &actionqueue_core::control::HostControlContext,
     actor_id: ActorId,
@@ -195,7 +195,13 @@ fn actor_operation<T: serde::Serialize>(
     }
     let value = match operation(&mut a, host, state.clock.now()) {
         Ok(value) => value,
-        Err(_) => return rejection.into_response(),
+        Err(error) => {
+            let recovery_required = a.recovery_required();
+            if recovery_required {
+                state.operational_failed.store(true, std::sync::atomic::Ordering::Release);
+            }
+            return operation_error_status(&error, rejection, recovery_required).into_response();
+        }
     };
     if crate::http::maintenance::maintain_locked(state, &mut a).is_err() {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
@@ -205,6 +211,22 @@ fn actor_operation<T: serde::Serialize>(
         None => StatusCode::OK.into_response(),
     }
 }
+fn operation_error_status(
+    error: &actionqueue_core::control::ControlError,
+    rejection: StatusCode,
+    recovery_required: bool,
+) -> StatusCode {
+    use actionqueue_core::control::ControlError;
+    if recovery_required {
+        return StatusCode::SERVICE_UNAVAILABLE;
+    }
+    match error {
+        ControlError::Unauthorized | ControlError::Scope => StatusCode::FORBIDDEN,
+        ControlError::NotFound => StatusCode::NOT_FOUND,
+        ControlError::Mutation(_) => rejection,
+    }
+}
+
 type ControlAuthority = actionqueue_storage::mutation::StorageMutationAuthority<
     actionqueue_storage::wal::InstrumentedWalWriter<
         actionqueue_storage::wal::fs_writer::WalFsWriter,

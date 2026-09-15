@@ -839,18 +839,7 @@ impl ReplayReducer {
                 return Err(E::InvalidIdentity);
             }
             let w = index.get(*id).ok_or(E::NotFound)?;
-            let res = w.resolution.as_ref().ok_or(E::InvalidState)?;
-            let resumes = match res.kind {
-                WaitResolutionKind::Children(_)
-                | WaitResolutionKind::Signal(_)
-                | WaitResolutionKind::Control(_) => true,
-                WaitResolutionKind::Deadline => w
-                    .spec
-                    .deadline()
-                    .is_some_and(|d| d.policy == WaitTimeoutPolicy::ResumeWithTimeout),
-                _ => false,
-            };
-            if !resumes
+            if !resumes(w)
                 || w.run_id != *run
                 || !self.get_run_state(run).is_some_and(|s| {
                     matches!(
@@ -869,16 +858,7 @@ impl ReplayReducer {
         // or closed by cancellation. Superseded inputs remain in attempt history.
         for w in index.records() {
             if let Some(res) = &w.resolution {
-                let resumes = matches!(
-                    res.kind,
-                    WaitResolutionKind::Children(_)
-                        | WaitResolutionKind::Signal(_)
-                        | WaitResolutionKind::Control(_)
-                ) || matches!(res.kind, WaitResolutionKind::Deadline)
-                    && w.spec
-                        .deadline()
-                        .is_some_and(|d| d.policy == WaitTimeoutPolicy::ResumeWithTimeout);
-                if resumes
+                if resumes(w)
                     && self.get_run_state(&w.run_id) != Some(&RunState::Canceled)
                     && index.pending_wait(w.run_id) != Some(w.spec.wait_id())
                     && !self.get_attempt_history(&w.run_id).is_some_and(|h| {
@@ -944,4 +924,19 @@ fn matches_signal(w: &WaitSpec, e: &SignalEnvelope, s: SignalSequence) -> bool {
         && f.kind == e.kind
         && f.correlation_id.as_ref().is_none_or(|c| Some(c) == e.correlation_id.as_ref())
         && f.source_ref.as_ref().is_none_or(|v| Some(v) == e.source_ref.as_ref())
+}
+
+/// Whether this durable resolution supplies input to another attempt.
+fn resumes(record: &WaitRecord) -> bool {
+    match record.resolution.as_ref().map(|r| &r.kind) {
+        Some(
+            WaitResolutionKind::Children(_)
+            | WaitResolutionKind::Signal(_)
+            | WaitResolutionKind::Control(_),
+        ) => true,
+        Some(WaitResolutionKind::Deadline) => {
+            record.spec.deadline().is_some_and(|d| d.policy == WaitTimeoutPolicy::ResumeWithTimeout)
+        }
+        _ => false,
+    }
 }
