@@ -12,32 +12,19 @@ use actionqueue_storage::{
     wal::{fs_writer::WalFsWriter, repair::RepairPolicy},
 };
 pub type Authority = StorageMutationAuthority<WalFsWriter, ReplayReducer>;
+fn open_with(path: &std::path::Path, features: Vec<String>) -> Authority {
+    open_store(path, OpenOptions::Initialize { features })
+        .unwrap()
+        .into_authority()
+        .unwrap()
+        .with_host(host_support::host(actionqueue_core::control::ControlScope::SingleTenant))
+}
 pub fn open(path: &std::path::Path) -> Authority {
-    let session = open_store(
-        path,
-        OpenOptions::Initialize {
-            features: capabilities().into_iter().filter(|f| f != "platform").collect(),
-        },
-    )
-    .unwrap();
-    session.into_authority().unwrap().with_host(actionqueue_core::control::HostControlContext {
-        actor_id: None,
-        scope: actionqueue_core::control::ControlScope::SingleTenant,
-        attribution: actionqueue_core::causal::ControlMutationContext::new(
-            actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-        ),
-    })
+    open_with(path, capabilities().into_iter().filter(|f| f != "platform").collect())
 }
 #[cfg(feature = "platform")]
 pub fn open_platform(path: &std::path::Path) -> Authority {
-    let session = open_store(path, OpenOptions::Initialize { features: capabilities() }).unwrap();
-    session.into_authority().unwrap().with_host(actionqueue_core::control::HostControlContext {
-        actor_id: None,
-        scope: actionqueue_core::control::ControlScope::SingleTenant,
-        attribution: actionqueue_core::causal::ControlMutationContext::new(
-            actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-        ),
-    })
+    open_with(path, capabilities())
 }
 pub fn reopen(path: &std::path::Path) -> Authority {
     let session = open_store(path, OpenOptions::ReadWrite).unwrap();
@@ -46,13 +33,7 @@ pub fn reopen(path: &std::path::Path) -> Authority {
         WalFsWriter::new_with_repair(session, RepairPolicy::TruncatePartial).unwrap(),
         projection,
     )
-    .with_host(actionqueue_core::control::HostControlContext {
-        actor_id: None,
-        scope: actionqueue_core::control::ControlScope::SingleTenant,
-        attribution: actionqueue_core::causal::ControlMutationContext::new(
-            actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-        ),
-    })
+    .with_host(host_support::host(actionqueue_core::control::ControlScope::SingleTenant))
 }
 pub fn id(n: u64) -> SignalId {
     SignalId::new(format!("signal/{n}")).unwrap()

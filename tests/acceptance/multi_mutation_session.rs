@@ -47,13 +47,9 @@ fn multi_mutation_session_produces_consistent_projection_after_each_step() {
         recovery.wal_writer,
         recovery.projection,
     )
-    .with_host(actionqueue_core::control::HostControlContext {
-        actor_id: None,
-        scope: actionqueue_core::control::ControlScope::SingleTenant,
-        attribution: actionqueue_core::causal::ControlMutationContext::new(
-            actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-        ),
-    });
+    .with_host(crate::admission_support::host_support::host(
+        actionqueue_core::control::ControlScope::SingleTenant,
+    ));
 
     // Mutation 1: Create task A.
     let task_a_id = TaskId::new();
@@ -114,13 +110,9 @@ fn multi_mutation_session_produces_consistent_projection_after_each_step() {
     // Mutation 4: Pause engine.
     let seq4 = next_seq(&authority);
     let cmd4 = MutationCommand::EnginePause(EnginePauseCommand::new(seq4, seq4)).with_control(
-        &actionqueue_core::control::HostControlContext {
-            actor_id: None,
-            scope: actionqueue_core::control::ControlScope::Store,
-            attribution: actionqueue_core::causal::ControlMutationContext::new(
-                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-            ),
-        },
+        &crate::admission_support::host_support::host(
+            actionqueue_core::control::ControlScope::Store,
+        ),
     );
     let _ =
         authority.submit_command(cmd4, DurabilityPolicy::Immediate).expect("pause should succeed");
@@ -129,13 +121,9 @@ fn multi_mutation_session_produces_consistent_projection_after_each_step() {
     // Mutation 5: Resume engine.
     let seq5 = next_seq(&authority);
     let cmd5 = MutationCommand::EngineResume(EngineResumeCommand::new(seq5, seq5)).with_control(
-        &actionqueue_core::control::HostControlContext {
-            actor_id: None,
-            scope: actionqueue_core::control::ControlScope::Store,
-            attribution: actionqueue_core::causal::ControlMutationContext::new(
-                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-            ),
-        },
+        &crate::admission_support::host_support::host(
+            actionqueue_core::control::ControlScope::Store,
+        ),
     );
     let _ =
         authority.submit_command(cmd5, DurabilityPolicy::Immediate).expect("resume should succeed");

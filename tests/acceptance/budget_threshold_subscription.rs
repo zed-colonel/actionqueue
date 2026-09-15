@@ -9,6 +9,8 @@
 //! 3. Task B runs and reports 400 tokens out of a 500 budget (80%).
 //! 4. Budget threshold event fires → subscription triggered → run 2 promoted.
 
+#[path = "host_support.rs"]
+mod host_support;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -67,13 +69,7 @@ async fn budget_threshold_triggers_subscription_promotion() {
     let handler = ThresholdHandler;
     let engine = ActionQueueEngine::new(make_config(dir.path().to_path_buf()), handler);
     let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap").with_host(
-        actionqueue_core::control::HostControlContext {
-            actor_id: None,
-            scope: actionqueue_core::control::ControlScope::SingleTenant,
-            attribution: actionqueue_core::causal::ControlMutationContext::new(
-                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-            ),
-        },
+        crate::host_support::host(actionqueue_core::control::ControlScope::SingleTenant),
     );
 
     // Task B: Once, budget 500 tokens.

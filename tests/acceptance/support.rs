@@ -20,7 +20,10 @@ use actionqueue_engine::concurrency::lifecycle::{
     evaluate_state_transition, KeyLifecycleContext, LifecycleResult,
 };
 use actionqueue_engine::index::scheduled::ScheduledIndex;
-// Binaries that also include the wait fixtures load this helper twice.
+// Binaries that also include the wait fixtures load these helpers twice.
+#[allow(clippy::duplicate_mod)]
+#[path = "host_support.rs"]
+pub mod host_support;
 #[allow(clippy::duplicate_mod)]
 #[path = "lease_support.rs"]
 mod lease_support;
@@ -266,13 +269,7 @@ pub fn transition_run_state_via_authority(
         recovery.wal_writer,
         recovery.projection,
     )
-    .with_host(actionqueue_core::control::HostControlContext {
-        actor_id: None,
-        scope: actionqueue_core::control::ControlScope::SingleTenant,
-        attribution: actionqueue_core::causal::ControlMutationContext::new(
-            actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-        ),
-    });
+    .with_host(host_support::host(actionqueue_core::control::ControlScope::SingleTenant));
 
     if to == RunState::Leased {
         if let Some((owner, expiry)) = authority.projection().get_lease(&run_id).cloned() {
@@ -422,6 +419,32 @@ pub fn single_run_id_for_task(data_dir: &Path, task_id: TaskId) -> RunId {
     run_ids[0]
 }
 
+/// Promotes every Scheduled run through the authority lane at the next sequence.
+fn promote_scheduled(
+    authority: &mut actionqueue_storage::mutation::StorageMutationAuthority<
+        actionqueue_storage::wal::InstrumentedWalWriter<
+            actionqueue_storage::wal::fs_writer::WalFsWriter,
+        >,
+        actionqueue_storage::recovery::reducer::ReplayReducer,
+    >,
+) -> actionqueue_engine::scheduler::promotion::AuthorityPromotionResult {
+    let scheduled = ScheduledIndex::from_runs(
+        authority
+            .projection()
+            .run_instances()
+            .filter(|r| r.state() == RunState::Scheduled)
+            .cloned()
+            .collect::<Vec<_>>(),
+    );
+    let first_sequence = next_sequence(authority.projection().latest_sequence());
+    promote_scheduled_to_ready_via_authority(
+        &scheduled,
+        PromotionParams::new(u64::MAX, first_sequence, first_sequence, DurabilityPolicy::Immediate),
+        authority,
+    )
+    .expect("promotion via authority should succeed")
+}
+
 /// Promotes the sole run for a task from Scheduled to Ready via authority lane.
 pub fn promote_single_run_to_ready_via_authority(data_dir: &Path, task_id: TaskId) -> RunId {
     let recovery = actionqueue_storage::recovery::bootstrap::load_projection_from_storage(data_dir)
@@ -434,29 +457,9 @@ pub fn promote_single_run_to_ready_via_authority(data_dir: &Path, task_id: TaskI
         recovery.wal_writer,
         recovery.projection,
     )
-    .with_host(actionqueue_core::control::HostControlContext {
-        actor_id: None,
-        scope: actionqueue_core::control::ControlScope::SingleTenant,
-        attribution: actionqueue_core::causal::ControlMutationContext::new(
-            actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-        ),
-    });
+    .with_host(host_support::host(actionqueue_core::control::ControlScope::SingleTenant));
 
-    let scheduled = ScheduledIndex::from_runs(
-        authority
-            .projection()
-            .run_instances()
-            .filter(|r| r.state() == actionqueue_core::run::state::RunState::Scheduled)
-            .cloned()
-            .collect::<Vec<actionqueue_core::run::run_instance::RunInstance>>(),
-    );
-    let first_sequence = next_sequence(authority.projection().latest_sequence());
-    let promotion = promote_scheduled_to_ready_via_authority(
-        &scheduled,
-        PromotionParams::new(u64::MAX, first_sequence, first_sequence, DurabilityPolicy::Immediate),
-        &mut authority,
-    )
-    .expect("promotion via authority should succeed");
+    let promotion = promote_scheduled(&mut authority);
     assert_eq!(
         promotion.outcomes().len(),
         1,
@@ -490,13 +493,7 @@ pub fn lease_acquire_for_run_via_authority(
         recovery.wal_writer,
         recovery.projection,
     )
-    .with_host(actionqueue_core::control::HostControlContext {
-        actor_id: None,
-        scope: actionqueue_core::control::ControlScope::SingleTenant,
-        attribution: actionqueue_core::causal::ControlMutationContext::new(
-            actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-        ),
-    });
+    .with_host(host_support::host(actionqueue_core::control::ControlScope::SingleTenant));
 
     if let Some((existing, expiry)) = authority.projection().get_lease(&run_id).cloned() {
         if existing == "fixture" {
@@ -538,13 +535,7 @@ pub fn lease_expire_for_run_via_authority(
         recovery.wal_writer,
         recovery.projection,
     )
-    .with_host(actionqueue_core::control::HostControlContext {
-        actor_id: None,
-        scope: actionqueue_core::control::ControlScope::SingleTenant,
-        attribution: actionqueue_core::causal::ControlMutationContext::new(
-            actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-        ),
-    });
+    .with_host(host_support::host(actionqueue_core::control::ControlScope::SingleTenant));
 
     let sequence = next_sequence(authority.projection().latest_sequence());
     let _ = authority
@@ -571,13 +562,7 @@ pub fn lease_release_for_run_via_authority(
         recovery.wal_writer,
         recovery.projection,
     )
-    .with_host(actionqueue_core::control::HostControlContext {
-        actor_id: None,
-        scope: actionqueue_core::control::ControlScope::SingleTenant,
-        attribution: actionqueue_core::causal::ControlMutationContext::new(
-            actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-        ),
-    });
+    .with_host(host_support::host(actionqueue_core::control::ControlScope::SingleTenant));
 
     let sequence = next_sequence(authority.projection().latest_sequence());
     let _ = authority
@@ -636,13 +621,7 @@ pub fn execute_attempt_outcome_sequence_via_authority(
         recovery.wal_writer,
         recovery.projection,
     )
-    .with_host(actionqueue_core::control::HostControlContext {
-        actor_id: None,
-        scope: actionqueue_core::control::ControlScope::SingleTenant,
-        attribution: actionqueue_core::causal::ControlMutationContext::new(
-            actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-        ),
-    });
+    .with_host(host_support::host(actionqueue_core::control::ControlScope::SingleTenant));
 
     let run_id = {
         let run_ids = authority.projection().run_ids_for_task(task_id);
@@ -650,21 +629,7 @@ pub fn execute_attempt_outcome_sequence_via_authority(
         run_ids[0]
     };
 
-    let scheduled = ScheduledIndex::from_runs(
-        authority
-            .projection()
-            .run_instances()
-            .filter(|r| r.state() == actionqueue_core::run::state::RunState::Scheduled)
-            .cloned()
-            .collect::<Vec<actionqueue_core::run::run_instance::RunInstance>>(),
-    );
-    let first_sequence = next_sequence(authority.projection().latest_sequence());
-    let promotion = promote_scheduled_to_ready_via_authority(
-        &scheduled,
-        PromotionParams::new(u64::MAX, first_sequence, first_sequence, DurabilityPolicy::Immediate),
-        &mut authority,
-    )
-    .expect("promotion via authority should succeed");
+    let promotion = promote_scheduled(&mut authority);
     assert_eq!(promotion.outcomes().len(), 1, "single run should be promoted to ready");
 
     let mut attempt_ids = Vec::new();
@@ -1042,29 +1007,9 @@ pub fn complete_once_run_via_authority(data_dir: &Path, task_id: TaskId) -> Comp
         recovery.wal_writer,
         recovery.projection,
     )
-    .with_host(actionqueue_core::control::HostControlContext {
-        actor_id: None,
-        scope: actionqueue_core::control::ControlScope::SingleTenant,
-        attribution: actionqueue_core::causal::ControlMutationContext::new(
-            actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-        ),
-    });
+    .with_host(host_support::host(actionqueue_core::control::ControlScope::SingleTenant));
 
-    let scheduled = ScheduledIndex::from_runs(
-        authority
-            .projection()
-            .run_instances()
-            .filter(|r| r.state() == actionqueue_core::run::state::RunState::Scheduled)
-            .cloned()
-            .collect::<Vec<actionqueue_core::run::run_instance::RunInstance>>(),
-    );
-    let first_sequence = next_sequence(authority.projection().latest_sequence());
-    let promotion = promote_scheduled_to_ready_via_authority(
-        &scheduled,
-        PromotionParams::new(u64::MAX, first_sequence, first_sequence, DurabilityPolicy::Immediate),
-        &mut authority,
-    )
-    .expect("promotion via authority should succeed");
+    let promotion = promote_scheduled(&mut authority);
     assert_eq!(promotion.outcomes().len(), 1);
 
     let leased_sequence = next_sequence(authority.projection().latest_sequence());
@@ -1191,29 +1136,9 @@ pub fn complete_all_task_runs_via_authority(
         recovery.wal_writer,
         recovery.projection,
     )
-    .with_host(actionqueue_core::control::HostControlContext {
-        actor_id: None,
-        scope: actionqueue_core::control::ControlScope::SingleTenant,
-        attribution: actionqueue_core::causal::ControlMutationContext::new(
-            actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-        ),
-    });
+    .with_host(host_support::host(actionqueue_core::control::ControlScope::SingleTenant));
 
-    let scheduled = ScheduledIndex::from_runs(
-        authority
-            .projection()
-            .run_instances()
-            .filter(|r| r.state() == actionqueue_core::run::state::RunState::Scheduled)
-            .cloned()
-            .collect::<Vec<actionqueue_core::run::run_instance::RunInstance>>(),
-    );
-    let first_sequence = next_sequence(authority.projection().latest_sequence());
-    let promotion = promote_scheduled_to_ready_via_authority(
-        &scheduled,
-        PromotionParams::new(u64::MAX, first_sequence, first_sequence, DurabilityPolicy::Immediate),
-        &mut authority,
-    )
-    .expect("promotion via authority should succeed");
+    let promotion = promote_scheduled(&mut authority);
     assert_eq!(
         promotion.outcomes().len(),
         run_ids.len(),
@@ -1592,13 +1517,7 @@ pub fn submit_attempt_start_via_authority(
         recovery.wal_writer,
         recovery.projection,
     )
-    .with_host(actionqueue_core::control::HostControlContext {
-        actor_id: None,
-        scope: actionqueue_core::control::ControlScope::SingleTenant,
-        attribution: actionqueue_core::causal::ControlMutationContext::new(
-            actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-        ),
-    });
+    .with_host(host_support::host(actionqueue_core::control::ControlScope::SingleTenant));
     let sequence = next_sequence(authority.projection().latest_sequence());
     let _ = authority
         .submit_command(
@@ -1629,13 +1548,7 @@ pub fn submit_attempt_finish_response_via_authority(
         recovery.wal_writer,
         recovery.projection,
     )
-    .with_host(actionqueue_core::control::HostControlContext {
-        actor_id: None,
-        scope: actionqueue_core::control::ControlScope::SingleTenant,
-        attribution: actionqueue_core::causal::ControlMutationContext::new(
-            actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-        ),
-    });
+    .with_host(host_support::host(actionqueue_core::control::ControlScope::SingleTenant));
     let sequence = next_sequence(authority.projection().latest_sequence());
     let _ = {
         let finish_cmd = legacy_attempt_finish::build_attempt_finish_command(

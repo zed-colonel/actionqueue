@@ -3,6 +3,8 @@
 //! Verifies that after exhausting a budget, replenishing it allows the dispatch
 //! loop to resume dispatching the blocked task, which then completes.
 
+#[path = "host_support.rs"]
+mod host_support;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -69,13 +71,7 @@ async fn budget_replenishment_unblocks_dispatch() {
     let handler = ExhaustThenSucceedHandler { call_count: Arc::clone(&call_count) };
     let engine = ActionQueueEngine::new(make_config(dir.path().to_path_buf()), handler);
     let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap").with_host(
-        actionqueue_core::control::HostControlContext {
-            actor_id: None,
-            scope: actionqueue_core::control::ControlScope::SingleTenant,
-            attribution: actionqueue_core::causal::ControlMutationContext::new(
-                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-            ),
-        },
+        crate::host_support::host(actionqueue_core::control::ControlScope::SingleTenant),
     );
 
     let task_id = TaskId::new();

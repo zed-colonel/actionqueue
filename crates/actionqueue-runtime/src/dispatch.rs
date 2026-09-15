@@ -2476,6 +2476,16 @@ mod tests {
 
     use super::*;
 
+    /// Single-tenant fixture host binding for embedded control conveniences.
+    fn host() -> actionqueue_core::control::HostControlContext {
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        }
+    }
     struct DependencyHandler;
 
     impl ExecutorHandler for DependencyHandler {
@@ -2611,13 +2621,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let recovery = load_projection_from_storage(dir.path()).unwrap();
         let mut authority = StorageMutationAuthority::new(recovery.wal_writer, recovery.projection)
-            .with_host(actionqueue_core::control::HostControlContext {
-                actor_id: None,
-                scope: actionqueue_core::control::ControlScope::SingleTenant,
-                attribution: actionqueue_core::causal::ControlMutationContext::new(
-                    actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-                ),
-            });
+            .with_host(host());
         let digest = authority.projection().projection_digest().unwrap();
         authority.set_continuation_limits(actionqueue_core::limits::ContinuationLimits {
             disposition_bytes: 99,
@@ -2659,13 +2663,7 @@ mod tests {
     > {
         let recovery = load_projection_from_storage(dir).unwrap();
         let authority = StorageMutationAuthority::new(recovery.wal_writer, recovery.projection)
-            .with_host(actionqueue_core::control::HostControlContext {
-                actor_id: None,
-                scope: actionqueue_core::control::ControlScope::SingleTenant,
-                attribution: actionqueue_core::causal::ControlMutationContext::new(
-                    actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-                ),
-            });
+            .with_host(host());
         DispatchLoop::new(
             authority,
             handler,

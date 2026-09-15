@@ -914,13 +914,9 @@ async fn daemon_run_and_task_cancellation_resolve_waits_through_compound_control
             .unwrap()
             .into_authority()
             .unwrap()
-            .with_host(actionqueue_core::control::HostControlContext {
-                actor_id: None,
-                scope: actionqueue_core::control::ControlScope::SingleTenant,
-                attribution: actionqueue_core::causal::ControlMutationContext::new(
-                    actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-                ),
-            });
+            .with_host(s::host_support::host(
+                actionqueue_core::control::ControlScope::SingleTenant,
+            ));
         let r = running(&mut a, 1, None, false);
         let w = WaitId::new();
         establish_wait(&mut a, r, spec(w, None));

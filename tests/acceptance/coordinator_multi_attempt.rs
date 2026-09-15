@@ -84,13 +84,9 @@ mod wf {
         let mut eng = engine
             .bootstrap_with_clock(MockClock::new(1000))
             .expect("bootstrap must succeed")
-            .with_host(actionqueue_core::control::HostControlContext {
-                actor_id: None,
-                scope: actionqueue_core::control::ControlScope::SingleTenant,
-                attribution: actionqueue_core::causal::ControlMutationContext::new(
-                    actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-                ),
-            });
+            .with_host(crate::support::host_support::host(
+                actionqueue_core::control::ControlScope::SingleTenant,
+            ));
 
         eng.submit_task(make_spec(coordinator_id, b"coordinator")).expect("submit coordinator");
         let _ = tokio::time::timeout(std::time::Duration::from_secs(10), eng.run_until_idle())
@@ -191,13 +187,9 @@ mod wf {
         {
             let recovery = load_projection_from_storage(&data_dir).expect("recovery must succeed");
             let mut auth = StorageMutationAuthority::new(recovery.wal_writer, recovery.projection)
-                .with_host(actionqueue_core::control::HostControlContext {
-                    actor_id: None,
-                    scope: actionqueue_core::control::ControlScope::SingleTenant,
-                    attribution: actionqueue_core::causal::ControlMutationContext::new(
-                        actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-                    ),
-                });
+                .with_host(crate::support::host_support::host(
+                    actionqueue_core::control::ControlScope::SingleTenant,
+                ));
 
             // Admit the parent first; explicit child priority populates its snapshot
             // before the coordinator executes, using ordinary scheduling semantics.
@@ -248,13 +240,9 @@ mod wf {
             let mut eng = engine
                 .bootstrap_with_clock(MockClock::new(1100))
                 .expect("bootstrap must succeed")
-                .with_host(actionqueue_core::control::HostControlContext {
-                    actor_id: None,
-                    scope: actionqueue_core::control::ControlScope::SingleTenant,
-                    attribution: actionqueue_core::causal::ControlMutationContext::new(
-                        actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-                    ),
-                });
+                .with_host(crate::support::host_support::host(
+                    actionqueue_core::control::ControlScope::SingleTenant,
+                ));
             let _ = tokio::time::timeout(std::time::Duration::from_secs(10), eng.run_until_idle())
                 .await
                 .expect("handler must return a valid disposition")

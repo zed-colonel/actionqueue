@@ -50,15 +50,10 @@ async fn triad_rbac_enforcement() {
     let dir = data_dir("triad");
     let clock = MockClock::new(1000);
     let engine = ActionQueueEngine::new(make_config(dir), NoopHandler);
-    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap").with_host(
-        actionqueue_core::control::HostControlContext {
-            actor_id: None,
-            scope: actionqueue_core::control::ControlScope::Store,
-            attribution: actionqueue_core::causal::ControlMutationContext::new(
-                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-            ),
-        },
-    );
+    let mut boot = engine
+        .bootstrap_with_clock(clock)
+        .expect("bootstrap")
+        .with_host(crate::host_support::host(actionqueue_core::control::ControlScope::Store));
 
     let tenant = TenantId::new();
     boot.create_tenant(TenantRegistration::new(tenant, "Digicorp")).expect("tenant");
@@ -68,21 +63,21 @@ async fn triad_rbac_enforcement() {
     let gatekeeper_id = ActorId::new();
     let caps = ExecutorTraits::new(vec!["work".to_string()]).expect("caps");
 
-    boot.set_control_context(Some(host_support::host(
+    boot.set_control_context(Some(crate::host_support::host(
         actionqueue_core::control::ControlScope::ProvisionTenant(tenant),
     )));
     boot.register_actor(
         ActorRegistration::new(operator_id, "operator", caps.clone(), 30).with_tenant(tenant),
     )
     .expect("reg operator");
-    boot.set_control_context(Some(host_support::host(
+    boot.set_control_context(Some(crate::host_support::host(
         actionqueue_core::control::ControlScope::ProvisionTenant(tenant),
     )));
     boot.register_actor(
         ActorRegistration::new(auditor_id, "auditor", caps.clone(), 30).with_tenant(tenant),
     )
     .expect("reg auditor");
-    boot.set_control_context(Some(host_support::host(
+    boot.set_control_context(Some(crate::host_support::host(
         actionqueue_core::control::ControlScope::ProvisionTenant(tenant),
     )));
     boot.register_actor(
@@ -91,29 +86,29 @@ async fn triad_rbac_enforcement() {
     .expect("reg gatekeeper");
 
     // Assign roles.
-    boot.set_control_context(Some(host_support::host(
+    boot.set_control_context(Some(crate::host_support::host(
         actionqueue_core::control::ControlScope::Store,
     )));
     boot.assign_role(operator_id, Role::Operator, tenant).expect("assign operator");
-    boot.set_control_context(Some(host_support::host(
+    boot.set_control_context(Some(crate::host_support::host(
         actionqueue_core::control::ControlScope::Store,
     )));
     boot.assign_role(auditor_id, Role::Auditor, tenant).expect("assign auditor");
-    boot.set_control_context(Some(host_support::host(
+    boot.set_control_context(Some(crate::host_support::host(
         actionqueue_core::control::ControlScope::Store,
     )));
     boot.assign_role(gatekeeper_id, Role::Gatekeeper, tenant).expect("assign gatekeeper");
 
     // Grant capabilities.
-    boot.set_control_context(Some(host_support::host(
+    boot.set_control_context(Some(crate::host_support::host(
         actionqueue_core::control::ControlScope::Store,
     )));
     boot.grant_capability(operator_id, Capability::CanSubmit, tenant).expect("grant CanSubmit");
-    boot.set_control_context(Some(host_support::host(
+    boot.set_control_context(Some(crate::host_support::host(
         actionqueue_core::control::ControlScope::Store,
     )));
     boot.grant_capability(auditor_id, Capability::CanReview, tenant).expect("grant CanReview");
-    boot.set_control_context(Some(host_support::host(
+    boot.set_control_context(Some(crate::host_support::host(
         actionqueue_core::control::ControlScope::Store,
     )));
     boot.grant_capability(gatekeeper_id, Capability::CanExecute, tenant).expect("grant CanExecute");
@@ -155,22 +150,17 @@ async fn no_role_rejected_by_check_permission() {
     let dir = data_dir("no-role");
     let clock = MockClock::new(1000);
     let engine = ActionQueueEngine::new(make_config(dir), NoopHandler);
-    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap").with_host(
-        actionqueue_core::control::HostControlContext {
-            actor_id: None,
-            scope: actionqueue_core::control::ControlScope::Store,
-            attribution: actionqueue_core::causal::ControlMutationContext::new(
-                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-            ),
-        },
-    );
+    let mut boot = engine
+        .bootstrap_with_clock(clock)
+        .expect("bootstrap")
+        .with_host(crate::host_support::host(actionqueue_core::control::ControlScope::Store));
 
     let tenant = TenantId::new();
     boot.create_tenant(TenantRegistration::new(tenant, "Corp")).expect("tenant");
 
     let actor_id = ActorId::new();
     let caps = ExecutorTraits::new(vec!["work".to_string()]).expect("caps");
-    boot.set_control_context(Some(host_support::host(
+    boot.set_control_context(Some(crate::host_support::host(
         actionqueue_core::control::ControlScope::ProvisionTenant(tenant),
     )));
     boot.register_actor(ActorRegistration::new(actor_id, "worker", caps, 30).with_tenant(tenant))

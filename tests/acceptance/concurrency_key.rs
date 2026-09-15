@@ -710,13 +710,7 @@ async fn concurrency_key_e2e_serialized_execution_via_engine() {
     let clock = MockClock::new(1_000_000);
     let engine = ActionQueueEngine::new(config, handler);
     let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap should succeed").with_host(
-        actionqueue_core::control::HostControlContext {
-            actor_id: None,
-            scope: actionqueue_core::control::ControlScope::SingleTenant,
-            attribution: actionqueue_core::causal::ControlMutationContext::new(
-                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-            ),
-        },
+        crate::support::host_support::host(actionqueue_core::control::ControlScope::SingleTenant),
     );
 
     // Submit two tasks sharing the SAME concurrency key.

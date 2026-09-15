@@ -7,6 +7,8 @@
 //!   4. Verifying recovered state matches expectations,
 //!   5. Verifying new operations succeed after recovery.
 
+#[path = "../acceptance/host_support.rs"]
+mod host_support;
 #[path = "../acceptance/lease_support.rs"]
 mod lease_support;
 use std::path::PathBuf;
@@ -74,15 +76,8 @@ fn open_authority(
 ) -> StorageMutationAuthority<InstrumentedWalWriter<WalFsWriter>, ReplayReducer> {
     let recovery =
         load_projection_from_storage(data_dir).expect("storage bootstrap should succeed");
-    StorageMutationAuthority::new(recovery.wal_writer, recovery.projection).with_host(
-        actionqueue_core::control::HostControlContext {
-            actor_id: None,
-            scope: actionqueue_core::control::ControlScope::SingleTenant,
-            attribution: actionqueue_core::causal::ControlMutationContext::new(
-                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-            ),
-        },
-    )
+    StorageMutationAuthority::new(recovery.wal_writer, recovery.projection)
+        .with_host(crate::host_support::host(actionqueue_core::control::ControlScope::SingleTenant))
 }
 
 /// Computes the next WAL sequence from the projection's latest.

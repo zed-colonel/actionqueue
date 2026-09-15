@@ -5,6 +5,8 @@
 //! and re-bootstrapping from the same data directory, the recovered projection
 //! must reflect the same budget allocation and consumption as before the crash.
 
+#[path = "host_support.rs"]
+mod host_support;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -69,13 +71,7 @@ async fn budget_state_survives_wal_recovery() {
         let engine =
             ActionQueueEngine::new(make_config(dir.path().to_path_buf()), ThreeHundredTokenHandler);
         let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap phase 1").with_host(
-            actionqueue_core::control::HostControlContext {
-                actor_id: None,
-                scope: actionqueue_core::control::ControlScope::SingleTenant,
-                attribution: actionqueue_core::causal::ControlMutationContext::new(
-                    actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-                ),
-            },
+            crate::host_support::host(actionqueue_core::control::ControlScope::SingleTenant),
         );
 
         // max_attempts=1 with TerminalFailure → exactly one dispatch, then Failed.
@@ -117,13 +113,7 @@ async fn budget_state_survives_wal_recovery() {
         let engine =
             ActionQueueEngine::new(make_config(dir.path().to_path_buf()), ThreeHundredTokenHandler);
         let boot = engine.bootstrap_with_clock(clock).expect("bootstrap phase 2").with_host(
-            actionqueue_core::control::HostControlContext {
-                actor_id: None,
-                scope: actionqueue_core::control::ControlScope::SingleTenant,
-                attribution: actionqueue_core::causal::ControlMutationContext::new(
-                    actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-                ),
-            },
+            crate::host_support::host(actionqueue_core::control::ControlScope::SingleTenant),
         );
 
         let budget_recovered =
@@ -159,13 +149,7 @@ async fn budget_replenishment_survives_wal_recovery() {
         let engine =
             ActionQueueEngine::new(make_config(dir.path().to_path_buf()), ThreeHundredTokenHandler);
         let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap phase 1").with_host(
-            actionqueue_core::control::HostControlContext {
-                actor_id: None,
-                scope: actionqueue_core::control::ControlScope::SingleTenant,
-                attribution: actionqueue_core::causal::ControlMutationContext::new(
-                    actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-                ),
-            },
+            crate::host_support::host(actionqueue_core::control::ControlScope::SingleTenant),
         );
 
         // max_attempts=5 so we get multiple dispatches before exhaustion.
@@ -208,13 +192,7 @@ async fn budget_replenishment_survives_wal_recovery() {
         let engine =
             ActionQueueEngine::new(make_config(dir.path().to_path_buf()), ThreeHundredTokenHandler);
         let boot = engine.bootstrap_with_clock(clock).expect("bootstrap phase 2").with_host(
-            actionqueue_core::control::HostControlContext {
-                actor_id: None,
-                scope: actionqueue_core::control::ControlScope::SingleTenant,
-                attribution: actionqueue_core::causal::ControlMutationContext::new(
-                    actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-                ),
-            },
+            crate::host_support::host(actionqueue_core::control::ControlScope::SingleTenant),
         );
 
         let budget_recovered =

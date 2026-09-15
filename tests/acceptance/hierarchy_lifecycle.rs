@@ -78,13 +78,9 @@ mod wf {
         {
             let recovery = load_projection_from_storage(&data_dir).expect("recovery must succeed");
             let mut auth = StorageMutationAuthority::new(recovery.wal_writer, recovery.projection)
-                .with_host(actionqueue_core::control::HostControlContext {
-                    actor_id: None,
-                    scope: actionqueue_core::control::ControlScope::SingleTenant,
-                    attribution: actionqueue_core::causal::ControlMutationContext::new(
-                        actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-                    ),
-                });
+                .with_host(crate::support::host_support::host(
+                    actionqueue_core::control::ControlScope::SingleTenant,
+                ));
 
             // Admit each task and its initial run atomically, parent first.
             let parent_spec = TaskSpec::new(
@@ -124,13 +120,9 @@ mod wf {
             let mut eng = engine
                 .bootstrap_with_clock(MockClock::new(ts))
                 .expect("bootstrap must succeed")
-                .with_host(actionqueue_core::control::HostControlContext {
-                    actor_id: None,
-                    scope: actionqueue_core::control::ControlScope::SingleTenant,
-                    attribution: actionqueue_core::causal::ControlMutationContext::new(
-                        actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-                    ),
-                });
+                .with_host(crate::support::host_support::host(
+                    actionqueue_core::control::ControlScope::SingleTenant,
+                ));
 
             // Tick processes cascade (step 0c) which cancels children.
             let _ = eng.tick().await.expect("tick must succeed");

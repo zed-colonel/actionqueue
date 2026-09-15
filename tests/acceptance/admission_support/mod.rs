@@ -1,6 +1,8 @@
 #![allow(dead_code)]
+// Binaries that also include the signal fixtures load this helper twice.
+#[allow(clippy::duplicate_mod)]
 #[path = "../host_support.rs"]
-mod host_support;
+pub mod host_support;
 use actionqueue_core::{
     admission::{AdmissionPlan, EnsureTaskRequest},
     causal::CausalContext,
@@ -15,9 +17,9 @@ use actionqueue_core::{
 };
 use actionqueue_storage::{
     mutation::StorageMutationAuthority,
-    recovery::{bootstrap::recover_read_only, reducer::ReplayReducer},
+    recovery::reducer::ReplayReducer,
     store::{capabilities, open_store, OpenOptions},
-    wal::{fs_writer::WalFsWriter, repair::RepairPolicy},
+    wal::fs_writer::WalFsWriter,
 };
 pub type Authority = StorageMutationAuthority<WalFsWriter, ReplayReducer>;
 pub fn id(n: u64) -> TaskId {
@@ -55,38 +57,19 @@ pub fn request(n: u64) -> EnsureTaskRequest {
     )
     .unwrap()
 }
+fn open_with(path: &std::path::Path, features: Vec<String>) -> Authority {
+    open_store(path, OpenOptions::Initialize { features })
+        .unwrap()
+        .into_authority()
+        .unwrap()
+        .with_host(host_support::host(actionqueue_core::control::ControlScope::SingleTenant))
+}
 pub fn open(path: &std::path::Path) -> Authority {
-    let session = open_store(
-        path,
-        OpenOptions::Initialize {
-            features: capabilities().into_iter().filter(|f| f != "platform").collect(),
-        },
-    )
-    .unwrap();
-    let projection = recover_read_only(&session, RepairPolicy::Strict).unwrap().projection;
-    Authority::new(WalFsWriter::new(session).unwrap(), projection).with_host(
-        actionqueue_core::control::HostControlContext {
-            actor_id: None,
-            scope: actionqueue_core::control::ControlScope::SingleTenant,
-            attribution: actionqueue_core::causal::ControlMutationContext::new(
-                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-            ),
-        },
-    )
+    open_with(path, capabilities().into_iter().filter(|f| f != "platform").collect())
 }
 #[cfg(feature = "platform")]
 pub fn open_platform(path: &std::path::Path) -> Authority {
-    let session = open_store(path, OpenOptions::Initialize { features: capabilities() }).unwrap();
-    let projection = recover_read_only(&session, RepairPolicy::Strict).unwrap().projection;
-    Authority::new(WalFsWriter::new(session).unwrap(), projection).with_host(
-        actionqueue_core::control::HostControlContext {
-            actor_id: None,
-            scope: actionqueue_core::control::ControlScope::SingleTenant,
-            attribution: actionqueue_core::causal::ControlMutationContext::new(
-                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-            ),
-        },
-    )
+    open_with(path, capabilities())
 }
 pub fn command(q: EnsureTaskRequest, sequence: u64, timestamp: u64) -> AdmissionCommitCommand {
     let control = q.control_context().cloned();

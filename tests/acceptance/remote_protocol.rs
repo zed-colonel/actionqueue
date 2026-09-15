@@ -28,13 +28,7 @@ fn setup(path: &std::path::Path) -> (s::Authority, HostControlContext, RunId) {
     .unwrap()
     .into_authority()
     .unwrap()
-    .with_host(actionqueue_core::control::HostControlContext {
-        actor_id: None,
-        scope: actionqueue_core::control::ControlScope::SingleTenant,
-        attribution: actionqueue_core::causal::ControlMutationContext::new(
-            actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-        ),
-    });
+    .with_host(s::host_support::host(actionqueue_core::control::ControlScope::SingleTenant));
     let id = ActorId::new();
     commit!(
         &mut a,

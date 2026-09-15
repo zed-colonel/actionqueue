@@ -16,6 +16,16 @@ use actionqueue_runtime::engine::ActionQueueEngine;
 
 static TEST_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
+/// Single-tenant fixture host binding for embedded control conveniences.
+fn host() -> actionqueue_core::control::HostControlContext {
+    actionqueue_core::control::HostControlContext {
+        actor_id: None,
+        scope: actionqueue_core::control::ControlScope::SingleTenant,
+        attribution: actionqueue_core::causal::ControlMutationContext::new(
+            actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+        ),
+    }
+}
 fn temp_data_dir() -> PathBuf {
     let dir = std::env::temp_dir();
     let count = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
@@ -44,16 +54,8 @@ async fn full_lifecycle_submit_to_complete() {
 
     let clock = MockClock::new(1000);
     let engine = ActionQueueEngine::new(config, SuccessHandler);
-    let mut bootstrapped = engine
-        .bootstrap_with_clock(clock)
-        .expect("bootstrap should succeed")
-        .with_host(actionqueue_core::control::HostControlContext {
-            actor_id: None,
-            scope: actionqueue_core::control::ControlScope::SingleTenant,
-            attribution: actionqueue_core::causal::ControlMutationContext::new(
-                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-            ),
-        });
+    let mut bootstrapped =
+        engine.bootstrap_with_clock(clock).expect("bootstrap should succeed").with_host(host());
 
     // Submit a Once task
     let task_id = TaskId::new();
@@ -98,13 +100,7 @@ async fn full_lifecycle_submit_to_complete() {
     )
     .bootstrap_with_clock(MockClock::new(5000))
     .unwrap()
-    .with_host(actionqueue_core::control::HostControlContext {
-        actor_id: None,
-        scope: actionqueue_core::control::ControlScope::SingleTenant,
-        attribution: actionqueue_core::causal::ControlMutationContext::new(
-            actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-        ),
-    });
+    .with_host(host());
     assert!(!recovered.ensure_task(request).unwrap().is_created());
     assert_eq!(recovered.projection().projection_digest().unwrap(), before);
     recovered.shutdown().unwrap();
@@ -118,16 +114,8 @@ async fn engine_pause_skips_dispatch() {
 
     let clock = MockClock::new(1000);
     let engine = ActionQueueEngine::new(config, SuccessHandler);
-    let mut bootstrapped = engine
-        .bootstrap_with_clock(clock)
-        .expect("bootstrap should succeed")
-        .with_host(actionqueue_core::control::HostControlContext {
-            actor_id: None,
-            scope: actionqueue_core::control::ControlScope::SingleTenant,
-            attribution: actionqueue_core::causal::ControlMutationContext::new(
-                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-            ),
-        });
+    let mut bootstrapped =
+        engine.bootstrap_with_clock(clock).expect("bootstrap should succeed").with_host(host());
 
     // Submit task
     let spec = TaskSpec::new(
@@ -156,13 +144,7 @@ async fn child_retry_survives_parent_completion_cache_cleanup_and_restart() {
     let mut engine = ActionQueueEngine::new(config.clone(), SuccessHandler)
         .bootstrap_with_clock(MockClock::new(1000))
         .unwrap()
-        .with_host(actionqueue_core::control::HostControlContext {
-            actor_id: None,
-            scope: actionqueue_core::control::ControlScope::SingleTenant,
-            attribution: actionqueue_core::causal::ControlMutationContext::new(
-                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-            ),
-        });
+        .with_host(host());
     let make_spec = |id| {
         TaskSpec::new(
             id,
@@ -198,13 +180,7 @@ async fn child_retry_survives_parent_completion_cache_cleanup_and_restart() {
     let mut recovered = ActionQueueEngine::new(config, SuccessHandler)
         .bootstrap_with_clock(MockClock::new(5000))
         .unwrap()
-        .with_host(actionqueue_core::control::HostControlContext {
-            actor_id: None,
-            scope: actionqueue_core::control::ControlScope::SingleTenant,
-            attribution: actionqueue_core::causal::ControlMutationContext::new(
-                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-            ),
-        });
+        .with_host(host());
     assert!(!recovered.ensure_task(request).unwrap().is_created());
     assert_eq!(recovered.projection().projection_digest().unwrap(), digest);
     recovered.shutdown().unwrap();

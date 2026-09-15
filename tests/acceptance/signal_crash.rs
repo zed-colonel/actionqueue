@@ -38,13 +38,9 @@ fn failed_admissions_fence_writer_and_authority_until_recovery() {
         ));
         let (writer, projection) = a.into_parts();
         let a = Authority::new(writer, projection).with_host(
-            actionqueue_core::control::HostControlContext {
-                actor_id: None,
-                scope: actionqueue_core::control::ControlScope::SingleTenant,
-                attribution: actionqueue_core::causal::ControlMutationContext::new(
-                    actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-                ),
-            },
+            crate::signal_support::host_support::host(
+                actionqueue_core::control::ControlScope::SingleTenant,
+            ),
         );
         assert!(a.recovery_required());
         drop(a);

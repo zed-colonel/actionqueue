@@ -303,13 +303,9 @@ fn tenant_keys_are_independent_and_cross_tenant_references_or_uuid_collisions_le
                     TenantRegistration::new(*t, format!("tenant/{n}")),
                     40,
                 ))
-                .with_control(&actionqueue_core::control::HostControlContext {
-                    actor_id: None,
-                    scope: actionqueue_core::control::ControlScope::Store,
-                    attribution: actionqueue_core::causal::ControlMutationContext::new(
-                        actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-                    ),
-                }),
+                .with_control(&crate::admission_support::host_support::host(
+                    actionqueue_core::control::ControlScope::Store,
+                )),
                 DurabilityPolicy::Immediate,
             )
             .unwrap();
@@ -381,13 +377,9 @@ fn cron_initial_window_and_text_are_preserved_and_unsupported_profiles_reject() 
     .projection;
     let mut a =
         Authority::new(actionqueue_storage::wal::fs_writer::WalFsWriter::new(session).unwrap(), p)
-            .with_host(actionqueue_core::control::HostControlContext {
-                actor_id: None,
-                scope: actionqueue_core::control::ControlScope::SingleTenant,
-                attribution: actionqueue_core::causal::ControlMutationContext::new(
-                    actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-                ),
-            });
+            .with_host(crate::admission_support::host_support::host(
+                actionqueue_core::control::ControlScope::SingleTenant,
+            ));
     assert!(matches!(ensure(&mut a, q, 120), Err(AdmissionError::Rejected(R::UnsupportedFeature))));
     assert_eq!(a.projection().latest_sequence(), 1);
 }

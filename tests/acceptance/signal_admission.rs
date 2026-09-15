@@ -113,13 +113,9 @@ fn every_producer_field_conflicts_and_global_sequence_ignores_other_wal_events()
     let _ = a
         .submit_command(
             MutationCommand::EnginePause(EnginePauseCommand::new(3, 42)).with_control(
-                &actionqueue_core::control::HostControlContext {
-                    actor_id: None,
-                    scope: actionqueue_core::control::ControlScope::Store,
-                    attribution: actionqueue_core::causal::ControlMutationContext::new(
-                        actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-                    ),
-                },
+                &crate::signal_support::host_support::host(
+                    actionqueue_core::control::ControlScope::Store,
+                ),
             ),
             DurabilityPolicy::Immediate,
         )
@@ -317,13 +313,9 @@ fn same_identity_across_tenants_isolated_with_local_ancestry_and_profile_validat
                     TenantRegistration::new(t, "tenant"),
                     1,
                 ))
-                .with_control(&actionqueue_core::control::HostControlContext {
-                    actor_id: None,
-                    scope: actionqueue_core::control::ControlScope::Store,
-                    attribution: actionqueue_core::causal::ControlMutationContext::new(
-                        actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-                    ),
-                }),
+                .with_control(&crate::signal_support::host_support::host(
+                    actionqueue_core::control::ControlScope::Store,
+                )),
                 DurabilityPolicy::Immediate,
             )
             .unwrap();
@@ -377,15 +369,10 @@ fn same_identity_across_tenants_isolated_with_local_ancestry_and_profile_validat
     // A platform-capable binary must still respect a store's smaller immutable profile.
     let root = dir.path().join("no-platform");
     let session = open_store(&root, OpenOptions::Initialize { features: vec![] }).unwrap();
-    let mut a = session.into_authority().unwrap().with_host(
-        actionqueue_core::control::HostControlContext {
-            actor_id: None,
-            scope: actionqueue_core::control::ControlScope::SingleTenant,
-            attribution: actionqueue_core::causal::ControlMutationContext::new(
-                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-            ),
-        },
-    );
+    let mut a =
+        session.into_authority().unwrap().with_host(crate::signal_support::host_support::host(
+            actionqueue_core::control::ControlScope::SingleTenant,
+        ));
     // Populate an in-memory tenant solely to separate profile validation from tenant validation.
     a.projection_mut()
         .apply(&actionqueue_storage::wal::event::WalEvent::new(

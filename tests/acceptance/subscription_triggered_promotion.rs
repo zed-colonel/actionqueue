@@ -8,6 +8,8 @@
 //! time=11000 — far beyond the mock clock's value of 1000. Without the
 //! subscription trigger, that run would remain Scheduled indefinitely.
 
+#[path = "host_support.rs"]
+mod host_support;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -58,13 +60,7 @@ async fn subscription_promotes_future_scheduled_run_on_completion() {
     let handler = AlwaysSucceedHandler;
     let engine = ActionQueueEngine::new(make_config(dir.path().to_path_buf()), handler);
     let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap").with_host(
-        actionqueue_core::control::HostControlContext {
-            actor_id: None,
-            scope: actionqueue_core::control::ControlScope::SingleTenant,
-            attribution: actionqueue_core::causal::ControlMutationContext::new(
-                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-            ),
-        },
+        crate::host_support::host(actionqueue_core::control::ControlScope::SingleTenant),
     );
 
     // Task B: Once, scheduled now (time=1000).

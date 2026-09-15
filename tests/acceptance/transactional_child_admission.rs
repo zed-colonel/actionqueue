@@ -384,13 +384,7 @@ async fn aq_dd_005_bounded_multibatch_fanout_uses_checkpoints_and_ordinary_dag_e
     )
     .bootstrap_with_clock(MockClock::new(1000))
     .unwrap()
-    .with_host(actionqueue_core::control::HostControlContext {
-        actor_id: None,
-        scope: actionqueue_core::control::ControlScope::SingleTenant,
-        attribution: actionqueue_core::causal::ControlMutationContext::new(
-            actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-        ),
-    });
+    .with_host(s::host_support::host(actionqueue_core::control::ControlScope::SingleTenant));
     let mut task = admission_support::request(1).task_spec().clone();
     task.set_run_policy(RunPolicy::Once).unwrap();
     let q = admission_support::with_spec(&admission_support::request(1), task);

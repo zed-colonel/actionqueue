@@ -374,13 +374,7 @@ async fn normal_handler_awaits_then_receives_signal_or_deadline_and_completes_wi
         )
         .bootstrap_with_clock(MockClock::new(1000))
         .unwrap()
-        .with_host(actionqueue_core::control::HostControlContext {
-            actor_id: None,
-            scope: actionqueue_core::control::ControlScope::SingleTenant,
-            attribution: actionqueue_core::causal::ControlMutationContext::new(
-                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-            ),
-        });
+        .with_host(s::host_support::host(actionqueue_core::control::ControlScope::SingleTenant));
         let q = admission_support::request(1);
         let mut task = q.task_spec().clone();
         task.set_constraints(TaskConstraints::new(1, None, None).unwrap()).unwrap();
@@ -635,13 +629,7 @@ fn exact_encoded_record_limit_and_cumulative_signal_quota_are_enforced() {
             MemoryWriter,
             original.clone(),
         )
-        .with_host(actionqueue_core::control::HostControlContext {
-            actor_id: None,
-            scope: actionqueue_core::control::ControlScope::SingleTenant,
-            attribution: actionqueue_core::causal::ControlMutationContext::new(
-                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-            ),
-        });
+        .with_host(s::host_support::host(actionqueue_core::control::ControlScope::SingleTenant));
         probe.set_continuation_limits(actionqueue_core::limits::ContinuationLimits {
             disposition_bytes: limit,
             ..Default::default()
@@ -730,13 +718,9 @@ async fn delayed_tick_recovers_expired_execution_and_advances_queued_task() {
             )
             .bootstrap_with_clock(clock.clone())
             .unwrap()
-            .with_host(actionqueue_core::control::HostControlContext {
-                actor_id: None,
-                scope: actionqueue_core::control::ControlScope::SingleTenant,
-                attribution: actionqueue_core::causal::ControlMutationContext::new(
-                    actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-                ),
-            });
+            .with_host(s::host_support::host(
+                actionqueue_core::control::ControlScope::SingleTenant,
+            ));
             let mut first = admission_support::request(1).task_spec().clone();
             first
                 .set_constraints(

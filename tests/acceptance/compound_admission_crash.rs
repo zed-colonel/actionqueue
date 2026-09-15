@@ -16,13 +16,9 @@ fn reopen(path: &std::path::Path) -> Authority {
     let session = open_store(path, OpenOptions::ReadWrite).unwrap();
     let projection = recover_read_only(&session, RepairPolicy::TruncatePartial).unwrap().projection;
     let writer = WalFsWriter::new_with_repair(session, RepairPolicy::TruncatePartial).unwrap();
-    Authority::new(writer, projection).with_host(actionqueue_core::control::HostControlContext {
-        actor_id: None,
-        scope: actionqueue_core::control::ControlScope::SingleTenant,
-        attribution: actionqueue_core::causal::ControlMutationContext::new(
-            actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-        ),
-    })
+    Authority::new(writer, projection).with_host(crate::admission_support::host_support::host(
+        actionqueue_core::control::ControlScope::SingleTenant,
+    ))
 }
 const POINTS: &[&str] = &[
     "wal_before_append",
@@ -85,13 +81,9 @@ fn injected_failures_preserve_atomicity_and_fence_cached_duplicates() {
             Err(actionqueue_storage::wal::writer::WalWriterError::Poisoned)
         ));
         let rewrapped = Authority::new(writer, projection).with_host(
-            actionqueue_core::control::HostControlContext {
-                actor_id: None,
-                scope: actionqueue_core::control::ControlScope::SingleTenant,
-                attribution: actionqueue_core::causal::ControlMutationContext::new(
-                    actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-                ),
-            },
+            crate::admission_support::host_support::host(
+                actionqueue_core::control::ControlScope::SingleTenant,
+            ),
         );
         assert!(matches!(
             rewrapped.lookup_admission(&request(1)),
@@ -240,11 +232,7 @@ fn attributed(
     .unwrap()
 }
 fn fixture_host() -> actionqueue_core::control::HostControlContext {
-    actionqueue_core::control::HostControlContext {
-        actor_id: None,
-        scope: actionqueue_core::control::ControlScope::SingleTenant,
-        attribution: actionqueue_core::causal::ControlMutationContext::new(
-            actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-        ),
-    }
+    crate::admission_support::host_support::host(
+        actionqueue_core::control::ControlScope::SingleTenant,
+    )
 }

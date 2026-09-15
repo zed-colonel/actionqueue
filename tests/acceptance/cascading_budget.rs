@@ -7,6 +7,8 @@
 //!    the budget gate blocks it — even though children may still be pending.
 //! 4. Budget replenishment allows the coordinator to resume and complete.
 
+#[path = "host_support.rs"]
+mod host_support;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -78,13 +80,7 @@ async fn coordinator_budget_exhaustion_blocks_resume_dispatch() {
     let handler = CascadeHandler { call_count: Arc::clone(&call_count) };
     let engine = ActionQueueEngine::new(make_config(dir.path().to_path_buf()), handler);
     let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap").with_host(
-        actionqueue_core::control::HostControlContext {
-            actor_id: None,
-            scope: actionqueue_core::control::ControlScope::SingleTenant,
-            attribution: actionqueue_core::causal::ControlMutationContext::new(
-                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-            ),
-        },
+        crate::host_support::host(actionqueue_core::control::ControlScope::SingleTenant),
     );
 
     // Submit coordinator task with 500-token budget.

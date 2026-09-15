@@ -8,6 +8,46 @@ fn inspect_host() -> actionqueue_core::control::HostControlContext {
         attribution: ControlMutationContext::new(OpaqueRef::new("inspector").unwrap()),
     }
 }
+/// Daemon router state over an instrumented authority, sharing the fixed
+/// telemetry, clock and readiness that the maintenance and metrics tests use.
+fn router_state(
+    metrics_bind: Option<std::net::SocketAddr>,
+    metrics_enabled: bool,
+    telemetry: actionqueue_storage::wal::WalAppendTelemetry,
+    now: u64,
+    authority: std::sync::Arc<
+        std::sync::Mutex<
+            actionqueue_storage::mutation::StorageMutationAuthority<
+                actionqueue_storage::wal::InstrumentedWalWriter<
+                    actionqueue_storage::wal::fs_writer::WalFsWriter,
+                >,
+                ReplayReducer,
+            >,
+        >,
+    >,
+) -> actionqueue_daemon::http::RouterStateInner {
+    use std::sync::{Arc, RwLock};
+
+    use actionqueue_daemon::{
+        bootstrap::{ReadyStatus, RouterConfig},
+        http::{RouterObservability, RouterStateInner},
+        metrics::registry::MetricsRegistry,
+    };
+    let projection = authority.lock().unwrap().projection().clone();
+    RouterStateInner::with_control_authority(
+        RouterConfig { control_enabled: true, metrics_enabled },
+        Arc::new(RwLock::new(projection)),
+        RouterObservability {
+            metrics: Arc::new(MetricsRegistry::new(metrics_bind).unwrap()),
+            wal_append_telemetry: telemetry,
+            clock: Arc::new(MockClock::new(now)),
+            recovery_observations:
+                actionqueue_storage::recovery::bootstrap::RecoveryObservations::zero(),
+        },
+        authority,
+        ReadyStatus::ready(),
+    )
+}
 fn encoded_trace(p: &ReplayReducer) -> serde_json::Value {
     let h = inspect_host();
     let i = Inspector::new(p, &h, false, Default::default(), false, 40).unwrap();
@@ -185,10 +225,6 @@ fn committed_signal_matching_failure_preserves_identity_and_recovery() {
 fn daemon_maintenance_resolves_deadlines_without_actor_requirement() {
     use std::sync::{Arc, RwLock};
 
-    use actionqueue_daemon::{
-        bootstrap::{ReadyStatus, RouterConfig},
-        http::{RouterObservability, RouterStateInner},
-    };
     use actionqueue_storage::wal::{InstrumentedWalWriter, WalAppendTelemetry};
     let dir = resume_dir();
     let mut a = s::open(dir.path());
@@ -203,23 +239,9 @@ fn daemon_maintenance_resolves_deadlines_without_actor_requirement() {
     let telemetry = WalAppendTelemetry::new();
     let a = Arc::new(Mutex::new(actionqueue_storage::mutation::StorageMutationAuthority::new(
         InstrumentedWalWriter::new(writer, telemetry.clone()),
-        projection.clone(),
+        projection,
     )));
-    let state = Arc::new(RouterStateInner::with_control_authority(
-        RouterConfig { control_enabled: true, metrics_enabled: true },
-        Arc::new(RwLock::new(projection)),
-        RouterObservability {
-            metrics: Arc::new(
-                actionqueue_daemon::metrics::registry::MetricsRegistry::new(None).unwrap(),
-            ),
-            wal_append_telemetry: telemetry,
-            clock: Arc::new(MockClock::new(40)),
-            recovery_observations:
-                actionqueue_storage::recovery::bootstrap::RecoveryObservations::zero(),
-        },
-        a.clone(),
-        ReadyStatus::ready(),
-    ));
+    let state = Arc::new(router_state(None, true, telemetry, 40, a.clone()));
     actionqueue_daemon::http::maintenance::tick(&state).unwrap();
     let a = a.lock().unwrap();
     assert_eq!(a.projection().get_run_state(&r), Some(&RunState::Ready));
@@ -240,10 +262,6 @@ fn daemon_maintenance_resolves_deadlines_without_actor_requirement() {
 fn idle_daemon_maintenance_performs_no_projection_image_or_digest_work() {
     use std::sync::{Arc, Mutex, RwLock};
 
-    use actionqueue_daemon::{
-        bootstrap::{ReadyStatus, RouterConfig},
-        http::{RouterObservability, RouterStateInner},
-    };
     use actionqueue_storage::{
         recovery::work,
         wal::{InstrumentedWalWriter, WalAppendTelemetry},
@@ -256,25 +274,10 @@ fn idle_daemon_maintenance_performs_no_projection_image_or_digest_work() {
     let telemetry = WalAppendTelemetry::new();
     let a = Arc::new(Mutex::new(actionqueue_storage::mutation::StorageMutationAuthority::new(
         InstrumentedWalWriter::new(writer, telemetry.clone()),
-        projection.clone(),
+        projection,
     )));
     let state = Arc::new(
-        RouterStateInner::with_control_authority(
-            RouterConfig { control_enabled: true, metrics_enabled: false },
-            Arc::new(RwLock::new(projection)),
-            RouterObservability {
-                metrics: Arc::new(
-                    actionqueue_daemon::metrics::registry::MetricsRegistry::new(None).unwrap(),
-                ),
-                wal_append_telemetry: telemetry,
-                clock: Arc::new(MockClock::new(40)),
-                recovery_observations:
-                    actionqueue_storage::recovery::bootstrap::RecoveryObservations::zero(),
-            },
-            a.clone(),
-            ReadyStatus::ready(),
-        )
-        .without_background_maintenance(),
+        router_state(None, false, telemetry, 40, a.clone()).without_background_maintenance(),
     );
     let sequence = a.lock().unwrap().projection().latest_sequence();
     assert_eq!(a.lock().unwrap().projection().waits().active_count(), 1);
@@ -464,26 +467,9 @@ async fn broad_wait_metrics_measure_live_candidates_without_replay_or_scrape_eve
     assert_eq!(a.telemetry().snapshot().broad_waits_established, 1);
     assert_eq!(a.telemetry().snapshot().match_wait_candidates, 0);
     let state = Arc::new(
-        RouterStateInner::with_control_authority(
-            RouterConfig { control_enabled: true, metrics_enabled: true },
-            Arc::new(RwLock::new(a.projection().clone())),
-            RouterObservability {
-                metrics: Arc::new(
-                    actionqueue_daemon::metrics::registry::MetricsRegistry::new(Some(
-                        "127.0.0.1:0".parse().unwrap(),
-                    ))
-                    .unwrap(),
-                ),
-                wal_append_telemetry: wal,
-                clock: Arc::new(MockClock::new(30)),
-                recovery_observations:
-                    actionqueue_storage::recovery::bootstrap::RecoveryObservations::zero(),
-            },
-            Arc::new(Mutex::new(a)),
-            ReadyStatus::ready(),
-        )
-        .without_background_maintenance()
-        .with_host_authenticator(Arc::new(|_, _| Ok(inspect_host()))),
+        router_state(Some("127.0.0.1:0".parse().unwrap()), true, wal, 30, Arc::new(Mutex::new(a)))
+            .without_background_maintenance()
+            .with_host_authenticator(Arc::new(|_, _| Ok(inspect_host()))),
     );
     let router = build_router(state.clone());
     async fn get_metrics(router: &axum::Router) -> String {

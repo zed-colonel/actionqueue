@@ -3,6 +3,8 @@
 //! Verifies that actors can be grouped into departments and that
 //! department membership is tracked correctly.
 
+#[path = "host_support.rs"]
+mod host_support;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -51,13 +53,7 @@ async fn five_actors_in_engineering_department() {
     let clock = MockClock::new(1000);
     let engine = ActionQueueEngine::new(make_config(dir), NoopHandler);
     let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap").with_host(
-        actionqueue_core::control::HostControlContext {
-            actor_id: None,
-            scope: actionqueue_core::control::ControlScope::SingleTenant,
-            attribution: actionqueue_core::causal::ControlMutationContext::new(
-                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-            ),
-        },
+        crate::host_support::host(actionqueue_core::control::ControlScope::SingleTenant),
     );
 
     let dept = DepartmentId::new("engineering").expect("valid dept");

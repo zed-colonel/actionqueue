@@ -2546,6 +2546,16 @@ mod tests {
     use actionqueue_core::task::task_spec::{TaskPayload, TaskSpec};
 
     use super::*;
+    /// Single-tenant fixture host binding for embedded control conveniences.
+    fn host() -> actionqueue_core::control::HostControlContext {
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        }
+    }
 
     #[derive(Debug, Default, Clone)]
     struct ProjectionStub {
@@ -2698,15 +2708,7 @@ mod tests {
 
         let writer = WriterStub::default();
         let projection = ProjectionStub::default();
-        let mut authority = StorageMutationAuthority::new(writer, projection).with_host(
-            actionqueue_core::control::HostControlContext {
-                actor_id: None,
-                scope: actionqueue_core::control::ControlScope::SingleTenant,
-                attribution: actionqueue_core::causal::ControlMutationContext::new(
-                    actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-                ),
-            },
-        );
+        let mut authority = StorageMutationAuthority::new(writer, projection).with_host(host());
 
         let task_outcome = authority
             .submit_command(
@@ -2748,15 +2750,7 @@ mod tests {
         let task_id = TaskId::new();
         let writer = WriterStub { fail_flush: true, ..Default::default() };
         let projection = ProjectionStub::default();
-        let mut authority = StorageMutationAuthority::new(writer, projection).with_host(
-            actionqueue_core::control::HostControlContext {
-                actor_id: None,
-                scope: actionqueue_core::control::ControlScope::SingleTenant,
-                attribution: actionqueue_core::causal::ControlMutationContext::new(
-                    actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-                ),
-            },
-        );
+        let mut authority = StorageMutationAuthority::new(writer, projection).with_host(host());
 
         let result = authority.submit_command(
             MutationCommand::TaskCreate(TaskCreateCommand::new(1, test_task_spec(task_id), 10)),

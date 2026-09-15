@@ -10,7 +10,8 @@ use actionqueue_executor_local::handler::{ExecutorContext, ExecutorHandler};
 use actionqueue_runtime::{
     config::RuntimeConfig,
     engine::{ActionQueueEngine, BootstrappedEngine},
-    inspection::DisclosurePolicy,
+    inspection::{DisclosurePolicy, Query},
+    views::TraceNode,
 };
 #[derive(Clone)]
 struct Handler {
@@ -200,21 +201,56 @@ async fn two_stores_lost_admission_duplicate_callback_early_signal_and_uncertain
         local.shutdown().unwrap();
     }
 }
-/// The bound host alone never discloses references; resolving a wait through the
-/// embedded surface settles it without a signal and keeps the run resumable.
+/// Admits one coordinator task whose first attempt establishes a wait.
+fn once_request(n: u64) -> actionqueue_core::admission::EnsureTaskRequest {
+    let q = engine::reference_request(n);
+    let mut once = q.task_spec().clone();
+    once.set_run_policy(RunPolicy::Once).unwrap();
+    engine::reference_with_spec(&q, once)
+}
+/// The bound host alone never discloses references; every embedded inspection
+/// convenience reads the same structural views the inspector does, and resolving a
+/// wait through the embedded surface settles it without a signal and keeps the
+/// run resumable until the run itself is canceled.
 #[tokio::test]
 async fn embedded_disclosure_and_wait_resolution_use_the_bound_host() {
     let dir = tempfile::tempdir().unwrap();
     let mut b = boot(dir.path(), true);
-    let q = engine::reference_request(1);
-    let mut once = q.task_spec().clone();
-    once.set_run_policy(RunPolicy::Once).unwrap();
-    let q = engine::reference_with_spec(&q, once);
+    let q = once_request(1);
     let task = q.task_spec().id();
+    let key = q.admission_key().clone();
+    let trace_id = q.causal_context().trace_id().to_string();
     b.ensure_task(q).unwrap();
     idle(&mut b).await;
     let run = b.projection().run_instances().next().unwrap().id();
     let wait = b.projection().waits().active(run).unwrap().spec.wait_id();
+    assert_eq!(b.get_admission(&key).unwrap().task_id, task);
+    assert_eq!(b.get_task(task).unwrap().id, task);
+    let run_view = b.get_run(run).unwrap();
+    assert_eq!(run_view.state, RunState::Awaiting);
+    let attempt = run_view.attempts.items[0].attempt_id;
+    assert_eq!(b.get_attempt(run, attempt).unwrap().attempt_id, attempt);
+    let wait_view = b.get_wait(wait).unwrap();
+    assert_eq!((wait_view.run_id, wait_view.attempt_id), (run, attempt));
+    let checkpoint = wait_view.checkpoint_id.unwrap();
+    assert_eq!(b.get_checkpoint(checkpoint).unwrap().attempt_id, attempt);
+    let waits = b.list_waits(&Query::default()).unwrap();
+    assert_eq!(waits.items.iter().map(|w| w.wait_id).collect::<Vec<_>>(), vec![wait]);
+    let trace = b.trace(&Query { trace_id: Some(trace_id), ..Default::default() }).unwrap();
+    let kinds: Vec<_> = trace
+        .nodes
+        .items
+        .iter()
+        .map(|n| match n {
+            TraceNode::Task(_) => "task",
+            TraceNode::Run(_) => "run",
+            TraceNode::Attempt(_) => "attempt",
+            TraceNode::Checkpoint(_) => "checkpoint",
+            TraceNode::Wait(_) => "wait",
+            TraceNode::Signal(_) => "signal",
+        })
+        .collect();
+    assert_eq!(kinds, ["task", "run", "attempt", "checkpoint", "wait"]);
     let redacted = serde_json::to_string(&b.inspector().unwrap().get_task(task).unwrap()).unwrap();
     assert!(b.inspector_with_disclosure(DisclosurePolicy::default()).is_err());
     let disclosed =
@@ -228,5 +264,33 @@ async fn embedded_disclosure_and_wait_resolution_use_the_bound_host() {
         actionqueue_storage::mutation::wait::WaitResolutionKind::Control(_)
     ));
     assert!(b.projection().pending_resume(run).is_some());
+    b.cancel_run(run).unwrap();
+    assert_eq!(b.get_run(run).unwrap().state, RunState::Canceled);
+    b.shutdown().unwrap();
+}
+/// Canceling a wait through the embedded surface is a control resolution that
+/// never wakes the run; a later signal is admitted and listed but matches nothing.
+#[tokio::test]
+async fn embedded_wait_cancellation_and_signal_listing_use_the_bound_host() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut b = boot(dir.path(), true);
+    b.ensure_task(once_request(1)).unwrap();
+    idle(&mut b).await;
+    let run = b.projection().run_instances().next().unwrap().id();
+    let wait = b.projection().waits().active(run).unwrap().spec.wait_id();
+    b.cancel_wait(run, wait).unwrap();
+    assert!(b.projection().waits().active(run).is_none());
+    assert!(b.projection().pending_resume(run).is_none());
+    let state = b.get_run(run).unwrap().state;
+    assert!(state.is_terminal(), "{state:?}");
+    let AdmitSignalOutcome::Admitted { signal_id, sequence } =
+        b.admit_signal(engine::reference_signal(1)).unwrap()
+    else {
+        panic!("fresh signal");
+    };
+    assert_eq!(b.get_signal(&signal_id).unwrap().sequence, sequence);
+    let listed = b.list_signals(&Query::default()).unwrap();
+    assert_eq!(listed.items.iter().map(|s| s.sequence).collect::<Vec<_>>(), vec![sequence]);
+    assert!(b.get_wait(wait).unwrap().resolution.unwrap().signal_sequence.is_none());
     b.shutdown().unwrap();
 }

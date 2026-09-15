@@ -77,15 +77,10 @@ async fn ledger_entries_survive_wal_recovery() {
     {
         let clock = AdvancableClock::new(1000);
         let engine = ActionQueueEngine::new(make_config(dir.clone()), NoopHandler);
-        let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap").with_host(
-            actionqueue_core::control::HostControlContext {
-                actor_id: None,
-                scope: actionqueue_core::control::ControlScope::Store,
-                attribution: actionqueue_core::causal::ControlMutationContext::new(
-                    actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-                ),
-            },
-        );
+        let mut boot = engine
+            .bootstrap_with_clock(clock)
+            .expect("bootstrap")
+            .with_host(crate::host_support::host(actionqueue_core::control::ControlScope::Store));
 
         boot.create_tenant(TenantRegistration::new(tenant_id, "Recovery Corp")).expect("tenant");
 
@@ -110,15 +105,10 @@ async fn ledger_entries_survive_wal_recovery() {
     {
         let clock = AdvancableClock::new(2000);
         let engine = ActionQueueEngine::new(make_config(dir), NoopHandler);
-        let boot = engine.bootstrap_with_clock(clock).expect("bootstrap after crash").with_host(
-            actionqueue_core::control::HostControlContext {
-                actor_id: None,
-                scope: actionqueue_core::control::ControlScope::Store,
-                attribution: actionqueue_core::causal::ControlMutationContext::new(
-                    actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-                ),
-            },
-        );
+        let boot = engine
+            .bootstrap_with_clock(clock)
+            .expect("bootstrap after crash")
+            .with_host(crate::host_support::host(actionqueue_core::control::ControlScope::Store));
 
         assert_eq!(boot.ledger().len(), 5, "all 5 ledger entries must survive WAL recovery");
 
@@ -154,15 +144,10 @@ async fn ledger_entry_payload_roundtrip() {
     {
         let clock = AdvancableClock::new(1000);
         let engine = ActionQueueEngine::new(make_config(dir.clone()), NoopHandler);
-        let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap").with_host(
-            actionqueue_core::control::HostControlContext {
-                actor_id: None,
-                scope: actionqueue_core::control::ControlScope::Store,
-                attribution: actionqueue_core::causal::ControlMutationContext::new(
-                    actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-                ),
-            },
-        );
+        let mut boot = engine
+            .bootstrap_with_clock(clock)
+            .expect("bootstrap")
+            .with_host(crate::host_support::host(actionqueue_core::control::ControlScope::Store));
         boot.create_tenant(TenantRegistration::new(tenant_id, "Corp")).expect("tenant");
         let entry = LedgerEntry::new(entry_id, tenant_id, "audit", payload.clone(), 1000);
         host_support::bind_engine_tenant(&mut boot, tenant_id, None);
@@ -173,15 +158,10 @@ async fn ledger_entry_payload_roundtrip() {
     {
         let clock = AdvancableClock::new(2000);
         let engine = ActionQueueEngine::new(make_config(dir), NoopHandler);
-        let boot = engine.bootstrap_with_clock(clock).expect("bootstrap").with_host(
-            actionqueue_core::control::HostControlContext {
-                actor_id: None,
-                scope: actionqueue_core::control::ControlScope::Store,
-                attribution: actionqueue_core::causal::ControlMutationContext::new(
-                    actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-                ),
-            },
-        );
+        let boot = engine
+            .bootstrap_with_clock(clock)
+            .expect("bootstrap")
+            .with_host(crate::host_support::host(actionqueue_core::control::ControlScope::Store));
 
         let recovered = boot.ledger().entry_by_id(entry_id).expect("entry present");
         assert_eq!(recovered.payload(), payload.as_slice(), "payload must match exactly");

@@ -97,13 +97,9 @@ fn cm_a_sequence_collision_rejected_by_authority() {
 
     // Step 3: Create a StorageMutationAuthority from the recovery.
     let mut authority = StorageMutationAuthority::new(recovery.wal_writer, recovery.projection)
-        .with_host(actionqueue_core::control::HostControlContext {
-            actor_id: None,
-            scope: actionqueue_core::control::ControlScope::SingleTenant,
-            attribution: actionqueue_core::causal::ControlMutationContext::new(
-                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-            ),
-        });
+        .with_host(crate::support::host_support::host(
+            actionqueue_core::control::ControlScope::SingleTenant,
+        ));
 
     // Record the projection state before the stale command.
     let pre_sequence = authority.projection().latest_sequence();
@@ -181,13 +177,9 @@ fn cm_b_sequential_mutations_preserve_monotonicity() {
     let run_id = run_ids[0];
 
     let mut authority = StorageMutationAuthority::new(recovery.wal_writer, recovery.projection)
-        .with_host(actionqueue_core::control::HostControlContext {
-            actor_id: None,
-            scope: actionqueue_core::control::ControlScope::SingleTenant,
-            attribution: actionqueue_core::causal::ControlMutationContext::new(
-                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-            ),
-        });
+        .with_host(crate::support::host_support::host(
+            actionqueue_core::control::ControlScope::SingleTenant,
+        ));
 
     // Record sequence after bootstrap.
     let mut previous_sequence = authority.projection().latest_sequence();

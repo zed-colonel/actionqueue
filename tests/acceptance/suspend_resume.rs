@@ -7,6 +7,8 @@
 //! 4. Handler returns Success on the second call.
 //! 5. Run completes. Attempt count reflects two total dispatches.
 
+#[path = "host_support.rs"]
+mod host_support;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -67,13 +69,7 @@ async fn suspend_resume_full_lifecycle() {
     let handler = SuspendThenSucceedHandler { call_count: Arc::clone(&call_count) };
     let engine = ActionQueueEngine::new(make_config(dir.path().to_path_buf()), handler);
     let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap").with_host(
-        actionqueue_core::control::HostControlContext {
-            actor_id: None,
-            scope: actionqueue_core::control::ControlScope::SingleTenant,
-            attribution: actionqueue_core::causal::ControlMutationContext::new(
-                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-            ),
-        },
+        crate::host_support::host(actionqueue_core::control::ControlScope::SingleTenant),
     );
 
     // max_attempts=1: if suspension counted as an attempt, the run would fail here.

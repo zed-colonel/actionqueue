@@ -7,6 +7,8 @@
 //! - `ReleaseOnRetry`: the key is released when the run suspends, allowing the
 //!   second task to be dispatched immediately.
 
+#[path = "host_support.rs"]
+mod host_support;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -85,13 +87,7 @@ async fn suspended_run_holds_concurrency_key_with_hold_during_retry_policy() {
     let handler = SuspendOnFirstCallHandler { call_count: Arc::clone(&call_count) };
     let engine = ActionQueueEngine::new(make_config(dir.path().to_path_buf()), handler);
     let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap").with_host(
-        actionqueue_core::control::HostControlContext {
-            actor_id: None,
-            scope: actionqueue_core::control::ControlScope::SingleTenant,
-            attribution: actionqueue_core::causal::ControlMutationContext::new(
-                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-            ),
-        },
+        crate::host_support::host(actionqueue_core::control::ControlScope::SingleTenant),
     );
 
     let shared_key = "exclusive-resource";
@@ -149,13 +145,7 @@ async fn suspended_run_releases_concurrency_key_with_release_on_retry_policy() {
     let handler = SuspendOnFirstCallHandler { call_count: Arc::clone(&call_count) };
     let engine = ActionQueueEngine::new(make_config(dir.path().to_path_buf()), handler);
     let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap").with_host(
-        actionqueue_core::control::HostControlContext {
-            actor_id: None,
-            scope: actionqueue_core::control::ControlScope::SingleTenant,
-            attribution: actionqueue_core::causal::ControlMutationContext::new(
-                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-            ),
-        },
+        crate::host_support::host(actionqueue_core::control::ControlScope::SingleTenant),
     );
 
     let shared_key = "shared-resource";

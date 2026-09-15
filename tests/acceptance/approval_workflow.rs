@@ -4,6 +4,8 @@
 //! - A rejected review blocks execution.
 //! - An approved review allows execution.
 
+#[path = "host_support.rs"]
+mod host_support;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -132,13 +134,7 @@ async fn plan_completes_then_execution_eligible() {
     let clock = AdvancableClock::new(1000);
     let engine = ActionQueueEngine::new(make_config(dir), SucceedHandler);
     let mut boot = engine.bootstrap_with_clock(clock.clone()).expect("bootstrap").with_host(
-        actionqueue_core::control::HostControlContext {
-            actor_id: None,
-            scope: actionqueue_core::control::ControlScope::SingleTenant,
-            attribution: actionqueue_core::causal::ControlMutationContext::new(
-                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
-            ),
-        },
+        crate::host_support::host(actionqueue_core::control::ControlScope::SingleTenant),
     );
 
     let plan_id = TaskId::new();
