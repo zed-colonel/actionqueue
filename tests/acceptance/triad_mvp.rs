@@ -3,13 +3,14 @@
 //! End-to-end: Operator submits → Auditor reviews → Gatekeeper executes.
 //! Verifies the full three-role approval workflow with ledger audit trail.
 
+mod host_support;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use actionqueue_core::actor::{ActorCapabilities, ActorRegistration};
+use actionqueue_core::actor::{ActorRegistration, ExecutorTraits};
 use actionqueue_core::ids::{ActorId, LedgerEntryId, TaskId, TenantId};
 use actionqueue_core::platform::{Capability, LedgerEntry, Role, TenantRegistration};
 use actionqueue_core::run::state::RunState;
@@ -18,7 +19,7 @@ use actionqueue_core::task::metadata::TaskMetadata;
 use actionqueue_core::task::run_policy::RunPolicy;
 use actionqueue_core::task::task_spec::{TaskPayload, TaskSpec};
 use actionqueue_engine::time::clock::Clock;
-use actionqueue_executor_local::handler::{ExecutorContext, ExecutorHandler, HandlerOutput};
+use actionqueue_executor_local::handler::{AttemptDisposition, ExecutorContext, ExecutorHandler};
 use actionqueue_runtime::config::{BackoffStrategyConfig, RuntimeConfig};
 use actionqueue_runtime::engine::ActionQueueEngine;
 
@@ -42,27 +43,17 @@ impl Clock for AdvancableClock {
     }
 }
 
-static COUNTER: AtomicUsize = AtomicUsize::new(0);
-
-fn data_dir(label: &str) -> PathBuf {
-    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let dir = PathBuf::from("target")
-        .join("tmp")
-        .join(format!("8i-triad-{label}-{}-{n}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("data dir");
-    dir
-}
-
 struct SucceedHandler;
 
 impl ExecutorHandler for SucceedHandler {
-    fn execute(&self, _ctx: ExecutorContext) -> HandlerOutput {
-        HandlerOutput::success()
+    fn execute(&self, _ctx: ExecutorContext) -> AttemptDisposition {
+        AttemptDisposition::complete(None)
     }
 }
 
 fn make_config(dir: PathBuf) -> RuntimeConfig {
     RuntimeConfig {
+        store_features: actionqueue_storage::store::capabilities(),
         data_dir: dir,
         backoff_strategy: BackoffStrategyConfig::Fixed { interval: Duration::ZERO },
         dispatch_concurrency: NonZeroUsize::new(1).expect("non-zero"),
@@ -85,10 +76,13 @@ fn task_spec(id: TaskId, label: &str) -> TaskSpec {
 /// Full triad workflow with audit trail.
 #[tokio::test]
 async fn triad_mvp_full_workflow() {
-    let dir = data_dir("full");
+    let dir = tempfile::tempdir().expect("isolated triad store");
     let clock = AdvancableClock::new(1000);
-    let engine = ActionQueueEngine::new(make_config(dir), SucceedHandler);
-    let mut boot = engine.bootstrap_with_clock(clock.clone()).expect("bootstrap");
+    let engine = ActionQueueEngine::new(make_config(dir.path().to_path_buf()), SucceedHandler);
+    let mut boot = engine
+        .bootstrap_with_clock(clock.clone())
+        .expect("bootstrap")
+        .with_host(crate::host_support::host(actionqueue_core::control::ControlScope::Store));
 
     // Setup: tenant + triad actors.
     let tenant_id = TenantId::new();
@@ -97,33 +91,63 @@ async fn triad_mvp_full_workflow() {
     let operator_id = ActorId::new();
     let auditor_id = ActorId::new();
     let gatekeeper_id = ActorId::new();
-    let caps = ActorCapabilities::new(vec!["work".to_string()]).expect("caps");
+    let caps = ExecutorTraits::new(vec!["work".to_string()]).expect("caps");
 
+    boot.set_control_context(Some(crate::host_support::host(
+        actionqueue_core::control::ControlScope::ProvisionTenant(tenant_id),
+    )));
     boot.register_actor(
         ActorRegistration::new(operator_id, "operator", caps.clone(), 30).with_tenant(tenant_id),
     )
     .expect("reg operator");
+    boot.set_control_context(Some(crate::host_support::host(
+        actionqueue_core::control::ControlScope::ProvisionTenant(tenant_id),
+    )));
     boot.register_actor(
         ActorRegistration::new(auditor_id, "auditor", caps.clone(), 30).with_tenant(tenant_id),
     )
     .expect("reg auditor");
+    boot.set_control_context(Some(crate::host_support::host(
+        actionqueue_core::control::ControlScope::ProvisionTenant(tenant_id),
+    )));
     boot.register_actor(
         ActorRegistration::new(gatekeeper_id, "gatekeeper", caps, 30).with_tenant(tenant_id),
     )
     .expect("reg gatekeeper");
 
+    boot.set_control_context(Some(crate::host_support::host(
+        actionqueue_core::control::ControlScope::Store,
+    )));
+
     boot.assign_role(operator_id, Role::Operator, tenant_id).expect("assign operator");
+    boot.set_control_context(Some(crate::host_support::host(
+        actionqueue_core::control::ControlScope::Store,
+    )));
     boot.assign_role(auditor_id, Role::Auditor, tenant_id).expect("assign auditor");
+    boot.set_control_context(Some(crate::host_support::host(
+        actionqueue_core::control::ControlScope::Store,
+    )));
     boot.assign_role(gatekeeper_id, Role::Gatekeeper, tenant_id).expect("assign gatekeeper");
 
+    boot.set_control_context(Some(crate::host_support::host(
+        actionqueue_core::control::ControlScope::Store,
+    )));
+
     boot.grant_capability(operator_id, Capability::CanSubmit, tenant_id).expect("grant CanSubmit");
+    boot.set_control_context(Some(crate::host_support::host(
+        actionqueue_core::control::ControlScope::Store,
+    )));
     boot.grant_capability(auditor_id, Capability::CanReview, tenant_id).expect("grant CanReview");
+    boot.set_control_context(Some(crate::host_support::host(
+        actionqueue_core::control::ControlScope::Store,
+    )));
     boot.grant_capability(gatekeeper_id, Capability::CanExecute, tenant_id)
         .expect("grant CanExecute");
 
     // Step 1: Operator submits work plan.
     let plan_id = TaskId::new();
-    boot.submit_task(task_spec(plan_id, "work-plan")).expect("submit plan");
+    host_support::bind_engine_tenant(&mut boot, tenant_id, Some(operator_id));
+    boot.submit_task(task_spec(plan_id, "work-plan").with_tenant(tenant_id)).expect("submit plan");
 
     // Audit: record plan submission.
     let audit_entry = LedgerEntry::new(
@@ -150,7 +174,8 @@ async fn triad_mvp_full_workflow() {
 
     // Step 2: Auditor reviews (approval workflow via DAG).
     let review_id = TaskId::new();
-    boot.submit_task(task_spec(review_id, "review")).expect("submit review");
+    host_support::bind_engine_tenant(&mut boot, tenant_id, Some(auditor_id));
+    boot.submit_task(task_spec(review_id, "review").with_tenant(tenant_id)).expect("submit review");
     boot.declare_dependency(review_id, vec![plan_id]).expect("review depends on plan");
 
     // Audit: record review decision.
@@ -177,7 +202,9 @@ async fn triad_mvp_full_workflow() {
 
     // Step 3: Gatekeeper executes privileged action.
     let exec_id = TaskId::new();
-    boot.submit_task(task_spec(exec_id, "privileged-execution")).expect("submit exec");
+    host_support::bind_engine_tenant(&mut boot, tenant_id, Some(gatekeeper_id));
+    boot.submit_task(task_spec(exec_id, "privileged-execution").with_tenant(tenant_id))
+        .expect("submit exec");
     boot.declare_dependency(exec_id, vec![review_id]).expect("exec depends on review");
 
     clock.advance(1);

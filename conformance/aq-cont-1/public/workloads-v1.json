@@ -1,0 +1,92 @@
+[
+  {
+    "id": "AQ-CF-PUBLIC-EARLY",
+    "mode": "early",
+    "required_features": [
+      "workflow",
+      "budget",
+      "actor",
+      "platform"
+    ],
+    "variants": [
+      "ordinary",
+      "replay",
+      "crash"
+    ]
+  },
+  {
+    "id": "AQ-CF-PUBLIC-LATE",
+    "mode": "late",
+    "required_features": [
+      "workflow",
+      "budget",
+      "actor",
+      "platform"
+    ],
+    "variants": [
+      "ordinary",
+      "replay",
+      "crash"
+    ]
+  },
+  {
+    "id": "AQ-CF-PUBLIC-DEADLINE",
+    "mode": "deadline",
+    "required_features": [
+      "workflow",
+      "budget",
+      "actor",
+      "platform"
+    ],
+    "variants": [
+      "ordinary",
+      "replay",
+      "crash"
+    ]
+  },
+  {
+    "id": "AQ-CF-PUBLIC-CANCEL",
+    "mode": "cancel",
+    "required_features": [
+      "workflow",
+      "budget",
+      "actor",
+      "platform"
+    ],
+    "variants": [
+      "ordinary",
+      "replay",
+      "crash"
+    ]
+  },
+  {
+    "id": "AQ-CF-PUBLIC-ADMISSION",
+    "mode": "admission",
+    "required_features": [
+      "workflow",
+      "budget",
+      "actor",
+      "platform"
+    ],
+    "variants": [
+      "ordinary",
+      "replay",
+      "crash"
+    ]
+  },
+  {
+    "id": "AQ-CF-PUBLIC-FANOUT",
+    "mode": "fanout",
+    "required_features": [
+      "workflow",
+      "budget",
+      "actor",
+      "platform"
+    ],
+    "variants": [
+      "ordinary",
+      "replay",
+      "crash"
+    ]
+  }
+]

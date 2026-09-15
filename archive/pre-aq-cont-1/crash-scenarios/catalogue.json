@@ -1,0 +1,143 @@
+{
+  "baseline_commit": "97c9dc26c19c697dbfb204ed503e82c5f053394f",
+  "baseline_tag": "actionqueue/pre-aq-cont-1",
+  "note": "Sources are preserved verbatim at the baseline tag; this catalogue pins their hashes so later PRs can prove which crash behaviours were retained, replaced, or rejected.",
+  "scenarios": [
+    {
+      "path": "tests/acceptance/crash_recovery.rs",
+      "feature": "core",
+      "sha256": "3930ccd4d572b117da0784cc131bb65ce43d7750a36bdaed8487e202cc951620",
+      "lines": 1184,
+      "tests": [
+        "crash_recovery_completed_run_remains_terminal_no_redispatch_after_restart",
+        "crash_recovery_absent_completion_allows_recovery_path_with_stable_runid_and_attempt_lineage",
+        "crash_recovery_active_lease_at_crash_closes_to_ready_without_phantom_terminal_state",
+        "crash_recovery_running_state_preserves_lineage_and_allows_recovery",
+        "crash_recovery_between_attempt_lease_expiry_preserves_lineage_and_allows_next_attempt_after_restart"
+      ],
+      "scenario": "Deterministic crash points around attempt start/finish with HTTP/metrics parity after restart"
+    },
+    {
+      "path": "tests/acceptance/crash_during_promotion.rs",
+      "feature": "core",
+      "sha256": "6925866e6f6fbbd61ba426a858f1bac6845c4ab615591ebdd2152f742bcc793c",
+      "lines": 91,
+      "tests": [
+        "crash_during_promotion_preserves_promoted_state"
+      ],
+      "scenario": "Promoted Ready runs survive a crash and are not re-promoted"
+    },
+    {
+      "path": "tests/acceptance/wal_corruption_recovery.rs",
+      "feature": "core",
+      "sha256": "556eeb5f37cf23d937ad9ecddc41875fab492221b3a32bbb2206aaf644be822b",
+      "lines": 632,
+      "tests": [
+        "wal_corruption_recovery_truncate_partial_repairs_incomplete_header",
+        "wal_corruption_recovery_truncate_partial_repairs_incomplete_payload",
+        "wal_corruption_recovery_truncate_partial_repairs_garbage_bytes",
+        "wal_corruption_recovery_truncate_partial_no_op_on_clean_wal",
+        "wal_corruption_recovery_strict_rejects_all_corruption_variants",
+        "wal_corruption_recovery_full_bootstrap_after_truncate_partial_repair",
+        "wal_corruption_bitflip_in_payload_detected_by_crc"
+      ],
+      "scenario": "Trailing WAL corruption variants (partial header, partial payload, garbage, bit flip) under truncate-partial and strict repair policies"
+    },
+    {
+      "path": "tests/acceptance/snapshot_corruption_recovery.rs",
+      "feature": "core",
+      "sha256": "f235682cdf7a6c2ca239d00c10967335f342c7adc6e246bd7087ed0fa986f94f",
+      "lines": 228,
+      "tests": [
+        "sc_a_corrupt_snapshot_falls_back_to_wal_replay",
+        "sc_b_truncated_snapshot_falls_back_to_wal_replay",
+        "sc_c_missing_snapshot_uses_wal_only"
+      ],
+      "scenario": "Corrupt, truncated, or missing snapshot falls back to WAL-only replay"
+    },
+    {
+      "path": "tests/acceptance/lease_expiry.rs",
+      "feature": "core",
+      "sha256": "7bd3eaf37ea4920b9090c9dac9935dbb702362530a85041da7cdd521e74650ac",
+      "lines": 944,
+      "tests": [
+        "lease_expiry_mock_clock_proves_active_then_expired_boundary",
+        "lease_expiry_triggers_reeligibility_and_run_completes_after_redispatch",
+        "lease_expiry_preserves_attempt_lineage_across_reeligibility_and_retry",
+        "lease_expiry_deterministic_boundary_proof_with_mock_clock_set_and_advance",
+        "lease_expiry_durability_across_restart_without_phantom_regression"
+      ],
+      "scenario": "Lease expiry releases the run and re-eligibility survives restart"
+    },
+    {
+      "path": "tests/chaos/kill_recovery.rs",
+      "feature": "core",
+      "sha256": "0e4bed7a98489b0258affa53181e8a9a8942529a711817c5d0ee8f38b6aacf11",
+      "lines": 1109,
+      "tests": [
+        "crash_after_task_creation_before_run_creation",
+        "crash_during_state_transitions_running",
+        "crash_with_mixed_terminal_and_active_runs",
+        "sequential_crashes_with_incremental_progress",
+        "wal_sequence_monotonicity_across_crashes",
+        "crash_during_retry_wait_preserves_state",
+        "high_volume_tasks_survive_crash"
+      ],
+      "scenario": "Simulated kill -9 (std::mem::forget) at task creation, state transitions, mixed terminal/active runs, sequential crashes, sequence monotonicity, retry wait, high volume"
+    },
+    {
+      "path": "tests/acceptance/workflow_crash_recovery.rs",
+      "feature": "workflow",
+      "sha256": "d0af7acbdbd1f1f5f71597972aabbcbaa4cc7308b361eecf4fc6ce56f7702136",
+      "lines": 244,
+      "tests": [
+        "dag_dependency_declarations_survive_restart",
+        "parent_child_mapping_survives_restart"
+      ],
+      "scenario": "DAG, hierarchy, and cron state survive WAL recovery"
+    },
+    {
+      "path": "tests/acceptance/dag_snapshot_recovery.rs",
+      "feature": "workflow",
+      "sha256": "bdaa2e0eb84fc63fbb7b042bcbbdfb8a6b861e4b954662d0d0c44308e811a830",
+      "lines": 180,
+      "tests": [
+        "dag_dependencies_survive_snapshot_recovery"
+      ],
+      "scenario": "Dependency declarations survive snapshot-plus-tail recovery"
+    },
+    {
+      "path": "tests/acceptance/budget_recovery.rs",
+      "feature": "budget",
+      "sha256": "8a8ac6c806329af91287a93f26d11050f1076e72a3b6b95dc003e174ce6febb7",
+      "lines": 209,
+      "tests": [
+        "budget_state_survives_wal_recovery",
+        "budget_replenishment_survives_wal_recovery"
+      ],
+      "scenario": "Budget allocations and consumption survive recovery"
+    },
+    {
+      "path": "tests/acceptance/ledger_recovery.rs",
+      "feature": "platform",
+      "sha256": "31939ac1f59cb6d0277dbbe6b012466ac2200615059b6b211df827db49b94fb5",
+      "lines": 157,
+      "tests": [
+        "ledger_entries_survive_wal_recovery",
+        "ledger_entry_payload_roundtrip"
+      ],
+      "scenario": "Ledger entries survive recovery"
+    },
+    {
+      "path": "tests/acceptance/remote_actor_crash.rs",
+      "feature": "actor",
+      "sha256": "f19e5bf19bb57bf82f235d590c83ad0609ea2876b1a59ec0cdc5072de16dac3c",
+      "lines": 125,
+      "tests": [
+        "actor_crash_detected_at_timeout",
+        "only_crashed_actor_deregistered"
+      ],
+      "scenario": "Remote actor heartbeat loss is detected and work is recovered"
+    }
+  ]
+}

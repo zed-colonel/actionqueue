@@ -1,28 +1,15 @@
 # actionqueue-daemon
 
-HTTP daemon with REST API and Prometheus metrics for the ActionQueue task queue engine.
+Release 0.2.0 implements AQ-CONT-1. See the [release and compatibility notes](../../docs/releases/0.2.0.md).
 
-## Overview
+HTTP v2 hosting for AQ-CONT-1. Object inspection requires a host authentication
+hook. Mutations additionally require `enable_control`; bootstrap rejects that
+setting without authentication. Health/readiness, aggregate statistics and
+metrics are separate from object inspection.
 
-This crate provides the daemon infrastructure:
+Bootstrap retains exclusive store ownership. `actionqueue daemon` binds the
+router and serves until graceful shutdown. Continuation maintenance runs with
+default features; actor/platform adapters are feature-gated and use `/api/v2`.
 
-- **HTTP API** -- Axum-based REST endpoints for task/run introspection and control
-- **Metrics** -- Prometheus metrics endpoint (`/metrics`)
-- **Bootstrap** -- Daemon startup and configuration validation
-
-Read-only introspection endpoints are enabled by default. Control endpoints (cancel, pause, resume) require explicit enablement.
-
-### API Surface
-
-- `/healthz`, `/ready` -- Health and readiness probes
-- `/api/v1/stats`, `/api/v1/tasks`, `/api/v1/runs` -- Introspection
-- `/api/v2/actors/*` -- Actor registration and heartbeat (actor feature)
-- `/api/v2/tenants`, `/api/v2/ledger` -- Platform operations (platform feature)
-
-## Part of the ActionQueue workspace
-
-See the [workspace root](https://github.com/zed-colonel/actionqueue) for full documentation.
-
-## License
-
-Apache-2.0
+See [AQ-12 APIs](../../docs/aq-12-apis.md) for routes, redacted views, error codes,
+backpressure, recovery readiness and telemetry.

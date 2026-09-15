@@ -38,11 +38,6 @@ pub enum ActionQueueEvent {
         /// The percentage (0-100) at which the threshold was crossed.
         pct: u8,
     },
-    /// An application-defined custom event.
-    CustomEvent {
-        /// The application-defined event key.
-        key: String,
-    },
     /// A remote actor registered with the hub.
     ActorRegistered {
         /// The actor that registered.
@@ -51,11 +46,6 @@ pub enum ActionQueueEvent {
     /// A remote actor deregistered (explicit or heartbeat timeout).
     ActorDeregistered {
         /// The actor that deregistered.
-        actor_id: ActorId,
-    },
-    /// A remote actor's heartbeat timed out.
-    ActorHeartbeatTimeout {
-        /// The actor whose heartbeat timed out.
         actor_id: ActorId,
     },
     /// A ledger entry was appended in the platform layer.
@@ -83,8 +73,8 @@ where
 
 /// Trait for types that expose active subscription filters.
 ///
-/// Implemented by `SubscriptionRegistry` in `actionqueue-budget`. This indirection
-/// keeps `actionqueue-core` free of a dependency on `actionqueue-budget`.
+/// Implemented by `InternalSubscriptionRegistry` in `actionqueue-engine`. This indirection
+/// keeps `actionqueue-core` free of a dependency on the engine.
 pub trait SubscriptionSource {
     /// Returns an iterator over (subscription_id, filter) pairs for all
     /// active (non-canceled, non-triggered) subscriptions.
@@ -113,11 +103,6 @@ fn filter_matches(filter: &EventFilter, event: &ActionQueueEvent) -> bool {
             },
             ActionQueueEvent::BudgetThresholdCrossed { task_id: event_task, dimension, pct },
         ) => filter_task == event_task && filter_dim == dimension && pct >= threshold_pct,
-
-        (
-            EventFilter::Custom { key: filter_key },
-            ActionQueueEvent::CustomEvent { key: event_key },
-        ) => filter_key == event_key,
 
         _ => false,
     }

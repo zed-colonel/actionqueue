@@ -5,9 +5,22 @@ use crate::task::constraints::{TaskConstraints, TaskConstraintsError};
 use crate::task::metadata::TaskMetadata;
 use crate::task::run_policy::{RunPolicy, RunPolicyError};
 
+/// How a direct child participates in its parent's lifecycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum ChildLifecyclePolicy {
+    /// Gates completion and receives cascading cancellation.
+    #[default]
+    Required,
+    /// Independent completion and cancellation; DAG edges still apply.
+    Detached,
+}
+
 /// Typed validation errors for [`TaskSpec`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TaskSpecError {
+    /// Detached lifecycle requires a parent relationship.
+    InvalidChildPolicy,
     /// The provided task identifier is nil/empty and therefore invalid at task admission.
     InvalidTaskId {
         /// Rejected task identifier.
@@ -22,6 +35,9 @@ pub enum TaskSpecError {
 impl std::fmt::Display for TaskSpecError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            TaskSpecError::InvalidChildPolicy => {
+                f.write_str("detached child policy requires a parent")
+            }
             TaskSpecError::InvalidTaskId { task_id } => {
                 write!(f, "invalid task identifier for task admission: {task_id}")
             }
@@ -94,6 +110,7 @@ pub struct TaskSpec {
     /// completion gating based on this relationship.
     #[cfg_attr(feature = "serde", serde(default))]
     parent_task_id: Option<TaskId>,
+    child_lifecycle_policy: ChildLifecyclePolicy,
     /// Optional tenant identifier for multi-tenant isolation.
     ///
     /// When set, this task is scoped to the named tenant. The platform
@@ -122,6 +139,7 @@ impl TaskSpec {
             constraints,
             metadata,
             parent_task_id: None,
+            child_lifecycle_policy: ChildLifecyclePolicy::Required,
             tenant_id: None,
         };
         spec.validate()?;
@@ -143,9 +161,26 @@ impl TaskSpec {
         self
     }
 
+    /// Attaches an explicit lifecycle policy to a parent relationship.
+    pub fn with_parent_policy(mut self, parent: TaskId, policy: ChildLifecyclePolicy) -> Self {
+        self.parent_task_id = Some(parent);
+        self.child_lifecycle_policy = policy;
+        self
+    }
+
+    /// Durable parent relationship policy.
+    pub fn child_lifecycle_policy(&self) -> ChildLifecyclePolicy {
+        self.child_lifecycle_policy
+    }
+
     /// Validates this task specification against invariant-sensitive checks.
     pub fn validate(&self) -> Result<(), TaskSpecError> {
         Self::validate_task_id(self.id)?;
+        if self.parent_task_id.is_none()
+            && self.child_lifecycle_policy == ChildLifecyclePolicy::Detached
+        {
+            return Err(TaskSpecError::InvalidChildPolicy);
+        }
         self.run_policy.validate().map_err(TaskSpecError::InvalidRunPolicy)?;
         self.constraints.validate().map_err(TaskSpecError::InvalidConstraints)
     }
@@ -244,6 +279,7 @@ impl<'de> serde::Deserialize<'de> for TaskSpec {
         D: serde::Deserializer<'de>,
     {
         #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
         struct TaskSpecWire {
             id: TaskId,
             payload: TaskPayload,
@@ -252,6 +288,8 @@ impl<'de> serde::Deserialize<'de> for TaskSpec {
             metadata: TaskMetadata,
             #[serde(default)]
             parent_task_id: Option<TaskId>,
+            #[serde(default)]
+            child_lifecycle_policy: ChildLifecyclePolicy,
             #[serde(default)]
             tenant_id: Option<TenantId>,
         }
@@ -264,6 +302,7 @@ impl<'de> serde::Deserialize<'de> for TaskSpec {
             constraints: wire.constraints,
             metadata: wire.metadata,
             parent_task_id: wire.parent_task_id,
+            child_lifecycle_policy: wire.child_lifecycle_policy,
             tenant_id: wire.tenant_id,
         };
         spec.validate().map_err(serde::de::Error::custom)?;
@@ -279,7 +318,7 @@ mod tests {
     use crate::task::constraints::TaskConstraints;
     use crate::task::metadata::TaskMetadata;
     use crate::task::run_policy::{RepeatPolicy, RunPolicy, RunPolicyError};
-    use crate::task::task_spec::{TaskPayload, TaskSpec, TaskSpecError};
+    use crate::task::task_spec::{ChildLifecyclePolicy, TaskPayload, TaskSpec, TaskSpecError};
 
     #[test]
     fn task_spec_new_rejects_nil_task_id() {
@@ -306,6 +345,7 @@ mod tests {
             constraints: TaskConstraints::default(),
             metadata: TaskMetadata::default(),
             parent_task_id: None,
+            child_lifecycle_policy: ChildLifecyclePolicy::Required,
             tenant_id: None,
         };
 
@@ -352,6 +392,7 @@ mod tests {
             constraints: TaskConstraints::default(),
             metadata: TaskMetadata::default(),
             parent_task_id: None,
+            child_lifecycle_policy: ChildLifecyclePolicy::Required,
             tenant_id: None,
         };
 

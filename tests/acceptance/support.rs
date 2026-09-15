@@ -8,7 +8,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-use actionqueue_cli::args::SubmitArgs;
 use actionqueue_core::ids::{AttemptId, RunId, TaskId};
 use actionqueue_core::mutation::{
     AppliedMutation, AttemptStartCommand, DurabilityPolicy, LeaseAcquireCommand,
@@ -21,14 +20,24 @@ use actionqueue_engine::concurrency::lifecycle::{
     evaluate_state_transition, KeyLifecycleContext, LifecycleResult,
 };
 use actionqueue_engine::index::scheduled::ScheduledIndex;
-use actionqueue_engine::scheduler::attempt_finish::submit_attempt_finish_via_authority;
+// Binaries that also include the wait fixtures load these helpers twice.
+#[allow(clippy::duplicate_mod)]
+#[path = "host_support.rs"]
+pub mod host_support;
+#[allow(clippy::duplicate_mod)]
+#[path = "lease_support.rs"]
+mod lease_support;
+#[path = "legacy_attempt_finish.rs"]
+mod legacy_attempt_finish;
 use actionqueue_engine::scheduler::promotion::{
     promote_scheduled_to_ready_via_authority, PromotionParams,
 };
-use actionqueue_executor_local::ExecutorResponse;
+use actionqueue_executor_local::AttemptDisposition;
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
 use http_body_util::BodyExt;
+pub use lease_support::fence_for;
+use legacy_attempt_finish::submit_attempt_finish_via_authority;
 use serde_json::Value;
 use tower::Service;
 
@@ -56,7 +65,7 @@ pub struct CrashRecoveryCheckpoint {
     pub pre_restart_sequence: u64,
 }
 
-/// Lease payload evidence parsed from `/api/v1/runs/:id`.
+/// Lease payload evidence parsed from `/api/v2/runs/:id`.
 #[derive(Debug, Clone)]
 pub struct LeaseSnapshotEvidence {
     /// Lease owner identity.
@@ -104,9 +113,9 @@ pub struct ConcurrencyGateOutcomeEvidence {
     pub transition_applied: bool,
 }
 
-/// Creates a deterministic, isolated acceptance data directory under `target/tmp/`.
+/// Creates a deterministic, isolated acceptance data directory under the configured temporary directory.
 pub fn unique_data_dir(label: &str) -> PathBuf {
-    let dir = PathBuf::from("target").join("tmp").join(format!(
+    let dir = std::env::temp_dir().join(format!(
         "{label}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
@@ -118,64 +127,79 @@ pub fn unique_data_dir(label: &str) -> PathBuf {
     dir
 }
 
-/// Submits a Once task through the CLI submit flow and returns JSON output payload.
+/// Submit through canonical CLI admission, then measure resulting durable runs.
 pub fn submit_once_task_via_cli(task_id: &str, data_dir: &Path) -> Value {
-    let args = SubmitArgs {
-        data_dir: Some(data_dir.to_path_buf()),
-        task_id: task_id.to_string(),
-        payload_path: None,
-        content_type: None,
-        run_policy: "once".to_string(),
-        constraints: None,
-        metadata: None,
-        json: true,
-    };
-
-    let output = actionqueue_cli::cmd::submit::run(args).expect("cli submit should succeed");
-    let value = match output {
-        actionqueue_cli::cmd::CommandOutput::Json(value) => value,
-        actionqueue_cli::cmd::CommandOutput::Text(text) => {
-            panic!("expected JSON output from submit helper, got text: {text}")
-        }
-    };
-
-    assert_eq!(value["command"], "submit");
-    assert_eq!(value["run_policy"], "once");
-    assert_eq!(value["runs_created"], 1);
-
-    value
+    submit_once_task_with_constraints_via_cli(task_id, data_dir, None)
 }
-
-/// Submits a Once task through CLI submit flow with optional raw constraints JSON.
 pub fn submit_once_task_with_constraints_via_cli(
     task_id: &str,
     data_dir: &Path,
-    constraints_json: Option<&str>,
+    constraints: Option<&str>,
 ) -> Value {
-    let args = SubmitArgs {
-        data_dir: Some(data_dir.to_path_buf()),
-        task_id: task_id.to_string(),
-        payload_path: None,
-        content_type: None,
-        run_policy: "once".to_string(),
-        constraints: constraints_json.map(str::to_string),
-        metadata: None,
-        json: true,
+    admit_via_cli(
+        task_id,
+        data_dir,
+        actionqueue_core::task::run_policy::RunPolicy::Once,
+        constraints,
+        "once".into(),
+    )
+}
+fn admit_via_cli(
+    task_id: &str,
+    data_dir: &Path,
+    policy: actionqueue_core::task::run_policy::RunPolicy,
+    constraints: Option<&str>,
+    policy_label: String,
+) -> Value {
+    use actionqueue_core::{
+        admission::EnsureTaskRequest,
+        task::{
+            constraints::TaskConstraints,
+            metadata::TaskMetadata,
+            task_spec::{TaskPayload, TaskSpec},
+        },
     };
-
-    let output = actionqueue_cli::cmd::submit::run(args).expect("cli submit should succeed");
-    let value = match output {
-        actionqueue_cli::cmd::CommandOutput::Json(value) => value,
-        actionqueue_cli::cmd::CommandOutput::Text(text) => {
-            panic!("expected JSON output from submit helper, got text: {text}")
-        }
-    };
-
-    assert_eq!(value["command"], "submit");
-    assert_eq!(value["run_policy"], "once");
-    assert_eq!(value["runs_created"], 1);
-
-    value
+    let constraints: TaskConstraints =
+        constraints.map(|s| serde_json::from_str(s).unwrap()).unwrap_or_default();
+    let task = TaskSpec::new(
+        task_id.parse().unwrap(),
+        TaskPayload::new(vec![]),
+        policy,
+        constraints,
+        TaskMetadata::default(),
+    )
+    .unwrap();
+    let q = EnsureTaskRequest::for_task(task, vec![]).unwrap();
+    let file = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(file.path(), serde_json::to_vec(&q).unwrap()).unwrap();
+    let args = vec![
+        "ensure-task".into(),
+        "--offline".into(),
+        "--data-dir".into(),
+        data_dir.to_str().unwrap().into(),
+        "--file".into(),
+        file.path().to_str().unwrap().into(),
+        "--json".into(),
+    ];
+    drop(actionqueue_storage::recovery::bootstrap::load_projection_from_storage(data_dir).unwrap());
+    let out = std::thread::spawn(move || actionqueue_cli::cmd::api::run(args))
+        .join()
+        .unwrap()
+        .expect("CLI admission");
+    let actionqueue_cli::cmd::CommandOutput::Json(value) = out else { panic!("JSON expected") };
+    assert!(value["Created"].is_object());
+    let session = actionqueue_storage::store::open_store(
+        data_dir,
+        actionqueue_storage::store::OpenOptions::ReadOnly,
+    )
+    .unwrap();
+    let p = actionqueue_storage::recovery::bootstrap::recover_read_only(
+        &session,
+        actionqueue_storage::wal::repair::RepairPolicy::Strict,
+    )
+    .unwrap()
+    .projection;
+    serde_json::json!({"runs_created":p.run_ids_for_task(q.task_spec().id()).len(),"run_policy":policy_label})
 }
 
 /// Submits a Once task through CLI submit flow with explicit `max_attempts` constraints.
@@ -209,6 +233,30 @@ pub fn promote_task_run_to_ready_via_authority(data_dir: &Path, task_id: TaskId)
     promote_single_run_to_ready_via_authority(data_dir, task_id)
 }
 
+fn ensure_fixture_lease<W: actionqueue_storage::wal::writer::WalWriter>(
+    authority: &mut actionqueue_storage::mutation::StorageMutationAuthority<
+        W,
+        actionqueue_storage::recovery::reducer::ReplayReducer,
+    >,
+    run_id: RunId,
+) {
+    if authority.projection().get_lease(&run_id).is_none() {
+        let sequence = next_sequence(authority.projection().latest_sequence());
+        let _ = authority
+            .submit_command(
+                MutationCommand::LeaseAcquire(LeaseAcquireCommand::new(
+                    sequence,
+                    run_id,
+                    "fixture",
+                    u64::MAX,
+                    0,
+                )),
+                DurabilityPolicy::Immediate,
+            )
+            .unwrap();
+    }
+}
+
 /// Submits a deterministic run-state transition through storage mutation authority.
 pub fn transition_run_state_via_authority(
     data_dir: &Path,
@@ -221,8 +269,29 @@ pub fn transition_run_state_via_authority(
     let mut authority = actionqueue_storage::mutation::authority::StorageMutationAuthority::new(
         recovery.wal_writer,
         recovery.projection,
-    );
+    )
+    .with_host(host_support::host(actionqueue_core::control::ControlScope::SingleTenant));
 
+    if to == RunState::Leased {
+        if let Some((owner, expiry)) = authority.projection().get_lease(&run_id).cloned() {
+            if owner == "fixture" {
+                let sequence = next_sequence(authority.projection().latest_sequence());
+                let _ = authority
+                    .submit_command(
+                        MutationCommand::LeaseRelease(
+                            actionqueue_core::mutation::LeaseReleaseCommand::new(
+                                sequence, run_id, owner, expiry, sequence,
+                            ),
+                        ),
+                        DurabilityPolicy::Immediate,
+                    )
+                    .unwrap();
+            }
+        }
+    }
+    if to == RunState::Running {
+        ensure_fixture_lease(&mut authority, run_id);
+    }
     let sequence = next_sequence(authority.projection().latest_sequence());
     let _ = authority
         .submit_command(
@@ -318,18 +387,18 @@ pub fn evaluate_and_apply_running_exit_with_key_gate(
     ConcurrencyGateOutcomeEvidence { run_id, from, to, gate_outcome, transition_applied: true }
 }
 
-/// Returns the `/api/v1/runs` row for a specific run identifier.
+/// Returns the `/api/v2/runs` row for a specific run identifier.
 pub async fn runs_list_entry_by_run_id(router: &mut axum::Router<()>, run_id: RunId) -> Value {
-    let runs = get_json(router, "/api/v1/runs").await;
-    let entries = runs["runs"].as_array().expect("runs list should be an array");
+    let runs = get_json(router, "/api/v2/runs").await;
+    let entries = runs["items"].as_array().expect("runs list should be an array");
     entries
         .iter()
         .find(|entry| entry["run_id"] == run_id.to_string())
         .cloned()
-        .unwrap_or_else(|| panic!("run id {run_id} should exist in /api/v1/runs response"))
+        .unwrap_or_else(|| panic!("run id {run_id} should exist in /api/v2/runs response"))
 }
 
-/// Asserts `/api/v1/runs` exposes exact concurrency-key truth for a run row.
+/// Asserts `/api/v2/runs` exposes exact concurrency-key truth for a run row.
 pub async fn assert_runs_list_concurrency_key(
     router: &mut axum::Router<()>,
     run_id: RunId,
@@ -351,6 +420,32 @@ pub fn single_run_id_for_task(data_dir: &Path, task_id: TaskId) -> RunId {
     run_ids[0]
 }
 
+/// Promotes every Scheduled run through the authority lane at the next sequence.
+fn promote_scheduled(
+    authority: &mut actionqueue_storage::mutation::StorageMutationAuthority<
+        actionqueue_storage::wal::InstrumentedWalWriter<
+            actionqueue_storage::wal::fs_writer::WalFsWriter,
+        >,
+        actionqueue_storage::recovery::reducer::ReplayReducer,
+    >,
+) -> actionqueue_engine::scheduler::promotion::AuthorityPromotionResult {
+    let scheduled = ScheduledIndex::from_runs(
+        authority
+            .projection()
+            .run_instances()
+            .filter(|r| r.state() == RunState::Scheduled)
+            .cloned()
+            .collect::<Vec<_>>(),
+    );
+    let first_sequence = next_sequence(authority.projection().latest_sequence());
+    promote_scheduled_to_ready_via_authority(
+        &scheduled,
+        PromotionParams::new(u64::MAX, first_sequence, first_sequence, DurabilityPolicy::Immediate),
+        authority,
+    )
+    .expect("promotion via authority should succeed")
+}
+
 /// Promotes the sole run for a task from Scheduled to Ready via authority lane.
 pub fn promote_single_run_to_ready_via_authority(data_dir: &Path, task_id: TaskId) -> RunId {
     let recovery = actionqueue_storage::recovery::bootstrap::load_projection_from_storage(data_dir)
@@ -362,23 +457,10 @@ pub fn promote_single_run_to_ready_via_authority(data_dir: &Path, task_id: TaskI
     let mut authority = actionqueue_storage::mutation::authority::StorageMutationAuthority::new(
         recovery.wal_writer,
         recovery.projection,
-    );
-
-    let scheduled = ScheduledIndex::from_runs(
-        authority
-            .projection()
-            .run_instances()
-            .filter(|r| r.state() == actionqueue_core::run::state::RunState::Scheduled)
-            .cloned()
-            .collect::<Vec<actionqueue_core::run::run_instance::RunInstance>>(),
-    );
-    let first_sequence = next_sequence(authority.projection().latest_sequence());
-    let promotion = promote_scheduled_to_ready_via_authority(
-        &scheduled,
-        PromotionParams::new(u64::MAX, first_sequence, first_sequence, DurabilityPolicy::Immediate),
-        &mut authority,
     )
-    .expect("promotion via authority should succeed");
+    .with_host(host_support::host(actionqueue_core::control::ControlScope::SingleTenant));
+
+    let promotion = promote_scheduled(&mut authority);
     assert_eq!(
         promotion.outcomes().len(),
         1,
@@ -411,8 +493,24 @@ pub fn lease_acquire_for_run_via_authority(
     let mut authority = actionqueue_storage::mutation::authority::StorageMutationAuthority::new(
         recovery.wal_writer,
         recovery.projection,
-    );
+    )
+    .with_host(host_support::host(actionqueue_core::control::ControlScope::SingleTenant));
 
+    if let Some((existing, expiry)) = authority.projection().get_lease(&run_id).cloned() {
+        if existing == "fixture" {
+            let sequence = next_sequence(authority.projection().latest_sequence());
+            let _ = authority
+                .submit_command(
+                    MutationCommand::LeaseRelease(
+                        actionqueue_core::mutation::LeaseReleaseCommand::new(
+                            sequence, run_id, existing, expiry, sequence,
+                        ),
+                    ),
+                    DurabilityPolicy::Immediate,
+                )
+                .unwrap();
+        }
+    }
     let sequence = next_sequence(authority.projection().latest_sequence());
     let _ = authority
         .submit_command(
@@ -437,7 +535,8 @@ pub fn lease_expire_for_run_via_authority(
     let mut authority = actionqueue_storage::mutation::authority::StorageMutationAuthority::new(
         recovery.wal_writer,
         recovery.projection,
-    );
+    )
+    .with_host(host_support::host(actionqueue_core::control::ControlScope::SingleTenant));
 
     let sequence = next_sequence(authority.projection().latest_sequence());
     let _ = authority
@@ -463,7 +562,8 @@ pub fn lease_release_for_run_via_authority(
     let mut authority = actionqueue_storage::mutation::authority::StorageMutationAuthority::new(
         recovery.wal_writer,
         recovery.projection,
-    );
+    )
+    .with_host(host_support::host(actionqueue_core::control::ControlScope::SingleTenant));
 
     let sequence = next_sequence(authority.projection().latest_sequence());
     let _ = authority
@@ -521,7 +621,8 @@ pub fn execute_attempt_outcome_sequence_via_authority(
     let mut authority = actionqueue_storage::mutation::authority::StorageMutationAuthority::new(
         recovery.wal_writer,
         recovery.projection,
-    );
+    )
+    .with_host(host_support::host(actionqueue_core::control::ControlScope::SingleTenant));
 
     let run_id = {
         let run_ids = authority.projection().run_ids_for_task(task_id);
@@ -529,21 +630,7 @@ pub fn execute_attempt_outcome_sequence_via_authority(
         run_ids[0]
     };
 
-    let scheduled = ScheduledIndex::from_runs(
-        authority
-            .projection()
-            .run_instances()
-            .filter(|r| r.state() == actionqueue_core::run::state::RunState::Scheduled)
-            .cloned()
-            .collect::<Vec<actionqueue_core::run::run_instance::RunInstance>>(),
-    );
-    let first_sequence = next_sequence(authority.projection().latest_sequence());
-    let promotion = promote_scheduled_to_ready_via_authority(
-        &scheduled,
-        PromotionParams::new(u64::MAX, first_sequence, first_sequence, DurabilityPolicy::Immediate),
-        &mut authority,
-    )
-    .expect("promotion via authority should succeed");
+    let promotion = promote_scheduled(&mut authority);
     assert_eq!(promotion.outcomes().len(), 1, "single run should be promoted to ready");
 
     let mut attempt_ids = Vec::new();
@@ -566,6 +653,7 @@ pub fn execute_attempt_outcome_sequence_via_authority(
             )
             .expect("ready -> leased should succeed");
 
+        ensure_fixture_lease(&mut authority, run_id);
         let running_sequence = next_sequence(authority.projection().latest_sequence());
         let _ = authority
             .submit_command(
@@ -580,10 +668,7 @@ pub fn execute_attempt_outcome_sequence_via_authority(
             )
             .expect("leased -> running should succeed");
 
-        let attempt_suffix = u128::from(attempt_number);
-        let attempt_id =
-            AttemptId::from_str(&format!("00000000-0000-0000-0000-{attempt_suffix:012x}"))
-                .expect("deterministic attempt id should parse");
+        let attempt_id = AttemptId::new();
         let attempt_start_sequence = next_sequence(authority.projection().latest_sequence());
         let _ = authority
             .submit_command(
@@ -592,6 +677,8 @@ pub fn execute_attempt_outcome_sequence_via_authority(
                     run_id,
                     attempt_id,
                     attempt_start_sequence,
+                    fence_for(authority.projection(), run_id),
+                    authority.projection().pending_resume(run_id).map(|c| c.context_id),
                 )),
                 DurabilityPolicy::Immediate,
             )
@@ -600,14 +687,13 @@ pub fn execute_attempt_outcome_sequence_via_authority(
         let response = executor_response_for_outcome(outcome, attempt_number);
         let attempt_finish_sequence = next_sequence(authority.projection().latest_sequence());
         let _ = {
-            let __finish_cmd =
-                actionqueue_engine::scheduler::attempt_finish::build_attempt_finish_command(
-                    attempt_finish_sequence,
-                    run_id,
-                    attempt_id,
-                    &response,
-                    attempt_finish_sequence,
-                );
+            let __finish_cmd = legacy_attempt_finish::build_attempt_finish_command(
+                attempt_finish_sequence,
+                run_id,
+                attempt_id,
+                &response,
+                attempt_finish_sequence,
+            );
             submit_attempt_finish_via_authority(
                 __finish_cmd,
                 DurabilityPolicy::Immediate,
@@ -728,31 +814,13 @@ pub fn submit_repeat_task_via_cli(
     count: u32,
     interval_secs: u64,
 ) -> Value {
-    let run_policy = format!("repeat:{count}:{interval_secs}");
-    let args = SubmitArgs {
-        data_dir: Some(data_dir.to_path_buf()),
-        task_id: task_id.to_string(),
-        payload_path: None,
-        content_type: None,
-        run_policy: run_policy.clone(),
-        constraints: None,
-        metadata: None,
-        json: true,
-    };
-
-    let output = actionqueue_cli::cmd::submit::run(args).expect("cli submit should succeed");
-    let value = match output {
-        actionqueue_cli::cmd::CommandOutput::Json(value) => value,
-        actionqueue_cli::cmd::CommandOutput::Text(text) => {
-            panic!("expected JSON output from submit helper, got text: {text}")
-        }
-    };
-
-    assert_eq!(value["command"], "submit");
-    assert_eq!(value["run_policy"], run_policy);
-    assert_eq!(value["runs_created"], count);
-
-    value
+    admit_via_cli(
+        task_id,
+        data_dir,
+        actionqueue_core::task::run_policy::RunPolicy::repeat(count, interval_secs).unwrap(),
+        None,
+        format!("repeat:{count}:{interval_secs}"),
+    )
 }
 
 /// Bootstraps a daemon HTTP router from storage state and feature settings.
@@ -769,7 +837,47 @@ pub fn bootstrap_http_router(data_dir: &Path, metrics_enabled: bool) -> axum::Ro
 
     let state =
         actionqueue_daemon::bootstrap::bootstrap(config).expect("daemon bootstrap should succeed");
-    state.http_router().clone().with_state(())
+    // These acceptance queries inspect a fixed recovered projection between mutations.
+    // Build a detached read router so later offline mutation helpers can acquire ownership.
+    // Full daemon lifetime-lock behavior is exercised separately.
+    let projection = state.projection().clone();
+    let clock = state.clock().clone();
+    let metrics = std::sync::Arc::new(
+        actionqueue_daemon::metrics::registry::MetricsRegistry::new(if metrics_enabled {
+            Some(std::net::SocketAddr::from(([127, 0, 0, 1], 9090)))
+        } else {
+            None
+        })
+        .expect("metrics"),
+    );
+    let observability = actionqueue_daemon::http::RouterObservability {
+        metrics,
+        clock,
+        wal_append_telemetry: actionqueue_storage::wal::WalAppendTelemetry::new(),
+        recovery_observations: actionqueue_storage::recovery::bootstrap::RecoveryObservations::zero(
+        ),
+    };
+    drop(state);
+    let inner = actionqueue_daemon::http::RouterStateInner::new(
+        actionqueue_daemon::bootstrap::RouterConfig { control_enabled: false, metrics_enabled },
+        std::sync::Arc::new(std::sync::RwLock::new(projection)),
+        observability,
+        actionqueue_daemon::bootstrap::ReadyStatus::ready(),
+    );
+    let inner = inner
+        .with_disclosure_policy(actionqueue_runtime::inspection::DisclosurePolicy {
+            allow_references: true,
+        })
+        .with_host_authenticator(std::sync::Arc::new(|_, _| {
+            Ok(actionqueue_core::control::HostControlContext {
+                actor_id: None,
+                scope: actionqueue_core::control::ControlScope::SingleTenant,
+                attribution: actionqueue_core::causal::ControlMutationContext::new(
+                    actionqueue_core::bounded::OpaqueRef::new("test-reader").unwrap(),
+                ),
+            })
+        }));
+    actionqueue_daemon::http::build_router(std::sync::Arc::new(inner)).with_state(())
 }
 
 /// Executes an in-process GET request and parses a JSON response payload.
@@ -788,11 +896,11 @@ pub async fn get_text(router: &mut axum::Router<()>, path: &str) -> String {
     String::from_utf8(bytes.to_vec()).expect("response should be utf-8")
 }
 
-/// Returns ordered attempt IDs from `/api/v1/runs/:id` as stable strings.
+/// Returns ordered attempt IDs from `/api/v2/runs/:id` as stable strings.
 pub async fn run_get_attempt_ids(router: &mut axum::Router<()>, run_id: RunId) -> Vec<String> {
-    let run_get_path = format!("/api/v1/runs/{run_id}");
+    let run_get_path = format!("/api/v2/runs/{run_id}");
     let run_get = get_json(router, &run_get_path).await;
-    run_get["attempts"]
+    run_get["attempts"]["items"]
         .as_array()
         .expect("attempts should be an array")
         .iter()
@@ -805,16 +913,16 @@ pub async fn run_get_attempt_ids(router: &mut axum::Router<()>, run_id: RunId) -
         .collect()
 }
 
-/// Executes `/api/v1/runs/:id` and returns the parsed response payload.
+/// Executes `/api/v2/runs/:id` and returns the parsed response payload.
 pub async fn run_get(router: &mut axum::Router<()>, run_id: RunId) -> Value {
-    let run_get_path = format!("/api/v1/runs/{run_id}");
+    let run_get_path = format!("/api/v2/runs/{run_id}");
     get_json(router, &run_get_path).await
 }
 
-/// Returns `/api/v1/runs` rows sorted by stable `run_id` string.
+/// Returns `/api/v2/runs` rows sorted by stable `run_id` string.
 pub async fn runs_list_rows_sorted_by_run_id(router: &mut axum::Router<()>) -> Vec<Value> {
-    let runs = get_json(router, "/api/v1/runs").await;
-    let mut rows = runs["runs"].as_array().expect("runs list should be an array").to_vec();
+    let runs = get_json(router, "/api/v2/runs").await;
+    let mut rows = runs["items"].as_array().expect("runs list should be an array").to_vec();
     rows.sort_by(|left, right| {
         left["run_id"]
             .as_str()
@@ -858,12 +966,12 @@ pub fn capture_checkpoint(data_dir: &Path, run_id: RunId) -> CrashRecoveryCheckp
     }
 }
 
-/// Returns parsed lease evidence from `/api/v1/runs/:id` when a lease is active.
+/// Returns parsed lease evidence from `/api/v2/runs/:id` when a lease is active.
 pub async fn current_lease_from_run_get(
     router: &mut axum::Router<()>,
     run_id: RunId,
 ) -> Option<LeaseSnapshotEvidence> {
-    let run_get_path = format!("/api/v1/runs/{run_id}");
+    let run_get_path = format!("/api/v2/runs/{run_id}?display_references=true");
     let run_get = get_json(router, &run_get_path).await;
     let lease = &run_get["lease"];
     if lease.is_null() {
@@ -871,7 +979,7 @@ pub async fn current_lease_from_run_get(
     }
 
     Some(LeaseSnapshotEvidence {
-        owner: lease["owner"]
+        owner: lease["owner"]["value"]
             .as_str()
             .expect("lease owner should be present as string")
             .to_string(),
@@ -899,23 +1007,10 @@ pub fn complete_once_run_via_authority(data_dir: &Path, task_id: TaskId) -> Comp
     let mut authority = actionqueue_storage::mutation::authority::StorageMutationAuthority::new(
         recovery.wal_writer,
         recovery.projection,
-    );
-
-    let scheduled = ScheduledIndex::from_runs(
-        authority
-            .projection()
-            .run_instances()
-            .filter(|r| r.state() == actionqueue_core::run::state::RunState::Scheduled)
-            .cloned()
-            .collect::<Vec<actionqueue_core::run::run_instance::RunInstance>>(),
-    );
-    let first_sequence = next_sequence(authority.projection().latest_sequence());
-    let promotion = promote_scheduled_to_ready_via_authority(
-        &scheduled,
-        PromotionParams::new(u64::MAX, first_sequence, first_sequence, DurabilityPolicy::Immediate),
-        &mut authority,
     )
-    .expect("promotion via authority should succeed");
+    .with_host(host_support::host(actionqueue_core::control::ControlScope::SingleTenant));
+
+    let promotion = promote_scheduled(&mut authority);
     assert_eq!(promotion.outcomes().len(), 1);
 
     let leased_sequence = next_sequence(authority.projection().latest_sequence());
@@ -932,6 +1027,7 @@ pub fn complete_once_run_via_authority(data_dir: &Path, task_id: TaskId) -> Comp
         )
         .expect("ready -> leased should succeed");
 
+    ensure_fixture_lease(&mut authority, run_id);
     let running_sequence = next_sequence(authority.projection().latest_sequence());
     let _ = authority
         .submit_command(
@@ -956,6 +1052,8 @@ pub fn complete_once_run_via_authority(data_dir: &Path, task_id: TaskId) -> Comp
                 run_id,
                 attempt_id,
                 attempt_start_sequence,
+                fence_for(authority.projection(), run_id),
+                authority.projection().pending_resume(run_id).map(|c| c.context_id),
             )),
             DurabilityPolicy::Immediate,
         )
@@ -963,14 +1061,13 @@ pub fn complete_once_run_via_authority(data_dir: &Path, task_id: TaskId) -> Comp
 
     let attempt_finish_sequence = next_sequence(authority.projection().latest_sequence());
     let _ = {
-        let __finish_cmd =
-            actionqueue_engine::scheduler::attempt_finish::build_attempt_finish_command(
-                attempt_finish_sequence,
-                run_id,
-                attempt_id,
-                &ExecutorResponse::Success { output: None },
-                attempt_finish_sequence,
-            );
+        let __finish_cmd = legacy_attempt_finish::build_attempt_finish_command(
+            attempt_finish_sequence,
+            run_id,
+            attempt_id,
+            &actionqueue_core::disposition::AttemptDisposition::complete(None),
+            attempt_finish_sequence,
+        );
         submit_attempt_finish_via_authority(
             __finish_cmd,
             DurabilityPolicy::Immediate,
@@ -1039,23 +1136,10 @@ pub fn complete_all_task_runs_via_authority(
     let mut authority = actionqueue_storage::mutation::authority::StorageMutationAuthority::new(
         recovery.wal_writer,
         recovery.projection,
-    );
-
-    let scheduled = ScheduledIndex::from_runs(
-        authority
-            .projection()
-            .run_instances()
-            .filter(|r| r.state() == actionqueue_core::run::state::RunState::Scheduled)
-            .cloned()
-            .collect::<Vec<actionqueue_core::run::run_instance::RunInstance>>(),
-    );
-    let first_sequence = next_sequence(authority.projection().latest_sequence());
-    let promotion = promote_scheduled_to_ready_via_authority(
-        &scheduled,
-        PromotionParams::new(u64::MAX, first_sequence, first_sequence, DurabilityPolicy::Immediate),
-        &mut authority,
     )
-    .expect("promotion via authority should succeed");
+    .with_host(host_support::host(actionqueue_core::control::ControlScope::SingleTenant));
+
+    let promotion = promote_scheduled(&mut authority);
     assert_eq!(
         promotion.outcomes().len(),
         run_ids.len(),
@@ -1078,6 +1162,7 @@ pub fn complete_all_task_runs_via_authority(
             )
             .expect("ready -> leased should succeed");
 
+        ensure_fixture_lease(&mut authority, run_id);
         let running_sequence = next_sequence(authority.projection().latest_sequence());
         let _ = authority
             .submit_command(
@@ -1104,6 +1189,8 @@ pub fn complete_all_task_runs_via_authority(
                     run_id,
                     attempt_id,
                     attempt_start_sequence,
+                    fence_for(authority.projection(), run_id),
+                    authority.projection().pending_resume(run_id).map(|c| c.context_id),
                 )),
                 DurabilityPolicy::Immediate,
             )
@@ -1111,14 +1198,13 @@ pub fn complete_all_task_runs_via_authority(
 
         let attempt_finish_sequence = next_sequence(authority.projection().latest_sequence());
         let _ = {
-            let __finish_cmd =
-                actionqueue_engine::scheduler::attempt_finish::build_attempt_finish_command(
-                    attempt_finish_sequence,
-                    run_id,
-                    attempt_id,
-                    &ExecutorResponse::Success { output: None },
-                    attempt_finish_sequence,
-                );
+            let __finish_cmd = legacy_attempt_finish::build_attempt_finish_command(
+                attempt_finish_sequence,
+                run_id,
+                attempt_id,
+                &actionqueue_core::disposition::AttemptDisposition::complete(None),
+                attempt_finish_sequence,
+            );
             submit_attempt_finish_via_authority(
                 __finish_cmd,
                 DurabilityPolicy::Immediate,
@@ -1308,7 +1394,7 @@ pub fn next_sequence(latest_sequence: u64) -> u64 {
 // Shared truth structs and assertion helpers for stats and metrics
 // ---------------------------------------------------------------------------
 
-/// Deterministic `/api/v1/stats` truth expectation set.
+/// Deterministic `/api/v2/stats` truth expectation set.
 ///
 /// Used by crash_recovery, concurrency_key, observability, and lease_expiry
 /// acceptance tests to assert aggregate parity from the stats endpoint.
@@ -1346,9 +1432,9 @@ pub struct MetricsTruth {
     pub attempts_timeout: f64,
 }
 
-/// Asserts required aggregate parity truth from `/api/v1/stats`.
+/// Asserts required aggregate parity truth from `/api/v2/stats`.
 pub async fn assert_stats_truth(router: &mut axum::Router<()>, expected: StatsTruth) {
-    let stats = get_json(router, "/api/v1/stats").await;
+    let stats = get_json(router, "/api/v2/stats").await;
     assert_eq!(stats["total_tasks"], expected.total_tasks);
     assert_eq!(stats["total_runs"], expected.total_runs);
     assert_eq!(stats["attempts_total"], expected.attempts_total);
@@ -1431,12 +1517,18 @@ pub fn submit_attempt_start_via_authority(
     let mut authority = actionqueue_storage::mutation::authority::StorageMutationAuthority::new(
         recovery.wal_writer,
         recovery.projection,
-    );
+    )
+    .with_host(host_support::host(actionqueue_core::control::ControlScope::SingleTenant));
     let sequence = next_sequence(authority.projection().latest_sequence());
     let _ = authority
         .submit_command(
             MutationCommand::AttemptStart(AttemptStartCommand::new(
-                sequence, run_id, attempt_id, sequence,
+                sequence,
+                run_id,
+                attempt_id,
+                sequence,
+                fence_for(authority.projection(), run_id),
+                authority.projection().pending_resume(run_id).map(|c| c.context_id),
             )),
             DurabilityPolicy::Immediate,
         )
@@ -1449,20 +1541,20 @@ pub fn submit_attempt_finish_response_via_authority(
     data_dir: &Path,
     run_id: RunId,
     attempt_id: AttemptId,
-    response: &ExecutorResponse,
+    response: &AttemptDisposition,
 ) -> u64 {
     let recovery = actionqueue_storage::recovery::bootstrap::load_projection_from_storage(data_dir)
         .expect("storage bootstrap should succeed");
     let mut authority = actionqueue_storage::mutation::authority::StorageMutationAuthority::new(
         recovery.wal_writer,
         recovery.projection,
-    );
+    )
+    .with_host(host_support::host(actionqueue_core::control::ControlScope::SingleTenant));
     let sequence = next_sequence(authority.projection().latest_sequence());
     let _ = {
-        let finish_cmd =
-            actionqueue_engine::scheduler::attempt_finish::build_attempt_finish_command(
-                sequence, run_id, attempt_id, response, sequence,
-            );
+        let finish_cmd = legacy_attempt_finish::build_attempt_finish_command(
+            sequence, run_id, attempt_id, response, sequence,
+        );
         submit_attempt_finish_via_authority(finish_cmd, DurabilityPolicy::Immediate, &mut authority)
     }
     .expect("attempt finish should succeed");
@@ -1472,16 +1564,34 @@ pub fn submit_attempt_finish_response_via_authority(
 fn executor_response_for_outcome(
     outcome: AttemptOutcomePlan,
     attempt_number: u32,
-) -> ExecutorResponse {
+) -> AttemptDisposition {
     match outcome {
-        AttemptOutcomePlan::Success => ExecutorResponse::Success { output: None },
-        AttemptOutcomePlan::RetryableFailure => ExecutorResponse::RetryableFailure {
-            error: format!("retryable failure at attempt {attempt_number}"),
-        },
-        AttemptOutcomePlan::TerminalFailure => ExecutorResponse::TerminalFailure {
-            error: format!("terminal failure at attempt {attempt_number}"),
-        },
-        AttemptOutcomePlan::Timeout => ExecutorResponse::Timeout { timeout_secs: 5 },
+        AttemptOutcomePlan::Success => {
+            actionqueue_core::disposition::AttemptDisposition::complete(None)
+        }
+        AttemptOutcomePlan::RetryableFailure => {
+            actionqueue_core::disposition::AttemptDisposition::retryable_failure(
+                actionqueue_core::bounded::BoundedError::new(format!(
+                    "retryable failure at attempt {attempt_number}"
+                ))
+                .unwrap(),
+            )
+        }
+        AttemptOutcomePlan::TerminalFailure => {
+            actionqueue_core::disposition::AttemptDisposition::terminal_failure(
+                actionqueue_core::bounded::BoundedError::new(format!(
+                    "terminal failure at attempt {attempt_number}"
+                ))
+                .unwrap(),
+            )
+        }
+        AttemptOutcomePlan::Timeout => actionqueue_core::disposition::AttemptDisposition::complete(
+            None,
+        )
+        .timed_out(
+            actionqueue_core::bounded::BoundedError::new(format!("attempt timed out after {}s", 5))
+                .unwrap(),
+        ),
     }
 }
 
@@ -1509,4 +1619,36 @@ fn expected_attempt_count_for_outcomes(
     }
 
     executed
+}
+
+/// Establishes child admissions and a durable child-terminal wait in one disposition.
+#[allow(dead_code)]
+pub fn admit_children(
+    children: Vec<actionqueue_core::task::task_spec::TaskSpec>,
+) -> actionqueue_core::disposition::AttemptDisposition {
+    use actionqueue_core::{continuation::*, disposition::*, ids::*};
+    let wait = WaitSpec::children(
+        WaitId::new(),
+        children.iter().map(|c| c.id()).collect(),
+        ChildWaitPolicy::AllTerminal,
+        None,
+    )
+    .unwrap();
+    let children = children
+        .into_iter()
+        .map(|s| {
+            ChildAdmission::new(
+                AdmissionKey::new(format!("child/{}", s.id())).unwrap(),
+                s,
+                vec![],
+                Default::default(),
+            )
+            .unwrap()
+        })
+        .collect();
+    AttemptDisposition::new(
+        DispositionOutcome::Awaiting,
+        DispositionParts { wait: Some(wait), child_admissions: children, ..Default::default() },
+    )
+    .unwrap()
 }

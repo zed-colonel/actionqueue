@@ -13,7 +13,7 @@
 //! # Invariant boundaries
 //!
 //! Configuration must not introduce any mutation lane outside the validated
-//! mutation authority defined in `invariant-boundaries-v0.1.md`. Configuration
+//! mutation authority defined in `docs/invariant-boundaries-v1.0.md`. Configuration
 //! values must be explicit and inspectable to preserve auditability required by
 //! external systems.
 //!
@@ -66,6 +66,12 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DaemonConfig {
+    /// Finite namespace/kind metric label allowlist (maximum 64 pairs).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub signal_metric_allowlist: std::collections::BTreeSet<(String, String)>,
+    /// Remote capacity, execution lease, and retry policy.
+    #[cfg(feature = "actor")]
+    pub remote_policy: actionqueue_runtime::remote::RemotePolicy,
     /// The bind address (IP and port) for the daemon HTTP server.
     ///
     /// This is the primary operational surface for read-only introspection
@@ -93,9 +99,9 @@ pub struct DaemonConfig {
     /// Feature flag to enable control endpoints.
     ///
     /// When `false` (the default), control endpoints are unreachable. When
-    /// `true`, control endpoints (`/api/v1/tasks/:task_id/cancel`,
-    /// `/api/v1/runs/:run_id/cancel`, `/api/v1/engine/pause`,
-    /// `/api/v1/engine/resume`) are registered and may be invoked.
+    /// `true`, control endpoints (`/api/v2/tasks/:task_id:cancel`,
+    /// `/api/v2/runs/:run_id:cancel`, `/api/v2/engine/pause`,
+    /// `/api/v2/engine/resume`) are registered and may be invoked.
     ///
     /// # Safety
     ///
@@ -121,6 +127,9 @@ pub struct DaemonConfig {
 impl Default for DaemonConfig {
     fn default() -> Self {
         Self {
+            signal_metric_allowlist: Default::default(),
+            #[cfg(feature = "actor")]
+            remote_policy: Default::default(),
             bind_address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8787),
             data_dir: PathBuf::from("~/.actionqueue/data"),
             enable_control: false,
@@ -157,6 +166,8 @@ pub enum ConfigErrorCode {
     InvalidDataDir,
     /// The metrics bind address is invalid.
     InvalidMetricsBind,
+    /// The signal metric namespace/kind allowlist is invalid.
+    InvalidSignalMetricAllowlist,
     /// The metrics bind address conflicts with the main bind address.
     PortConflict,
 }
@@ -167,6 +178,9 @@ impl std::fmt::Display for ConfigErrorCode {
             ConfigErrorCode::InvalidBindAddress => write!(f, "invalid_bind_address"),
             ConfigErrorCode::InvalidDataDir => write!(f, "invalid_data_dir"),
             ConfigErrorCode::InvalidMetricsBind => write!(f, "invalid_metrics_bind"),
+            ConfigErrorCode::InvalidSignalMetricAllowlist => {
+                write!(f, "invalid_signal_metric_allowlist")
+            }
             ConfigErrorCode::PortConflict => write!(f, "port_conflict"),
         }
     }
@@ -182,6 +196,21 @@ impl DaemonConfig {
     ///
     /// Returns a `ConfigError` if any field contains an invalid value.
     pub fn validate(&self) -> Result<(), ConfigError> {
+        if actionqueue_storage::mutation::telemetry::validate_signal_allowlist(
+            &self.signal_metric_allowlist,
+        )
+        .is_err()
+        {
+            return Err(ConfigError {
+                code: ConfigErrorCode::InvalidSignalMetricAllowlist,
+                message: "invalid signal metric allowlist".into(),
+            });
+        }
+        #[cfg(feature = "actor")]
+        self.remote_policy.validate().map_err(|e| ConfigError {
+            code: ConfigErrorCode::InvalidBindAddress,
+            message: e.to_string(),
+        })?;
         // Validate bind address
         if self.bind_address.port() == 0 {
             return Err(ConfigError {
@@ -242,6 +271,17 @@ mod tests {
     fn test_validate_valid_config() {
         let config = DaemonConfig::default();
         assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn invalid_signal_allowlist_names_its_configuration_field() {
+        let config = DaemonConfig {
+            signal_metric_allowlist: [("invalid namespace".into(), "event".into())].into(),
+            ..Default::default()
+        };
+        let error = config.validate().unwrap_err();
+        assert_eq!(error.code, ConfigErrorCode::InvalidSignalMetricAllowlist);
+        assert_eq!(error.code.to_string(), "invalid_signal_metric_allowlist");
     }
 
     #[test]

@@ -20,7 +20,22 @@ use crate::recovery::reducer::{AttemptHistoryEntry, LeaseMetadata, RunStateHisto
 /// format is versioned to support future evolution of the data structures.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct Snapshot {
+    pub control_history: Vec<(u64, actionqueue_core::control::ControlAttribution)>,
+    pub dispatch_sequences: Vec<(RunId, u64)>,
+    pub administrative_wakes: Vec<crate::recovery::resume::AdministrativeWake>,
+    pub administrative_pending: Vec<(RunId, actionqueue_core::continuation::ResumeContextId)>,
+    pub waits: Vec<crate::mutation::wait::WaitRecord>,
+    pub cancellations: Vec<crate::mutation::wait::CancelRecord>,
+    pub pending_resumes: Vec<(RunId, actionqueue_core::ids::WaitId)>,
+    pub key_reservations: Vec<(RunId, String)>,
+    /// Immutable signal facts, explicit pins and retirement state in signal sequence order.
+    pub signals: Vec<crate::mutation::signal::SignalRecord>,
+    /// Signal high-water mark, independent of WAL sequence.
+    pub last_signal_sequence: u64,
+    /// Immutable admission facts and the inputs needed to verify their digests.
+    pub admissions: Vec<crate::mutation::admission::AdmissionRecord>,
     /// The format version of this snapshot.
     ///
     /// This version is used to ensure compatibility between the snapshot writer and
@@ -69,6 +84,7 @@ pub struct Snapshot {
 /// Snapshot representation of engine control projection.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct SnapshotEngineControl {
     /// Whether scheduling and dispatch are paused.
     pub paused: bool,
@@ -84,6 +100,7 @@ pub struct SnapshotEngineControl {
 /// of all prerequisite tasks listed in `depends_on`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct SnapshotDependencyDeclaration {
     /// The task whose promotion is gated.
     pub task_id: TaskId,
@@ -99,6 +116,7 @@ pub struct SnapshotDependencyDeclaration {
 /// maintaining backward compatibility with existing data.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct SnapshotMetadata {
     /// The schema version of the snapshot format.
     ///
@@ -119,6 +137,7 @@ pub struct SnapshotMetadata {
 /// A task in the snapshot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct SnapshotTask {
     /// The task specification.
     pub task_spec: TaskSpec,
@@ -134,6 +153,7 @@ pub struct SnapshotTask {
 /// A run in the snapshot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct SnapshotRun {
     /// The canonical run payload.
     ///
@@ -159,6 +179,7 @@ impl SnapshotRun {
 /// Snapshot representation of a run state history entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct SnapshotRunStateHistoryEntry {
     /// The previous state, if any.
     pub from: Option<actionqueue_core::run::state::RunState>,
@@ -177,7 +198,11 @@ impl From<RunStateHistoryEntry> for SnapshotRunStateHistoryEntry {
 /// Snapshot representation of an attempt history entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct SnapshotAttemptHistoryEntry {
+    pub disposition: Option<Box<crate::mutation::disposition::DispositionRecord>>,
+    pub accepted_start: Option<crate::recovery::resume::AcceptedStart>,
+    pub finish_origin: actionqueue_core::continuation::AttemptFinishOrigin,
     /// The attempt identifier.
     pub attempt_id: actionqueue_core::ids::AttemptId,
     /// The timestamp when the attempt started.
@@ -196,6 +221,9 @@ pub struct SnapshotAttemptHistoryEntry {
 impl From<AttemptHistoryEntry> for SnapshotAttemptHistoryEntry {
     fn from(entry: AttemptHistoryEntry) -> Self {
         Self {
+            disposition: entry.disposition.clone(),
+            accepted_start: entry.accepted_start.clone(),
+            finish_origin: entry.finish_origin,
             attempt_id: entry.attempt_id,
             started_at: entry.started_at,
             finished_at: entry.finished_at,
@@ -209,7 +237,9 @@ impl From<AttemptHistoryEntry> for SnapshotAttemptHistoryEntry {
 /// Snapshot representation of lease metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct SnapshotLeaseMetadata {
+    pub granted_at_sequence: u64,
     /// Lease owner string.
     pub owner: String,
     /// Lease expiry timestamp.
@@ -223,6 +253,7 @@ pub struct SnapshotLeaseMetadata {
 impl From<LeaseMetadata> for SnapshotLeaseMetadata {
     fn from(metadata: LeaseMetadata) -> Self {
         Self {
+            granted_at_sequence: metadata.granted_at_sequence,
             owner: metadata.owner,
             expiry: metadata.expiry,
             acquired_at: metadata.acquired_at,
@@ -234,6 +265,7 @@ impl From<LeaseMetadata> for SnapshotLeaseMetadata {
 /// Snapshot representation of a budget allocation and consumption record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct SnapshotBudget {
     /// The task whose budget this record covers.
     pub task_id: actionqueue_core::ids::TaskId,
@@ -252,12 +284,17 @@ pub struct SnapshotBudget {
 /// Snapshot representation of a subscription state record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct SnapshotSubscription {
+    /// First matching WAL event observed after registration. Retained through snapshots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matched_sequence: Option<u64>,
     /// The subscription identifier.
     pub subscription_id: SubscriptionId,
     /// The subscribing task identifier.
     pub task_id: actionqueue_core::ids::TaskId,
     /// The event filter for this subscription.
+    #[cfg_attr(feature = "serde", serde(with = "crate::structural_filter"))]
     pub filter: EventFilter,
     /// The timestamp when the subscription was created.
     pub created_at: u64,
@@ -270,10 +307,11 @@ pub struct SnapshotSubscription {
 /// Snapshot representation of a registered actor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct SnapshotActor {
     pub actor_id: ActorId,
     pub identity: String,
-    pub capabilities: Vec<String>,
+    pub executor_traits: Vec<String>,
     pub department: Option<String>,
     pub heartbeat_interval_secs: u64,
     pub tenant_id: Option<TenantId>,
@@ -285,6 +323,7 @@ pub struct SnapshotActor {
 /// Snapshot representation of a tenant.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct SnapshotTenant {
     pub tenant_id: TenantId,
     pub name: String,
@@ -294,6 +333,7 @@ pub struct SnapshotTenant {
 /// Snapshot representation of a role assignment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct SnapshotRoleAssignment {
     pub actor_id: ActorId,
     pub role: Role,
@@ -304,6 +344,7 @@ pub struct SnapshotRoleAssignment {
 /// Snapshot representation of a capability grant.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct SnapshotCapabilityGrant {
     pub actor_id: ActorId,
     pub capability: Capability,
@@ -315,6 +356,7 @@ pub struct SnapshotCapabilityGrant {
 /// Snapshot representation of a ledger entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct SnapshotLedgerEntry {
     pub entry_id: LedgerEntryId,
     pub tenant_id: TenantId,

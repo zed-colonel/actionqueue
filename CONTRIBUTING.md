@@ -67,14 +67,26 @@ These are non-negotiable — never weaken them in a contribution:
 4. Lease and concurrency constraints are core-enforced
 5. External extensions cannot mutate persisted state directly
 
-See `invariant-boundaries-v0.1.md` for the full invariant specification.
+See `docs/invariant-boundaries-v1.0.md` for the full invariant specification.
+
+## AQ-CONT-1 boundary checks
+
+`cargo test --workspace` includes the `AQ-CONT-1` conformance binaries under
+`tests/conformance/`. They fail if target crates gain downstream domain types, developmental
+(campaign/arm/benchmark) concepts, free-form metadata maps, attribution reads in scheduling or
+authority code, developmental metric labels, archive references, or new uses of legacy symbols
+slated for removal. Run them alone with `cargo aq-conformance`. The checks read only
+git-tracked files, so untracked notes cannot affect them. The policy lives in
+`conformance/aq-cont-1/contract-boundaries.json`; see `docs/contracts/AQ-CONT-1.md`.
 
 ## Submitting Changes
 
 1. Fork the repository and create a feature branch
 2. Make your changes, ensuring all tests pass
 3. Run `cargo fmt --all` and `cargo clippy` before committing
-4. Open a pull request against `main` with a clear description of the change
+4. Open a pull request with a clear description of the change. `AQ-CONT-1` implementation
+   PRs target the `aq-cont-1` integration branch and include the review template from
+   Section 2.3 of `docs/planning/aq-cont-1/aq-cont-1-implementation-plan.md`
 
 ## License
 

@@ -15,9 +15,9 @@ use serde_json::Value;
 struct ObservabilityScenarioSpec {
     /// Human-readable deterministic scenario label used for isolated data-dir naming.
     label: &'static str,
-    /// Exact `/api/v1/stats` expectation before restart.
+    /// Exact `/api/v2/stats` expectation before restart.
     expected_stats_pre_restart: StatsTruth,
-    /// Exact `/api/v1/stats` expectation after restart.
+    /// Exact `/api/v2/stats` expectation after restart.
     expected_stats_post_restart: StatsTruth,
     /// Exact `/metrics` expectation before restart.
     expected_metrics_pre_restart: MetricsTruth,
@@ -27,7 +27,7 @@ struct ObservabilityScenarioSpec {
 
 use support::{MetricsTruth, StatsTruth};
 
-/// Deterministic per-row assertion contract for `/api/v1/runs`.
+/// Deterministic per-row assertion contract for `/api/v2/runs`.
 #[derive(Debug, Clone)]
 struct RunsListTruth {
     run_id: RunId,
@@ -37,7 +37,7 @@ struct RunsListTruth {
     expected_concurrency_key: Option<&'static str>,
 }
 
-/// Deterministic per-run assertion contract for `/api/v1/runs/:id`.
+/// Deterministic per-run assertion contract for `/api/v2/runs/:id`.
 #[derive(Debug, Clone)]
 struct RunGetTruth {
     run_id: RunId,
@@ -94,7 +94,7 @@ fn required_metric_family_prefixes() -> &'static [&'static str] {
     ]
 }
 
-/// Asserts deterministic `/api/v1/runs` identity and lifecycle-summary truth.
+/// Asserts deterministic `/api/v2/runs` identity and lifecycle-summary truth.
 async fn assert_runs_list_truth(router: &mut axum::Router<()>, expected_rows: &[RunsListTruth]) {
     let actual_rows = support::runs_list_rows_sorted_by_run_id(router).await;
 
@@ -119,7 +119,7 @@ async fn assert_runs_list_truth(router: &mut axum::Router<()>, expected_rows: &[
     }
 }
 
-/// Asserts deterministic `/api/v1/runs/:id` identity, lineage, and lifecycle truth.
+/// Asserts deterministic `/api/v2/runs/:id` identity, lineage, and lifecycle truth.
 async fn assert_run_get_truth(router: &mut axum::Router<()>, expected_runs: &[RunGetTruth]) {
     for expected in expected_runs {
         let payload = support::run_get(router, expected.run_id).await;
@@ -135,7 +135,7 @@ async fn assert_run_get_truth(router: &mut axum::Router<()>, expected_runs: &[Ru
             }
         }
 
-        let attempts = payload["attempts"].as_array().expect("attempts must be an array");
+        let attempts = payload["attempts"]["items"].as_array().expect("attempts must be an array");
         let actual_attempt_ids = attempts
             .iter()
             .map(|entry| {
@@ -157,7 +157,7 @@ async fn assert_run_get_truth(router: &mut axum::Router<()>, expected_runs: &[Ru
         assert_eq!(actual_attempt_ids, expected.expected_attempt_ids);
         assert_eq!(actual_attempt_results, expected.expected_attempt_results);
 
-        let actual_history = payload["state_history"]
+        let actual_history = payload["state_history"]["items"]
             .as_array()
             .expect("state_history should be an array")
             .iter()
@@ -175,7 +175,7 @@ async fn assert_run_get_truth(router: &mut axum::Router<()>, expected_runs: &[Ru
     }
 }
 
-/// Asserts deterministic aggregate parity truth from `/api/v1/stats`.
+/// Asserts deterministic aggregate parity truth from `/api/v2/stats`.
 async fn assert_stats_truth(router: &mut axum::Router<()>, expected: StatsTruth) {
     support::assert_stats_truth(router, expected).await;
 }
@@ -189,19 +189,13 @@ async fn assert_metrics_value_truth(router: &mut axum::Router<()>, expected: Met
 async fn assert_metrics_label_bounds_and_families(router: &mut axum::Router<()>) {
     let metrics = support::get_text(router, "/metrics").await;
 
-    let expected_run_labels: BTreeSet<String> = [
-        "scheduled",
-        "ready",
-        "leased",
-        "running",
-        "retry_wait",
-        "completed",
-        "failed",
-        "canceled",
-    ]
-    .into_iter()
-    .map(str::to_string)
-    .collect();
+    // The bounded label set is derived from `RunState::ALL`; every state,
+    // including `suspended` and `awaiting`, must be pre-seeded.
+    let expected_run_labels: BTreeSet<String> =
+        actionqueue_daemon::metrics::registry::RUN_STATE_LABEL_VALUES
+            .into_iter()
+            .map(str::to_string)
+            .collect();
     let expected_attempt_labels: BTreeSet<String> =
         ["success", "failure", "timeout"].into_iter().map(str::to_string).collect();
     let expected_run_keys: BTreeSet<String> = ["state"].into_iter().map(str::to_string).collect();
@@ -222,7 +216,10 @@ async fn assert_metrics_label_bounds_and_families(router: &mut axum::Router<()>)
         expected_attempt_keys
     );
 
-    assert_eq!(support::metrics_sample_count(&metrics, "actionqueue_runs_total"), 8);
+    assert_eq!(
+        support::metrics_sample_count(&metrics, "actionqueue_runs_total"),
+        actionqueue_daemon::metrics::registry::RUN_STATE_LABEL_VALUES.len()
+    );
     assert_eq!(support::metrics_sample_count(&metrics, "actionqueue_attempts_total"), 3);
 
     for prefix in required_metric_family_prefixes() {
@@ -235,28 +232,19 @@ async fn assert_metrics_label_bounds_and_families(router: &mut axum::Router<()>)
 
 /// Captures canonicalized metrics fact set for restart parity snapshots.
 fn capture_metrics_fact_snapshot(metrics_text: &str) -> MetricsFactSnapshot {
-    let run_state_values = [
-        "scheduled",
-        "ready",
-        "leased",
-        "running",
-        "retry_wait",
-        "completed",
-        "failed",
-        "canceled",
-    ]
-    .into_iter()
-    .map(|state| {
-        (
-            state.to_string(),
-            support::metrics_sample_value(
-                metrics_text,
-                "actionqueue_runs_total",
-                &[("state", state)],
-            ),
-        )
-    })
-    .collect::<BTreeMap<_, _>>();
+    let run_state_values = actionqueue_daemon::metrics::registry::RUN_STATE_LABEL_VALUES
+        .into_iter()
+        .map(|state| {
+            (
+                state.to_string(),
+                support::metrics_sample_value(
+                    metrics_text,
+                    "actionqueue_runs_total",
+                    &[("state", state)],
+                ),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
 
     let attempts_result_values = ["success", "failure", "timeout"]
         .into_iter()
@@ -324,7 +312,7 @@ async fn capture_read_surface_snapshot(router: &mut axum::Router<()>) -> ReadSur
         run_get_by_run_id.insert(run_id_text, payload);
     }
 
-    let stats_payload = support::get_json(router, "/api/v1/stats").await;
+    let stats_payload = support::get_json(router, "/api/v2/stats").await;
     let metrics_text = support::get_text(router, "/metrics").await;
 
     ReadSurfaceSnapshot {
@@ -473,10 +461,7 @@ async fn observability_api_identity_and_lifecycle_parity_are_operator_reconstruc
             task_id: task_id_b.to_string(),
             expected_state: "Failed",
             expected_block_reason: Some("terminal"),
-            expected_attempt_ids: vec![
-                "00000000-0000-0000-0000-000000000001".to_string(),
-                "00000000-0000-0000-0000-000000000002".to_string(),
-            ],
+            expected_attempt_ids: failed.attempt_ids.iter().map(ToString::to_string).collect(),
             expected_attempt_results: vec!["Failure".to_string(), "Failure".to_string()],
             expected_state_history: history_truth(&[
                 (None, "Scheduled"),
@@ -957,10 +942,7 @@ async fn observability_restart_preserves_runs_run_get_stats_and_metrics_parity()
             task_id: task_failed.to_string(),
             expected_state: "Failed",
             expected_block_reason: Some("terminal"),
-            expected_attempt_ids: vec![
-                "00000000-0000-0000-0000-000000000001".to_string(),
-                "00000000-0000-0000-0000-000000000002".to_string(),
-            ],
+            expected_attempt_ids: failed.attempt_ids.iter().map(ToString::to_string).collect(),
             expected_attempt_results: vec!["Failure".to_string(), "Failure".to_string()],
             expected_state_history: history_truth(&[
                 (None, "Scheduled"),

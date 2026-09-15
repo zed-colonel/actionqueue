@@ -7,6 +7,8 @@
 //! 4. Verify all tasks completed (all runs in terminal state)
 //! 5. Verify no state violations (no runs stuck in Running/Leased)
 
+#[path = "host_support.rs"]
+mod host_support;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -19,7 +21,7 @@ use actionqueue_core::task::metadata::TaskMetadata;
 use actionqueue_core::task::run_policy::RunPolicy;
 use actionqueue_core::task::task_spec::{TaskPayload, TaskSpec};
 use actionqueue_engine::time::clock::MockClock;
-use actionqueue_executor_local::handler::{ExecutorContext, ExecutorHandler, HandlerOutput};
+use actionqueue_executor_local::handler::{AttemptDisposition, ExecutorContext, ExecutorHandler};
 use actionqueue_runtime::config::{BackoffStrategyConfig, RuntimeConfig};
 use actionqueue_runtime::engine::ActionQueueEngine;
 
@@ -27,9 +29,8 @@ static STRESS_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 fn stress_data_dir(label: &str) -> PathBuf {
     let count = STRESS_COUNTER.fetch_add(1, Ordering::SeqCst);
-    let dir = PathBuf::from("target")
-        .join("tmp")
-        .join(format!("p6-008-stress-{label}-{}-{count}", std::process::id()));
+    let dir =
+        std::env::temp_dir().join(format!("p6-008-stress-{label}-{}-{count}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("stress data dir should be creatable");
     dir
 }
@@ -49,13 +50,13 @@ impl RandomSleepHandler {
 }
 
 impl ExecutorHandler for RandomSleepHandler {
-    fn execute(&self, ctx: ExecutorContext) -> HandlerOutput {
+    fn execute(&self, ctx: ExecutorContext) -> AttemptDisposition {
         let _input = ctx.input;
         // Simple deterministic variation: use invocation counter to vary sleep.
         let n = self.invocation_counter.fetch_add(1, Ordering::Relaxed);
         let sleep_ms = 1 + (n % 10); // 1-10ms
         std::thread::sleep(Duration::from_millis(sleep_ms));
-        HandlerOutput::Success { output: None, consumption: vec![] }
+        actionqueue_core::disposition::AttemptDisposition::complete(None)
     }
 }
 
@@ -64,9 +65,9 @@ impl ExecutorHandler for RandomSleepHandler {
 struct InstantHandler;
 
 impl ExecutorHandler for InstantHandler {
-    fn execute(&self, ctx: ExecutorContext) -> HandlerOutput {
+    fn execute(&self, ctx: ExecutorContext) -> AttemptDisposition {
         let _input = ctx.input;
-        HandlerOutput::Success { output: None, consumption: vec![] }
+        actionqueue_core::disposition::AttemptDisposition::complete(None)
     }
 }
 
@@ -94,7 +95,9 @@ async fn stress_100_tasks_4_workers_random_sleep() {
 
     let clock = MockClock::new(1_000_000);
     let engine = ActionQueueEngine::new(config, RandomSleepHandler::new());
-    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap should succeed");
+    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap should succeed").with_host(
+        crate::host_support::host(actionqueue_core::control::ControlScope::SingleTenant),
+    );
 
     // Submit 100 tasks.
     let mut task_ids = Vec::with_capacity(num_tasks);
@@ -180,7 +183,9 @@ async fn stress_200_tasks_4_workers_instant() {
 
     let clock = MockClock::new(1_000_000);
     let engine = ActionQueueEngine::new(config, InstantHandler);
-    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap should succeed");
+    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap should succeed").with_host(
+        crate::host_support::host(actionqueue_core::control::ControlScope::SingleTenant),
+    );
 
     for _ in 0..num_tasks {
         let spec = TaskSpec::new(
@@ -222,7 +227,9 @@ async fn stress_100_tasks_1_worker_serialized() {
 
     let clock = MockClock::new(1_000_000);
     let engine = ActionQueueEngine::new(config, RandomSleepHandler::new());
-    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap should succeed");
+    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap should succeed").with_host(
+        crate::host_support::host(actionqueue_core::control::ControlScope::SingleTenant),
+    );
 
     for _ in 0..num_tasks {
         let spec = TaskSpec::new(
@@ -263,7 +270,9 @@ async fn stress_150_tasks_8_workers() {
 
     let clock = MockClock::new(1_000_000);
     let engine = ActionQueueEngine::new(config, RandomSleepHandler::new());
-    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap should succeed");
+    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap should succeed").with_host(
+        crate::host_support::host(actionqueue_core::control::ControlScope::SingleTenant),
+    );
 
     for _ in 0..num_tasks {
         let spec = TaskSpec::new(
@@ -322,24 +331,26 @@ async fn stress_100_tasks_mixed_outcomes() {
     }
 
     impl ExecutorHandler for MixedOutcomeHandler {
-        fn execute(&self, ctx: ExecutorContext) -> HandlerOutput {
+        fn execute(&self, ctx: ExecutorContext) -> AttemptDisposition {
             let _input = ctx.input;
             let n = self.counter.fetch_add(1, Ordering::Relaxed);
             std::thread::sleep(Duration::from_millis(1));
             if n % 2 == 0 {
-                HandlerOutput::Success { output: None, consumption: vec![] }
+                actionqueue_core::disposition::AttemptDisposition::complete(None)
             } else {
-                HandlerOutput::TerminalFailure {
-                    error: "terminal failure".to_string(),
-                    consumption: vec![],
-                }
+                actionqueue_core::disposition::AttemptDisposition::terminal_failure(
+                    actionqueue_core::bounded::BoundedError::new("terminal failure".to_string())
+                        .unwrap(),
+                )
             }
         }
     }
 
     let handler = MixedOutcomeHandler { counter: AtomicUsize::new(0) };
     let engine = ActionQueueEngine::new(config, handler);
-    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap should succeed");
+    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap should succeed").with_host(
+        crate::host_support::host(actionqueue_core::control::ControlScope::SingleTenant),
+    );
 
     for _ in 0..num_tasks {
         let spec = TaskSpec::new(

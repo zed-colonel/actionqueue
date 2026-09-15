@@ -2,18 +2,22 @@
 //!
 //! These tests exercise WAL durability under abrupt process termination by:
 //!   1. Writing state via the mutation authority (task creation, run creation, transitions),
-//!   2. Simulating kill -9 by calling `std::mem::forget` on all handles (skipping Drop/close),
+//!   2. Simulating kill -9 by dropping the authority without a durability sync,
 //!   3. Re-opening from storage via `load_projection_from_storage`,
 //!   4. Verifying recovered state matches expectations,
 //!   5. Verifying new operations succeed after recovery.
 
+#[path = "../acceptance/host_support.rs"]
+mod host_support;
+#[path = "../acceptance/lease_support.rs"]
+mod lease_support;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use actionqueue_core::ids::{AttemptId, RunId, TaskId};
 use actionqueue_core::mutation::{
     AttemptFinishCommand, AttemptOutcome, AttemptStartCommand, DurabilityPolicy, MutationAuthority,
-    MutationCommand, RunCreateCommand, RunStateTransitionCommand, TaskCreateCommand,
+    MutationCommand, RunStateTransitionCommand,
 };
 use actionqueue_core::run::state::RunState;
 use actionqueue_core::run::RunInstance;
@@ -29,18 +33,14 @@ use actionqueue_storage::wal::InstrumentedWalWriter;
 
 static TEST_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
-/// Creates a unique temporary data directory for each test under `target/tmp/`.
+/// Creates a unique temporary data directory for each test under the configured temporary directory.
 ///
-/// Matches the pattern used by acceptance tests for consistent build-directory
+/// Matches the pattern used by acceptance tests for consistent temporary-directory
 /// locality and easier cleanup.
 fn unique_data_dir(label: &str) -> PathBuf {
     let count = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
-    let dir = PathBuf::from("target").join("tmp").join(format!(
-        "chaos-{}-{}-{}",
-        label,
-        std::process::id(),
-        count
-    ));
+    let dir =
+        std::env::temp_dir().join(format!("chaos-{}-{}-{}", label, std::process::id(), count));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("chaos data dir should be creatable");
     dir
@@ -77,6 +77,7 @@ fn open_authority(
     let recovery =
         load_projection_from_storage(data_dir).expect("storage bootstrap should succeed");
     StorageMutationAuthority::new(recovery.wal_writer, recovery.projection)
+        .with_host(crate::host_support::host(actionqueue_core::control::ControlScope::SingleTenant))
 }
 
 /// Computes the next WAL sequence from the projection's latest.
@@ -86,31 +87,47 @@ fn next_seq(
     authority.projection().latest_sequence().checked_add(1).expect("sequence should not overflow")
 }
 
-/// Simulates kill -9 by forgetting all handles without running destructors.
-///
-/// `std::mem::forget` prevents Drop from running, which means:
-/// - WalFsWriter does NOT get its `Drop::drop` called (no best-effort sync_all)
-/// - No buffers are flushed
-/// - File descriptors leak (OS reclaims on process exit; in test they leak until GC)
-///
-/// This is strictly harsher than `drop()`, which runs the destructor and triggers
-/// a best-effort sync. A real kill -9 would do neither — `forget` is the closest
-/// in-process simulation.
+/// Commits a Once task and its chosen initial run in one admission frame.
+fn admit_once(
+    authority: &mut StorageMutationAuthority<InstrumentedWalWriter<WalFsWriter>, ReplayReducer>,
+    spec: TaskSpec,
+    run_id: RunId,
+) {
+    use actionqueue_core::admission::{AdmissionPlan, EnsureTaskRequest};
+    let seq = next_seq(authority);
+    let run = RunInstance::new_scheduled_with_id(run_id, spec.id(), seq, seq).unwrap();
+    let request = EnsureTaskRequest::for_task(spec, vec![]).unwrap();
+    let digest = request.digest().unwrap();
+    let plan = AdmissionPlan::new(request, vec![run], digest).unwrap();
+    let _ = authority
+        .submit_command(
+            MutationCommand::AdmissionCommit(
+                actionqueue_core::mutation::AdmissionCommitCommand::new(seq, plan, None, seq),
+            ),
+            DurabilityPolicy::Immediate,
+        )
+        .unwrap();
+}
+
+/// Simulates loss of the process-owned projection after durable, unbuffered writes.
+/// Dropping releases the OS lock without a WAL sync. A separate target conformance
+/// child-process test proves real SIGKILL lock release and durable recovery.
 fn simulate_kill9(
     authority: StorageMutationAuthority<InstrumentedWalWriter<WalFsWriter>, ReplayReducer>,
 ) {
-    std::mem::forget(authority);
+    // WAL writes are unbuffered; dropping releases the OS lock without a sync.
+    drop(authority);
 }
 
 // ---------------------------------------------------------------------------
-// Scenario A: Crash after task creation, before run creation.
+// Scenario A: Crash after compound admission, before scheduling.
 //
-// Submit 3 tasks, crash immediately. Recovery should see all 3 tasks, 0 runs.
-// Then create runs on 2 of them and verify operations proceed.
+// Submit 3 tasks, crash immediately. Recovery should see all tasks and initial runs.
+// Then promote an admitted run and verify operations proceed.
 // ---------------------------------------------------------------------------
 
 #[test]
-fn crash_after_task_creation_before_run_creation() {
+fn crash_after_compound_admission_before_scheduling() {
     let data_dir = unique_data_dir("scenario_a");
 
     // Phase 1: Create tasks, then kill -9.
@@ -121,13 +138,7 @@ fn crash_after_task_creation_before_run_creation() {
         for i in 0u8..3 {
             let spec = make_task_spec(&[10 + i, 20 + i]);
             let task_id = spec.id();
-            let seq = next_seq(&authority);
-            let _ = authority
-                .submit_command(
-                    MutationCommand::TaskCreate(TaskCreateCommand::new(seq, spec, seq)),
-                    DurabilityPolicy::Immediate,
-                )
-                .expect("task create should succeed");
+            admit_once(&mut authority, spec, RunId::new());
             ids.push(task_id);
         }
 
@@ -136,7 +147,7 @@ fn crash_after_task_creation_before_run_creation() {
         ids
     };
 
-    // Phase 2: Recovery — verify all 3 tasks present, 0 runs.
+    // Phase 2: Recovery — verify all 3 complete admissions.
     {
         let recovery =
             load_projection_from_storage(&data_dir).expect("recovery should succeed after crash");
@@ -146,7 +157,7 @@ fn crash_after_task_creation_before_run_creation() {
             3,
             "all 3 tasks must survive kill -9 recovery"
         );
-        assert_eq!(recovery.projection.run_count(), 0, "no runs were created before crash");
+        assert_eq!(recovery.projection.run_count(), 3, "all initial runs survive with their tasks");
 
         for task_id in &task_ids {
             assert!(
@@ -156,23 +167,12 @@ fn crash_after_task_creation_before_run_creation() {
         }
     }
 
-    // Phase 3: Post-recovery — create runs and drive to completion.
+    // Phase 3: Post-recovery — promote an admitted run.
     {
         let mut authority = open_authority(&data_dir);
 
-        // Create a run for the first task, drive to Ready.
-        let run_id = RunId::new();
-        let task_id = task_ids[0];
-        let seq = next_seq(&authority);
-        let run = RunInstance::new_scheduled_with_id(run_id, task_id, seq, seq)
-            .expect("run instance should be valid");
-        let _ = authority
-            .submit_command(
-                MutationCommand::RunCreate(RunCreateCommand::new(seq, run)),
-                DurabilityPolicy::Immediate,
-            )
-            .expect("run create should succeed post-recovery");
-
+        // The run was committed atomically with the task before the crash.
+        let run_id = authority.projection().run_ids_for_task(task_ids[0])[0];
         let seq = next_seq(&authority);
         let _ = authority
             .submit_command(
@@ -217,23 +217,7 @@ fn crash_during_state_transitions_running() {
         let mut authority = open_authority(&data_dir);
         let spec = make_task_spec_with_id(task_id, &[0xBA, 0xBE]);
 
-        let seq = next_seq(&authority);
-        let _ = authority
-            .submit_command(
-                MutationCommand::TaskCreate(TaskCreateCommand::new(seq, spec, seq)),
-                DurabilityPolicy::Immediate,
-            )
-            .expect("task create should succeed");
-
-        let seq = next_seq(&authority);
-        let run = RunInstance::new_scheduled_with_id(run_id, task_id, seq, seq)
-            .expect("run instance should be valid");
-        let _ = authority
-            .submit_command(
-                MutationCommand::RunCreate(RunCreateCommand::new(seq, run)),
-                DurabilityPolicy::Immediate,
-            )
-            .expect("run create should succeed");
+        admit_once(&mut authority, spec, run_id);
 
         // Scheduled -> Ready
         let seq = next_seq(&authority);
@@ -266,6 +250,23 @@ fn crash_during_state_transitions_running() {
             .expect("Ready->Leased should succeed");
 
         // Leased -> Running
+        if authority.projection().get_lease(&run_id).is_none() {
+            let seq = next_seq(&authority);
+            let _ = authority
+                .submit_command(
+                    MutationCommand::LeaseAcquire(
+                        actionqueue_core::mutation::LeaseAcquireCommand::new(
+                            seq,
+                            run_id,
+                            "fixture",
+                            u64::MAX,
+                            0,
+                        ),
+                    ),
+                    DurabilityPolicy::Immediate,
+                )
+                .unwrap();
+        }
         let seq = next_seq(&authority);
         let _ = authority
             .submit_command(
@@ -307,7 +308,12 @@ fn crash_during_state_transitions_running() {
         let _ = authority
             .submit_command(
                 MutationCommand::AttemptStart(AttemptStartCommand::new(
-                    seq, run_id, attempt_id, seq,
+                    seq,
+                    run_id,
+                    attempt_id,
+                    seq,
+                    lease_support::fence_for(authority.projection(), run_id),
+                    authority.projection().pending_resume(run_id).map(|c| c.context_id),
                 )),
                 DurabilityPolicy::Immediate,
             )
@@ -392,29 +398,10 @@ fn crash_with_mixed_terminal_and_active_runs() {
     {
         let mut authority = open_authority(&data_dir);
 
-        // --- Create all 3 tasks ---
-        for (tid, payload) in [(task_a, 0xAAu8), (task_b, 0xBBu8), (task_c, 0xCCu8)] {
-            let spec = make_task_spec_with_id(tid, &[payload]);
-            let seq = next_seq(&authority);
-            let _ = authority
-                .submit_command(
-                    MutationCommand::TaskCreate(TaskCreateCommand::new(seq, spec, seq)),
-                    DurabilityPolicy::Immediate,
-                )
-                .expect("task create should succeed");
-        }
-
-        // --- Create runs for each task ---
-        for (rid, tid) in [(run_a, task_a), (run_b, task_b), (run_c, task_c)] {
-            let seq = next_seq(&authority);
-            let run = RunInstance::new_scheduled_with_id(rid, tid, seq, seq)
-                .expect("run instance should be valid");
-            let _ = authority
-                .submit_command(
-                    MutationCommand::RunCreate(RunCreateCommand::new(seq, run)),
-                    DurabilityPolicy::Immediate,
-                )
-                .expect("run create should succeed");
+        for (tid, rid, payload) in
+            [(task_a, run_a, 0xAAu8), (task_b, run_b, 0xBBu8), (task_c, run_c, 0xCCu8)]
+        {
+            admit_once(&mut authority, make_task_spec_with_id(tid, &[payload]), rid);
         }
 
         // Helper: drive a run through Scheduled -> Ready -> Leased -> Running.
@@ -428,6 +415,23 @@ fn crash_with_mixed_terminal_and_active_runs() {
                 (RunState::Ready, RunState::Leased),
                 (RunState::Leased, RunState::Running),
             ] {
+                if to == RunState::Running {
+                    let seq = next_seq(auth);
+                    let _ = auth
+                        .submit_command(
+                            MutationCommand::LeaseAcquire(
+                                actionqueue_core::mutation::LeaseAcquireCommand::new(
+                                    seq,
+                                    rid,
+                                    "fixture",
+                                    u64::MAX,
+                                    0,
+                                ),
+                            ),
+                            DurabilityPolicy::Immediate,
+                        )
+                        .unwrap();
+                }
                 let s = next_seq(auth);
                 let _ = auth
                     .submit_command(
@@ -447,7 +451,14 @@ fn crash_with_mixed_terminal_and_active_runs() {
             let seq = next_seq(&authority);
             let _ = authority
                 .submit_command(
-                    MutationCommand::AttemptStart(AttemptStartCommand::new(seq, run_a, aid, seq)),
+                    MutationCommand::AttemptStart(AttemptStartCommand::new(
+                        seq,
+                        run_a,
+                        aid,
+                        seq,
+                        lease_support::fence_for(authority.projection(), run_a),
+                        authority.projection().pending_resume(run_a).map(|c| c.context_id),
+                    )),
                     DurabilityPolicy::Immediate,
                 )
                 .expect("attempt start A");
@@ -486,7 +497,14 @@ fn crash_with_mixed_terminal_and_active_runs() {
             let seq = next_seq(&authority);
             let _ = authority
                 .submit_command(
-                    MutationCommand::AttemptStart(AttemptStartCommand::new(seq, run_b, aid, seq)),
+                    MutationCommand::AttemptStart(AttemptStartCommand::new(
+                        seq,
+                        run_b,
+                        aid,
+                        seq,
+                        lease_support::fence_for(authority.projection(), run_b),
+                        authority.projection().pending_resume(run_b).map(|c| c.context_id),
+                    )),
                     DurabilityPolicy::Immediate,
                 )
                 .expect("attempt start B");
@@ -559,7 +577,12 @@ fn crash_with_mixed_terminal_and_active_runs() {
         let _ = authority
             .submit_command(
                 MutationCommand::AttemptStart(AttemptStartCommand::new(
-                    seq, run_c, attempt_id, seq,
+                    seq,
+                    run_c,
+                    attempt_id,
+                    seq,
+                    lease_support::fence_for(authority.projection(), run_c),
+                    authority.projection().pending_resume(run_c).map(|c| c.context_id),
                 )),
                 DurabilityPolicy::Immediate,
             )
@@ -630,23 +653,7 @@ fn sequential_crashes_with_incremental_progress() {
         let mut authority = open_authority(&data_dir);
 
         let spec = make_task_spec_with_id(task_id, &[0xDD]);
-        let seq = next_seq(&authority);
-        let _ = authority
-            .submit_command(
-                MutationCommand::TaskCreate(TaskCreateCommand::new(seq, spec, seq)),
-                DurabilityPolicy::Immediate,
-            )
-            .expect("task create");
-
-        let seq = next_seq(&authority);
-        let run = RunInstance::new_scheduled_with_id(run_id, task_id, seq, seq)
-            .expect("run instance should be valid");
-        let _ = authority
-            .submit_command(
-                MutationCommand::RunCreate(RunCreateCommand::new(seq, run)),
-                DurabilityPolicy::Immediate,
-            )
-            .expect("run create");
+        admit_once(&mut authority, spec, run_id);
 
         simulate_kill9(authority);
     }
@@ -712,6 +719,23 @@ fn sequential_crashes_with_incremental_progress() {
             )
             .expect("Ready->Leased");
 
+        if authority.projection().get_lease(&run_id).is_none() {
+            let seq = next_seq(&authority);
+            let _ = authority
+                .submit_command(
+                    MutationCommand::LeaseAcquire(
+                        actionqueue_core::mutation::LeaseAcquireCommand::new(
+                            seq,
+                            run_id,
+                            "fixture",
+                            u64::MAX,
+                            0,
+                        ),
+                    ),
+                    DurabilityPolicy::Immediate,
+                )
+                .unwrap();
+        }
         let seq = next_seq(&authority);
         let _ = authority
             .submit_command(
@@ -748,7 +772,12 @@ fn sequential_crashes_with_incremental_progress() {
         let _ = authority
             .submit_command(
                 MutationCommand::AttemptStart(AttemptStartCommand::new(
-                    seq, run_id, attempt_id, seq,
+                    seq,
+                    run_id,
+                    attempt_id,
+                    seq,
+                    lease_support::fence_for(authority.projection(), run_id),
+                    authority.projection().pending_resume(run_id).map(|c| c.context_id),
                 )),
                 DurabilityPolicy::Immediate,
             )
@@ -818,24 +847,14 @@ fn wal_sequence_monotonicity_across_crashes() {
         let spec1 = make_task_spec(&[0xE1]);
         task_id_1 = spec1.id();
         let seq = next_seq(&authority);
-        assert_eq!(seq, 1, "first event should get sequence 1");
-        let _ = authority
-            .submit_command(
-                MutationCommand::TaskCreate(TaskCreateCommand::new(seq, spec1, seq)),
-                DurabilityPolicy::Immediate,
-            )
-            .expect("task create 1");
+        assert_eq!(seq, 2, "StoreInitialized precedes the first mutation");
+        admit_once(&mut authority, spec1, RunId::new());
 
         let spec2 = make_task_spec(&[0xE2]);
         task_id_2 = spec2.id();
         let seq = next_seq(&authority);
-        assert_eq!(seq, 2, "second event should get sequence 2");
-        let _ = authority
-            .submit_command(
-                MutationCommand::TaskCreate(TaskCreateCommand::new(seq, spec2, seq)),
-                DurabilityPolicy::Immediate,
-            )
-            .expect("task create 2");
+        assert_eq!(seq, 3, "second mutation follows initialization");
+        admit_once(&mut authority, spec2, RunId::new());
 
         simulate_kill9(authority);
     }
@@ -845,8 +864,8 @@ fn wal_sequence_monotonicity_across_crashes() {
         let recovery = load_projection_from_storage(&data_dir).expect("recovery 1");
         assert_eq!(
             recovery.projection.latest_sequence(),
-            2,
-            "latest sequence must be 2 after 2 events + crash"
+            3,
+            "initialization plus two mutations survive crash"
         );
     }
 
@@ -855,14 +874,9 @@ fn wal_sequence_monotonicity_across_crashes() {
         let mut authority = open_authority(&data_dir);
 
         let seq = next_seq(&authority);
-        assert_eq!(seq, 3, "post-crash-1 event should get sequence 3");
+        assert_eq!(seq, 4, "post-crash mutation is contiguous");
         let spec3 = make_task_spec(&[0xE3]);
-        let _ = authority
-            .submit_command(
-                MutationCommand::TaskCreate(TaskCreateCommand::new(seq, spec3, seq)),
-                DurabilityPolicy::Immediate,
-            )
-            .expect("task create 3");
+        admit_once(&mut authority, spec3, RunId::new());
 
         simulate_kill9(authority);
     }
@@ -872,8 +886,8 @@ fn wal_sequence_monotonicity_across_crashes() {
         let recovery = load_projection_from_storage(&data_dir).expect("recovery 2");
         assert_eq!(
             recovery.projection.latest_sequence(),
-            3,
-            "latest sequence must be 3 after 3 events across 2 crashes"
+            4,
+            "initialization plus three mutations survive crashes"
         );
         assert_eq!(recovery.projection.task_count(), 3);
         assert!(recovery.projection.get_task(&task_id_1).is_some());
@@ -903,23 +917,7 @@ fn crash_during_retry_wait_preserves_state() {
         let mut authority = open_authority(&data_dir);
 
         let spec = make_task_spec_with_id(task_id, &[0xFF]);
-        let seq = next_seq(&authority);
-        let _ = authority
-            .submit_command(
-                MutationCommand::TaskCreate(TaskCreateCommand::new(seq, spec, seq)),
-                DurabilityPolicy::Immediate,
-            )
-            .expect("task create");
-
-        let seq = next_seq(&authority);
-        let run = RunInstance::new_scheduled_with_id(run_id, task_id, seq, seq)
-            .expect("run instance should be valid");
-        let _ = authority
-            .submit_command(
-                MutationCommand::RunCreate(RunCreateCommand::new(seq, run)),
-                DurabilityPolicy::Immediate,
-            )
-            .expect("run create");
+        admit_once(&mut authority, spec, run_id);
 
         // Scheduled -> Ready -> Leased -> Running
         for (from, to) in [
@@ -927,6 +925,23 @@ fn crash_during_retry_wait_preserves_state() {
             (RunState::Ready, RunState::Leased),
             (RunState::Leased, RunState::Running),
         ] {
+            if to == RunState::Running && authority.projection().get_lease(&run_id).is_none() {
+                let seq = next_seq(&authority);
+                let _ = authority
+                    .submit_command(
+                        MutationCommand::LeaseAcquire(
+                            actionqueue_core::mutation::LeaseAcquireCommand::new(
+                                seq,
+                                run_id,
+                                "fixture",
+                                u64::MAX,
+                                0,
+                            ),
+                        ),
+                        DurabilityPolicy::Immediate,
+                    )
+                    .unwrap();
+            }
             let seq = next_seq(&authority);
             let _ = authority
                 .submit_command(
@@ -943,7 +958,12 @@ fn crash_during_retry_wait_preserves_state() {
         let _ = authority
             .submit_command(
                 MutationCommand::AttemptStart(AttemptStartCommand::new(
-                    seq, run_id, attempt_1, seq,
+                    seq,
+                    run_id,
+                    attempt_1,
+                    seq,
+                    lease_support::fence_for(authority.projection(), run_id),
+                    authority.projection().pending_resume(run_id).map(|c| c.context_id),
                 )),
                 DurabilityPolicy::Immediate,
             )
@@ -1000,6 +1020,23 @@ fn crash_during_retry_wait_preserves_state() {
             (RunState::Ready, RunState::Leased),
             (RunState::Leased, RunState::Running),
         ] {
+            if to == RunState::Running && authority.projection().get_lease(&run_id).is_none() {
+                let seq = next_seq(&authority);
+                let _ = authority
+                    .submit_command(
+                        MutationCommand::LeaseAcquire(
+                            actionqueue_core::mutation::LeaseAcquireCommand::new(
+                                seq,
+                                run_id,
+                                "fixture",
+                                u64::MAX,
+                                0,
+                            ),
+                        ),
+                        DurabilityPolicy::Immediate,
+                    )
+                    .unwrap();
+            }
             let seq = next_seq(&authority);
             let _ = authority
                 .submit_command(
@@ -1016,7 +1053,12 @@ fn crash_during_retry_wait_preserves_state() {
         let _ = authority
             .submit_command(
                 MutationCommand::AttemptStart(AttemptStartCommand::new(
-                    seq, run_id, attempt_2, seq,
+                    seq,
+                    run_id,
+                    attempt_2,
+                    seq,
+                    lease_support::fence_for(authority.projection(), run_id),
+                    authority.projection().pending_resume(run_id).map(|c| c.context_id),
                 )),
                 DurabilityPolicy::Immediate,
             )
@@ -1079,13 +1121,7 @@ fn high_volume_tasks_survive_crash() {
         for i in 0u16..50 {
             let spec = make_task_spec(&i.to_le_bytes());
             task_ids.push(spec.id());
-            let seq = next_seq(&authority);
-            let _ = authority
-                .submit_command(
-                    MutationCommand::TaskCreate(TaskCreateCommand::new(seq, spec, seq)),
-                    DurabilityPolicy::Immediate,
-                )
-                .expect("task create in bulk");
+            admit_once(&mut authority, spec, RunId::new());
         }
 
         simulate_kill9(authority);
@@ -1095,7 +1131,7 @@ fn high_volume_tasks_survive_crash() {
     {
         let recovery = load_projection_from_storage(&data_dir).expect("bulk recovery");
         assert_eq!(recovery.projection.task_count(), 50, "all 50 tasks must survive kill -9");
-        assert_eq!(recovery.projection.latest_sequence(), 50);
+        assert_eq!(recovery.projection.latest_sequence(), 51);
 
         for task_id in &task_ids {
             assert!(

@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "id": "AQ-CF-PROOF-CONTROL",
+  "target": "acceptance_control_mutation_attribution",
+  "case_ids": [
+    "AQ-H10",
+    "AQ-H11",
+    "AQ-H15"
+  ],
+  "minimum_passed": 1,
+  "evidence_kind": "complete_test_binary",
+  "assertions": "All tests in this named binary must pass; replay/crash assertions execute inside their test controllers."
+}

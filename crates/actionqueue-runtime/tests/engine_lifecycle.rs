@@ -10,12 +10,22 @@ use actionqueue_core::task::metadata::TaskMetadata;
 use actionqueue_core::task::run_policy::RunPolicy;
 use actionqueue_core::task::task_spec::{TaskPayload, TaskSpec};
 use actionqueue_engine::time::clock::MockClock;
-use actionqueue_executor_local::handler::{ExecutorContext, ExecutorHandler, HandlerOutput};
+use actionqueue_executor_local::handler::{AttemptDisposition, ExecutorContext, ExecutorHandler};
 use actionqueue_runtime::config::RuntimeConfig;
 use actionqueue_runtime::engine::ActionQueueEngine;
 
 static TEST_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
+/// Single-tenant fixture host binding for embedded control conveniences.
+fn host() -> actionqueue_core::control::HostControlContext {
+    actionqueue_core::control::HostControlContext {
+        actor_id: None,
+        scope: actionqueue_core::control::ControlScope::SingleTenant,
+        attribution: actionqueue_core::causal::ControlMutationContext::new(
+            actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+        ),
+    }
+}
 fn temp_data_dir() -> PathBuf {
     let dir = std::env::temp_dir();
     let count = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
@@ -28,9 +38,12 @@ fn temp_data_dir() -> PathBuf {
 struct SuccessHandler;
 
 impl ExecutorHandler for SuccessHandler {
-    fn execute(&self, ctx: ExecutorContext) -> HandlerOutput {
+    fn execute(&self, ctx: ExecutorContext) -> AttemptDisposition {
         let _input = ctx.input;
-        HandlerOutput::Success { output: Some(b"done".to_vec()), consumption: vec![] }
+        actionqueue_core::disposition::AttemptDisposition::complete(
+            (Some(b"done".to_vec()))
+                .map(|v| actionqueue_core::data_ref::DataRef::from_bytes(v).unwrap()),
+        )
     }
 }
 
@@ -41,7 +54,8 @@ async fn full_lifecycle_submit_to_complete() {
 
     let clock = MockClock::new(1000);
     let engine = ActionQueueEngine::new(config, SuccessHandler);
-    let mut bootstrapped = engine.bootstrap_with_clock(clock).expect("bootstrap should succeed");
+    let mut bootstrapped =
+        engine.bootstrap_with_clock(clock).expect("bootstrap should succeed").with_host(host());
 
     // Submit a Once task
     let task_id = TaskId::new();
@@ -54,7 +68,9 @@ async fn full_lifecycle_submit_to_complete() {
     )
     .expect("valid spec");
 
-    bootstrapped.submit_task(spec).expect("submit should succeed");
+    let request =
+        actionqueue_core::admission::EnsureTaskRequest::for_task(spec.clone(), vec![]).unwrap();
+    let created = bootstrapped.submit_task(spec).expect("submit should succeed");
 
     // Verify task was created
     assert_eq!(bootstrapped.projection().task_count(), 1);
@@ -72,7 +88,22 @@ async fn full_lifecycle_submit_to_complete() {
     let run_state = bootstrapped.projection().get_run_state(&run_ids[0]);
     assert_eq!(run_state, Some(&RunState::Completed));
 
+    let before = bootstrapped.projection().projection_digest().unwrap();
+    let duplicate = bootstrapped.ensure_task(request.clone()).unwrap();
+    assert!(!duplicate.is_created());
+    assert_eq!(duplicate.sequence(), created.sequence());
+    assert_eq!(bootstrapped.projection().projection_digest().unwrap(), before);
     bootstrapped.shutdown().expect("shutdown should succeed");
+    let mut recovered = ActionQueueEngine::new(
+        RuntimeConfig { data_dir: data_dir.clone(), ..Default::default() },
+        SuccessHandler,
+    )
+    .bootstrap_with_clock(MockClock::new(5000))
+    .unwrap()
+    .with_host(host());
+    assert!(!recovered.ensure_task(request).unwrap().is_created());
+    assert_eq!(recovered.projection().projection_digest().unwrap(), before);
+    recovered.shutdown().unwrap();
     let _ = std::fs::remove_dir_all(data_dir);
 }
 
@@ -83,7 +114,8 @@ async fn engine_pause_skips_dispatch() {
 
     let clock = MockClock::new(1000);
     let engine = ActionQueueEngine::new(config, SuccessHandler);
-    let mut bootstrapped = engine.bootstrap_with_clock(clock).expect("bootstrap should succeed");
+    let mut bootstrapped =
+        engine.bootstrap_with_clock(clock).expect("bootstrap should succeed").with_host(host());
 
     // Submit task
     let spec = TaskSpec::new(
@@ -100,5 +132,57 @@ async fn engine_pause_skips_dispatch() {
     let tick = bootstrapped.tick().await.expect("tick should succeed");
     assert!(!tick.engine_paused);
 
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
+#[tokio::test]
+async fn child_retry_survives_parent_completion_cache_cleanup_and_restart() {
+    use actionqueue_core::admission::{AdmissionRejection, EnsureTaskRequest};
+    use actionqueue_runtime::admission::AdmissionError;
+    let data_dir = temp_data_dir();
+    let config = RuntimeConfig { data_dir: data_dir.clone(), ..Default::default() };
+    let mut engine = ActionQueueEngine::new(config.clone(), SuccessHandler)
+        .bootstrap_with_clock(MockClock::new(1000))
+        .unwrap()
+        .with_host(host());
+    let make_spec = |id| {
+        TaskSpec::new(
+            id,
+            TaskPayload::new(vec![]),
+            RunPolicy::Once,
+            TaskConstraints::default(),
+            TaskMetadata::default(),
+        )
+        .unwrap()
+    };
+    let parent = TaskId::new();
+    let child = TaskId::new();
+    engine.submit_task(make_spec(parent)).unwrap();
+    let request = EnsureTaskRequest::for_task(
+        make_spec(child).with_parent_policy(
+            parent,
+            actionqueue_core::task::task_spec::ChildLifecyclePolicy::Detached,
+        ),
+        vec![],
+    )
+    .unwrap();
+    engine.ensure_task(request.clone()).unwrap();
+    let _ = engine.run_until_idle().await.unwrap();
+    assert!(engine.projection().runs_for_task(parent).all(|r| r.state() == RunState::Completed));
+    assert!(engine.projection().runs_for_task(child).all(|r| r.state() == RunState::Completed));
+    let digest = engine.projection().projection_digest().unwrap();
+    assert!(!engine.ensure_task(request.clone()).unwrap().is_created());
+    assert!(matches!(
+        engine.submit_task(make_spec(TaskId::new()).with_parent(parent)),
+        Err(AdmissionError::Rejected(AdmissionRejection::TerminalParent))
+    ));
+    engine.shutdown().unwrap();
+    let mut recovered = ActionQueueEngine::new(config, SuccessHandler)
+        .bootstrap_with_clock(MockClock::new(5000))
+        .unwrap()
+        .with_host(host());
+    assert!(!recovered.ensure_task(request).unwrap().is_created());
+    assert_eq!(recovered.projection().projection_digest().unwrap(), digest);
+    recovered.shutdown().unwrap();
     let _ = std::fs::remove_dir_all(data_dir);
 }

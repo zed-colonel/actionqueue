@@ -38,12 +38,12 @@ async fn assert_pre_execution_baseline(
     task_id_literal: &str,
     expected_run_id: &str,
 ) {
-    let stats = support::get_json(router, "/api/v1/stats").await;
+    let stats = support::get_json(router, "/api/v2/stats").await;
     assert_eq!(stats["total_runs"], 1);
     assert_eq!(stats["runs_by_state"]["scheduled"], 1);
 
-    let runs = support::get_json(router, "/api/v1/runs").await;
-    let task_runs = runs["runs"]
+    let runs = support::get_json(router, "/api/v2/runs").await;
+    let task_runs = runs["items"]
         .as_array()
         .expect("runs list should be an array")
         .iter()
@@ -61,7 +61,7 @@ async fn assert_retry_cap_http_truth(
     run_id: &str,
     spec: RetryCapScenarioSpec,
 ) {
-    let stats = support::get_json(router, "/api/v1/stats").await;
+    let stats = support::get_json(router, "/api/v2/stats").await;
     assert_eq!(stats["total_runs"], 1);
     assert_eq!(
         stats["runs_by_state"]["completed"],
@@ -75,8 +75,8 @@ async fn assert_retry_cap_http_truth(
     assert_eq!(stats["runs_by_state"]["ready"], 0);
     assert_eq!(stats["runs_by_state"]["scheduled"], 0);
 
-    let runs = support::get_json(router, "/api/v1/runs").await;
-    let task_runs = runs["runs"]
+    let runs = support::get_json(router, "/api/v2/runs").await;
+    let task_runs = runs["items"]
         .as_array()
         .expect("runs list should be an array")
         .iter()
@@ -87,13 +87,13 @@ async fn assert_retry_cap_http_truth(
     assert_eq!(task_runs[0]["attempt_count"], spec.expected_attempt_count);
     assert_eq!(task_runs[0]["state"], spec.expected_final_state);
 
-    let run_get_path = format!("/api/v1/runs/{run_id}");
+    let run_get_path = format!("/api/v2/runs/{run_id}");
     let run_get = support::get_json(router, &run_get_path).await;
     assert_eq!(run_get["state"], spec.expected_final_state);
     assert_eq!(run_get["attempt_count"], spec.expected_attempt_count);
     assert_eq!(run_get["block_reason"], "terminal");
 
-    let attempts = run_get["attempts"].as_array().expect("attempts should be an array");
+    let attempts = run_get["attempts"]["items"].as_array().expect("attempts should be an array");
     assert_eq!(attempts.len(), spec.expected_attempt_count);
     let attempt_results = attempts
         .iter()

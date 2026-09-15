@@ -1,0 +1,50 @@
+{
+  "baseline_commit": "97c9dc26c19c697dbfb204ed503e82c5f053394f",
+  "command_template": "cargo test --workspace [--features <set>] --no-fail-fast -- --test-threads=1",
+  "toolchain": "rustc 1.89.0 (29483883e 2025-08-04)",
+  "note": "counts are evidence of the frozen baseline; they are not target thresholds",
+  "feature_sets": {
+    "default": {
+      "binaries": 73,
+      "passed": 870,
+      "failed": 0,
+      "ignored": 0,
+      "wall_seconds": 40.145
+    },
+    "workflow,budget,actor,platform": {
+      "binaries": 103,
+      "passed": 939,
+      "failed": 0,
+      "ignored": 0,
+      "wall_seconds": 43.708
+    },
+    "workflow": {
+      "binaries": 84,
+      "passed": 904,
+      "failed": 0,
+      "ignored": 0,
+      "wall_seconds": 30.0
+    },
+    "budget": {
+      "binaries": 82,
+      "passed": 882,
+      "failed": 0,
+      "ignored": 0,
+      "wall_seconds": 26.0
+    },
+    "actor": {
+      "binaries": 77,
+      "passed": 882,
+      "failed": 0,
+      "ignored": 0,
+      "wall_seconds": 26.35
+    },
+    "platform": {
+      "binaries": 76,
+      "passed": 876,
+      "failed": 0,
+      "ignored": 0,
+      "wall_seconds": 26.587
+    }
+  }
+}

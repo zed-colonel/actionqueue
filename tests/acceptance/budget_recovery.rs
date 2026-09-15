@@ -5,9 +5,10 @@
 //! and re-bootstrapping from the same data directory, the recovered projection
 //! must reflect the same budget allocation and consumption as before the crash.
 
+#[path = "host_support.rs"]
+mod host_support;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use actionqueue_core::budget::{BudgetConsumption, BudgetDimension};
@@ -17,19 +18,12 @@ use actionqueue_core::task::metadata::TaskMetadata;
 use actionqueue_core::task::run_policy::RunPolicy;
 use actionqueue_core::task::task_spec::{TaskPayload, TaskSpec};
 use actionqueue_engine::time::clock::MockClock;
-use actionqueue_executor_local::handler::{ExecutorContext, ExecutorHandler, HandlerOutput};
+use actionqueue_executor_local::handler::{AttemptDisposition, ExecutorContext, ExecutorHandler};
 use actionqueue_runtime::config::{BackoffStrategyConfig, RuntimeConfig};
 use actionqueue_runtime::engine::ActionQueueEngine;
 
-static COUNTER: AtomicUsize = AtomicUsize::new(0);
-
-fn data_dir(label: &str) -> PathBuf {
-    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let dir = PathBuf::from("target")
-        .join("tmp")
-        .join(format!("7g-budget-recovery-{label}-{}-{n}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("data dir should be creatable");
-    dir
+fn data_dir(label: &str) -> tempfile::TempDir {
+    tempfile::Builder::new().prefix(label).tempdir().expect("test data dir")
 }
 
 /// Always fails terminally, consuming 300 tokens per attempt.
@@ -38,11 +32,12 @@ fn data_dir(label: &str) -> PathBuf {
 struct ThreeHundredTokenHandler;
 
 impl ExecutorHandler for ThreeHundredTokenHandler {
-    fn execute(&self, _ctx: ExecutorContext) -> HandlerOutput {
-        HandlerOutput::TerminalFailure {
-            error: "budget-consume-300".to_string(),
-            consumption: vec![BudgetConsumption::new(BudgetDimension::Token, 300)],
-        }
+    fn execute(&self, _ctx: ExecutorContext) -> AttemptDisposition {
+        actionqueue_core::disposition::AttemptDisposition::terminal_failure(
+            actionqueue_core::bounded::BoundedError::new("budget-consume-300".to_string()).unwrap(),
+        )
+        .with_consumption(vec![BudgetConsumption::new(BudgetDimension::Token, 300)])
+        .unwrap()
     }
 }
 
@@ -73,8 +68,11 @@ async fn budget_state_survives_wal_recovery() {
     // ---- Phase 1: allocate, consume 300 tokens via terminal failure, then drop ----
     {
         let clock = MockClock::new(1000);
-        let engine = ActionQueueEngine::new(make_config(dir.clone()), ThreeHundredTokenHandler);
-        let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap phase 1");
+        let engine =
+            ActionQueueEngine::new(make_config(dir.path().to_path_buf()), ThreeHundredTokenHandler);
+        let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap phase 1").with_host(
+            crate::host_support::host(actionqueue_core::control::ControlScope::SingleTenant),
+        );
 
         // max_attempts=1 with TerminalFailure → exactly one dispatch, then Failed.
         let constraints = TaskConstraints::new(1, None, None).expect("valid constraints");
@@ -112,8 +110,11 @@ async fn budget_state_survives_wal_recovery() {
     // ---- Phase 2: re-bootstrap and verify WAL recovery restores budget state ----
     {
         let clock = MockClock::new(1000);
-        let engine = ActionQueueEngine::new(make_config(dir.clone()), ThreeHundredTokenHandler);
-        let boot = engine.bootstrap_with_clock(clock).expect("bootstrap phase 2");
+        let engine =
+            ActionQueueEngine::new(make_config(dir.path().to_path_buf()), ThreeHundredTokenHandler);
+        let boot = engine.bootstrap_with_clock(clock).expect("bootstrap phase 2").with_host(
+            crate::host_support::host(actionqueue_core::control::ControlScope::SingleTenant),
+        );
 
         let budget_recovered =
             boot.projection().get_budget(&task_id, BudgetDimension::Token).expect("budget");
@@ -129,8 +130,6 @@ async fn budget_state_survives_wal_recovery() {
 
         boot.shutdown().expect("shutdown phase 2");
     }
-
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Budget replenishment resets consumed to 0 and survives WAL recovery.
@@ -147,8 +146,11 @@ async fn budget_replenishment_survives_wal_recovery() {
     // ---- Phase 1: allocate, exhaust, replenish, then drop ----
     {
         let clock = MockClock::new(1000);
-        let engine = ActionQueueEngine::new(make_config(dir.clone()), ThreeHundredTokenHandler);
-        let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap phase 1");
+        let engine =
+            ActionQueueEngine::new(make_config(dir.path().to_path_buf()), ThreeHundredTokenHandler);
+        let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap phase 1").with_host(
+            crate::host_support::host(actionqueue_core::control::ControlScope::SingleTenant),
+        );
 
         // max_attempts=5 so we get multiple dispatches before exhaustion.
         let constraints = TaskConstraints::new(5, None, None).expect("valid constraints");
@@ -187,8 +189,11 @@ async fn budget_replenishment_survives_wal_recovery() {
     // ---- Phase 2: re-bootstrap and verify replenishment state persisted ----
     {
         let clock = MockClock::new(1000);
-        let engine = ActionQueueEngine::new(make_config(dir.clone()), ThreeHundredTokenHandler);
-        let boot = engine.bootstrap_with_clock(clock).expect("bootstrap phase 2");
+        let engine =
+            ActionQueueEngine::new(make_config(dir.path().to_path_buf()), ThreeHundredTokenHandler);
+        let boot = engine.bootstrap_with_clock(clock).expect("bootstrap phase 2").with_host(
+            crate::host_support::host(actionqueue_core::control::ControlScope::SingleTenant),
+        );
 
         let budget_recovered =
             boot.projection().get_budget(&task_id, BudgetDimension::Token).expect("budget");
@@ -204,6 +209,4 @@ async fn budget_replenishment_survives_wal_recovery() {
 
         boot.shutdown().expect("shutdown phase 2");
     }
-
-    let _ = std::fs::remove_dir_all(&dir);
 }

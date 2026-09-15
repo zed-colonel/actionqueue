@@ -14,7 +14,9 @@ mod wf {
     use actionqueue_core::task::run_policy::RunPolicy;
     use actionqueue_core::task::task_spec::{TaskPayload, TaskSpec};
     use actionqueue_engine::time::clock::MockClock;
-    use actionqueue_executor_local::handler::{ExecutorContext, ExecutorHandler, HandlerOutput};
+    use actionqueue_executor_local::handler::{
+        AttemptDisposition, ExecutorContext, ExecutorHandler,
+    };
     use actionqueue_runtime::config::RuntimeConfig;
     use actionqueue_runtime::engine::ActionQueueEngine;
 
@@ -22,8 +24,11 @@ mod wf {
     struct OutputHandler;
 
     impl ExecutorHandler for OutputHandler {
-        fn execute(&self, _ctx: ExecutorContext) -> HandlerOutput {
-            HandlerOutput::Success { output: Some(b"hello-output".to_vec()), consumption: vec![] }
+        fn execute(&self, _ctx: ExecutorContext) -> AttemptDisposition {
+            actionqueue_core::disposition::AttemptDisposition::complete(
+                (Some(b"hello-output".to_vec()))
+                    .map(|v| actionqueue_core::data_ref::DataRef::from_bytes(v).unwrap()),
+            )
         }
     }
 
@@ -45,7 +50,10 @@ mod wf {
             let engine = ActionQueueEngine::new(engine_config(&data_dir), OutputHandler);
             let mut eng = engine
                 .bootstrap_with_clock(MockClock::new(1000))
-                .expect("bootstrap should succeed");
+                .expect("bootstrap should succeed")
+                .with_host(crate::support::host_support::host(
+                    actionqueue_core::control::ControlScope::SingleTenant,
+                ));
 
             let spec = TaskSpec::new(
                 task_id,
@@ -87,7 +95,10 @@ mod wf {
             let engine = ActionQueueEngine::new(engine_config(&data_dir), OutputHandler);
             let eng = engine
                 .bootstrap_with_clock(MockClock::new(2000))
-                .expect("bootstrap after restart should succeed");
+                .expect("bootstrap after restart should succeed")
+                .with_host(crate::support::host_support::host(
+                    actionqueue_core::control::ControlScope::SingleTenant,
+                ));
 
             let run_ids = eng.projection().run_ids_for_task(task_id);
             assert_eq!(run_ids.len(), 1, "run count must be stable across restart");

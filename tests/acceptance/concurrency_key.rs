@@ -14,9 +14,9 @@ use actionqueue_engine::concurrency::key_gate::{ConcurrencyKey, KeyGate};
 struct ConcurrencyScenarioSpec {
     /// Human-readable scenario label used for isolated data-dir naming.
     label: &'static str,
-    /// Exact `/api/v1/stats` expectation before restart.
+    /// Exact `/api/v2/stats` expectation before restart.
     expected_stats_pre_restart: StatsTruth,
-    /// Exact `/api/v1/stats` expectation after restart.
+    /// Exact `/api/v2/stats` expectation after restart.
     expected_stats_post_restart: StatsTruth,
     /// Exact `/metrics` expectation before restart.
     expected_metrics_pre_restart: MetricsTruth,
@@ -26,7 +26,7 @@ struct ConcurrencyScenarioSpec {
 
 use support::{MetricsTruth, StatsTruth};
 
-/// Deterministic per-run assertion contract for `/api/v1/runs` and `/api/v1/runs/:id`.
+/// Deterministic per-run assertion contract for `/api/v2/runs` and `/api/v2/runs/:id`.
 #[derive(Debug, Clone, Copy)]
 struct RunRowTruth<'a> {
     run_id: actionqueue_core::ids::RunId,
@@ -65,7 +65,7 @@ fn seed_once_run_to_leased(
     }
 }
 
-/// Asserts required aggregate parity truth from `/api/v1/stats`.
+/// Asserts required aggregate parity truth from `/api/v2/stats`.
 async fn assert_stats_truth(router: &mut axum::Router<()>, expected: StatsTruth) {
     support::assert_stats_truth(router, expected).await;
 }
@@ -77,8 +77,8 @@ async fn assert_metrics_truth(router: &mut axum::Router<()>, expected: MetricsTr
 
 /// Asserts deterministic run identity/state/concurrency-key truth from read surfaces.
 async fn assert_run_rows_truth(router: &mut axum::Router<()>, expected_rows: &[RunRowTruth<'_>]) {
-    let runs = support::get_json(router, "/api/v1/runs").await;
-    let rows = runs["runs"].as_array().expect("runs list should be an array");
+    let runs = support::get_json(router, "/api/v2/runs").await;
+    let rows = runs["items"].as_array().expect("runs list should be an array");
     assert_eq!(rows.len(), expected_rows.len(), "scenario must expose exactly expected run count");
 
     for expected in expected_rows {
@@ -93,7 +93,7 @@ async fn assert_run_rows_truth(router: &mut axum::Router<()>, expected_rows: &[R
         )
         .await;
 
-        let run_get_path = format!("/api/v1/runs/{}", expected.run_id);
+        let run_get_path = format!("/api/v2/runs/{}", expected.run_id);
         let run_get = support::get_json(router, &run_get_path).await;
         assert_eq!(run_get["run_id"], expected.run_id.to_string());
         assert_eq!(run_get["state"], expected.expected_state);
@@ -651,7 +651,9 @@ async fn concurrency_key_e2e_serialized_execution_via_engine() {
     use actionqueue_core::task::run_policy::RunPolicy;
     use actionqueue_core::task::task_spec::{TaskPayload, TaskSpec};
     use actionqueue_engine::time::clock::MockClock;
-    use actionqueue_executor_local::handler::{ExecutorContext, ExecutorHandler, HandlerOutput};
+    use actionqueue_executor_local::handler::{
+        AttemptDisposition, ExecutorContext, ExecutorHandler,
+    };
     use actionqueue_runtime::config::{BackoffStrategyConfig, RuntimeConfig};
     use actionqueue_runtime::engine::ActionQueueEngine;
 
@@ -669,7 +671,7 @@ async fn concurrency_key_e2e_serialized_execution_via_engine() {
     }
 
     impl ExecutorHandler for ConcurrencyTracker {
-        fn execute(&self, ctx: ExecutorContext) -> HandlerOutput {
+        fn execute(&self, ctx: ExecutorContext) -> AttemptDisposition {
             let _input = ctx.input;
             let prev = self.concurrent.fetch_add(1, Ordering::SeqCst);
             let current = prev + 1;
@@ -687,7 +689,7 @@ async fn concurrency_key_e2e_serialized_execution_via_engine() {
             }
             std::thread::sleep(Duration::from_millis(5));
             self.concurrent.fetch_sub(1, Ordering::SeqCst);
-            HandlerOutput::Success { output: None, consumption: vec![] }
+            actionqueue_core::disposition::AttemptDisposition::complete(None)
         }
     }
 
@@ -707,7 +709,9 @@ async fn concurrency_key_e2e_serialized_execution_via_engine() {
 
     let clock = MockClock::new(1_000_000);
     let engine = ActionQueueEngine::new(config, handler);
-    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap should succeed");
+    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap should succeed").with_host(
+        crate::support::host_support::host(actionqueue_core::control::ControlScope::SingleTenant),
+    );
 
     // Submit two tasks sharing the SAME concurrency key.
     let shared_key = "e2e-serialize-key";

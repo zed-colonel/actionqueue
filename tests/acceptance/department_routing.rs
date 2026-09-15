@@ -3,16 +3,18 @@
 //! Verifies that actors can be grouped into departments and that
 //! department membership is tracked correctly.
 
+#[path = "host_support.rs"]
+mod host_support;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use actionqueue_actor::DepartmentRegistry;
-use actionqueue_core::actor::{ActorCapabilities, ActorRegistration};
+use actionqueue_core::actor::{ActorRegistration, ExecutorTraits};
 use actionqueue_core::ids::{ActorId, DepartmentId};
 use actionqueue_engine::time::clock::MockClock;
-use actionqueue_executor_local::handler::{ExecutorContext, ExecutorHandler, HandlerOutput};
+use actionqueue_executor_local::handler::{AttemptDisposition, ExecutorContext, ExecutorHandler};
 use actionqueue_runtime::config::{BackoffStrategyConfig, RuntimeConfig};
 use actionqueue_runtime::engine::ActionQueueEngine;
 
@@ -20,9 +22,8 @@ static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 fn data_dir(label: &str) -> PathBuf {
     let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let dir = PathBuf::from("target")
-        .join("tmp")
-        .join(format!("8d-dept-routing-{label}-{}-{n}", std::process::id()));
+    let dir =
+        std::env::temp_dir().join(format!("8d-dept-routing-{label}-{}-{n}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("data dir");
     dir
 }
@@ -30,8 +31,8 @@ fn data_dir(label: &str) -> PathBuf {
 struct NoopHandler;
 
 impl ExecutorHandler for NoopHandler {
-    fn execute(&self, _ctx: ExecutorContext) -> HandlerOutput {
-        HandlerOutput::success()
+    fn execute(&self, _ctx: ExecutorContext) -> AttemptDisposition {
+        AttemptDisposition::complete(None)
     }
 }
 
@@ -51,7 +52,9 @@ async fn five_actors_in_engineering_department() {
     let dir = data_dir("eng-dept");
     let clock = MockClock::new(1000);
     let engine = ActionQueueEngine::new(make_config(dir), NoopHandler);
-    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap");
+    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap").with_host(
+        crate::host_support::host(actionqueue_core::control::ControlScope::SingleTenant),
+    );
 
     let dept = DepartmentId::new("engineering").expect("valid dept");
 
@@ -59,7 +62,7 @@ async fn five_actors_in_engineering_department() {
     for i in 0..5 {
         let id = ActorId::new();
         actor_ids.push(id);
-        let caps = ActorCapabilities::new(vec!["compute".to_string()]).expect("caps");
+        let caps = ExecutorTraits::new(vec!["compute".to_string()]).expect("caps");
         let reg = ActorRegistration::new(id, format!("worker-{i}"), caps, 30)
             .with_department(dept.clone());
         boot.register_actor(reg).expect("register");

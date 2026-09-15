@@ -4,6 +4,8 @@
 //! - A rejected review blocks execution.
 //! - An approved review allows execution.
 
+#[path = "host_support.rs"]
+mod host_support;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -17,7 +19,7 @@ use actionqueue_core::task::metadata::TaskMetadata;
 use actionqueue_core::task::run_policy::RunPolicy;
 use actionqueue_core::task::task_spec::{TaskPayload, TaskSpec};
 use actionqueue_engine::time::clock::Clock;
-use actionqueue_executor_local::handler::{ExecutorContext, ExecutorHandler, HandlerOutput};
+use actionqueue_executor_local::handler::{AttemptDisposition, ExecutorContext, ExecutorHandler};
 use actionqueue_runtime::config::{BackoffStrategyConfig, RuntimeConfig};
 use actionqueue_runtime::engine::ActionQueueEngine;
 use actionqueue_workflow::dag::DependencyGate;
@@ -46,9 +48,7 @@ static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 fn data_dir(label: &str) -> PathBuf {
     let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let dir = PathBuf::from("target")
-        .join("tmp")
-        .join(format!("8g-approval-{label}-{}-{n}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("8g-approval-{label}-{}-{n}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("data dir");
     dir
 }
@@ -56,8 +56,8 @@ fn data_dir(label: &str) -> PathBuf {
 struct SucceedHandler;
 
 impl ExecutorHandler for SucceedHandler {
-    fn execute(&self, _ctx: ExecutorContext) -> HandlerOutput {
-        HandlerOutput::success()
+    fn execute(&self, _ctx: ExecutorContext) -> AttemptDisposition {
+        AttemptDisposition::complete(None)
     }
 }
 
@@ -133,7 +133,9 @@ async fn plan_completes_then_execution_eligible() {
     let dir = data_dir("workflow");
     let clock = AdvancableClock::new(1000);
     let engine = ActionQueueEngine::new(make_config(dir), SucceedHandler);
-    let mut boot = engine.bootstrap_with_clock(clock.clone()).expect("bootstrap");
+    let mut boot = engine.bootstrap_with_clock(clock.clone()).expect("bootstrap").with_host(
+        crate::host_support::host(actionqueue_core::control::ControlScope::SingleTenant),
+    );
 
     let plan_id = TaskId::new();
     let execution_id = TaskId::new();

@@ -34,6 +34,13 @@ impl ActorRegistry {
     pub fn register(&mut self, registration: ActorRegistration) {
         let actor_id = registration.actor_id();
         tracing::debug!(%actor_id, "actor registered");
+        if let Some(previous) = self.actors.get(&actor_id) {
+            if let Some(tenant) = previous.registration.tenant_id() {
+                if let Some(ids) = self.actors_by_tenant.get_mut(&tenant) {
+                    ids.remove(&actor_id);
+                }
+            }
+        }
         if let Some(tenant_id) = registration.tenant_id() {
             self.actors_by_tenant.entry(tenant_id).or_default().insert(actor_id);
         }
@@ -70,22 +77,17 @@ impl ActorRegistry {
         };
         ids.iter().copied().filter(|&id| self.is_active(id)).collect()
     }
-
-    /// Returns an iterator over all actor IDs (active and deregistered).
-    pub fn all_actor_ids(&self) -> impl Iterator<Item = ActorId> + '_ {
-        self.actors.keys().copied()
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use actionqueue_core::actor::{ActorCapabilities, ActorRegistration};
+    use actionqueue_core::actor::{ActorRegistration, ExecutorTraits};
     use actionqueue_core::ids::{ActorId, TenantId};
 
     use super::ActorRegistry;
 
     fn make_registration(actor_id: ActorId) -> ActorRegistration {
-        let caps = ActorCapabilities::new(vec!["compute".to_string()]).unwrap();
+        let caps = ExecutorTraits::new(vec!["compute".to_string()]).unwrap();
         ActorRegistration::new(actor_id, "test-actor", caps, 30)
     }
 
@@ -117,7 +119,7 @@ mod tests {
         let deregistered_id = ActorId::new();
         let other_tenant_id = ActorId::new();
 
-        let caps = ActorCapabilities::new(vec!["c".to_string()]).unwrap();
+        let caps = ExecutorTraits::new(vec!["c".to_string()]).unwrap();
         registry
             .register(ActorRegistration::new(active_id, "a", caps.clone(), 30).with_tenant(tenant));
         registry.register(
@@ -136,7 +138,7 @@ mod tests {
     fn identity_returns_lease_owner_string() {
         let mut registry = ActorRegistry::new();
         let id = ActorId::new();
-        let caps = ActorCapabilities::new(vec!["c".to_string()]).unwrap();
+        let caps = ExecutorTraits::new(vec!["c".to_string()]).unwrap();
         registry.register(ActorRegistration::new(id, "caelum-vessel-1", caps, 30));
         assert_eq!(registry.identity(id), Some("caelum-vessel-1"));
     }

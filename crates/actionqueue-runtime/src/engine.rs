@@ -6,9 +6,7 @@
 use actionqueue_core::task::task_spec::TaskSpec;
 use actionqueue_engine::time::clock::{Clock, SystemClock};
 use actionqueue_executor_local::handler::ExecutorHandler;
-use actionqueue_storage::recovery::bootstrap::{
-    load_projection_from_storage, RecoveryBootstrapError,
-};
+use actionqueue_storage::recovery::bootstrap::RecoveryBootstrapError;
 use actionqueue_storage::recovery::reducer::ReplayReducer;
 use actionqueue_storage::wal::fs_writer::WalFsWriter;
 use actionqueue_storage::wal::writer::InstrumentedWalWriter;
@@ -94,19 +92,23 @@ impl<H: ExecutorHandler + 'static> ActionQueueEngine<H> {
         let data_dir = self.config.data_dir.display().to_string();
         tracing::info!(data_dir, "bootstrapping engine");
 
-        // Ensure data directory exists
-        std::fs::create_dir_all(&self.config.data_dir)
-            .map_err(|e| BootstrapError::Io(e.to_string()))?;
-
         // Recover from storage
-        let recovery = load_projection_from_storage(&self.config.data_dir)
-            .map_err(BootstrapError::Recovery)?;
+        let recovery = actionqueue_storage::recovery::bootstrap::load_projection_with_features(
+            &self.config.data_dir,
+            self.config.store_features.clone(),
+        )
+        .map_err(BootstrapError::Recovery)?;
 
         // Build mutation authority
-        let authority = actionqueue_storage::mutation::authority::StorageMutationAuthority::new(
+        let mut authority = actionqueue_storage::mutation::authority::StorageMutationAuthority::new(
             recovery.wal_writer,
             recovery.projection,
         );
+
+        authority.set_admission_limits(self.config.admission_limits);
+        authority.set_continuation_limits(self.config.continuation_limits);
+        authority.set_signal_limits(self.config.signal_limits);
+        authority.set_signal_retention_policy(self.config.signal_retention);
 
         // Compute snapshot path — must match bootstrap.rs snapshot_dir / "snapshot.bin"
         let snapshot_path = self
@@ -125,7 +127,8 @@ impl<H: ExecutorHandler + 'static> ActionQueueEngine<H> {
                 self.config.lease_timeout_secs,
                 snapshot_path,
                 self.config.snapshot_event_threshold,
-            ),
+            )
+            .with_local_executor_traits(self.config.local_executor_traits.clone()),
         )
         .map_err(BootstrapError::Dispatch)?;
 
@@ -140,13 +143,197 @@ pub struct BootstrappedEngine<H: ExecutorHandler + 'static, C: Clock = SystemClo
 }
 
 impl<H: ExecutorHandler + 'static, C: Clock> BootstrappedEngine<H, C> {
-    /// Submits a new task specification for execution.
-    pub fn submit_task(&mut self, spec: TaskSpec) -> Result<(), EngineError> {
+    /// Idempotent convenience admission with `task/<uuid>` key, trace, and correlation.
+    /// Constructs an explicitly host-bound embedded control surface.
+    pub fn with_host(mut self, host: actionqueue_core::control::HostControlContext) -> Self {
+        self.set_control_context(Some(host));
+        self
+    }
+    /// Binds a trusted host identity/scope for embedded control convenience methods.
+    /// Execution and recovery do not inherit control permissions from this binding.
+    pub fn set_control_context(
+        &mut self,
+        host: Option<actionqueue_core::control::HostControlContext>,
+    ) {
+        self.dispatch.set_control_context(host);
+    }
+    /// Retain the preallocated task UUID on retry.
+    pub fn control(
+        &mut self,
+        operation: crate::control::ControlOperation,
+    ) -> Result<crate::control::ControlOutcome, crate::control::ServiceError> {
+        self.dispatch.control(operation)
+    }
+    /// Redacted host-bound structural inspection.
+    pub fn inspector(
+        &self,
+    ) -> Result<crate::inspection::Inspector<'_>, crate::inspection::InspectionError> {
+        self.dispatch.inspector(Default::default(), false)
+    }
+    /// Disclosure additionally requires an explicit trusted host policy.
+    pub fn inspector_with_disclosure(
+        &self,
+        policy: crate::inspection::DisclosurePolicy,
+    ) -> Result<crate::inspection::Inspector<'_>, crate::inspection::InspectionError> {
+        self.dispatch.inspector(policy, true)
+    }
+    pub fn submit_task(
+        &mut self,
+        spec: TaskSpec,
+    ) -> Result<actionqueue_core::admission::EnsureTaskOutcome, crate::admission::AdmissionError>
+    {
         let task_id = spec.id();
         tracing::debug!(%task_id, "submit_task");
-        self.dispatch.submit_task(spec).map_err(EngineError::Dispatch)
+        self.dispatch.submit_task(spec)
     }
 
+    pub fn get_admission(
+        &self,
+        key: &actionqueue_core::ids::AdmissionKey,
+    ) -> Result<crate::views::AdmissionView, crate::inspection::InspectionError> {
+        self.inspector()?.get_admission(key)
+    }
+    pub fn get_task(
+        &self,
+        id: actionqueue_core::ids::TaskId,
+    ) -> Result<crate::views::TaskView, crate::inspection::InspectionError> {
+        self.inspector()?.get_task(id)
+    }
+    pub fn get_run(
+        &self,
+        id: actionqueue_core::ids::RunId,
+    ) -> Result<crate::views::RunView, crate::inspection::InspectionError> {
+        self.inspector()?.get_run(id)
+    }
+    pub fn get_attempt(
+        &self,
+        run: actionqueue_core::ids::RunId,
+        attempt: actionqueue_core::ids::AttemptId,
+    ) -> Result<crate::views::AttemptView, crate::inspection::InspectionError> {
+        self.inspector()?.get_attempt(run, attempt)
+    }
+    pub fn get_wait(
+        &self,
+        id: actionqueue_core::ids::WaitId,
+    ) -> Result<crate::views::WaitView, crate::inspection::InspectionError> {
+        self.inspector()?.get_wait(id)
+    }
+    pub fn get_signal(
+        &self,
+        id: &actionqueue_core::ids::SignalId,
+    ) -> Result<crate::views::SignalView, crate::inspection::InspectionError> {
+        self.inspector()?.get_signal(id)
+    }
+    pub fn get_checkpoint(
+        &self,
+        id: actionqueue_core::ids::CheckpointId,
+    ) -> Result<crate::views::CheckpointView, crate::inspection::InspectionError> {
+        self.inspector()?.get_checkpoint(id)
+    }
+    #[cfg(feature = "serde")]
+    pub fn list_signals(
+        &self,
+        q: &crate::inspection::Query,
+    ) -> Result<crate::views::Page<crate::views::SignalView>, crate::inspection::InspectionError>
+    {
+        self.inspector()?.list_signals(q)
+    }
+    #[cfg(feature = "serde")]
+    pub fn list_waits(
+        &self,
+        q: &crate::inspection::Query,
+    ) -> Result<crate::views::Page<crate::views::WaitView>, crate::inspection::InspectionError>
+    {
+        self.inspector()?.list_waits(q)
+    }
+    #[cfg(feature = "serde")]
+    pub fn trace(
+        &self,
+        q: &crate::inspection::Query,
+    ) -> Result<crate::views::TraceView, crate::inspection::InspectionError> {
+        self.inspector()?.trace(q)
+    }
+    pub fn cancel_task(
+        &mut self,
+        id: actionqueue_core::ids::TaskId,
+    ) -> Result<crate::control::ControlOutcome, crate::control::ServiceError> {
+        self.control(crate::control::ControlOperation::Cancel(
+            actionqueue_core::mutation::CancelTarget::Task(id),
+        ))
+    }
+    pub fn cancel_run(
+        &mut self,
+        id: actionqueue_core::ids::RunId,
+    ) -> Result<crate::control::ControlOutcome, crate::control::ServiceError> {
+        self.control(crate::control::ControlOperation::Cancel(
+            actionqueue_core::mutation::CancelTarget::Run(id),
+        ))
+    }
+    pub fn cancel_wait(
+        &mut self,
+        run_id: actionqueue_core::ids::RunId,
+        wait_id: actionqueue_core::ids::WaitId,
+    ) -> Result<crate::control::ControlOutcome, crate::control::ServiceError> {
+        self.control(crate::control::ControlOperation::CancelWait { run_id, wait_id })
+    }
+    pub fn resolve_wait(
+        &mut self,
+        run_id: actionqueue_core::ids::RunId,
+        wait_id: actionqueue_core::ids::WaitId,
+    ) -> Result<crate::control::ControlOutcome, crate::control::ServiceError> {
+        self.control(crate::control::ControlOperation::ResolveWait { run_id, wait_id })
+    }
+    /// Resident signal and live capacity-rejection counters.
+    pub fn signal_statistics(&self) -> actionqueue_storage::recovery::signals::SignalStatistics {
+        self.dispatch.signal_statistics()
+    }
+    /// Admits a signal with the configured trusted host context.
+    pub fn admit_signal(
+        &mut self,
+        request: actionqueue_core::continuation::AdmitSignalRequest,
+    ) -> Result<actionqueue_core::continuation::AdmitSignalOutcome, crate::control::ServiceError>
+    {
+        match self.control(crate::control::ControlOperation::AdmitSignal(request))? {
+            crate::control::ControlOutcome::Signal(outcome) => Ok(outcome),
+            _ => unreachable!("signal operation"),
+        }
+    }
+    /// Explicit durable retention control through the mutation authority.
+    pub fn pin_signal(
+        &mut self,
+        signal_id: actionqueue_core::ids::SignalId,
+        pin_id: actionqueue_core::continuation::SignalPinId,
+        ingress: actionqueue_core::continuation::SignalIngressContext,
+    ) -> Result<usize, crate::signals::SignalAdmissionError> {
+        self.dispatch.pin_signal(signal_id, pin_id, ingress)
+    }
+    /// Explicit durable retention control through the mutation authority.
+    pub fn unpin_signal(
+        &mut self,
+        signal_id: actionqueue_core::ids::SignalId,
+        pin_id: actionqueue_core::continuation::SignalPinId,
+        ingress: actionqueue_core::continuation::SignalIngressContext,
+    ) -> Result<usize, crate::signals::SignalAdmissionError> {
+        self.dispatch.unpin_signal(signal_id, pin_id, ingress)
+    }
+    /// Explicit durable retention control through the mutation authority.
+    pub fn retire_signals(
+        &mut self,
+        sequences: Vec<actionqueue_core::ids::SignalSequence>,
+        ingress: actionqueue_core::continuation::SignalIngressContext,
+    ) -> Result<usize, crate::signals::SignalAdmissionError> {
+        self.dispatch.retire_signals(sequences, ingress)
+    }
+    /// Ensures a durable tenant-scoped admission; changed meaning returns a typed conflict.
+    pub fn ensure_task(
+        &mut self,
+        request: actionqueue_core::admission::EnsureTaskRequest,
+    ) -> Result<actionqueue_core::admission::EnsureTaskOutcome, crate::control::ServiceError> {
+        match self.control(crate::control::ControlOperation::AdmitTask(request))? {
+            crate::control::ControlOutcome::Task(outcome) => Ok(outcome),
+            _ => unreachable!("task operation"),
+        }
+    }
     /// Advances the dispatch loop by one tick.
     pub async fn tick(&mut self) -> Result<TickResult, EngineError> {
         self.dispatch.tick().await.map_err(EngineError::Dispatch)
@@ -221,7 +408,6 @@ impl<H: ExecutorHandler + 'static, C: Clock> BootstrappedEngine<H, C> {
     }
 
     /// Resumes a suspended run (transitions Suspended → Ready).
-    #[cfg(feature = "budget")]
     pub fn resume_run(&mut self, run_id: actionqueue_core::ids::RunId) -> Result<(), EngineError> {
         tracing::debug!(%run_id, "resume_run");
         self.dispatch.resume_run(run_id).map_err(EngineError::Dispatch)
@@ -239,17 +425,6 @@ impl<H: ExecutorHandler + 'static, C: Clock> BootstrappedEngine<H, C> {
     ) -> Result<actionqueue_core::subscription::SubscriptionId, EngineError> {
         tracing::debug!(%task_id, "create_subscription");
         self.dispatch.create_subscription(task_id, filter).map_err(EngineError::Dispatch)
-    }
-
-    /// Fires a custom event, triggering any matching subscriptions.
-    ///
-    /// Subscriptions with a `Custom { key }` filter matching the event key
-    /// are triggered. Triggered subscriptions promote their task's Scheduled
-    /// runs on the next tick.
-    #[cfg(feature = "budget")]
-    pub fn fire_custom_event(&mut self, key: String) -> Result<(), EngineError> {
-        tracing::debug!(key, "fire_custom_event");
-        self.dispatch.fire_custom_event(key).map_err(EngineError::Dispatch)
     }
 
     // ── Actor feature ──────────────────────────────────────────────────────

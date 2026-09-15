@@ -19,14 +19,22 @@ use actionqueue_core::mutation::{
 use actionqueue_core::run::state::RunState;
 use actionqueue_core::run::transitions::is_valid_transition;
 use actionqueue_core::subscription::SubscriptionId;
+use actionqueue_core::{
+    admission::{AdmissionDigest, AdmissionRejection, EnsureTaskOutcome, EnsureTaskRequest},
+    ids::{AdmissionKey, TenantId},
+    limits::AdmissionLimits,
+    mutation::AdmissionCommitCommand,
+    run::RunInstance,
+};
 
+use super::admission::AdmissionRecord;
 use crate::recovery::reducer::ReplayReducer;
 use crate::recovery::reducer::ReplayReducerError;
 use crate::wal::event::{WalEvent, WalEventType};
 use crate::wal::writer::{WalWriter, WalWriterError};
 
 /// Projection behavior required by the mutation authority.
-pub trait MutationProjection {
+pub trait MutationProjection: Clone {
     /// Typed projection apply error.
     type Error;
 
@@ -66,11 +74,204 @@ pub trait MutationProjection {
         false
     }
 
+    /// Rejects actor re-registration that changes its immutable tenant namespace.
+    fn validate_actor_registration(
+        &self,
+        _registration: &actionqueue_core::actor::ActorRegistration,
+    ) -> Result<(), MutationValidationError> {
+        Ok(())
+    }
+
+    /// Resolves a tenant-scoped admission under the exclusive mutation owner.
+    fn resolve_admission(
+        &self,
+        _tenant: Option<TenantId>,
+        _key: &AdmissionKey,
+        _digest: &AdmissionDigest,
+    ) -> Result<Option<EnsureTaskOutcome>, AdmissionRejection> {
+        Err(AdmissionRejection::UnsupportedFeature)
+    }
+    /// Validates complete admission semantics against durable state.
+    fn validate_admission(
+        &self,
+        _record: &AdmissionRecord,
+        _runs: &[RunInstance],
+    ) -> Result<(), AdmissionRejection> {
+        Err(AdmissionRejection::UnsupportedFeature)
+    }
+    /// Signal indexes, if this projection supports durable signals.
+    fn signal_index(&self) -> Option<&crate::recovery::signals::SignalIndex> {
+        None
+    }
+    /// Continuation indexes, if this projection supports durable waits.
+    fn wait_index(&self) -> Option<&crate::recovery::waits::WaitIndex> {
+        None
+    }
+    /// Validates local causation and tenant ownership before signal admission.
+    fn validate_signal_references(
+        &self,
+        _e: &actionqueue_core::continuation::SignalEnvelope,
+    ) -> Result<(), actionqueue_core::continuation::SignalRejection> {
+        Err(actionqueue_core::continuation::SignalRejection::UnsupportedFeature)
+    }
+    /// Checks operational capacity for a new wait, independently of replay validation.
+    fn validate_wait_capacity(
+        &self,
+        _run: RunId,
+        _limits: actionqueue_core::limits::ContinuationLimits,
+    ) -> Result<(), actionqueue_core::mutation::WaitRejection> {
+        Err(actionqueue_core::mutation::WaitRejection::UnsupportedFeature)
+    }
+    /// Additional runs are permitted only for an admitted cron task's next occurrence.
+    fn validate_additional_run(&self, _run: &RunInstance) -> Result<(), MutationValidationError> {
+        Err(MutationValidationError::RunCreateRequiresCronReplenishment)
+    }
+    /// Prepare continuation and compound controls against the serialized projection.
+    fn prepare_wait(
+        &self,
+        command: &MutationCommand,
+        durability: DurabilityPolicy,
+    ) -> Result<Option<super::wait::WaitPreparation>, actionqueue_core::mutation::WaitRejection>
+    {
+        if matches!(
+            command,
+            MutationCommand::AttemptDispositionCommit(_)
+                | MutationCommand::WaitEstablish(_)
+                | MutationCommand::WaitSatisfy(_)
+                | MutationCommand::WaitTimeout(_)
+                | MutationCommand::WaitResolve(_)
+                | MutationCommand::WaitCancel(_)
+                | MutationCommand::Cancel(_)
+        ) {
+            return Err(actionqueue_core::mutation::WaitRejection::UnsupportedFeature);
+        }
+        let _ = durability;
+        Ok(None)
+    }
+    /// Includes manual pins and continuation history.
+    fn signal_is_protected(&self, sequence: actionqueue_core::ids::SignalSequence) -> bool {
+        self.signal_index()
+            .and_then(|i| i.by_sequence(sequence))
+            .is_some_and(|r| !r.pins().is_empty())
+    }
+    fn prepare_disposition(
+        &self,
+        _c: &actionqueue_core::mutation::AttemptDispositionCommitCommand,
+        _a: AdmissionLimits,
+        _c_limits: actionqueue_core::limits::ContinuationLimits,
+        _s: actionqueue_core::limits::SignalLimits,
+    ) -> Result<super::disposition::DispositionRecord, super::disposition::DispositionRejection>
+    {
+        Err(super::disposition::DispositionRejection::UnsupportedFeature)
+    }
+    /// Checks current permissions and an explicit ingress scope before lookup.
+    fn authorize_scope(
+        &self,
+        _platform: bool,
+        _host: &actionqueue_core::control::HostControlContext,
+        _action: actionqueue_core::control::QueueAction,
+        _tenant: Option<TenantId>,
+    ) -> Result<(), actionqueue_core::control::ControlError> {
+        Err(actionqueue_core::control::ControlError::Unauthorized)
+    }
+    /// Prepares a host control against this authoritative projection.
+    fn prepare_control(
+        &self,
+        _platform: bool,
+        _host: &actionqueue_core::control::HostControlContext,
+        _command: MutationCommand,
+    ) -> Result<MutationCommand, actionqueue_core::control::ControlError> {
+        Err(actionqueue_core::control::ControlError::Unauthorized)
+    }
+    /// Verifies recovery controls against durable antecedents.
+    fn validate_recovery(
+        &self,
+        _command: &MutationCommand,
+    ) -> Result<(), actionqueue_core::control::ControlError> {
+        Err(actionqueue_core::control::ControlError::Unauthorized)
+    }
+    /// Independently verifies authenticated remote result expectations.
+    fn validate_remote(
+        &self,
+        _command: &actionqueue_core::mutation::AttemptDispositionCommitCommand,
+        _platform: bool,
+    ) -> Result<Option<u64>, actionqueue_core::control::ControlError> {
+        Err(actionqueue_core::control::ControlError::Unauthorized)
+    }
     /// Applies a durable event to the in-memory projection.
     fn apply_event(&mut self, event: &WalEvent) -> Result<(), Self::Error>;
 }
 
 impl MutationProjection for ReplayReducer {
+    fn validate_wait_capacity(
+        &self,
+        run: RunId,
+        limits: actionqueue_core::limits::ContinuationLimits,
+    ) -> Result<(), actionqueue_core::mutation::WaitRejection> {
+        use actionqueue_core::mutation::WaitRejection;
+        let run = self.get_run_instance(&run).ok_or(WaitRejection::NotFound)?;
+        let task = self.get_task(&run.task_id()).ok_or(WaitRejection::NotFound)?;
+        self.waits().validate_capacity(task.tenant_id(), limits)
+    }
+    fn validate_additional_run(&self, run: &RunInstance) -> Result<(), MutationValidationError> {
+        let invalid = MutationValidationError::RunCreateRequiresCronReplenishment;
+        #[cfg(feature = "workflow")]
+        if let Some(admission) = self.task_admission(run.task_id()) {
+            if let actionqueue_core::task::run_policy::RunPolicy::Cron(policy) =
+                admission.request().task_spec().run_policy()
+            {
+                let runs: Vec<_> = self.runs_for_task(run.task_id()).collect();
+                let after = runs
+                    .iter()
+                    .map(|r| r.scheduled_at())
+                    .max()
+                    .unwrap_or_else(|| run.created_at().saturating_sub(1));
+                if !self.is_task_canceled(run.task_id())
+                    && policy.max_occurrences().is_none_or(|max| runs.len() < max as usize)
+                    && runs.iter().filter(|r| !r.state().is_terminal()).count()
+                        < actionqueue_core::task::run_policy::CRON_WINDOW_SIZE as usize
+                    && run.created_at() >= admission.timestamp()
+                    && policy.next_occurrences_after(after, 1).first() == Some(&run.scheduled_at())
+                    && run.attempt_count() == 0
+                    && run.failure_attempt_count() == 0
+                    && run.current_attempt_id().is_none()
+                {
+                    return Ok(());
+                }
+            }
+        }
+        let _ = run;
+        Err(invalid)
+    }
+    fn wait_index(&self) -> Option<&crate::recovery::waits::WaitIndex> {
+        Some(self.waits())
+    }
+    fn authorize_scope(
+        &self,
+        platform: bool,
+        host: &actionqueue_core::control::HostControlContext,
+        action: actionqueue_core::control::QueueAction,
+        tenant: Option<TenantId>,
+    ) -> Result<(), actionqueue_core::control::ControlError> {
+        super::control::check_scope(
+            super::control::authorize_projection(self, platform, host, action)?,
+            tenant,
+        )
+    }
+    fn prepare_control(
+        &self,
+        platform: bool,
+        host: &actionqueue_core::control::HostControlContext,
+        command: MutationCommand,
+    ) -> Result<MutationCommand, actionqueue_core::control::ControlError> {
+        super::control::prepare_control(self, platform, host, command)
+    }
+    fn validate_recovery(
+        &self,
+        command: &MutationCommand,
+    ) -> Result<(), actionqueue_core::control::ControlError> {
+        super::control::validate_recovery(self, command)
+    }
     type Error = ReplayReducerError;
 
     fn latest_sequence(&self) -> u64 {
@@ -113,7 +314,75 @@ impl MutationProjection for ReplayReducer {
         ReplayReducer::is_subscription_canceled(self, subscription_id)
     }
 
+    fn validate_actor_registration(
+        &self,
+        registration: &actionqueue_core::actor::ActorRegistration,
+    ) -> Result<(), MutationValidationError> {
+        if self
+            .get_actor(&registration.actor_id())
+            .is_some_and(|old| old.tenant_id != registration.tenant_id())
+        {
+            return Err(MutationValidationError::ActorTenantChange);
+        }
+        Ok(())
+    }
+
+    fn validate_remote(
+        &self,
+        command: &actionqueue_core::mutation::AttemptDispositionCommitCommand,
+        platform: bool,
+    ) -> Result<Option<u64>, actionqueue_core::control::ControlError> {
+        super::control::validate_remote_projection(self, platform, command)
+    }
+    fn resolve_admission(
+        &self,
+        tenant: Option<TenantId>,
+        key: &AdmissionKey,
+        digest: &AdmissionDigest,
+    ) -> Result<Option<EnsureTaskOutcome>, AdmissionRejection> {
+        self.admission(tenant, key).map(|r| r.resolve(digest)).transpose()
+    }
+    fn validate_admission(
+        &self,
+        record: &AdmissionRecord,
+        runs: &[RunInstance],
+    ) -> Result<(), AdmissionRejection> {
+        ReplayReducer::validate_admission(self, record, runs)
+    }
+    fn signal_index(&self) -> Option<&crate::recovery::signals::SignalIndex> {
+        Some(self.signals())
+    }
+    fn validate_signal_references(
+        &self,
+        e: &actionqueue_core::continuation::SignalEnvelope,
+    ) -> Result<(), actionqueue_core::continuation::SignalRejection> {
+        ReplayReducer::validate_signal_references(self, e)
+    }
+    fn prepare_wait(
+        &self,
+        command: &MutationCommand,
+        durability: DurabilityPolicy,
+    ) -> Result<Option<super::wait::WaitPreparation>, actionqueue_core::mutation::WaitRejection>
+    {
+        self.prepare_wait_command(command, durability)
+    }
+    fn signal_is_protected(&self, sequence: actionqueue_core::ids::SignalSequence) -> bool {
+        ReplayReducer::signal_is_protected(self, sequence)
+    }
+    fn prepare_disposition(
+        &self,
+        c: &actionqueue_core::mutation::AttemptDispositionCommitCommand,
+        a: AdmissionLimits,
+        cl: actionqueue_core::limits::ContinuationLimits,
+        s: actionqueue_core::limits::SignalLimits,
+    ) -> Result<super::disposition::DispositionRecord, super::disposition::DispositionRejection>
+    {
+        ReplayReducer::prepare_disposition(self, c, a, cl, s)
+    }
+    /// The same semantic validation as replay runs once here, on the prepared copy,
+    /// before any durable write.
     fn apply_event(&mut self, event: &WalEvent) -> Result<(), Self::Error> {
+        self.validate_target_event(event.event())?;
         self.apply(event)
     }
 }
@@ -122,21 +391,155 @@ impl MutationProjection for ReplayReducer {
 #[derive(Debug)]
 pub struct StorageMutationAuthority<W: WalWriter, P: MutationProjection> {
     wal_writer: W,
+    telemetry: super::telemetry::QueueTelemetry,
     projection: P,
+    host_context: Option<actionqueue_core::control::HostControlContext>,
+    recovery_required: bool,
+    admission_limits: AdmissionLimits,
+    continuation_limits: actionqueue_core::limits::ContinuationLimits,
+    pub(super) signal_limits: actionqueue_core::limits::SignalLimits,
+    pub(super) signal_retention: actionqueue_core::limits::SignalRetentionPolicy,
+    pub(super) signal_capacity_rejections: u64,
 }
 
 impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
-    /// Creates a new storage authority with an owned WAL writer and projection.
-    pub fn new(wal_writer: W, projection: P) -> Self {
-        Self { wal_writer, projection }
+    /// Shared process-lifetime authority observations.
+    pub fn telemetry(&self) -> &super::telemetry::QueueTelemetry {
+        &self.telemetry
+    }
+    /// Constructs an explicitly host-bound authority for embedded controls.
+    pub fn with_host(mut self, host: actionqueue_core::control::HostControlContext) -> Self {
+        self.host_context = Some(host);
+        self
+    }
+    /// Installs the trusted embedded host context for legacy convenience calls.
+    /// No default identity or scope is inferred by storage.
+    pub fn set_control_context(
+        &mut self,
+        host: Option<actionqueue_core::control::HostControlContext>,
+    ) {
+        self.host_context = host;
+    }
+    /// Current host binding, when explicitly configured by the embedding host.
+    pub fn control_context(&self) -> Option<&actionqueue_core::control::HostControlContext> {
+        self.host_context.as_ref()
+    }
+    /// Runs one host operation with a temporary binding, restoring even on unwind.
+    pub fn with_control_context<T>(
+        &mut self,
+        host: &actionqueue_core::control::HostControlContext,
+        f: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let previous = self.host_context.replace(host.clone());
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(self)));
+        self.host_context = previous;
+        match result {
+            Ok(value) => value,
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
+    }
+    fn platform_profile(&self) -> bool {
+        self.store_session().is_some_and(|s| s.manifest().features.iter().any(|f| f == "platform"))
+    }
+    /// Current continuation creation limits (hard ceilings still apply).
+    pub fn continuation_limits(&self) -> actionqueue_core::limits::ContinuationLimits {
+        self.continuation_limits
     }
 
-    /// Returns the projection used by this authority.
+    /// Configures creation limits; exact retries and replay retain hard format rules.
+    pub fn set_continuation_limits(
+        &mut self,
+        limits: actionqueue_core::limits::ContinuationLimits,
+    ) {
+        self.continuation_limits = limits;
+    }
+    /// Creates a new storage authority with an owned WAL writer and projection.
+    pub fn new(wal_writer: W, projection: P) -> Self {
+        let recovery_required = wal_writer.recovery_required();
+        Self {
+            wal_writer,
+            telemetry: Default::default(),
+            projection,
+            host_context: None,
+            recovery_required,
+            admission_limits: AdmissionLimits::default(),
+            continuation_limits: Default::default(),
+            signal_limits: Default::default(),
+            signal_retention: Default::default(),
+            signal_capacity_rejections: 0,
+        }
+    }
+
+    /// Current creation limits (hard ceilings still apply).
+    pub fn admission_limits(&self) -> AdmissionLimits {
+        self.admission_limits
+    }
+    /// Applies creation limits. Values above hard ceilings cannot raise the limits.
+    pub fn set_admission_limits(&mut self, limits: AdmissionLimits) {
+        self.admission_limits = limits;
+    }
+    /// Returns whether an uncertain write requires reopening and recovery.
+    pub fn recovery_required(&self) -> bool {
+        self.recovery_required
+    }
+    /// Checks a bound host before any duplicate lookup or mutation planning.
+    pub fn authorize_control(
+        &self,
+        action: actionqueue_core::control::QueueAction,
+        tenant: Option<TenantId>,
+    ) -> Result<(), MutationAuthorityError<P::Error>> {
+        let host = self.host_context.as_ref().ok_or(MutationAuthorityError::Control(
+            actionqueue_core::control::ControlError::Unauthorized,
+        ))?;
+        self.projection
+            .authorize_scope(self.platform_profile(), host, action, tenant)
+            .map_err(MutationAuthorityError::Control)
+    }
+    /// Resolves retries before planning or applying lowered creation limits.
+    /// A fenced authority never answers even cached duplicate requests.
+    pub fn lookup_admission(
+        &self,
+        request: &EnsureTaskRequest,
+    ) -> Result<Option<EnsureTaskOutcome>, MutationAuthorityError<P::Error>> {
+        if self.recovery_required {
+            return Err(MutationAuthorityError::RecoveryRequired);
+        }
+        self.authorize_control(
+            actionqueue_core::control::QueueAction::AdmitTask,
+            request.task_spec().tenant_id(),
+        )?;
+        if request
+            .control_context()
+            .is_some_and(|c| Some(c) != self.host_context.as_ref().map(|h| &h.attribution))
+        {
+            return Err(MutationAuthorityError::Control(
+                actionqueue_core::control::ControlError::Unauthorized,
+            ));
+        }
+        let digest = request.digest().map_err(MutationAuthorityError::Admission)?;
+        let result = self.projection.resolve_admission(
+            request.task_spec().tenant_id(),
+            request.admission_key(),
+            &digest,
+        );
+        self.telemetry.admission_lookup(
+            matches!(result, Ok(Some(_))),
+            matches!(result, Err(AdmissionRejection::Conflict { .. })),
+        );
+        result.map_err(MutationAuthorityError::Admission)
+    }
+    /// Returns the lifetime store session for session-bound operations.
+    pub fn store_session(&self) -> Option<&crate::store::StoreSession> {
+        self.wal_writer.store_session()
+    }
+
+    /// Returns the authoritative projection.
     pub fn projection(&self) -> &P {
         &self.projection
     }
 
     /// Returns the mutable projection used by this authority.
+    #[cfg(any(test, feature = "testing"))]
     pub fn projection_mut(&mut self) -> &mut P {
         &mut self.projection
     }
@@ -151,6 +554,23 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
         command: &MutationCommand,
     ) -> Result<ValidatedCommand, MutationValidationError> {
         match command {
+            MutationCommand::AttemptDispositionCommit(_)
+            | MutationCommand::WaitEstablish(_)
+            | MutationCommand::WaitSatisfy(_)
+            | MutationCommand::WaitTimeout(_)
+            | MutationCommand::WaitResolve(_)
+            | MutationCommand::WaitCancel(_)
+            | MutationCommand::Cancel(_) => unreachable!("continuations prepared separately"),
+            MutationCommand::SignalAdmit(_)
+            | MutationCommand::SignalPin(_)
+            | MutationCommand::SignalUnpin(_)
+            | MutationCommand::RetireSignals(_) => {
+                unreachable!("signal commands prepared separately")
+            }
+            MutationCommand::AdmissionCommit(details) => {
+                self.validate_sequence(details.expected_sequence())?;
+                Ok(ValidatedCommand::AdmissionCommit(details.clone()))
+            }
             MutationCommand::TaskCreate(details) => {
                 self.validate_task_create(details)?;
                 Ok(ValidatedCommand::TaskCreate(details.clone()))
@@ -164,8 +584,8 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
                 Ok(ValidatedCommand::RunStateTransition(*details))
             }
             MutationCommand::AttemptStart(details) => {
-                self.validate_attempt_start(*details)?;
-                Ok(ValidatedCommand::AttemptStart(*details))
+                self.validate_attempt_start(details.clone())?;
+                Ok(ValidatedCommand::AttemptStart(details.clone()))
             }
             MutationCommand::AttemptFinish(details) => {
                 self.validate_attempt_finish(details)?;
@@ -235,8 +655,12 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
                 self.validate_sequence(details.sequence())?;
                 Ok(ValidatedCommand::SubscriptionTrigger(*details))
             }
+            MutationCommand::Control { .. } | MutationCommand::RecoveryControl(_) => {
+                Err(MutationValidationError::NestedControl)
+            }
             MutationCommand::ActorRegister(details) => {
                 self.validate_sequence(details.sequence())?;
+                self.projection.validate_actor_registration(details.registration())?;
                 Ok(ValidatedCommand::ActorRegister(details.clone()))
             }
             MutationCommand::ActorDeregister(details) => {
@@ -296,6 +720,11 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
         &self,
         command: &TaskCreateCommand,
     ) -> Result<(), MutationValidationError> {
+        // Unbound test writers may construct reducer fixtures. A durable store
+        // always requires compound admission, even in a build with test support.
+        if self.store_session().is_some() || !cfg!(any(test, feature = "testing")) {
+            return Err(MutationValidationError::TaskCreateRequiresAdmission);
+        }
         self.validate_sequence(command.sequence())?;
 
         if self.projection.task_exists(command.task_spec().id()) {
@@ -325,6 +754,9 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
             });
         }
 
+        if self.store_session().is_some() || !cfg!(any(test, feature = "testing")) {
+            self.projection.validate_additional_run(command.run_instance())?;
+        }
         if command.run_instance().state() != RunState::Scheduled {
             return Err(MutationValidationError::RunCreateRequiresScheduled {
                 run_id: command.run_instance().id(),
@@ -360,6 +792,12 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
                 from: command.previous_state(),
                 to: command.new_state(),
             });
+        }
+
+        if command.previous_state() == RunState::Awaiting
+            || command.new_state() == RunState::Awaiting
+        {
+            return Err(MutationValidationError::AwaitingTransitionRequiresContinuationRecord);
         }
 
         Ok(())
@@ -751,6 +1189,17 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
 
     fn build_event_and_applied(validated: ValidatedCommand) -> (WalEvent, AppliedMutation) {
         match validated {
+            ValidatedCommand::AdmissionCommit(c) => {
+                let record = AdmissionRecord::from_command(&c).expect("validated admission digest");
+                let applied = AppliedMutation::Admission(record.outcome(true));
+                (
+                    WalEvent::new(
+                        c.expected_sequence(),
+                        WalEventType::AdmissionCommitted { record, runs: c.plan().runs().to_vec() },
+                    ),
+                    applied,
+                )
+            }
             ValidatedCommand::TaskCreate(command) => {
                 let task_id = command.task_spec().id();
                 let event = WalEvent::new(
@@ -800,6 +1249,7 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
                     },
                 );
                 let applied = AppliedMutation::AttemptStart {
+                    assignment: None,
                     run_id: command.run_id(),
                     attempt_id: command.attempt_id(),
                 };
@@ -808,13 +1258,16 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
             ValidatedCommand::AttemptFinish(command) => {
                 let event = WalEvent::new(
                     command.sequence(),
-                    WalEventType::AttemptFinished {
-                        run_id: command.run_id(),
-                        attempt_id: command.attempt_id(),
-                        result: command.result(),
-                        error: command.error().map(|s| s.to_string()),
-                        output: command.output().map(|b| b.to_vec()),
-                        timestamp: command.timestamp(),
+                    WalEventType::AttemptClosed {
+                        record: crate::recovery::resume::AttemptClosure {
+                            run_id: command.run_id(),
+                            attempt_id: command.attempt_id(),
+                            result: command.result(),
+                            error: command.error().map(str::to_owned),
+                            output: command.output().map(<[u8]>::to_vec),
+                            timestamp: command.timestamp(),
+                            origin: command.origin(),
+                        },
                     },
                 );
                 let applied = AppliedMutation::AttemptFinish {
@@ -1056,7 +1509,12 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
                     WalEventType::ActorRegistered {
                         actor_id: reg.actor_id(),
                         identity: reg.identity().to_string(),
-                        capabilities: reg.capabilities().as_slice().to_vec(),
+                        executor_traits: reg
+                            .executor_traits()
+                            .as_slice()
+                            .iter()
+                            .map(|value| value.as_str().to_owned())
+                            .collect(),
                         department: reg.department().map(|d| d.as_str().to_string()),
                         heartbeat_interval_secs: reg.heartbeat_interval_secs(),
                         tenant_id: reg.tenant_id(),
@@ -1152,27 +1610,309 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
     }
 }
 
-impl<W: WalWriter, P: MutationProjection> MutationAuthority for StorageMutationAuthority<W, P> {
-    type Error = MutationAuthorityError<P::Error>;
-
-    fn submit_command(
+impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
+    fn submit_inner(
         &mut self,
         command: MutationCommand,
         durability: DurabilityPolicy,
-    ) -> Result<MutationOutcome, Self::Error> {
-        // Stage 1: validate command.
-        let validated =
-            self.validate_command(&command).map_err(MutationAuthorityError::Validation)?;
+    ) -> Result<MutationOutcome, MutationAuthorityError<P::Error>> {
+        if self.recovery_required {
+            return Err(MutationAuthorityError::RecoveryRequired);
+        }
+        let platform = self.platform_profile();
+        let (command, control) = match command {
+            MutationCommand::Control { host, command } => {
+                let command = self
+                    .projection
+                    .prepare_control(platform, &host, *command)
+                    .map_err(MutationAuthorityError::Control)?;
+                (command, Some(actionqueue_core::control::ControlAttribution::from(&host)))
+            }
+            MutationCommand::RecoveryControl(command) => {
+                self.projection
+                    .validate_recovery(&command)
+                    .map_err(MutationAuthorityError::Control)?;
+                (*command, None)
+            }
+            command if super::control::action(&command).is_some() => {
+                let host = self.host_context.as_ref().ok_or(MutationAuthorityError::Control(
+                    actionqueue_core::control::ControlError::Unauthorized,
+                ))?;
+                let command = self
+                    .projection
+                    .prepare_control(platform, host, command)
+                    .map_err(MutationAuthorityError::Control)?;
+                (command, Some(actionqueue_core::control::ControlAttribution::from(host)))
+            }
+            command => (command, None),
+        };
+        if let MutationCommand::AttemptDispositionCommit(c) = &command {
+            if c.remote().is_some() {
+                let platform = self
+                    .store_session()
+                    .map(|s| s.manifest().features.iter().any(|f| f == "platform"))
+                    .unwrap_or(false);
+                let prior = self.projection.validate_remote(c, platform).map_err(|_| {
+                    MutationAuthorityError::Disposition(
+                        super::disposition::DispositionRejection::Stale,
+                    )
+                })?;
+                if let Some(sequence) = prior {
+                    return Ok(MutationOutcome::new(sequence, AppliedMutation::NoOp));
+                }
+            }
+        }
+        if let MutationCommand::AdmissionCommit(c) = &command {
+            if durability != DurabilityPolicy::Immediate {
+                return Err(MutationAuthorityError::Admission(
+                    AdmissionRejection::ImmediateDurabilityRequired,
+                ));
+            }
+            let record =
+                AdmissionRecord::from_command(c).map_err(MutationAuthorityError::Admission)?;
+            // Resolve key before stale sequence or changed lifecycle preconditions.
+            if let Some(outcome) = self
+                .projection
+                .resolve_admission(record.tenant_id(), record.key(), record.digest())
+                .map_err(MutationAuthorityError::Admission)?
+            {
+                return Ok(MutationOutcome::new(
+                    outcome.sequence(),
+                    AppliedMutation::Admission(outcome),
+                ));
+            }
+            self.admission_limits
+                .validate_spec(record.request().task_spec(), record.request().dependencies().len())
+                .map_err(MutationAuthorityError::Admission)?;
+            self.projection
+                .validate_admission(&record, c.plan().runs())
+                .map_err(MutationAuthorityError::Admission)?;
+        }
+        let disposition_event = if let MutationCommand::AttemptDispositionCommit(c) = &command {
+            use super::disposition::DispositionRejection as R;
+            if durability != DurabilityPolicy::Immediate {
+                return Err(MutationAuthorityError::Disposition(R::ImmediateDurabilityRequired));
+            }
+            let record = self
+                .projection
+                .prepare_disposition(
+                    c,
+                    self.admission_limits,
+                    self.continuation_limits,
+                    self.signal_limits,
+                )
+                .map_err(MutationAuthorityError::Disposition)?;
+            let event = WalEvent::new(
+                c.expected_sequence(),
+                WalEventType::AttemptDispositionCommitted { record },
+            );
+            let profile = self
+                .store_session()
+                .map(|s| s.manifest().features.clone())
+                .unwrap_or_else(crate::store::capabilities);
+            crate::store::check_event_profile(event.event(), &profile)
+                .map_err(|_| MutationAuthorityError::Disposition(R::UnsupportedFeature))?;
+            self.continuation_limits
+                .validate_record(
+                    crate::wal::codec::encode(&event)
+                        .map_err(|_| MutationAuthorityError::Disposition(R::TooLarge))?
+                        .len(),
+                )
+                .map_err(|_| MutationAuthorityError::Disposition(R::TooLarge))?;
+            Some(event)
+        } else {
+            None
+        };
+        let signal_preparation = self.prepare_signal(&command, durability).map_err(|e| {
+            if e == actionqueue_core::continuation::SignalRejection::Capacity {
+                self.signal_capacity_rejections = self.signal_capacity_rejections.saturating_add(1);
+            }
+            MutationAuthorityError::Signal(e)
+        })?;
+        if let Some(super::signal_authority::SignalPreparation::Noop(outcome)) = signal_preparation
+        {
+            return Ok(outcome);
+        }
+        let wait_preparation = self
+            .projection
+            .prepare_wait(&command, durability)
+            .map_err(MutationAuthorityError::Wait)?;
+        if let Some(super::wait::WaitPreparation::Noop(outcome)) = wait_preparation {
+            return Ok(outcome);
+        }
+        let (event, applied) = if let Some(event) = disposition_event {
+            (event, AppliedMutation::NoOp)
+        } else if let Some(super::wait::WaitPreparation::Event(event, applied)) = wait_preparation {
+            let bytes = crate::wal::codec::encode(&event).map_err(|_| {
+                MutationAuthorityError::Wait(actionqueue_core::mutation::WaitRejection::TooLarge)
+            })?;
+            if bytes.len() > actionqueue_core::limits::MAX_WAIT_RECORD_BYTES {
+                return Err(MutationAuthorityError::Wait(
+                    actionqueue_core::mutation::WaitRejection::TooLarge,
+                ));
+            }
+            if let WalEventType::WaitEstablished { record } = event.event() {
+                self.projection
+                    .validate_wait_capacity(record.run_id, self.continuation_limits)
+                    .map_err(MutationAuthorityError::Wait)?;
+                if record.checkpoint.as_ref().is_some_and(|c| matches!(&c.data, actionqueue_core::data_ref::DataRef::Inline(v) if v.bytes().len() > self.continuation_limits.checkpoint_bytes.min(actionqueue_core::limits::MAX_INLINE_DATA_BYTES)))
+                    || self.continuation_limits.validate_record(bytes.len()).is_err() {
+                    return Err(MutationAuthorityError::Wait(actionqueue_core::mutation::WaitRejection::TooLarge));
+                }
+            }
+            (*event, applied)
+        } else if let Some(super::signal_authority::SignalPreparation::Event(event, applied)) =
+            signal_preparation
+        {
+            (*event, applied)
+        } else {
+            // Stage 1: validate command.
+            let validated =
+                self.validate_command(&command).map_err(MutationAuthorityError::Validation)?;
 
-        // Stage 2: map validated command to canonical WAL event.
-        let (event, applied) = Self::build_event_and_applied(validated);
+            // Stage 2: map validated command to canonical WAL event.
+            Self::build_event_and_applied(validated)
+        };
+
+        if matches!(event.event(), WalEventType::AdmissionCommitted { .. }) {
+            let bytes = crate::wal::codec::encode(&event)
+                .map_err(|_| MutationAuthorityError::Admission(AdmissionRejection::TooLarge))?;
+            if bytes.len()
+                > self
+                    .admission_limits
+                    .record_bytes
+                    .min(actionqueue_core::limits::MAX_ADMISSION_RECORD_BYTES)
+            {
+                return Err(MutationAuthorityError::Admission(AdmissionRejection::TooLarge));
+            }
+            let profile = self
+                .store_session()
+                .map(|s| s.manifest().features.clone())
+                .unwrap_or_else(crate::store::capabilities);
+            crate::store::check_event_profile(event.event(), &profile).map_err(|_| {
+                MutationAuthorityError::Admission(AdmissionRejection::UnsupportedFeature)
+            })?;
+        }
+        if let WalEventType::AttemptClosed { record } = event.event() {
+            if record.output.as_ref().is_some_and(|v| {
+                v.len()
+                    > self
+                        .continuation_limits
+                        .output_bytes
+                        .min(actionqueue_core::limits::MAX_INLINE_DATA_BYTES)
+            }) || self
+                .continuation_limits
+                .validate_record(
+                    crate::wal::codec::encode(&event)
+                        .map_err(|_| {
+                            MutationAuthorityError::Wait(
+                                actionqueue_core::mutation::WaitRejection::TooLarge,
+                            )
+                        })?
+                        .len(),
+                )
+                .is_err()
+            {
+                return Err(MutationAuthorityError::Wait(
+                    actionqueue_core::mutation::WaitRejection::TooLarge,
+                ));
+            }
+        }
+        let event = if let Some(control) = control { event.with_control(control) } else { event };
+        // Validate the actual frame, including host attribution, before the writer
+        // can observe it. Encoding errors here are definitive rejections, not IO
+        // uncertainty and must never fence an otherwise healthy authority.
+        let too_large = || match event.event() {
+            WalEventType::AdmissionCommitted { .. } => {
+                MutationAuthorityError::Admission(AdmissionRejection::TooLarge)
+            }
+            WalEventType::SignalAdmitted { .. }
+            | WalEventType::SignalPinned { .. }
+            | WalEventType::SignalUnpinned { .. }
+            | WalEventType::SignalsRetired { .. } => MutationAuthorityError::Signal(
+                actionqueue_core::continuation::SignalRejection::TooLarge,
+            ),
+            WalEventType::AttemptDispositionCommitted { .. } => {
+                MutationAuthorityError::Disposition(
+                    super::disposition::DispositionRejection::TooLarge,
+                )
+            }
+            _ => MutationAuthorityError::Wait(actionqueue_core::mutation::WaitRejection::TooLarge),
+        };
+        let frame_bytes = crate::wal::codec::encode(&event).map_err(|_| too_large())?.len();
+        let _fault_scope =
+            crate::store::fault::event_scope(crate::wal::wire_v1::kind(event.event()));
+        crate::store::fault::checkpoint("compound_after_serialization").map_err(|e| {
+            MutationAuthorityError::Append(crate::wal::writer::WalWriterError::IoError(
+                e.to_string(),
+            ))
+        })?;
+        let limit = match event.event() {
+            WalEventType::AdmissionCommitted { .. } => self
+                .admission_limits
+                .record_bytes
+                .min(actionqueue_core::limits::MAX_ADMISSION_RECORD_BYTES),
+            WalEventType::SignalAdmitted { .. }
+            | WalEventType::SignalPinned { .. }
+            | WalEventType::SignalUnpinned { .. }
+            | WalEventType::SignalsRetired { .. } => self
+                .signal_limits
+                .record_bytes
+                .min(actionqueue_core::limits::MAX_SIGNAL_RECORD_BYTES),
+            WalEventType::AttemptDispositionCommitted { .. } => self
+                .continuation_limits
+                .disposition_bytes
+                .min(actionqueue_core::limits::MAX_ADMISSION_RECORD_BYTES),
+            WalEventType::WaitEstablished { .. }
+            | WalEventType::WaitSatisfied { .. }
+            | WalEventType::WaitTimedOut { .. }
+            | WalEventType::WaitCanceled { .. }
+            | WalEventType::AttemptClosed { .. } => self
+                .continuation_limits
+                .disposition_bytes
+                .min(actionqueue_core::limits::MAX_WAIT_RECORD_BYTES),
+            _ => usize::MAX,
+        };
+        if frame_bytes > limit {
+            return Err(too_large());
+        }
+        if matches!(event.event(), WalEventType::SignalAdmitted { .. })
+            && self.projection.signal_index().is_some_and(|i| {
+                i.statistics()
+                    .bytes
+                    .checked_add(frame_bytes)
+                    .is_none_or(|n| n > self.signal_limits.bytes)
+            })
+        {
+            self.signal_capacity_rejections = self.signal_capacity_rejections.saturating_add(1);
+            return Err(MutationAuthorityError::Signal(
+                actionqueue_core::continuation::SignalRejection::Capacity,
+            ));
+        }
+        // Prepare the complete affected projection before any durable write.
+        let mut prepared = self.projection.clone();
+        let (preparation, work) = crate::recovery::work::measure(|| prepared.apply_event(&event));
+        self.telemetry.matching_work(work);
+        preparation.map_err(|source| {
+            if matches!(event.event(), WalEventType::AttemptDispositionCommitted { .. }) {
+                self.recovery_required = true;
+                self.wal_writer.fence();
+            }
+            MutationAuthorityError::Apply { sequence: event.sequence(), source }
+        })?;
 
         // Stage 3: append WAL event.
-        self.wal_writer.append(&event).map_err(MutationAuthorityError::Append)?;
+        if let Err(error) = self.wal_writer.append(&event) {
+            self.recovery_required = true;
+            self.wal_writer.fence();
+            return Err(MutationAuthorityError::Append(error));
+        }
 
         // Stage 4: durability sync by policy.
         if durability == DurabilityPolicy::Immediate {
             if let Err(flush_error) = self.wal_writer.flush() {
+                self.recovery_required = true;
+                self.wal_writer.fence();
                 return Err(MutationAuthorityError::PartialDurability {
                     sequence: event.sequence(),
                     flush_error,
@@ -1180,12 +1920,29 @@ impl<W: WalWriter, P: MutationProjection> MutationAuthority for StorageMutationA
             }
         }
 
-        // Stage 5: apply in-memory projection.
-        self.projection.apply_event(&event).map_err(|source| MutationAuthorityError::Apply {
-            sequence: event.sequence(),
-            source,
+        crate::store::fault::checkpoint("authority_before_publish").map_err(|error| {
+            self.recovery_required = true;
+            self.wal_writer.fence();
+            MutationAuthorityError::Publication {
+                sequence: event.sequence(),
+                synced: durability == DurabilityPolicy::Immediate,
+                error: error.to_string(),
+            }
         })?;
 
+        // Publish the already validated state only after durability succeeds.
+        self.projection = prepared;
+        self.telemetry.committed(&event, frame_bytes, &self.projection);
+
+        crate::store::fault::checkpoint("authority_after_publish").map_err(|error| {
+            self.recovery_required = true;
+            self.wal_writer.fence();
+            MutationAuthorityError::Publication {
+                sequence: event.sequence(),
+                synced: durability == DurabilityPolicy::Immediate,
+                error: error.to_string(),
+            }
+        })?;
         tracing::debug!(sequence = event.sequence(), "command submitted");
         Ok(MutationOutcome::new(event.sequence(), applied))
     }
@@ -1193,6 +1950,7 @@ impl<W: WalWriter, P: MutationProjection> MutationAuthority for StorageMutationA
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ValidatedCommand {
+    AdmissionCommit(AdmissionCommitCommand),
     TaskCreate(TaskCreateCommand),
     RunCreate(RunCreateCommand),
     RunStateTransition(RunStateTransitionCommand),
@@ -1250,6 +2008,16 @@ struct LeaseCloseParams<'a> {
 /// Typed validation failures from the authority validation stage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MutationValidationError {
+    /// Task creation must atomically establish admission and initial runs.
+    TaskCreateRequiresAdmission,
+    /// Standalone runs must replenish an admitted cron policy's bounded window.
+    RunCreateRequiresCronReplenishment,
+    /// Control attribution cannot be nested.
+    NestedControl,
+    /// Actor IDs cannot be reassigned to another tenant namespace.
+    ActorTenantChange,
+    /// Awaiting transitions require compound continuation records (AQ-06).
+    AwaitingTransitionRequiresContinuationRecord,
     /// Projection sequence could not be advanced because it overflowed `u64`.
     SequenceOverflow,
     /// Command sequence is stale or otherwise non-monotonic.
@@ -1459,6 +2227,14 @@ pub enum MutationValidationError {
 impl std::fmt::Display for MutationValidationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::TaskCreateRequiresAdmission => {
+                write!(f, "task creation requires compound admission")
+            }
+            Self::RunCreateRequiresCronReplenishment => {
+                write!(f, "standalone run creation requires valid cron replenishment")
+            }
+            Self::NestedControl => write!(f, "nested control attribution"),
+            Self::ActorTenantChange => write!(f, "actor tenant is immutable"),
             MutationValidationError::SequenceOverflow => {
                 write!(f, "mutation sequence overflow while computing next expected sequence")
             }
@@ -1503,6 +2279,9 @@ impl std::fmt::Display for MutationValidationError {
                     "mutation rejected for run {run_id}: previous_state mismatch \
                      expected={expected:?} actual={actual:?}"
                 )
+            }
+            MutationValidationError::AwaitingTransitionRequiresContinuationRecord => {
+                write!(f, "awaiting transition requires a continuation record")
             }
             MutationValidationError::InvalidTransition { run_id, from, to } => {
                 write!(
@@ -1651,6 +2430,18 @@ impl std::error::Error for MutationValidationError {}
 /// Typed stage-aware authority failures.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MutationAuthorityError<ProjectionError> {
+    /// Missing or invalid trusted host control context.
+    Control(actionqueue_core::control::ControlError),
+    /// Complete disposition rejected before append.
+    Disposition(super::disposition::DispositionRejection),
+    /// Definitive continuation rejection.
+    Wait(actionqueue_core::mutation::WaitRejection),
+    /// Complete admission was rejected before append.
+    Admission(AdmissionRejection),
+    /// Definitive signal rejection before append.
+    Signal(actionqueue_core::continuation::SignalRejection),
+    /// An uncertain write fences the authority until recovery.
+    RecoveryRequired,
     /// Validation stage failure.
     Validation(MutationValidationError),
     /// WAL append stage failure.
@@ -1663,9 +2454,18 @@ pub enum MutationAuthorityError<ProjectionError> {
         /// Underlying flush error.
         flush_error: WalWriterError,
     },
-    /// Projection apply stage failure after append.
+    /// Publication/response failed after append. The writer and authority are fenced.
+    Publication {
+        /// Sequence whose publication did not finish normally.
+        sequence: u64,
+        /// Whether fsync completed successfully before the failure.
+        synced: bool,
+        /// Publication failure, without request data.
+        error: String,
+    },
+    /// Projection preparation failed before append.
     Apply {
-        /// Sequence that was already appended durably.
+        /// Proposed sequence (no record was appended).
         sequence: u64,
         /// Underlying projection apply error.
         source: ProjectionError,
@@ -1677,6 +2477,14 @@ impl<ProjectionError: std::fmt::Display> std::fmt::Display
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Control(e) => write!(f, "{e}"),
+            Self::Admission(e) => write!(f, "{e}"),
+            Self::Signal(e) => write!(f, "{e}"),
+            Self::Wait(e) => write!(f, "{e}"),
+            Self::Disposition(e) => write!(f, "{e}"),
+            Self::RecoveryRequired => {
+                write!(f, "mutation authority requires recovery after an uncertain write")
+            }
             MutationAuthorityError::Validation(error) => {
                 write!(f, "mutation validation failed: {error}")
             }
@@ -1690,12 +2498,12 @@ impl<ProjectionError: std::fmt::Display> std::fmt::Display
                      flush failed: {flush_error}"
                 )
             }
+            Self::Publication { sequence, synced, error } => write!(
+                f,
+                "mutation publication failed at sequence {sequence} (synced={synced}): {error}"
+            ),
             MutationAuthorityError::Apply { sequence, source } => {
-                write!(
-                    f,
-                    "mutation apply stage failed after durable append sequence {sequence}: \
-                     {source}"
-                )
+                write!(f, "mutation preparation failed before append sequence {sequence}: {source}")
             }
         }
     }
@@ -1704,6 +2512,29 @@ impl<ProjectionError: std::fmt::Display> std::fmt::Display
 impl<ProjectionError: std::error::Error + 'static> std::error::Error
     for MutationAuthorityError<ProjectionError>
 {
+}
+
+impl<W: WalWriter, P: MutationProjection> MutationAuthority for StorageMutationAuthority<W, P> {
+    type Error = MutationAuthorityError<P::Error>;
+    fn submit_command(
+        &mut self,
+        command: MutationCommand,
+        durability: DurabilityPolicy,
+    ) -> Result<MutationOutcome, Self::Error> {
+        let disposition = matches!(&command, MutationCommand::AttemptDispositionCommit(_));
+        let result = self.submit_inner(command, durability);
+        if disposition
+            && matches!(
+                &result,
+                Err(MutationAuthorityError::Disposition(_)
+                    | MutationAuthorityError::Control(_)
+                    | MutationAuthorityError::Validation(_))
+            )
+        {
+            self.telemetry.disposition_rejected();
+        }
+        result
+    }
 }
 
 #[cfg(test)]
@@ -1715,8 +2546,18 @@ mod tests {
     use actionqueue_core::task::task_spec::{TaskPayload, TaskSpec};
 
     use super::*;
+    /// Single-tenant fixture host binding for embedded control conveniences.
+    fn host() -> actionqueue_core::control::HostControlContext {
+        actionqueue_core::control::HostControlContext {
+            actor_id: None,
+            scope: actionqueue_core::control::ControlScope::SingleTenant,
+            attribution: actionqueue_core::causal::ControlMutationContext::new(
+                actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+            ),
+        }
+    }
 
-    #[derive(Debug, Default)]
+    #[derive(Debug, Default, Clone)]
     struct ProjectionStub {
         latest_sequence: u64,
         tasks: std::collections::HashSet<TaskId>,
@@ -1728,6 +2569,17 @@ mod tests {
     }
 
     impl MutationProjection for ProjectionStub {
+        // This test double isolates WAL/mutation mechanics. Authorization is
+        // exercised with the real ReplayReducer in the control acceptance suite.
+        fn prepare_control(
+            &self,
+            _platform: bool,
+            _host: &actionqueue_core::control::HostControlContext,
+            command: MutationCommand,
+        ) -> Result<MutationCommand, actionqueue_core::control::ControlError> {
+            Ok(command)
+        }
+
         type Error = &'static str;
 
         fn latest_sequence(&self) -> u64 {
@@ -1856,7 +2708,7 @@ mod tests {
 
         let writer = WriterStub::default();
         let projection = ProjectionStub::default();
-        let mut authority = StorageMutationAuthority::new(writer, projection);
+        let mut authority = StorageMutationAuthority::new(writer, projection).with_host(host());
 
         let task_outcome = authority
             .submit_command(
@@ -1898,7 +2750,7 @@ mod tests {
         let task_id = TaskId::new();
         let writer = WriterStub { fail_flush: true, ..Default::default() };
         let projection = ProjectionStub::default();
-        let mut authority = StorageMutationAuthority::new(writer, projection);
+        let mut authority = StorageMutationAuthority::new(writer, projection).with_host(host());
 
         let result = authority.submit_command(
             MutationCommand::TaskCreate(TaskCreateCommand::new(1, test_task_spec(task_id), 10)),

@@ -1,67 +1,34 @@
-# Data Directory Format
+# Target data directory format (0.2.0)
 
-## Overview
+This filename is retained for links; it documents AQ-CONT-1, not the old store.
+The authoritative implementation is [storage](../crates/actionqueue-storage/README.md).
 
-The ActionQueue data directory stores all persistent state including the write-ahead log (WAL) and snapshots.
+| Component | Version |
+|---|---|
+| Store manifest schema | 1 |
+| WAL frame | 1 |
+| Snapshot schema | 9 |
+| Projection digest image | 9 |
 
-## Directory Structure
+The root contains `manifest.json`, `store.lock`, `wal/actionqueue.wal`, and optional
+`snapshots/snapshot.bin`. A manifest binds contract, store UUID, versions, creation
+identity/time, immutable feature profile and hash algorithms. Initialization
+publishes a synced staging directory by atomic rename. Unidentified nonempty
+stores and incompatible manifests are rejected without mutation.
 
-```
-<data_dir>/
-├── wal/
-│   └── actionqueue.wal       # Write-ahead log (append-only)
-└── snapshots/
-    └── snapshot.bin      # Snapshot (atomic via .tmp rename)
-```
+WAL frames use `AQCONT1W`, format, record kind, payload schema, store UUID, sequence,
+payload length, payload CRC-32 and header CRC-32 in a 52-byte little-endian header.
+Payloads are storage-owned Postcard DTOs, limited to 16 MiB. Kinds and payload
+schemas have explicit version mappings; they are not Rust enum discriminants.
+Sequence 1 binds the manifest; later sequences must be contiguous.
 
-## WAL v5 Record Format
+Snapshots use `AQCONT1S`, frame version, length and payload CRC with a strict JSON
+envelope limited to 256 MiB. The envelope binds the store identity, covered WAL
+sequence, image versions and SHA-256 projection digest. It includes continuations,
+checkpoints, resume assignments and attribution. Writers sync the WAL, publish by
+atomic replacement, and sync the parent directory. Recovery validates against the
+complete WAL and rebuilds derived indexes. Snapshot-only stores are unsupported.
 
-Each WAL record uses the following binary framing:
-
-| Field    | Size    | Encoding       | Description                              |
-|----------|---------|----------------|------------------------------------------|
-| version  | 4 bytes | LE u32         | WAL format version (currently 5)         |
-| length   | 4 bytes | LE u32         | Byte length of the postcard payload      |
-| crc32    | 4 bytes | LE u32         | CRC-32 checksum of the payload bytes     |
-| payload  | N bytes | postcard binary | Serialized `WalEvent` (sequence + event) |
-
-- **Path**: `<data_dir>/wal/actionqueue.wal`
-- **Write mode**: Append-only, fsync after each durable write
-- **Maximum payload size**: `u32::MAX` bytes (enforced by `PayloadTooLarge` guard)
-- **Repair policy**: Trailing corruption (incomplete final record) is truncated on recovery
-- **Event types**: 32 event variants covering task/run lifecycle, leases, dependencies, budgets, subscriptions, actor registration, and platform operations
-
-## Snapshot Format (schema v8)
-
-Each snapshot file uses the same framing envelope as the WAL:
-
-| Field    | Size    | Encoding       | Description                              |
-|----------|---------|----------------|------------------------------------------|
-| version  | 4 bytes | LE u32         | Snapshot format version (currently 5)    |
-| length   | 4 bytes | LE u32         | Byte length of the JSON payload          |
-| crc32    | 4 bytes | LE u32         | CRC-32 checksum of the payload bytes     |
-| payload  | N bytes | JSON (UTF-8)   | Serialized `Snapshot` struct             |
-
-The snapshot schema version (currently 8) is recorded inside the JSON payload in the `metadata.schema_version` field, separate from the outer framing version.
-
-- **Path**: `<data_dir>/snapshots/snapshot.bin`
-- **Write mode**: Atomic via temp file + rename (write to `snapshot.bin.tmp`, rename on close)
-- **Parent directory fsync**: Performed after rename to make directory entry durable
-- **Drop safety**: Temp file removed on drop if `close()` was not called
-- **Content**: Tasks, runs (with state history and attempt lineage), engine control, dependency declarations, budgets, subscriptions, actors, tenants, role assignments, capability grants, ledger entries
-
-## Recovery Procedure
-
-1. **Load snapshot** (if present): Read and validate `snapshots/snapshot.bin` CRC-32.
-   If corrupt, discard snapshot and fall through to WAL-only replay.
-2. **Replay WAL tail**: Read `wal/actionqueue.wal` from the sequence after the snapshot
-   (or from the beginning if no snapshot). Validate each record's CRC-32.
-3. **Truncate trailing corruption**: If the final WAL record has a partial header
-   or payload (CRC mismatch), truncate at the last valid record boundary.
-4. **Reconstruct projection**: Apply all valid WAL events to the in-memory reducer.
-5. **Rebuild in-memory structures**: Reconstruct DependencyGate, HierarchyTracker,
-   KeyGate, BudgetTracker, SubscriptionRegistry, ActorRegistry, HeartbeatMonitor,
-   DepartmentRegistry, TenantRegistry, RbacEnforcer, and AppendLedger from the
-   reducer's projection state.
-6. **Re-open WAL writer**: Position the writer at the end of the validated WAL
-   for subsequent appends.
+Only physical snapshot damage permits fallback. Semantic, identity and compatibility
+errors halt recovery. WAL CRC failures and interior corruption are never silently
+skipped. See [recovery policy](wal-recovery-guide.md).

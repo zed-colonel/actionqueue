@@ -20,7 +20,9 @@ mod wf {
     use actionqueue_core::task::run_policy::RunPolicy;
     use actionqueue_core::task::task_spec::{TaskPayload, TaskSpec};
     use actionqueue_engine::time::clock::MockClock;
-    use actionqueue_executor_local::handler::{ExecutorContext, ExecutorHandler, HandlerOutput};
+    use actionqueue_executor_local::handler::{
+        AttemptDisposition, ExecutorContext, ExecutorHandler,
+    };
     use actionqueue_runtime::config::RuntimeConfig;
     use actionqueue_runtime::engine::ActionQueueEngine;
     use actionqueue_storage::mutation::authority::StorageMutationAuthority;
@@ -31,8 +33,25 @@ mod wf {
     struct EchoHandler;
 
     impl ExecutorHandler for EchoHandler {
-        fn execute(&self, ctx: ExecutorContext) -> HandlerOutput {
-            HandlerOutput::Success { output: Some(ctx.input.payload.clone()), consumption: vec![] }
+        fn execute(&self, ctx: ExecutorContext) -> AttemptDisposition {
+            if ctx.input.resume_context.is_none() {
+                if let Some(children) = &ctx.children {
+                    return AttemptDisposition::awaiting(
+                        actionqueue_core::continuation::WaitSpec::children(
+                            actionqueue_core::ids::WaitId::new(),
+                            children.children().iter().map(|child| child.task_id()).collect(),
+                            actionqueue_core::continuation::ChildWaitPolicy::AllTerminal,
+                            None,
+                        )
+                        .unwrap(),
+                        None,
+                    );
+                }
+            }
+            actionqueue_core::disposition::AttemptDisposition::complete(
+                (Some(ctx.input.payload.clone()))
+                    .map(|v| actionqueue_core::data_ref::DataRef::from_bytes(v).unwrap()),
+            )
         }
     }
 
@@ -54,7 +73,12 @@ mod wf {
         // Phase 1: submit both tasks and declare step2→step1 dependency.
         {
             let engine = ActionQueueEngine::new(engine_config(&data_dir), EchoHandler);
-            let mut eng = engine.bootstrap_with_clock(MockClock::new(1000)).expect("bootstrap");
+            let mut eng = engine
+                .bootstrap_with_clock(MockClock::new(1000))
+                .expect("bootstrap")
+                .with_host(crate::support::host_support::host(
+                    actionqueue_core::control::ControlScope::SingleTenant,
+                ));
 
             let spec1 = TaskSpec::new(
                 step1_id,
@@ -81,7 +105,10 @@ mod wf {
         // Declare dependency via authority.
         {
             let recovery = load_projection_from_storage(&data_dir).expect("recovery");
-            let mut auth = StorageMutationAuthority::new(recovery.wal_writer, recovery.projection);
+            let mut auth = StorageMutationAuthority::new(recovery.wal_writer, recovery.projection)
+                .with_host(crate::support::host_support::host(
+                    actionqueue_core::control::ControlScope::SingleTenant,
+                ));
             let seq = auth.projection().latest_sequence() + 1;
             let _ = auth
                 .submit_command(
@@ -99,8 +126,12 @@ mod wf {
         // Phase 2: first run — step1 completes, step2 becomes eligible and completes.
         {
             let engine = ActionQueueEngine::new(engine_config(&data_dir), EchoHandler);
-            let mut eng =
-                engine.bootstrap_with_clock(MockClock::new(1000)).expect("bootstrap after declare");
+            let mut eng = engine
+                .bootstrap_with_clock(MockClock::new(1000))
+                .expect("bootstrap after declare")
+                .with_host(crate::support::host_support::host(
+                    actionqueue_core::control::ControlScope::SingleTenant,
+                ));
             let _ = eng.run_until_idle().await.expect("run");
 
             // Both steps must have completed.
@@ -119,8 +150,12 @@ mod wf {
         // Phase 3: restart again — verify completed state + output survive.
         {
             let engine = ActionQueueEngine::new(engine_config(&data_dir), EchoHandler);
-            let eng =
-                engine.bootstrap_with_clock(MockClock::new(2000)).expect("bootstrap after restart");
+            let eng = engine
+                .bootstrap_with_clock(MockClock::new(2000))
+                .expect("bootstrap after restart")
+                .with_host(crate::support::host_support::host(
+                    actionqueue_core::control::ControlScope::SingleTenant,
+                ));
 
             let step1_runs = eng.projection().run_ids_for_task(step1_id);
             let step2_runs = eng.projection().run_ids_for_task(step2_id);
@@ -180,7 +215,12 @@ mod wf {
         // Submit parent and child (with parent_task_id set) via engine.
         {
             let engine = ActionQueueEngine::new(engine_config(&data_dir), EchoHandler);
-            let mut eng = engine.bootstrap_with_clock(MockClock::new(1000)).expect("bootstrap");
+            let mut eng = engine
+                .bootstrap_with_clock(MockClock::new(1000))
+                .expect("bootstrap")
+                .with_host(crate::support::host_support::host(
+                    actionqueue_core::control::ControlScope::SingleTenant,
+                ));
 
             let parent_spec = TaskSpec::new(
                 parent_id,
@@ -209,8 +249,12 @@ mod wf {
         // Restart and verify the parent-child relationship is in the projection.
         {
             let engine = ActionQueueEngine::new(engine_config(&data_dir), EchoHandler);
-            let eng =
-                engine.bootstrap_with_clock(MockClock::new(2000)).expect("bootstrap after restart");
+            let eng = engine
+                .bootstrap_with_clock(MockClock::new(2000))
+                .expect("bootstrap after restart")
+                .with_host(crate::support::host_support::host(
+                    actionqueue_core::control::ControlScope::SingleTenant,
+                ));
 
             // Both tasks must be Completed.
             let parent_runs = eng.projection().run_ids_for_task(parent_id);

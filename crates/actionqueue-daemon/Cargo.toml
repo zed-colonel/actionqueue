@@ -1,7 +1,7 @@
 [package]
 name = "actionqueue-daemon"
 authors = ["Keith <zed.colonel@gmail.com>"]
-version = "0.1.2"
+version = "0.2.0"
 edition = "2021"
 license = "Apache-2.0"
 description = "HTTP daemon with REST API and Prometheus metrics for the ActionQueue task queue engine."
@@ -11,10 +11,12 @@ keywords = ["http", "daemon", "api", "metrics", "task-queue"]
 categories = ["web-programming::http-server"]
 
 [dependencies]
-actionqueue-core = "0.1.2"
-actionqueue-storage = "0.1.2"
-serde = { version = "1.0", features = ["derive"], optional = true }
+actionqueue-core = "0.2.0"
+actionqueue-storage = "0.2.0"
+actionqueue-runtime = "0.2.0"
+serde = { version = "1.0", features = ["derive"] }
 axum = "0.7"
+tokio = { version = "1", features = ["rt", "time"] }
 serde_json = "1.0"
 prometheus = "0.13"
 tracing = "0.1"
@@ -25,17 +27,20 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 http-body-util = "0.1"
 tower = { version = "0.4", features = ["util"] }
 
+actionqueue-storage = { version = "0.2.0", features = ["testing"] }
+
 [dependencies.actionqueue-actor]
-version = "0.1.2"
+version = "0.2.0"
 optional = true
 
 [dependencies.actionqueue-platform]
-version = "0.1.2"
+version = "0.2.0"
 optional = true
 
 [features]
+budget = ["actionqueue-runtime/budget", "actionqueue-storage/budget"]
 default = ["serde"]
-serde = ["dep:serde"]
-workflow = ["actionqueue-core/workflow"]
-actor = ["dep:actionqueue-actor"]
-platform = ["dep:actionqueue-platform", "actor"]
+serde = []
+workflow = ["actionqueue-runtime/workflow", "actionqueue-storage/workflow", "actionqueue-core/workflow"]
+actor = ["actionqueue-runtime/actor", "actionqueue-storage/actor", "dep:actionqueue-actor"]
+platform = ["actionqueue-runtime/platform", "actionqueue-storage/platform", "dep:actionqueue-platform", "actor"]

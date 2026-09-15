@@ -7,6 +7,8 @@
 //! 4. Handler returns Success on the second call.
 //! 5. Run completes. Attempt count reflects two total dispatches.
 
+#[path = "host_support.rs"]
+mod host_support;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -20,19 +22,12 @@ use actionqueue_core::task::metadata::TaskMetadata;
 use actionqueue_core::task::run_policy::RunPolicy;
 use actionqueue_core::task::task_spec::{TaskPayload, TaskSpec};
 use actionqueue_engine::time::clock::MockClock;
-use actionqueue_executor_local::handler::{ExecutorContext, ExecutorHandler, HandlerOutput};
+use actionqueue_executor_local::handler::{AttemptDisposition, ExecutorContext, ExecutorHandler};
 use actionqueue_runtime::config::{BackoffStrategyConfig, RuntimeConfig};
 use actionqueue_runtime::engine::ActionQueueEngine;
 
-static COUNTER: AtomicUsize = AtomicUsize::new(0);
-
-fn data_dir(label: &str) -> PathBuf {
-    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let dir = PathBuf::from("target")
-        .join("tmp")
-        .join(format!("7c-suspend-resume-{label}-{}-{n}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("data dir should be creatable");
-    dir
+fn data_dir(label: &str) -> tempfile::TempDir {
+    tempfile::Builder::new().prefix(label).tempdir().expect("test data dir")
 }
 
 /// Suspends on the first call; succeeds on all subsequent calls.
@@ -42,12 +37,12 @@ struct SuspendThenSucceedHandler {
 }
 
 impl ExecutorHandler for SuspendThenSucceedHandler {
-    fn execute(&self, _ctx: ExecutorContext) -> HandlerOutput {
+    fn execute(&self, _ctx: ExecutorContext) -> AttemptDisposition {
         let n = self.call_count.fetch_add(1, Ordering::SeqCst);
         if n == 0 {
-            HandlerOutput::Suspended { output: None, consumption: vec![] }
+            actionqueue_core::disposition::AttemptDisposition::suspended(None, None)
         } else {
-            HandlerOutput::Success { output: None, consumption: vec![] }
+            actionqueue_core::disposition::AttemptDisposition::complete(None)
         }
     }
 }
@@ -72,8 +67,10 @@ async fn suspend_resume_full_lifecycle() {
     let clock = MockClock::new(1000);
     let call_count = Arc::new(AtomicUsize::new(0));
     let handler = SuspendThenSucceedHandler { call_count: Arc::clone(&call_count) };
-    let engine = ActionQueueEngine::new(make_config(dir.clone()), handler);
-    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap");
+    let engine = ActionQueueEngine::new(make_config(dir.path().to_path_buf()), handler);
+    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap").with_host(
+        crate::host_support::host(actionqueue_core::control::ControlScope::SingleTenant),
+    );
 
     // max_attempts=1: if suspension counted as an attempt, the run would fail here.
     // It must NOT count, so the run can still complete after one suspend + one success.
@@ -135,5 +132,4 @@ async fn suspend_resume_full_lifecycle() {
     );
 
     boot.shutdown().expect("shutdown");
-    let _ = std::fs::remove_dir_all(&dir);
 }

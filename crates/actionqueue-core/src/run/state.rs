@@ -5,7 +5,8 @@
 /// States progress forward through: Scheduled -> Ready -> Leased -> Running -> (RetryWait -> Ready)* or -> Terminal
 /// A running attempt may also be preempted to Suspended (e.g. by budget exhaustion), then
 /// resumed back to Ready when capacity is restored.
-/// Cancellation is also allowed from Scheduled, Ready, Leased, Running, RetryWait, and Suspended -> Canceled.
+/// Running may yield to Awaiting, which resolves through Ready, Failed, or Canceled.
+/// Cancellation is allowed from every non-terminal state.
 /// Terminal states (Completed, Failed, Canceled) are immutable and cannot transition to any other state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -24,7 +25,7 @@ pub enum RunState {
 
     /// The run is currently being executed.
     /// Transitions: -> RetryWait (on failure, if retries remain), -> Suspended (preempted),
-    /// -> Completed (on success), -> Failed (on failure, no retries), -> Canceled
+    /// -> Awaiting (continuation), -> Completed (on success), -> Failed (no retries), -> Canceled
     Running,
 
     /// The run failed and is waiting before retry.
@@ -48,18 +49,38 @@ pub enum RunState {
     /// The run was canceled.
     /// Terminal state - no further transitions allowed.
     Canceled,
+
+    /// Waiting for a durable continuation. Non-terminal; resolves to Ready, Failed, or Canceled.
+    /// Durable continuation state; storage uses explicit versioned wire DTOs.
+    Awaiting,
 }
 
 impl RunState {
+    /// Every run state, in declaration order.
+    ///
+    /// Observability surfaces derive their bounded label sets and per-state
+    /// counters from this list so that adding a state cannot leave one behind.
+    pub const ALL: [RunState; 10] = [
+        RunState::Scheduled,
+        RunState::Ready,
+        RunState::Leased,
+        RunState::Running,
+        RunState::RetryWait,
+        RunState::Suspended,
+        RunState::Completed,
+        RunState::Failed,
+        RunState::Canceled,
+        RunState::Awaiting,
+    ];
+
     /// Returns true if this is a terminal state.
     pub fn is_terminal(&self) -> bool {
         matches!(self, RunState::Completed | RunState::Failed | RunState::Canceled)
     }
-}
 
-impl std::fmt::Display for RunState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let name = match self {
+    /// Returns the stable snake_case label used by metrics, stats, and display.
+    pub const fn label(self) -> &'static str {
+        match self {
             RunState::Scheduled => "scheduled",
             RunState::Ready => "ready",
             RunState::Leased => "leased",
@@ -69,7 +90,13 @@ impl std::fmt::Display for RunState {
             RunState::Completed => "completed",
             RunState::Failed => "failed",
             RunState::Canceled => "canceled",
-        };
-        write!(f, "{name}")
+            RunState::Awaiting => "awaiting",
+        }
+    }
+}
+
+impl std::fmt::Display for RunState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.label())
     }
 }

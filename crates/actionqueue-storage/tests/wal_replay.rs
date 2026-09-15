@@ -66,11 +66,12 @@ fn temp_snapshot_path() -> PathBuf {
 }
 
 fn open_wal_writer(path: PathBuf) -> WalFsWriter {
-    WalFsWriter::new(path).expect("Failed to open WAL writer for replay test")
+    WalFsWriter::new_raw_for_test(path).expect("Failed to open WAL writer for replay test")
 }
 
 fn open_snapshot_writer(path: PathBuf) -> SnapshotFsWriter {
-    SnapshotFsWriter::new(path).expect("Failed to open snapshot writer for replay test")
+    SnapshotFsWriter::new_raw_for_test(path)
+        .expect("Failed to open snapshot writer for replay test")
 }
 
 /// Creates a test task spec with a deterministic ID
@@ -847,7 +848,18 @@ fn test_snapshot_plus_wal_tail_equivalence() {
 
     // Persist a snapshot at sequence 3 (after Scheduled -> Ready).
     let snapshot = Snapshot {
-        version: 4,
+        control_history: vec![],
+        dispatch_sequences: Vec::new(),
+        administrative_wakes: Vec::new(),
+        administrative_pending: Vec::new(),
+        waits: vec![],
+        cancellations: vec![],
+        pending_resumes: vec![],
+        key_reservations: vec![],
+        signals: vec![],
+        last_signal_sequence: 0,
+        admissions: vec![],
+        version: 9,
         timestamp: 2000,
         metadata: SnapshotMetadata {
             schema_version: SNAPSHOT_SCHEMA_VERSION,
@@ -984,7 +996,7 @@ fn test_wal_writer_constructor_failure_returns_typed_error() {
     let _ = fs::remove_dir_all(&missing_parent);
     let wal_path = missing_parent.join("wal.log");
 
-    let result = WalFsWriter::new(wal_path);
+    let result = WalFsWriter::new_raw_for_test(wal_path);
     assert!(matches!(result, Err(WalFsWriterInitError::IoError(_))));
 }
 
@@ -998,7 +1010,7 @@ fn test_snapshot_writer_constructor_failure_returns_typed_error() {
     let _ = fs::remove_dir_all(&missing_parent);
     let snapshot_path = missing_parent.join("snapshot.bin");
 
-    let result = SnapshotFsWriter::new(snapshot_path);
+    let result = SnapshotFsWriter::new_raw_for_test(snapshot_path);
     assert!(matches!(result, Err(SnapshotFsWriterInitError::IoError(_))));
 }
 

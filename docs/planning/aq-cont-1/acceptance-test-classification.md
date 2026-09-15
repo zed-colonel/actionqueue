@@ -1,0 +1,121 @@
+# Acceptance Test Classification for AQ-CONT-1
+
+Companion to [`acceptance-test-taxonomy.md`](../../acceptance-test-taxonomy.md). Every baseline
+acceptance and chaos test is classified per Section 1.3 of the
+[implementation plan](aq-cont-1-implementation-plan.md):
+
+- **Retain** — the behaviour survives `AQ-CONT-1`; the test is re-proved against target
+  types (it may be rewritten, but its invariant must still hold).
+- **Replace** — the behaviour is superseded; the test is rewritten to prove the target
+  seam and the old expectation is deleted in the named PR.
+- **Reject** — the expectation contradicts the target contract; the test is deleted in the
+  named PR and its scenario becomes a negative test.
+
+This file lives under a root the legacy-symbol scan exempts (`legacy_scan_exempt_roots` in the
+boundary policy) so it may keep naming legacy symbols after their removal PRs land. Baseline sources are frozen at tag `actionqueue/pre-aq-cont-1`; the frozen pass/fail record is
+in [`archive/pre-aq-cont-1/characterization-results/`](../../../archive/pre-aq-cont-1/characterization-results/summary.json).
+
+## Core contract tests (no features)
+
+| Test | Classification | Reason | Re-proved / removed in |
+|---|---|---|---|
+| `once_accounting` | Retain | Run-policy accounting is a retained invariant | `AQ-04` |
+| `repeat_accounting` | Retain | Run-policy accounting | `AQ-04` |
+| `retry_cap` | Retain (accounting changes) | Retry cap remains; physical and failure attempts split per `AQ-ADR-012` | `AQ-08` |
+| `crash_recovery` | Retain | WAL-first recovery; crash points re-expressed against `AttemptDisposition` | `AQ-03`, `AQ-08` |
+| `concurrency_key` | Retain | Concurrency-key enforcement; adds wait-time policy per `AQ-ADR-009` | `AQ-06` |
+| `observability` | Replace | Metrics/inspection surfaces are rebuilt; no developmental identifiers in labels | `AQ-12` |
+| `cancellation` | Retain (attribution added) | Terminal finality retained; control mutations gain `ControlMutationContext` | `AQ-11` |
+| `negative_transitions` | Retained and extended (AQ-02) | Invalid Awaiting edges and generic continuation-record guard asserted | `AQ-02` |
+| `lease_expiry` | Retain | Lease fencing and expiry | `AQ-03`, `AQ-08` |
+| `wal_corruption_recovery` | Replace (AQ-03 complete) | Target bounded framing, reserved kind/schema rejection, and semantic-prefix-before-repair proof; full cut coverage in target persistence conformance | `AQ-03` |
+| `misfire` | Retain | Misfire policy for scheduled runs | `AQ-04` |
+| `dispatch_invariants` | Retain (expanded) | Property-based dispatch invariants gain `Awaiting` | `AQ-06` |
+| `concurrent_dispatch_stress` | Retain | Stress under concurrent dispatch | `AQ-13` |
+| `snapshot_corruption_recovery` | Retain (ported AQ-03) | Target physical-damage-only fallback; incompatibility and semantics refuse | `AQ-03` |
+| `concurrent_mutation_boundary` | Retain | Sequence monotonicity in the authority lane | `AQ-03` |
+| `mixed_attempt_outcomes` | Replace | Outcome kinds are superseded by `AttemptDisposition` | `AQ-08` |
+| `crash_during_promotion` | Retain | Promotion durability | `AQ-03` |
+| `multi_mutation_session` | Retain (commands change) | Single-session authority pipeline; command set is the target set | `AQ-03` |
+| `kill_recovery` (chaos) | Retain | Abrupt-termination durability | `AQ-03`, `AQ-13` |
+
+## Workflow feature tests
+
+| Test | Classification | Reason | Re-proved / removed in |
+|---|---|---|---|
+| `handler_output_roundtrip` | Rewrite | Compound disposition output references and recovery | `AQ-08` |
+| `dag_ordering` | Retain | DAG dependencies remain first-class gates | `AQ-09` |
+| `dag_failure_propagation` | Retain | Failed prerequisite cascades | `AQ-09` |
+| `dag_cycle_rejection` | Retain | Cycle rejection at declaration | `AQ-09` |
+| `hierarchy_lifecycle` | Retain (policy explicit) | Premature Complete rejection, required/detached cancellation, and recovery per `AQ-ADR-013` | `AQ-09` |
+| `dynamic_submission` | Rewrite | Child admissions commit with Awaiting; parent resumes through durable child evidence | `AQ-08` |
+| `coordinator_multi_attempt` | Replace | Checkpoint-based batches and immutable child wakes; snapshots remain inspection views | `AQ-08`, `AQ-09` |
+| `cron_scheduling` | Retain | Cron derivation | `AQ-04` |
+| `workflow_crash_recovery` | Retain | Workflow state survives recovery | `AQ-09` |
+| `dag_snapshot_recovery` | Retain | Dependency declarations survive snapshot recovery | `AQ-03`, `AQ-09` |
+| `attempt_lineage` | Retain (accounting split) | Stable `RunId`, unique `AttemptId`; physical vs failure count added | `AQ-08` |
+
+## Budget feature tests
+
+| Test | Classification | Reason | Re-proved / removed in |
+|---|---|---|---|
+| `budget_enforcement` | Retain | Budget consumption | `AQ-10` |
+| `budget_replenishment` | Retain | Replenishment | `AQ-10` |
+| `suspend_resume` | Retain (meaning narrowed) | `Suspended` remains preemption only; waiting moves to `Awaiting` | `AQ-06`, `AQ-10` |
+| `budget_recovery` | Retain | Budget state survives recovery | `AQ-10` |
+| `suspended_concurrency_key` | Retain | Key behaviour under suspension; awaiting policy added separately | `AQ-06` |
+| `budget_threshold_suspension` | Retain | Threshold preemption | `AQ-10` |
+| `subscription_triggered_promotion` | Retained (AQ-10) | Engine-owned structural subscriptions promote Scheduled only | `AQ-10` |
+| `budget_threshold_subscription` | Retain | Internal structural subscription | `AQ-10` |
+| `cascading_budget` | Retain | Hierarchical cascade of budget effects | `AQ-10` |
+| `custom_event_subscription` | Deleted (AQ-10) | Replaced by durable signal and budget/awaiting coverage | `AQ-10` |
+
+## Actor feature tests
+
+| Test | Classification | Reason | Re-proved / removed in |
+|---|---|---|---|
+| `actor_registration` | Retained (AQ-02) | Registration with validated `ExecutorTraits` | `AQ-02`, `AQ-11` |
+| `executor_trait_matching` | Replaced (AQ-02) | Bounded executor trait matching; routing grants no RBAC role or permission | `AQ-02`, `AQ-11` |
+| `remote_actor_crash` | Retain (fenced) | Crash detection plus result-envelope fencing per `AQ-ADR-017` | `AQ-11` |
+| `department_routing` | Replace | Routing by trait; must prove traits grant no authority | `AQ-11` |
+
+## Platform feature tests
+
+| Test | Classification | Reason | Re-proved / removed in |
+|---|---|---|---|
+| `multi_tenant_isolation` | Retain | Tenant isolation; campaign references must not cross tenants (`AQ-DD-003`) | `AQ-11` |
+| `rbac_enforcement` | Retain (permissions added) | Typed permissions for admission, signals, waits, cancellation, reprioritization | `AQ-11` |
+| `approval_workflow` | Retain | Approval flow as ordinary scheduled work | `AQ-11` |
+| `ledger_recovery` | Retain | Ledger survives recovery | `AQ-11` |
+| `triad_mvp` | Replace | End-to-end scenario rebuilt on target APIs | `AQ-12` |
+
+## Summary
+
+| Classification | Count |
+|---|---:|
+| Retain | 39 |
+| Replace | 7 |
+| Reject | 3 |
+| **Total** | **49** |
+
+Counts cover the 48 acceptance tests plus the chaos test registered in `Cargo.toml` at the
+baseline. Tests whose classification is "Retain" with a qualifier are counted as Retain.
+
+### AQ-03 persistence evidence
+
+The old-store baseline characterization is replaced by executable no-write rejection.
+`conformance_target_persistence` covers initialized stores, snapshot cuts, independent
+expected state and canonical digest, failure injection, and backup/restore.
+`conformance_store_process_lock` isolates process-kill ownership recovery from parallel
+close/reopen tests, avoiding transient inherited-lock contention during process spawning.
+The conformance alias includes both binaries. Raw codec/reducer fixture tests
+retain their narrower role via explicitly test-only constructors. Acceptance read-router
+helpers now capture detached checkpoint projections; production daemons retain ownership.
+Crash simulations drop unbuffered WAL handles to release OS locks without syncing; a
+separate child-process kill test proves real process lock release. Initialization adds
+sequence one, and mutation accounting assertions include that durable record.
+
+`attempt_disposition` adds storage fence, atomic effects, checkpoint, accounting, handler delivery, graph, quota, and crash/replay proofs for AQ-08.
+
+AQ-10 adds `budget_awaiting`: dimension/key-policy/wake-timing matrix, recovery,
+blocked context retention, cancellation, replenishment, and real handler yield.

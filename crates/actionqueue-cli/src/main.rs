@@ -15,7 +15,8 @@ fn main() {
     if args.len() < 2 {
         emit_error_and_exit(CliError::usage(
             "usage_missing_command",
-            "Usage: actionqueue-cli <command> [options]\nAvailable commands: daemon, submit, stats",
+            "Usage: actionqueue <command> [options]\nAvailable commands: daemon, ensure-task, \
+             admission, task, run, signal, wait, trace, inspect, store, backup, restore",
         ));
     }
 
@@ -37,9 +38,9 @@ fn main() {
     };
 
     let outcome = match parsed {
+        Command::Api(args) => cmd::api::run(args),
         Command::Daemon(daemon_args) => cmd::daemon::run(daemon_args),
-        Command::Submit(submit_args) => cmd::submit::run(submit_args),
-        Command::Stats(stats_args) => cmd::stats::run(stats_args),
+        Command::Storage(args) => cmd::storage::run(args),
     };
 
     match outcome {
@@ -63,6 +64,8 @@ fn emit_success(output: CommandOutput) {
 
 fn emit_error_and_exit(error: CliError) -> ! {
     let payload = ErrorPayload {
+        committed: error.committed_signal(),
+        recovery_required: error.committed_signal().is_some(),
         error_kind: error.kind(),
         error_code: error.code(),
         message: error.message(),

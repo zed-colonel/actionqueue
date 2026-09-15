@@ -7,6 +7,8 @@
 //! - `ReleaseOnRetry`: the key is released when the run suspends, allowing the
 //!   second task to be dispatched immediately.
 
+#[path = "host_support.rs"]
+mod host_support;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -20,19 +22,12 @@ use actionqueue_core::task::metadata::TaskMetadata;
 use actionqueue_core::task::run_policy::RunPolicy;
 use actionqueue_core::task::task_spec::{TaskPayload, TaskSpec};
 use actionqueue_engine::time::clock::MockClock;
-use actionqueue_executor_local::handler::{ExecutorContext, ExecutorHandler, HandlerOutput};
+use actionqueue_executor_local::handler::{AttemptDisposition, ExecutorContext, ExecutorHandler};
 use actionqueue_runtime::config::{BackoffStrategyConfig, RuntimeConfig};
 use actionqueue_runtime::engine::ActionQueueEngine;
 
-static COUNTER: AtomicUsize = AtomicUsize::new(0);
-
-fn data_dir(label: &str) -> PathBuf {
-    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let dir = PathBuf::from("target")
-        .join("tmp")
-        .join(format!("7i-suspended-ck-{label}-{}-{n}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("data dir should be creatable");
-    dir
+fn data_dir(label: &str) -> tempfile::TempDir {
+    tempfile::Builder::new().prefix(label).tempdir().expect("test data dir")
 }
 
 /// Suspends on call 0; succeeds on all subsequent calls.
@@ -42,12 +37,12 @@ struct SuspendOnFirstCallHandler {
 }
 
 impl ExecutorHandler for SuspendOnFirstCallHandler {
-    fn execute(&self, _ctx: ExecutorContext) -> HandlerOutput {
+    fn execute(&self, _ctx: ExecutorContext) -> AttemptDisposition {
         let n = self.call_count.fetch_add(1, Ordering::SeqCst);
         if n == 0 {
-            HandlerOutput::Suspended { output: None, consumption: vec![] }
+            actionqueue_core::disposition::AttemptDisposition::suspended(None, None)
         } else {
-            HandlerOutput::Success { output: None, consumption: vec![] }
+            actionqueue_core::disposition::AttemptDisposition::complete(None)
         }
     }
 }
@@ -90,8 +85,10 @@ async fn suspended_run_holds_concurrency_key_with_hold_during_retry_policy() {
     let clock = MockClock::new(1000);
     let call_count = Arc::new(AtomicUsize::new(0));
     let handler = SuspendOnFirstCallHandler { call_count: Arc::clone(&call_count) };
-    let engine = ActionQueueEngine::new(make_config(dir.clone()), handler);
-    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap");
+    let engine = ActionQueueEngine::new(make_config(dir.path().to_path_buf()), handler);
+    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap").with_host(
+        crate::host_support::host(actionqueue_core::control::ControlScope::SingleTenant),
+    );
 
     let shared_key = "exclusive-resource";
 
@@ -134,7 +131,6 @@ async fn suspended_run_holds_concurrency_key_with_hold_during_retry_policy() {
     );
 
     boot.shutdown().expect("shutdown");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// With ReleaseOnRetry, a suspended run releases the concurrency key.
@@ -147,8 +143,10 @@ async fn suspended_run_releases_concurrency_key_with_release_on_retry_policy() {
     let clock = MockClock::new(1000);
     let call_count = Arc::new(AtomicUsize::new(0));
     let handler = SuspendOnFirstCallHandler { call_count: Arc::clone(&call_count) };
-    let engine = ActionQueueEngine::new(make_config(dir.clone()), handler);
-    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap");
+    let engine = ActionQueueEngine::new(make_config(dir.path().to_path_buf()), handler);
+    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap").with_host(
+        crate::host_support::host(actionqueue_core::control::ControlScope::SingleTenant),
+    );
 
     let shared_key = "shared-resource";
 
@@ -195,5 +193,4 @@ async fn suspended_run_releases_concurrency_key_with_release_on_retry_policy() {
     assert_eq!(state_a_final, RunState::Suspended, "task A must still be Suspended (not resumed)");
 
     boot.shutdown().expect("shutdown");
-    let _ = std::fs::remove_dir_all(&dir);
 }

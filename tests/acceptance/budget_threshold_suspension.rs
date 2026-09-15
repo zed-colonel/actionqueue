@@ -17,9 +17,10 @@
 //! cancels the CancellationContext stored in InFlightRun using the
 //! unit-level approach.
 
+#[path = "host_support.rs"]
+mod host_support;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use actionqueue_core::budget::{BudgetConsumption, BudgetDimension};
@@ -31,22 +32,15 @@ use actionqueue_core::task::run_policy::RunPolicy;
 use actionqueue_core::task::task_spec::{TaskPayload, TaskSpec};
 use actionqueue_engine::time::clock::MockClock;
 use actionqueue_executor_local::handler::{
-    CancellationContext, ExecutorContext, ExecutorHandler, HandlerOutput,
+    AttemptDisposition, CancellationContext, ExecutorContext, ExecutorHandler,
 };
 use actionqueue_executor_local::types::ExecutorRequest;
 use actionqueue_executor_local::AttemptRunner;
 use actionqueue_runtime::config::{BackoffStrategyConfig, RuntimeConfig};
 use actionqueue_runtime::engine::ActionQueueEngine;
 
-static COUNTER: AtomicUsize = AtomicUsize::new(0);
-
-fn data_dir(label: &str) -> PathBuf {
-    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let dir = PathBuf::from("target")
-        .join("tmp")
-        .join(format!("7d-budget-suspend-{label}-{}-{n}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("data dir");
-    dir
+fn data_dir(label: &str) -> tempfile::TempDir {
+    tempfile::Builder::new().prefix(label).tempdir().expect("test data dir")
 }
 
 /// Handler that consumes tokens and returns RetryableFailure.
@@ -54,11 +48,12 @@ fn data_dir(label: &str) -> PathBuf {
 struct TokenConsumeRetryHandler;
 
 impl ExecutorHandler for TokenConsumeRetryHandler {
-    fn execute(&self, _ctx: ExecutorContext) -> HandlerOutput {
-        HandlerOutput::RetryableFailure {
-            error: "transient".to_string(),
-            consumption: vec![BudgetConsumption::new(BudgetDimension::Token, 500)],
-        }
+    fn execute(&self, _ctx: ExecutorContext) -> AttemptDisposition {
+        actionqueue_core::disposition::AttemptDisposition::retryable_failure(
+            actionqueue_core::bounded::BoundedError::new("transient".to_string()).unwrap(),
+        )
+        .with_consumption(vec![BudgetConsumption::new(BudgetDimension::Token, 500)])
+        .unwrap()
     }
 }
 
@@ -80,8 +75,10 @@ async fn budget_exhaustion_blocks_further_dispatch() {
 
     let clock = MockClock::new(1000);
     let handler = TokenConsumeRetryHandler;
-    let engine = ActionQueueEngine::new(make_config(dir.clone()), handler);
-    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap");
+    let engine = ActionQueueEngine::new(make_config(dir.path().to_path_buf()), handler);
+    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap").with_host(
+        crate::host_support::host(actionqueue_core::control::ControlScope::SingleTenant),
+    );
 
     let task_id = TaskId::new();
     let constraints = TaskConstraints::new(5, None, None).expect("valid");
@@ -113,7 +110,6 @@ async fn budget_exhaustion_blocks_further_dispatch() {
     );
 
     boot.shutdown().expect("shutdown");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Unit-level test: verifies that an externally-provided CancellationContext
@@ -129,11 +125,11 @@ fn external_cancellation_context_reaches_handler() {
     struct SuspendOnCancelHandler;
 
     impl ExecutorHandler for SuspendOnCancelHandler {
-        fn execute(&self, ctx: ExecutorContext) -> HandlerOutput {
+        fn execute(&self, ctx: ExecutorContext) -> AttemptDisposition {
             if ctx.input.cancellation_context.token().is_cancelled() {
-                HandlerOutput::Suspended { output: None, consumption: vec![] }
+                actionqueue_core::disposition::AttemptDisposition::suspended(None, None)
             } else {
-                HandlerOutput::Success { output: None, consumption: vec![] }
+                actionqueue_core::disposition::AttemptDisposition::complete(None)
             }
         }
     }
@@ -145,12 +141,16 @@ fn external_cancellation_context_reaches_handler() {
     ctx.cancel();
 
     let request = ExecutorRequest {
+        lease_fence: actionqueue_core::mutation::LeaseFence::new("test".into(), 1),
+        failure_attempt_count: 0,
+        resume_context: None,
+        causal_context: None,
         run_id: RunId::new(),
         attempt_id: AttemptId::new(),
         payload: vec![],
         constraints: TaskConstraints::new(3, None, None).expect("valid"),
         attempt_number: 1,
-        submission: None,
+
         children: None,
         cancellation_context: Some(ctx),
     };
@@ -159,8 +159,8 @@ fn external_cancellation_context_reaches_handler() {
 
     // Handler must observe the pre-signaled cancellation and return Suspended.
     assert_eq!(
-        outcome.response,
-        actionqueue_executor_local::types::ExecutorResponse::Suspended { output: None },
+        outcome.disposition,
+        actionqueue_core::disposition::AttemptDisposition::suspended(None, None),
         "handler must return Suspended when CancellationContext is pre-cancelled"
     );
 }

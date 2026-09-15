@@ -617,12 +617,13 @@ mod tests {
         let saw_cancel_clone = Arc::clone(&saw_cancel);
 
         let result = guard.execute_with_cancellation(Some(0), move |context| {
-            for _ in 0..10_000 {
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            while std::time::Instant::now() < deadline {
                 if context.token().is_cancelled() {
                     saw_cancel_clone.store(true, Ordering::SeqCst);
                     break;
                 }
-                std::hint::spin_loop();
+                thread::sleep(Duration::from_millis(1));
             }
             9u8
         });
@@ -687,11 +688,12 @@ mod tests {
 
         let result = guard.execute_with_cancellation(Some(0), move |context| {
             // With a 10ms poll interval, the watchdog should still eventually fire
-            for _ in 0..10_000 {
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            while std::time::Instant::now() < deadline {
                 if context.token().is_cancelled() {
                     return true;
                 }
-                std::hint::spin_loop();
+                thread::sleep(Duration::from_millis(1));
             }
             false
         });

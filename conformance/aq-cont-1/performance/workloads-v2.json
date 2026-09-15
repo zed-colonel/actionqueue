@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "sizes": [
+    8,
+    129,
+    257
+  ],
+  "clock": "explicit logical timestamps",
+  "bounds": {
+    "match_batch": 128,
+    "active_waits_after_matching": 0,
+    "remaining_match_candidates_after_completion": 0,
+    "history_visits": 0,
+    "bucket_probes": 4,
+    "waiter_visits_per_active_wait": 4,
+    "signal_candidates_per_query": 1
+  },
+  "timing_policy": "informational",
+  "compound_children": [
+    1,
+    8,
+    32
+  ],
+  "rejected_compound_children": 64
+}

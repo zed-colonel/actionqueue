@@ -20,6 +20,15 @@ pub fn run(args: DaemonArgs) -> Result<CommandOutput, CliError> {
         config.metrics_bind = Some(parse_socket_addr(metrics_bind, "metrics_bind")?);
     }
     config.enable_control = args.enable_control;
+    for label in &args.signal_metric_labels {
+        let Some((namespace, kind)) = label.split_once(':') else {
+            return Err(CliError::validation(
+                "daemon_config_invalid",
+                format!("invalid signal metric label '{label}': expected namespace:kind"),
+            ));
+        };
+        config.signal_metric_allowlist.insert((namespace.to_string(), kind.to_string()));
+    }
 
     config.validate().map_err(|error| {
         CliError::validation(
@@ -28,39 +37,164 @@ pub fn run(args: DaemonArgs) -> Result<CommandOutput, CliError> {
         )
     })?;
 
-    let state = actionqueue_daemon::bootstrap::bootstrap(config).map_err(|error| {
-        CliError::runtime("daemon_bootstrap_failed", format!("daemon bootstrap failed: {error}"))
-    })?;
-
-    let ready = state.ready_status();
-    let metrics_bind = state.config().metrics_bind.map(|addr| addr.to_string());
-
-    if args.json {
-        return Ok(CommandOutput::Json(json!({
-            "command": "daemon",
-            "data_dir": data_dir.display().to_string(),
-            "bind_address": state.config().bind_address.to_string(),
-            "metrics_bind": metrics_bind,
-            "control_enabled": state.config().enable_control,
-            "ready": ready.is_ready(),
-            "ready_reason": ready.reason(),
-        })));
+    let hook = args
+        .auth_file
+        .as_ref()
+        .map(|path| {
+            let bytes = std::fs::read(path).map_err(|_| {
+                CliError::validation("host_auth_invalid", "unable to read host authentication file")
+            })?;
+            actionqueue_daemon::http::auth::bearer_authenticator(&bytes).map_err(|_| {
+                CliError::validation(
+                    "host_auth_invalid",
+                    "invalid host authentication configuration",
+                )
+            })
+        })
+        .transpose()?;
+    if config.enable_control && hook.is_none() {
+        return Err(CliError::validation(
+            "host_auth_required",
+            "--enable-control requires --auth-file",
+        ));
     }
+    let state = actionqueue_daemon::bootstrap::bootstrap_with_authenticator(config, hook).map_err(
+        |_error| CliError::runtime("daemon_bootstrap_failed", "daemon bootstrap failed"),
+    )?;
 
-    let lines = [
-        "command=daemon".to_string(),
-        format!("data_dir={}", data_dir.display()),
-        format!("bind_address={}", state.config().bind_address),
-        format!("metrics_bind={}", metrics_bind.as_deref().unwrap_or("disabled")),
-        format!("control_enabled={}", state.config().enable_control),
-        format!("ready={}", ready.is_ready()),
-        format!("ready_reason={}", ready.reason()),
-    ];
-    Ok(CommandOutput::Text(lines.join("\n")))
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|_| CliError::runtime("runtime_unavailable", "unable to start runtime"))?;
+    runtime.block_on(async move {
+        let listener = tokio::net::TcpListener::bind(state.config().bind_address)
+            .await
+            .map_err(|_| CliError::runtime("bind_failed", "unable to bind listener"))?;
+        let address = listener
+            .local_addr()
+            .map_err(|_| CliError::runtime("bind_failed", "listener unavailable"))?;
+        let metrics_listener =
+            if let Some(bind) = state.config().metrics_bind {
+                Some(tokio::net::TcpListener::bind(bind).await.map_err(|_| {
+                    CliError::runtime("bind_failed", "unable to bind metrics listener")
+                })?)
+            } else {
+                None
+            };
+        let (stop, stopped) = tokio::sync::watch::channel(false);
+        let signal_task = tokio::spawn(async move {
+            #[cfg(unix)]
+            {
+                if let Ok(mut term) =
+                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                {
+                    tokio::select! { _ = tokio::signal::ctrl_c() => {}, _ = term.recv() => {} }
+                } else {
+                    let _ = tokio::signal::ctrl_c().await;
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = tokio::signal::ctrl_c().await;
+            }
+            let _ = stop.send(true);
+        });
+        println!(
+            "{}",
+            json!({"command":"daemon", "bind_address":address.to_string(), "ready":true})
+        );
+        // Both listeners finish before bootstrap/store ownership is released.
+        let router = actionqueue_daemon::http::build_router(state.router_state().clone());
+        let mut api_stopped = stopped.clone();
+        let api = async {
+            axum::serve(listener, router)
+                .with_graceful_shutdown(async move {
+                    let _ = api_stopped.wait_for(|v| *v).await;
+                })
+                .await
+        };
+        let mut metrics_stopped = stopped;
+        let metrics = async {
+            if let Some(listener) = metrics_listener {
+                let router =
+                    actionqueue_daemon::http::metrics::register_routes(axum::Router::new(), true)
+                        .with_state(state.router_state().clone());
+                axum::serve(listener, router)
+                    .with_graceful_shutdown(async move {
+                        let _ = metrics_stopped.wait_for(|v| *v).await;
+                    })
+                    .await
+            } else {
+                Ok(())
+            }
+        };
+        let result = tokio::try_join!(api, metrics);
+        signal_task.abort();
+        result
+            .map_err(|_| CliError::runtime("serve_failed", "HTTP server stopped unexpectedly"))?;
+        state.shutdown().await;
+        Ok(CommandOutput::Json(json!({"status":"stopped"})))
+    })
 }
 
 fn parse_socket_addr(raw: &str, field: &str) -> Result<SocketAddr, CliError> {
     raw.parse::<SocketAddr>().map_err(|error| {
         CliError::validation("invalid_socket_address", format!("invalid {field} '{raw}': {error}"))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn control_bootstrap_requires_valid_trusted_host_configuration() {
+        let root = std::env::temp_dir()
+            .join(format!("aq-cli-auth-{}", actionqueue_core::ids::TaskId::new()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut args = DaemonArgs {
+            auth_file: None,
+            data_dir: Some(root.join("store")),
+            bind: None,
+            metrics_bind: None,
+            enable_control: true,
+            signal_metric_labels: Vec::new(),
+            json: true,
+        };
+        assert!(run(args.clone()).is_err());
+        let path = root.join("host.json");
+        args.auth_file = Some(path.clone());
+        assert!(run(args.clone()).is_err());
+        std::fs::write(&path, b"invalid").unwrap();
+        assert!(run(args.clone()).is_err());
+        let h = actionqueue_core::causal::ControlMutationContext::new(
+            actionqueue_core::bounded::OpaqueRef::new("trusted-cli-host").unwrap(),
+        );
+        std::fs::write(&path, serde_json::to_vec(&json!([{"token":"0123456789abcdef0123456789abcdef", "actor_id":null,"scope":"SingleTenant","attribution":h}])).unwrap()).unwrap();
+        // Valid server startup and shutdown are covered by black-box process tests.
+        assert!(actionqueue_daemon::http::auth::bearer_authenticator(
+            &std::fs::read(path).unwrap()
+        )
+        .is_ok());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    /// Label pairs are validated with the daemon configuration before any store is opened.
+    #[test]
+    fn signal_metric_labels_are_validated_before_bootstrap() {
+        let root = std::env::temp_dir()
+            .join(format!("aq-cli-labels-{}", actionqueue_core::ids::TaskId::new()));
+        let args = |labels: &[&str]| DaemonArgs {
+            auth_file: None,
+            data_dir: Some(root.join("store")),
+            bind: None,
+            metrics_bind: None,
+            enable_control: false,
+            signal_metric_labels: labels.iter().map(|l| l.to_string()).collect(),
+            json: true,
+        };
+        for invalid in [&["no-separator"][..], &["missing-kind:"], &[":missing-namespace"]] {
+            let error = run(args(invalid)).unwrap_err();
+            assert_eq!(error.code(), "daemon_config_invalid", "{invalid:?}");
+        }
+        assert!(!root.exists(), "rejected labels must not create a store");
+    }
 }

@@ -54,6 +54,8 @@ pub enum Capability {
     CanCancel,
     /// Extension capability. The inner string must be non-empty.
     Custom(String),
+    /// Explicit queue-control permission; custom strings and role names cannot grant it.
+    Queue(crate::control::QueueAction),
 }
 
 impl Capability {
@@ -106,7 +108,7 @@ impl TenantRegistration {
 ///
 /// Ledger keys identify the logical ledger (e.g. `"audit"`, `"decision"`,
 /// `"relationship"`, `"incident"`, `"reality"`). The payload is opaque bytes
-/// whose schema is defined by the consumer (Caelum, Digicorp).
+/// whose schema is defined by the consumer (applications, Digicorp).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LedgerEntry {

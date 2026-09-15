@@ -113,11 +113,6 @@ impl<T> DispatchQueue<T> {
     pub fn is_empty(&self) -> bool {
         self.queue.is_empty()
     }
-
-    /// Returns true when dispatch queue has been marked shut down.
-    pub fn is_shutdown(&self) -> bool {
-        self.shutdown
-    }
 }
 
 #[cfg(test)]

@@ -18,7 +18,9 @@ mod wf {
     use actionqueue_core::task::run_policy::RunPolicy;
     use actionqueue_core::task::task_spec::{TaskPayload, TaskSpec};
     use actionqueue_engine::time::clock::MockClock;
-    use actionqueue_executor_local::handler::{ExecutorContext, ExecutorHandler, HandlerOutput};
+    use actionqueue_executor_local::handler::{
+        AttemptDisposition, ExecutorContext, ExecutorHandler,
+    };
     use actionqueue_runtime::config::RuntimeConfig;
     use actionqueue_runtime::engine::ActionQueueEngine;
     use actionqueue_storage::mutation::authority::StorageMutationAuthority;
@@ -29,14 +31,16 @@ mod wf {
     struct SelectiveHandler;
 
     impl ExecutorHandler for SelectiveHandler {
-        fn execute(&self, ctx: ExecutorContext) -> HandlerOutput {
+        fn execute(&self, ctx: ExecutorContext) -> AttemptDisposition {
             if ctx.input.payload == b"fail" {
-                HandlerOutput::TerminalFailure {
-                    error: "intentional terminal failure".to_string(),
-                    consumption: vec![],
-                }
+                actionqueue_core::disposition::AttemptDisposition::terminal_failure(
+                    actionqueue_core::bounded::BoundedError::new(
+                        "intentional terminal failure".to_string(),
+                    )
+                    .unwrap(),
+                )
             } else {
-                HandlerOutput::Success { output: None, consumption: vec![] }
+                actionqueue_core::disposition::AttemptDisposition::complete(None)
             }
         }
     }
@@ -59,8 +63,12 @@ mod wf {
         // Phase 1: submit step1 (will fail) and step2 (depends on step1).
         {
             let engine = ActionQueueEngine::new(engine_config(&data_dir), SelectiveHandler);
-            let mut eng =
-                engine.bootstrap_with_clock(MockClock::new(1000)).expect("bootstrap must succeed");
+            let mut eng = engine
+                .bootstrap_with_clock(MockClock::new(1000))
+                .expect("bootstrap must succeed")
+                .with_host(crate::support::host_support::host(
+                    actionqueue_core::control::ControlScope::SingleTenant,
+                ));
 
             let spec1 = TaskSpec::new(
                 step1_id,
@@ -89,7 +97,11 @@ mod wf {
         {
             let recovery = load_projection_from_storage(&data_dir).expect("recovery must succeed");
             let mut authority =
-                StorageMutationAuthority::new(recovery.wal_writer, recovery.projection);
+                StorageMutationAuthority::new(recovery.wal_writer, recovery.projection).with_host(
+                    crate::support::host_support::host(
+                        actionqueue_core::control::ControlScope::SingleTenant,
+                    ),
+                );
 
             let seq = authority.projection().latest_sequence() + 1;
             let _ = authority
@@ -108,8 +120,12 @@ mod wf {
         // Phase 3: run engine — step1 fails, step2 must be canceled.
         {
             let engine = ActionQueueEngine::new(engine_config(&data_dir), SelectiveHandler);
-            let mut eng =
-                engine.bootstrap_with_clock(MockClock::new(1000)).expect("bootstrap must succeed");
+            let mut eng = engine
+                .bootstrap_with_clock(MockClock::new(1000))
+                .expect("bootstrap must succeed")
+                .with_host(crate::support::host_support::host(
+                    actionqueue_core::control::ControlScope::SingleTenant,
+                ));
             let _ = eng.run_until_idle().await.expect("run must complete");
 
             let step1_runs = eng.projection().run_ids_for_task(step1_id);
@@ -150,8 +166,12 @@ mod wf {
         // Phase 1: submit all three tasks.
         {
             let engine = ActionQueueEngine::new(engine_config(&data_dir), SelectiveHandler);
-            let mut eng =
-                engine.bootstrap_with_clock(MockClock::new(1000)).expect("bootstrap must succeed");
+            let mut eng = engine
+                .bootstrap_with_clock(MockClock::new(1000))
+                .expect("bootstrap must succeed")
+                .with_host(crate::support::host_support::host(
+                    actionqueue_core::control::ControlScope::SingleTenant,
+                ));
 
             let spec1 = TaskSpec::new(
                 step1_id,
@@ -190,7 +210,11 @@ mod wf {
         {
             let recovery = load_projection_from_storage(&data_dir).expect("recovery must succeed");
             let mut authority =
-                StorageMutationAuthority::new(recovery.wal_writer, recovery.projection);
+                StorageMutationAuthority::new(recovery.wal_writer, recovery.projection).with_host(
+                    crate::support::host_support::host(
+                        actionqueue_core::control::ControlScope::SingleTenant,
+                    ),
+                );
 
             let seq = authority.projection().latest_sequence() + 1;
             let _ = authority
@@ -222,8 +246,12 @@ mod wf {
         // Phase 3: run engine — step1 fails, step2 AND step3 must be canceled.
         {
             let engine = ActionQueueEngine::new(engine_config(&data_dir), SelectiveHandler);
-            let mut eng =
-                engine.bootstrap_with_clock(MockClock::new(1000)).expect("bootstrap must succeed");
+            let mut eng = engine
+                .bootstrap_with_clock(MockClock::new(1000))
+                .expect("bootstrap must succeed")
+                .with_host(crate::support::host_support::host(
+                    actionqueue_core::control::ControlScope::SingleTenant,
+                ));
             let _ = eng.run_until_idle().await.expect("run must complete");
 
             let step1_runs = eng.projection().run_ids_for_task(step1_id);

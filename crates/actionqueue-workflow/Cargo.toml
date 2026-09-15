@@ -1,23 +1,21 @@
 [package]
 name = "actionqueue-workflow"
 authors = ["Keith <zed.colonel@gmail.com>"]
-version = "0.1.2"
+version = "0.2.0"
 edition = "2021"
 license = "Apache-2.0"
-description = "Workflow primitives for ActionQueue: DAG dependencies, task hierarchy, cron scheduling, and dynamic submission."
+description = "Workflow primitives for ActionQueue: DAG dependencies, task hierarchy, cron scheduling, and durable child admission."
 readme = "README.md"
 repository = "https://github.com/zed-colonel/actionqueue"
 keywords = ["workflow", "dag", "cron", "task-queue", "hierarchy"]
 categories = ["concurrency"]
 
 [dependencies]
-actionqueue-core = "0.1.2"
-actionqueue-storage = "0.1.2"
-actionqueue-executor-local = "0.1.2"
-tokio = { version = "1", features = ["sync"] }
-tracing = "0.1"
+actionqueue-core = "0.2.0"
+actionqueue-storage = "0.2.0"
+actionqueue-executor-local = "0.2.0"
 
 [dev-dependencies]
-actionqueue-runtime = "0.1.2"
+actionqueue-runtime = "0.2.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 uuid = { version = "1.0", features = ["v4"] }

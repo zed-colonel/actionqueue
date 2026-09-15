@@ -18,6 +18,7 @@ members = [
     "crates/actionqueue-actor",
     "crates/actionqueue-platform",
 ]
+exclude = ["examples/downstream-handoff"]
 resolver = "2"
 
 [features]
@@ -30,34 +31,49 @@ workflow = [
     "actionqueue-cli/workflow",
 ]
 budget = [
+    "actionqueue-cli/budget",
+    "actionqueue-daemon/budget",
     "actionqueue-runtime/budget",
 ]
 actor = [
+    "actionqueue-cli/actor",
+    "actionqueue-daemon/actor",
     "actionqueue-runtime/actor",
 ]
 platform = [
+    "actionqueue-cli/platform",
+    "actionqueue-daemon/platform",
     "actionqueue-runtime/platform",
 ]
 
 [dev-dependencies]
-actionqueue-core = "0.1.2"
-actionqueue-storage = "0.1.2"
-actionqueue-engine = "0.1.2"
-actionqueue-executor-local = "0.1.2"
-actionqueue-runtime = "0.1.2"
-actionqueue-workflow = "0.1.2"
-actionqueue-budget = "0.1.2"
-actionqueue-actor = "0.1.2"
-actionqueue-platform = "0.1.2"
-actionqueue-daemon = "0.1.2"
-actionqueue-cli = "0.1.2"
+actionqueue-core = "0.2.0"
+actionqueue-storage = { version = "0.2.0", features = ["testing"] }
+actionqueue-engine = "0.2.0"
+actionqueue-executor-local = "0.2.0"
+actionqueue-runtime = "0.2.0"
+actionqueue-workflow = "0.2.0"
+actionqueue-budget = "0.2.0"
+actionqueue-actor = "0.2.0"
+actionqueue-platform = "0.2.0"
+actionqueue-daemon = "0.2.0"
+actionqueue-cli = "0.2.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 axum = "0.7"
 tower = { version = "0.4", features = ["util"] }
 http-body-util = "0.1"
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
 serde_json = "1.0"
+serde = { version = "1", features = ["derive"] }
 tempfile = "3.10"
 proptest = "1.4"
+sha2 = "0.10"
+# AQ-CONT-1 boundary checks parse target sources instead of lexing them; these are already
+# transitive dependencies of the workspace (serde_derive, tokio-macros, async-trait).
+syn = { version = "2", features = ["full", "visit"] }
+proc-macro2 = { version = "1", features = ["span-locations"] }
+quote = "1"
 
 [[test]]
 name = "acceptance_once_accounting"
@@ -136,6 +152,18 @@ name = "chaos_kill_recovery"
 path = "tests/chaos/kill_recovery.rs"
 
 [[test]]
+name = "conformance_contract_boundaries"
+path = "tests/conformance/contract_boundaries.rs"
+
+[[test]]
+name = "conformance_frozen_evidence"
+path = "tests/conformance/frozen_evidence.rs"
+
+[[test]]
+name = "conformance_pre_contract_store"
+path = "tests/conformance/pre_contract_store.rs"
+
+[[test]]
 name = "acceptance_handler_output_roundtrip"
 path = "tests/acceptance/handler_output_roundtrip.rs"
 required-features = ["workflow"]
@@ -203,7 +231,6 @@ required-features = ["budget"]
 [[test]]
 name = "acceptance_suspend_resume"
 path = "tests/acceptance/suspend_resume.rs"
-required-features = ["budget"]
 
 [[test]]
 name = "acceptance_budget_recovery"
@@ -213,7 +240,6 @@ required-features = ["budget"]
 [[test]]
 name = "acceptance_suspended_concurrency_key"
 path = "tests/acceptance/suspended_concurrency_key.rs"
-required-features = ["budget"]
 
 [[test]]
 name = "acceptance_budget_threshold_suspension"
@@ -236,18 +262,13 @@ path = "tests/acceptance/cascading_budget.rs"
 required-features = ["budget", "workflow"]
 
 [[test]]
-name = "acceptance_custom_event_subscription"
-path = "tests/acceptance/custom_event_subscription.rs"
-required-features = ["budget"]
-
-[[test]]
 name = "acceptance_actor_registration"
 path = "tests/acceptance/actor_registration.rs"
 required-features = ["actor"]
 
 [[test]]
-name = "acceptance_capability_matching"
-path = "tests/acceptance/capability_matching.rs"
+name = "acceptance_executor_trait_matching"
+path = "tests/acceptance/executor_trait_matching.rs"
 required-features = ["actor"]
 
 [[test]]
@@ -297,3 +318,129 @@ actionqueue-actor = { path = "crates/actionqueue-actor" }
 actionqueue-platform = { path = "crates/actionqueue-platform" }
 actionqueue-daemon = { path = "crates/actionqueue-daemon" }
 actionqueue-cli = { path = "crates/actionqueue-cli" }
+
+# Evidence tooling for the frozen pre-AQ-CONT-1 archive. Not runtime code; target
+# crates must not depend on the archive. See archive/pre-aq-cont-1/README.md.
+
+[[test]]
+name = "conformance_target_persistence"
+path = "tests/conformance/target_persistence.rs"
+
+[[test]]
+name = "conformance_store_process_lock"
+path = "tests/conformance/store_process_lock.rs"
+
+[[test]]
+name = "acceptance_idempotent_admission"
+path = "tests/acceptance/idempotent_admission.rs"
+
+[[test]]
+name = "acceptance_admission_conflict"
+path = "tests/acceptance/admission_conflict.rs"
+
+[[test]]
+name = "acceptance_compound_admission_crash"
+path = "tests/acceptance/compound_admission_crash.rs"
+
+[[test]]
+name = "acceptance_signal_admission"
+path = "tests/acceptance/signal_admission.rs"
+
+[[test]]
+name = "acceptance_signal_retention"
+path = "tests/acceptance/signal_retention.rs"
+
+[[test]]
+name = "acceptance_signal_crash"
+path = "tests/acceptance/signal_crash.rs"
+
+[[test]]
+name = "acceptance_waits"
+path = "tests/acceptance/waits.rs"
+
+[[test]]
+name = "acceptance_wait_crash"
+path = "tests/acceptance/wait_crash.rs"
+
+[[test]]
+name = "acceptance_checkpoint_resume"
+path = "tests/acceptance/checkpoint_resume.rs"
+
+[[test]]
+name = "acceptance_resume_context_crash"
+path = "tests/acceptance/resume_context_crash.rs"
+
+[[test]]
+name = "acceptance_attempt_disposition"
+path = "tests/acceptance/attempt_disposition.rs"
+
+[[test]]
+name = "acceptance_transactional_child_admission"
+path = "tests/acceptance/transactional_child_admission.rs"
+
+[[test]]
+name = "acceptance_parent_wait_child_atomicity"
+path = "tests/acceptance/parent_wait_child_atomicity.rs"
+
+[[test]]
+name = "acceptance_budget_awaiting"
+path = "tests/acceptance/budget_awaiting.rs"
+required-features = ["budget"]
+
+[[test]]
+name = "acceptance_remote_protocol"
+path = "tests/acceptance/remote_protocol.rs"
+required-features = ["actor"]
+
+[[test]]
+name = "acceptance_control_mutation_attribution"
+path = "tests/acceptance/control_mutation_attribution.rs"
+
+[[test]]
+name = "acceptance_structural_inspection"
+path = "tests/acceptance/structural_inspection.rs"
+
+[[test]]
+name = "conformance_package"
+path = "tests/conformance/package.rs"
+
+[[test]]
+name = "conformance_scenarios"
+path = "tests/conformance/scenarios.rs"
+
+[[test]]
+name = "chaos_continuation_matrix"
+path = "tests/chaos/continuation_matrix.rs"
+
+[[test]]
+name = "conformance_model"
+path = "tests/conformance/model.rs"
+
+[[example]]
+name = "aq_conformance"
+path = "conformance/aq-cont-1/drivers/main.rs"
+
+[[bench]]
+name = "continuation"
+path = "benches/continuation.rs"
+harness = false
+
+[[test]]
+name = "conformance_reference_adapter"
+path = "tests/conformance/reference_adapter.rs"
+required-features = ["workflow", "budget", "actor", "platform"]
+
+[[test]]
+name = "conformance_developmental"
+path = "tests/conformance/developmental.rs"
+required-features = ["workflow", "budget", "actor", "platform"]
+
+[[test]]
+name = "conformance_public"
+path = "tests/conformance/public.rs"
+required-features = ["workflow", "budget", "actor", "platform"]
+
+[[example]]
+name = "aq_adapter"
+path = "conformance/aq-cont-1/drivers/adapter.rs"
+required-features = ["workflow", "budget", "actor", "platform"]

@@ -24,16 +24,16 @@ use actionqueue_core::subscription::{EventFilter, SubscriptionId};
 use crate::wal::event::{WalEvent, WalEventType};
 
 /// Projection record for a task with timestamp metadata.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TaskRecord {
     /// Canonical task specification.
-    task_spec: actionqueue_core::task::task_spec::TaskSpec,
+    pub(crate) task_spec: actionqueue_core::task::task_spec::TaskSpec,
     /// Task creation timestamp (Unix epoch seconds).
-    created_at: u64,
+    pub(crate) created_at: u64,
     /// Task update timestamp (Unix epoch seconds), if any.
-    updated_at: Option<u64>,
+    pub(crate) updated_at: Option<u64>,
     /// Task cancellation timestamp (Unix epoch seconds), if canceled.
-    canceled_at: Option<u64>,
+    pub(crate) canceled_at: Option<u64>,
 }
 
 /// A deterministic state transition record for a run.
@@ -67,6 +67,9 @@ impl RunStateHistoryEntry {
 /// A deterministic attempt lineage record for a run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AttemptHistoryEntry {
+    pub disposition: Option<Box<crate::mutation::disposition::DispositionRecord>>,
+    pub(crate) accepted_start: Option<super::resume::AcceptedStart>,
+    pub(crate) finish_origin: actionqueue_core::continuation::AttemptFinishOrigin,
     /// The attempt identifier.
     pub(crate) attempt_id: actionqueue_core::ids::AttemptId,
     /// The timestamp when the attempt started.
@@ -82,6 +85,14 @@ pub struct AttemptHistoryEntry {
 }
 
 impl AttemptHistoryEntry {
+    /// Durable start and assignment, absent only for schema-1 historical attempts.
+    pub fn accepted_start(&self) -> Option<&super::resume::AcceptedStart> {
+        self.accepted_start.as_ref()
+    }
+    /// Structural origin of the attempt closure.
+    pub fn finish_origin(&self) -> actionqueue_core::continuation::AttemptFinishOrigin {
+        self.finish_origin
+    }
     /// Returns the attempt identifier.
     pub fn attempt_id(&self) -> actionqueue_core::ids::AttemptId {
         self.attempt_id
@@ -114,8 +125,15 @@ impl AttemptHistoryEntry {
         self.error.as_deref()
     }
 
-    /// Returns the optional opaque output bytes produced by the handler.
+    /// Returns the complete inline or external output reference.
+    pub fn output_ref(&self) -> Option<&actionqueue_core::data_ref::DataRef> {
+        self.disposition.as_ref().and_then(|d| d.disposition.output())
+    }
+    /// Returns inline output bytes, when the disposition carries inline data.
     pub fn output(&self) -> Option<&[u8]> {
+        if let Some(actionqueue_core::data_ref::DataRef::Inline(v)) = self.output_ref() {
+            return Some(v.bytes());
+        }
         self.output.as_deref()
     }
 }
@@ -123,6 +141,7 @@ impl AttemptHistoryEntry {
 /// A deterministic lease metadata record for a run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LeaseMetadata {
+    pub(crate) granted_at_sequence: u64,
     /// Lease owner string.
     pub(crate) owner: String,
     /// Lease expiry timestamp.
@@ -134,6 +153,10 @@ pub struct LeaseMetadata {
 }
 
 impl LeaseMetadata {
+    /// Original grant fence, unchanged by heartbeats.
+    pub fn granted_at_sequence(&self) -> u64 {
+        self.granted_at_sequence
+    }
     /// Returns the lease owner.
     pub fn owner(&self) -> &str {
         &self.owner
@@ -156,11 +179,11 @@ impl LeaseMetadata {
 }
 
 /// Actor projection record.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ActorRecord {
     pub actor_id: ActorId,
     pub identity: String,
-    pub capabilities: Vec<String>,
+    pub executor_traits: Vec<String>,
     pub department: Option<String>,
     pub heartbeat_interval_secs: u64,
     pub tenant_id: Option<TenantId>,
@@ -170,7 +193,7 @@ pub struct ActorRecord {
 }
 
 /// Tenant projection record.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TenantRecord {
     pub tenant_id: TenantId,
     pub name: String,
@@ -178,7 +201,7 @@ pub struct TenantRecord {
 }
 
 /// Role assignment record.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RoleAssignmentRecord {
     pub actor_id: ActorId,
     pub role: Role,
@@ -187,7 +210,7 @@ pub struct RoleAssignmentRecord {
 }
 
 /// Capability grant record.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CapabilityGrantRecord {
     pub actor_id: ActorId,
     pub capability: Capability,
@@ -197,7 +220,7 @@ pub struct CapabilityGrantRecord {
 }
 
 /// Ledger entry record.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LedgerEntryRecord {
     pub entry_id: LedgerEntryId,
     pub tenant_id: TenantId,
@@ -208,7 +231,7 @@ pub struct LedgerEntryRecord {
 }
 
 /// Budget allocation and consumption record.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct BudgetRecord {
     /// The budget dimension this record covers.
     pub dimension: BudgetDimension,
@@ -223,8 +246,11 @@ pub struct BudgetRecord {
 }
 
 /// Subscription state record.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SubscriptionRecord {
+    /// First matching WAL event observed after registration. Retained through snapshots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matched_sequence: Option<u64>,
     /// The subscription identifier.
     pub subscription_id: SubscriptionId,
     /// The subscribing task identifier.
@@ -264,58 +290,96 @@ impl TaskRecord {
 /// A reducer that applies WAL events to reconstruct state.
 #[derive(Debug, Clone)]
 pub struct ReplayReducer {
+    pub(crate) inspection_index: super::inspection::InspectionIndex,
+    pub(crate) control_history:
+        std::collections::BTreeMap<u64, actionqueue_core::control::ControlAttribution>,
+    pub(crate) dispatch_sequences: std::collections::BTreeMap<RunId, u64>,
+    pub(crate) checkpoints: std::collections::BTreeMap<
+        actionqueue_core::ids::CheckpointId,
+        super::checkpoints::CheckpointRecord,
+    >,
+    pub(crate) administrative_wakes: std::collections::BTreeMap<
+        actionqueue_core::continuation::ResumeContextId,
+        super::resume::AdministrativeWake,
+    >,
+    pub(crate) administrative_pending:
+        std::collections::BTreeMap<RunId, actionqueue_core::continuation::ResumeContextId>,
+    pub(crate) waits: super::waits::WaitIndex,
+    /// Committed cancellations by target; a repeated cancel is acknowledged without a record.
+    pub(crate) cancellations:
+        HashMap<actionqueue_core::mutation::CancelTarget, crate::mutation::wait::CancelRecord>,
+    pub(crate) key_reservations: std::collections::BTreeMap<RunId, String>,
+    pub(crate) signals: super::signals::SignalIndex,
+    pub(crate) admissions: HashMap<
+        (Option<TenantId>, actionqueue_core::ids::AdmissionKey),
+        crate::mutation::admission::AdmissionRecord,
+    >,
+    pub(crate) admission_by_task:
+        HashMap<TaskId, (Option<TenantId>, actionqueue_core::ids::AdmissionKey)>,
     /// The current state of all runs being replayed.
-    runs: HashMap<actionqueue_core::ids::RunId, RunState>,
+    pub(crate) runs: HashMap<actionqueue_core::ids::RunId, RunState>,
     /// The current state of all tasks being replayed.
-    tasks: HashMap<actionqueue_core::ids::TaskId, TaskRecord>,
+    pub(crate) tasks: HashMap<actionqueue_core::ids::TaskId, TaskRecord>,
     /// The current state of all run instances being replayed.
-    run_instances:
+    pub(crate) run_instances:
         HashMap<actionqueue_core::ids::RunId, actionqueue_core::run::run_instance::RunInstance>,
     /// Secondary index: task_id → run_ids for O(R_task) lookups.
-    runs_by_task: HashMap<TaskId, Vec<RunId>>,
+    pub(crate) runs_by_task: HashMap<TaskId, Vec<RunId>>,
     /// Run lifecycle history derived from WAL transitions.
-    run_history: HashMap<actionqueue_core::ids::RunId, Vec<RunStateHistoryEntry>>,
+    pub(crate) run_history: HashMap<actionqueue_core::ids::RunId, Vec<RunStateHistoryEntry>>,
     /// Attempt lineage derived from WAL attempt events.
-    attempt_history: HashMap<actionqueue_core::ids::RunId, Vec<AttemptHistoryEntry>>,
+    pub(crate) attempt_history: HashMap<actionqueue_core::ids::RunId, Vec<AttemptHistoryEntry>>,
     /// The active lease projection for runs (`owner`, `expiry`).
-    leases: HashMap<actionqueue_core::ids::RunId, (String, u64)>,
+    pub(crate) leases: HashMap<actionqueue_core::ids::RunId, (String, u64)>,
     /// Lease metadata derived from WAL lease events.
-    lease_metadata: HashMap<actionqueue_core::ids::RunId, LeaseMetadata>,
+    pub(crate) lease_metadata: HashMap<actionqueue_core::ids::RunId, LeaseMetadata>,
     /// The latest sequence number processed.
-    latest_sequence: u64,
+    pub(crate) latest_sequence: u64,
     /// Task canceled projection keyed by task identifier.
-    task_canceled_at: HashMap<TaskId, u64>,
+    pub(crate) task_canceled_at: HashMap<TaskId, u64>,
     /// Whether engine scheduling/dispatch is currently paused.
-    engine_paused: bool,
+    pub(crate) engine_paused: bool,
     /// Timestamp of most recent engine pause, if any.
-    engine_paused_at: Option<u64>,
+    pub(crate) engine_paused_at: Option<u64>,
     /// Timestamp of most recent engine resume, if any.
-    engine_resumed_at: Option<u64>,
+    pub(crate) engine_resumed_at: Option<u64>,
     /// Declared task dependencies: task_id → prerequisite task_ids.
     /// Rebuilt from `DependencyDeclared` WAL events. Used by the dispatch loop
     /// to reconstruct the `DependencyGate` after recovery.
-    dependency_declarations: HashMap<TaskId, HashSet<TaskId>>,
+    pub(crate) dependency_declarations: HashMap<TaskId, HashSet<TaskId>>,
+    pub(crate) dependency_declared_at: HashMap<TaskId, u64>,
     /// Budget allocation and consumption records keyed by (task_id, dimension).
-    budgets: HashMap<(actionqueue_core::ids::TaskId, BudgetDimension), BudgetRecord>,
+    pub(crate) budgets: HashMap<(actionqueue_core::ids::TaskId, BudgetDimension), BudgetRecord>,
     /// Subscription state records keyed by subscription identifier.
-    subscriptions: HashMap<SubscriptionId, SubscriptionRecord>,
+    pub(crate) subscriptions: HashMap<SubscriptionId, SubscriptionRecord>,
     /// Actor projection records keyed by actor identifier.
-    actors: HashMap<ActorId, ActorRecord>,
+    pub(crate) actors: HashMap<ActorId, ActorRecord>,
     /// Tenant projection records keyed by tenant identifier.
-    tenants: HashMap<TenantId, TenantRecord>,
+    pub(crate) tenants: HashMap<TenantId, TenantRecord>,
     /// Role assignment records keyed by (actor_id, tenant_id).
-    role_assignments: HashMap<(ActorId, TenantId), RoleAssignmentRecord>,
+    pub(crate) role_assignments: HashMap<(ActorId, TenantId), RoleAssignmentRecord>,
     /// Capability grant records keyed by (actor_id, capability_key, tenant_id).
     /// Using String as capability key to avoid Hash bound on Capability.
-    capability_grants: HashMap<(ActorId, String, TenantId), CapabilityGrantRecord>,
+    pub(crate) capability_grants: HashMap<(ActorId, String, TenantId), CapabilityGrantRecord>,
     /// Ledger entries (append-only, ordered by insertion).
-    ledger_entries: Vec<LedgerEntryRecord>,
+    pub(crate) ledger_entries: Vec<LedgerEntryRecord>,
 }
 
 impl ReplayReducer {
     /// Creates a new replay reducer.
     pub fn new() -> Self {
         ReplayReducer {
+            inspection_index: Default::default(),
+            checkpoints: Default::default(),
+            administrative_wakes: Default::default(),
+            administrative_pending: Default::default(),
+            dispatch_sequences: Default::default(),
+            waits: Default::default(),
+            cancellations: HashMap::new(),
+            key_reservations: Default::default(),
+            signals: super::signals::SignalIndex::default(),
+            admissions: HashMap::new(),
+            admission_by_task: HashMap::new(),
             runs: HashMap::new(),
             tasks: HashMap::new(),
             run_instances: HashMap::new(),
@@ -324,12 +388,14 @@ impl ReplayReducer {
             attempt_history: HashMap::new(),
             leases: HashMap::new(),
             lease_metadata: HashMap::new(),
+            control_history: Default::default(),
             latest_sequence: 0,
             task_canceled_at: HashMap::new(),
             engine_paused: false,
             engine_paused_at: None,
             engine_resumed_at: None,
             dependency_declarations: HashMap::new(),
+            dependency_declared_at: HashMap::new(),
             budgets: HashMap::new(),
             subscriptions: HashMap::new(),
             actors: HashMap::new(),
@@ -381,17 +447,6 @@ impl ReplayReducer {
         self.run_instances.get(run_id)
     }
 
-    /// Returns a mutable reference to a run instance by ID.
-    ///
-    /// This is used during snapshot bootstrap to restore attempt state that
-    /// cannot be replayed through normal WAL event application.
-    pub(crate) fn get_run_instance_mut(
-        &mut self,
-        run_id: actionqueue_core::ids::RunId,
-    ) -> Option<&mut actionqueue_core::run::run_instance::RunInstance> {
-        self.run_instances.get_mut(&run_id)
-    }
-
     /// Returns the run state history for a run by ID.
     pub fn get_run_history(
         &self,
@@ -431,6 +486,22 @@ impl ReplayReducer {
         &self,
     ) -> impl Iterator<Item = &actionqueue_core::run::run_instance::RunInstance> {
         self.run_instances.values()
+    }
+
+    /// Indexed lookup by attempt identity, independent of any caller-supplied run.
+    pub(crate) fn attempt_entry(
+        &self,
+        attempt: actionqueue_core::ids::AttemptId,
+    ) -> Option<&AttemptHistoryEntry> {
+        let run = self.attempt_owner(attempt)?;
+        self.attempt_history.get(&run)?.iter().find(|a| a.attempt_id() == attempt)
+    }
+
+    /// Every run, grouped by task in creation order (the order `runs_for_task` yields).
+    pub(crate) fn runs_in_index_order(
+        &self,
+    ) -> impl Iterator<Item = &actionqueue_core::run::run_instance::RunInstance> {
+        self.runs_by_task.values().flatten().filter_map(|id| self.run_instances.get(id))
     }
 
     /// Returns run identifiers owned by the provided task in deterministic order.
@@ -508,6 +579,35 @@ impl ReplayReducer {
         self.tasks.values()
     }
 
+    /// Durable signals and derived retained indexes.
+    pub fn signals(&self) -> &super::signals::SignalIndex {
+        &self.signals
+    }
+    /// Looks up immutable admission facts in the caller's tenant namespace.
+    pub fn admission(
+        &self,
+        tenant: Option<TenantId>,
+        key: &actionqueue_core::ids::AdmissionKey,
+    ) -> Option<&crate::mutation::admission::AdmissionRecord> {
+        self.admissions.get(&(tenant, key.clone()))
+    }
+    /// Resolves admission context through a task, including after terminal cleanup.
+    pub fn task_admission(
+        &self,
+        task: TaskId,
+    ) -> Option<&crate::mutation::admission::AdmissionRecord> {
+        self.admission_by_task.get(&task).and_then(|key| self.admissions.get(key))
+    }
+    /// All immutable admission records.
+    pub fn admissions(&self) -> impl Iterator<Item = &crate::mutation::admission::AdmissionRecord> {
+        self.admissions.values()
+    }
+    pub(crate) fn insert_admission(&mut self, record: crate::mutation::admission::AdmissionRecord) {
+        self.inspection_index.insert(&record);
+        let key = (record.tenant_id(), record.key().clone());
+        self.admission_by_task.insert(record.task_id(), key.clone());
+        self.admissions.insert(key, record);
+    }
     /// Applies an event to the current state.
     pub fn apply(&mut self, event: &WalEvent) -> Result<(), ReplayReducerError> {
         // Validate sequence order (must be monotonically increasing).
@@ -517,7 +617,159 @@ impl ReplayReducer {
             return Err(ReplayReducerError::InvalidTransition);
         }
 
+        let observations = self.subscription_observations();
         match event.event() {
+            WalEventType::RunStateChanged { run_id, previous_state, new_state, .. }
+                if *previous_state == RunState::Awaiting
+                    || *new_state == RunState::Awaiting
+                    || ((self.waits.pending_wait(*run_id).is_some()
+                        || self.administrative_pending.contains_key(run_id))
+                        && !matches!(
+                            (previous_state, new_state),
+                            (RunState::Ready, RunState::Leased)
+                                | (RunState::Leased, RunState::Running)
+                                | (RunState::Leased, RunState::Ready)
+                                | (RunState::Running, RunState::RetryWait)
+                                | (RunState::RetryWait, RunState::Ready)
+                        )) =>
+            {
+                return Err(ReplayReducerError::InvalidTransition)
+            }
+            WalEventType::RunCanceled { run_id, .. }
+                if self.waits.active(*run_id).is_some()
+                    || self.waits.pending_wait(*run_id).is_some() =>
+            {
+                return Err(ReplayReducerError::InvalidTransition)
+            }
+            WalEventType::TaskCanceled { task_id, .. }
+                if self.runs_for_task(*task_id).any(|r| {
+                    self.waits.active(r.id()).is_some() || self.waits.pending_wait(r.id()).is_some()
+                }) =>
+            {
+                return Err(ReplayReducerError::InvalidTransition)
+            }
+            WalEventType::AttemptFinished {
+                result: actionqueue_core::mutation::AttemptResultKind::Awaiting,
+                ..
+            } => return Err(ReplayReducerError::InvalidTransition),
+            _ => {}
+        }
+        match event.event() {
+            WalEventType::WaitEstablished { record } => {
+                if record.sequence != event.sequence() {
+                    return Err(ReplayReducerError::CorruptedData);
+                }
+                self.apply_wait_established(record)?;
+            }
+            WalEventType::WaitSatisfied { record }
+            | WalEventType::WaitTimedOut { record }
+            | WalEventType::WaitCanceled { record } => {
+                use crate::mutation::wait::WaitResolutionKind as K;
+                let valid = matches!(
+                    (event.event(), &record.kind),
+                    (
+                        WalEventType::WaitSatisfied { .. },
+                        K::Children(_) | K::Signal(_) | K::Control(_)
+                    ) | (WalEventType::WaitTimedOut { .. }, K::Deadline)
+                        | (WalEventType::WaitCanceled { .. }, K::Canceled(_))
+                );
+                if record.sequence != event.sequence() || !valid {
+                    return Err(ReplayReducerError::CorruptedData);
+                }
+                self.apply_wait_resolution(record)?;
+            }
+            WalEventType::TaskCancellationCommitted { record }
+            | WalEventType::RunCancellationCommitted { record } => {
+                if record.sequence != event.sequence() {
+                    return Err(ReplayReducerError::CorruptedData);
+                }
+                if !matches!(
+                    (event.event(), record.target),
+                    (
+                        WalEventType::TaskCancellationCommitted { .. },
+                        actionqueue_core::mutation::CancelTarget::Task(_)
+                    ) | (
+                        WalEventType::RunCancellationCommitted { .. },
+                        actionqueue_core::mutation::CancelTarget::Run(_)
+                    )
+                ) {
+                    return Err(ReplayReducerError::CorruptedData);
+                }
+                self.apply_cancellation(record)?;
+            }
+            WalEventType::SignalAdmitted { record } => {
+                if record.wal_sequence() != event.sequence()
+                    || !record.is_retained()
+                    || !record.pins().is_empty()
+                {
+                    return Err(ReplayReducerError::Signal(
+                        actionqueue_core::continuation::SignalRejection::InvalidEnvelope,
+                    ));
+                }
+                self.validate_signal_references(record.envelope())
+                    .map_err(ReplayReducerError::Signal)?;
+                self.signals.insert(record.clone()).map_err(ReplayReducerError::Signal)?;
+                self.signals
+                    .account_control(record, event.control())
+                    .map_err(ReplayReducerError::Signal)?;
+                self.signal_arrived(record.envelope());
+            }
+            WalEventType::SignalPinned { record } | WalEventType::SignalUnpinned { record } => {
+                if record.control.wal_sequence != event.sequence() {
+                    return Err(ReplayReducerError::CorruptedData);
+                }
+                self.signals
+                    .apply_pin(record, matches!(event.event(), WalEventType::SignalPinned { .. }))
+                    .map_err(ReplayReducerError::Signal)?;
+            }
+            WalEventType::SignalsRetired { record } => {
+                if record.control.wal_sequence != event.sequence() {
+                    return Err(ReplayReducerError::CorruptedData);
+                }
+                if record.sequences.iter().any(|s| self.signal_is_protected(*s)) {
+                    return Err(ReplayReducerError::Signal(
+                        actionqueue_core::continuation::SignalRejection::Protected,
+                    ));
+                }
+                self.signals.apply_retirement(record).map_err(ReplayReducerError::Signal)?;
+            }
+            WalEventType::AttemptDispositionCommitted { record } => {
+                if record.sequence != event.sequence() {
+                    return Err(ReplayReducerError::CorruptedData);
+                }
+                self.apply_disposition(record)?;
+            }
+            WalEventType::AdmissionCommitted { record, runs } => {
+                if record.sequence() != event.sequence() {
+                    return Err(ReplayReducerError::CorruptedData);
+                }
+                self.validate_admission(record, runs).map_err(ReplayReducerError::Admission)?;
+                crate::wal::codec::encode(event).map_err(|_| {
+                    ReplayReducerError::Admission(
+                        actionqueue_core::admission::AdmissionRejection::TooLarge,
+                    )
+                })?;
+                // Even direct reducer callers observe all or none if a sub-apply fails.
+                let mut prepared = self.clone();
+                prepared.apply_task_created(record.request().task_spec(), record.timestamp())?;
+                for run in runs {
+                    prepared.apply_run_created(run)?;
+                }
+                if !record.request().dependencies().is_empty() {
+                    prepared.apply_dependency_declared(
+                        record.task_id(),
+                        record.request().dependencies(),
+                    );
+                    prepared.dependency_declared_at.insert(record.task_id(), record.timestamp());
+                }
+                prepared.insert_admission(record.clone());
+                *self = prepared;
+            }
+            WalEventType::StoreInitialized { .. } => {
+                if self.latest_sequence != 0 || event.sequence() != 1 {
+                    return Err(ReplayReducerError::CorruptedData);
+                }
+            }
             WalEventType::TaskCreated { task_spec, timestamp } => {
                 self.apply_task_created(task_spec, *timestamp)?;
             }
@@ -526,8 +778,65 @@ impl ReplayReducer {
             }
             WalEventType::RunStateChanged { run_id, previous_state, new_state, timestamp } => {
                 self.apply_run_state_changed(run_id, previous_state, new_state, *timestamp)?;
+                if *new_state == RunState::Running {
+                    self.dispatch_sequences.insert(*run_id, event.sequence());
+                }
+                if *previous_state == RunState::Suspended && *new_state == RunState::Ready {
+                    self.record_administrative_wake(*run_id, event.sequence(), *timestamp);
+                }
+            }
+            WalEventType::AcceptedAttemptStarted { record } => {
+                if record.sequence != event.sequence() {
+                    return Err(ReplayReducerError::CorruptedData);
+                }
+                self.validate_accepted_start(record)?;
+                self.apply_attempt_started(&record.run_id, &record.attempt_id, record.timestamp)?;
+                self.attempt_history
+                    .get_mut(&record.run_id)
+                    .unwrap()
+                    .last_mut()
+                    .unwrap()
+                    .accepted_start = Some(record.clone());
+                self.waits.pending.remove(&record.run_id);
+                self.administrative_pending.remove(&record.run_id);
+            }
+            WalEventType::AttemptClosed { record } => {
+                if record.result == AttemptResultKind::Awaiting
+                    || record
+                        .output
+                        .as_ref()
+                        .is_some_and(|v| v.len() > actionqueue_core::limits::MAX_INLINE_DATA_BYTES)
+                {
+                    return Err(ReplayReducerError::CorruptedData);
+                }
+                if record.origin == actionqueue_core::continuation::AttemptFinishOrigin::Recovery
+                    && record.result != AttemptResultKind::Failure
+                {
+                    return Err(ReplayReducerError::CorruptedData);
+                }
+                let outcome = AttemptOutcome::from_raw_parts(
+                    record.result,
+                    record.error.clone(),
+                    record.output.clone(),
+                )
+                .map_err(|_| ReplayReducerError::CorruptedData)?;
+                self.apply_attempt_finished(
+                    &record.run_id,
+                    &record.attempt_id,
+                    outcome,
+                    record.timestamp,
+                )?;
+                self.attempt_history
+                    .get_mut(&record.run_id)
+                    .unwrap()
+                    .last_mut()
+                    .unwrap()
+                    .finish_origin = record.origin;
             }
             WalEventType::AttemptStarted { run_id, attempt_id, timestamp } => {
+                if self.next_resume_assignment(*run_id).is_some() {
+                    return Err(ReplayReducerError::CorruptedData);
+                }
                 self.apply_attempt_started(run_id, attempt_id, *timestamp)?;
             }
             WalEventType::AttemptFinished {
@@ -540,34 +849,7 @@ impl ReplayReducer {
             } => {
                 let outcome =
                     AttemptOutcome::from_raw_parts(*result, error.clone(), output.clone())
-                        .unwrap_or_else(|e| {
-                            tracing::warn!(
-                                "WAL replay: invalid attempt outcome shape: {e}; falling back to \
-                                 safe reconstruction"
-                            );
-                            match result {
-                                actionqueue_core::mutation::AttemptResultKind::Success => {
-                                    AttemptOutcome::success()
-                                }
-                                actionqueue_core::mutation::AttemptResultKind::Failure => {
-                                    AttemptOutcome::failure(
-                                        error
-                                            .clone()
-                                            .unwrap_or_else(|| "unknown failure".to_string()),
-                                    )
-                                }
-                                actionqueue_core::mutation::AttemptResultKind::Timeout => {
-                                    AttemptOutcome::timeout(
-                                        error
-                                            .clone()
-                                            .unwrap_or_else(|| "unknown timeout".to_string()),
-                                    )
-                                }
-                                actionqueue_core::mutation::AttemptResultKind::Suspended => {
-                                    AttemptOutcome::suspended()
-                                }
-                            }
-                        });
+                        .map_err(|_| ReplayReducerError::CorruptedData)?;
                 self.apply_attempt_finished(run_id, attempt_id, outcome, *timestamp)?;
             }
             WalEventType::TaskCanceled { task_id, timestamp } => {
@@ -578,6 +860,8 @@ impl ReplayReducer {
             }
             WalEventType::LeaseAcquired { run_id, owner, expiry, timestamp } => {
                 self.apply_lease_acquired(run_id, owner.clone(), *expiry, *timestamp)?;
+                self.lease_metadata.get_mut(run_id).expect("acquired").granted_at_sequence =
+                    event.sequence();
             }
             WalEventType::LeaseHeartbeat { run_id, owner, expiry, timestamp } => {
                 self.apply_lease_heartbeat(run_id, owner.clone(), *expiry, *timestamp)?;
@@ -594,10 +878,16 @@ impl ReplayReducer {
             WalEventType::EngineResumed { timestamp } => {
                 self.apply_engine_resumed(*timestamp)?;
             }
-            WalEventType::DependencyDeclared { task_id, depends_on, .. } => {
+            WalEventType::DependencyDeclared { task_id, depends_on, timestamp } => {
+                self.dependency_declared_at.insert(*task_id, *timestamp);
                 self.apply_dependency_declared(*task_id, depends_on);
             }
             WalEventType::RunSuspended { run_id, reason: _, timestamp } => {
+                if self.waits.pending_wait(*run_id).is_some()
+                    || self.administrative_pending.contains_key(run_id)
+                {
+                    return Err(ReplayReducerError::InvalidTransition);
+                }
                 self.apply_run_state_changed(
                     run_id,
                     &RunState::Running,
@@ -612,6 +902,7 @@ impl ReplayReducer {
                     &RunState::Ready,
                     *timestamp,
                 )?;
+                self.record_administrative_wake(*run_id, event.sequence(), *timestamp);
             }
             WalEventType::BudgetAllocated { task_id, dimension, limit, timestamp } => {
                 self.apply_budget_allocated(*task_id, *dimension, *limit, *timestamp);
@@ -646,11 +937,11 @@ impl ReplayReducer {
                 self.apply_subscription_canceled(*subscription_id, *timestamp);
             }
 
-            // ── WAL v5: Actor events ──────────────────────────────────────
+            // ── Actor events ──────────────────────────────────────
             WalEventType::ActorRegistered {
                 actor_id,
                 identity,
-                capabilities,
+                executor_traits,
                 department,
                 heartbeat_interval_secs,
                 tenant_id,
@@ -661,7 +952,7 @@ impl ReplayReducer {
                     ActorRecord {
                         actor_id: *actor_id,
                         identity: identity.clone(),
-                        capabilities: capabilities.clone(),
+                        executor_traits: executor_traits.clone(),
                         department: department.clone(),
                         heartbeat_interval_secs: *heartbeat_interval_secs,
                         tenant_id: *tenant_id,
@@ -682,7 +973,7 @@ impl ReplayReducer {
                 }
             }
 
-            // ── WAL v5: Platform events ───────────────────────────────────
+            // ── Platform events ───────────────────────────────────
             WalEventType::TenantCreated { tenant_id, name, timestamp } => {
                 self.tenants.insert(
                     *tenant_id,
@@ -743,13 +1034,46 @@ impl ReplayReducer {
             }
         }
 
+        self.record_subscription_matches(observations, event.sequence());
+
+        self.index_inspection_event(event);
         // Commit bookkeeping only after semantic application succeeds.
+        if let Some(control) = event.control() {
+            self.control_history.insert(event.sequence(), control.clone());
+        }
         self.latest_sequence = event.sequence();
+        // Refresh reverse-indexed child candidates after authoritative transitions.
+        let changed: Vec<_> = match event.event() {
+            WalEventType::RunStateChanged { run_id, .. }
+            | WalEventType::RunCanceled { run_id, .. } => {
+                self.get_run_instance(run_id).map(|r| vec![r.task_id()]).unwrap_or_default()
+            }
+            WalEventType::AttemptDispositionCommitted { record } => {
+                self.get_run_instance(&record.run_id).map(|r| vec![r.task_id()]).unwrap_or_default()
+            }
+            WalEventType::WaitSatisfied { record }
+            | WalEventType::WaitTimedOut { record }
+            | WalEventType::WaitCanceled { record } => {
+                self.get_run_instance(&record.run_id).map(|r| vec![r.task_id()]).unwrap_or_default()
+            }
+            WalEventType::TaskCanceled { task_id, .. } => vec![*task_id],
+            WalEventType::TaskCancellationCommitted { record }
+            | WalEventType::RunCancellationCommitted { record } => match record.target {
+                actionqueue_core::mutation::CancelTarget::Task(id) => vec![id],
+                actionqueue_core::mutation::CancelTarget::Run(id) => {
+                    self.get_run_instance(&id).map(|r| vec![r.task_id()]).unwrap_or_default()
+                }
+            },
+            _ => Vec::new(),
+        };
+        for task in changed {
+            self.child_state_changed(task);
+        }
 
         Ok(())
     }
 
-    fn apply_task_created(
+    pub(crate) fn apply_task_created(
         &mut self,
         task_spec: &actionqueue_core::task::task_spec::TaskSpec,
         timestamp: u64,
@@ -770,7 +1094,7 @@ impl ReplayReducer {
         Ok(())
     }
 
-    fn apply_task_canceled(
+    pub(super) fn apply_task_canceled(
         &mut self,
         task_id: &TaskId,
         timestamp: u64,
@@ -787,12 +1111,24 @@ impl ReplayReducer {
             }));
         }
 
+        // Shared by live mutation preparation and every replay path. Reject
+        // before changing either cancellation index or advancing the sequence.
+        if timestamp < task_record.created_at {
+            return Err(ReplayReducerError::TaskCausality(
+                TaskCausalityError::CanceledBeforeCreation {
+                    task_id: *task_id,
+                    created_at: task_record.created_at,
+                    canceled_at: timestamp,
+                },
+            ));
+        }
+
         task_record.canceled_at = Some(timestamp);
         self.task_canceled_at.insert(*task_id, timestamp);
         Ok(())
     }
 
-    fn apply_run_created(
+    pub(crate) fn apply_run_created(
         &mut self,
         run_instance: &actionqueue_core::run::run_instance::RunInstance,
     ) -> Result<(), ReplayReducerError> {
@@ -820,13 +1156,22 @@ impl ReplayReducer {
         Ok(())
     }
 
-    fn apply_run_state_changed(
+    pub(super) fn apply_run_state_changed(
         &mut self,
         run_id: &actionqueue_core::ids::RunId,
         previous_state: &RunState,
         new_state: &RunState,
         timestamp: u64,
     ) -> Result<(), ReplayReducerError> {
+        if *new_state == RunState::Completed {
+            let task = self
+                .get_run_instance(run_id)
+                .ok_or(ReplayReducerError::InvalidTransition)?
+                .task_id();
+            if !self.required_children_terminal(task) {
+                return Err(ReplayReducerError::InvalidTransition);
+            }
+        }
         // Check that the run exists
         let current_state = self.runs.get(run_id).ok_or(ReplayReducerError::InvalidTransition)?;
 
@@ -861,6 +1206,33 @@ impl ReplayReducer {
             }
         }
 
+        let task_id =
+            self.run_instances.get(run_id).ok_or(ReplayReducerError::CorruptedData)?.task_id();
+        let constraints = self
+            .tasks
+            .get(&task_id)
+            .ok_or(ReplayReducerError::CorruptedData)?
+            .task_spec()
+            .constraints();
+        if *new_state == RunState::Running {
+            if let Some(key) = constraints.concurrency_key() {
+                if self.key_reservations.iter().any(|(id, k)| id != run_id && k == key) {
+                    return Err(ReplayReducerError::Wait(
+                        actionqueue_core::mutation::WaitRejection::ConflictingKeyOwnership,
+                    ));
+                }
+                self.key_reservations.insert(*run_id, key.into());
+            }
+        } else if (matches!(new_state, RunState::RetryWait | RunState::Suspended)
+            && constraints.concurrency_key_hold_policy()
+                == actionqueue_core::task::constraints::ConcurrencyKeyHoldPolicy::ReleaseOnRetry
+            && (self.waits.pending_wait(*run_id).is_none()
+                || constraints.concurrency_key_wait_policy().releases_while_awaiting()))
+            || (*new_state == RunState::Awaiting
+                && constraints.concurrency_key_wait_policy().releases_while_awaiting())
+        {
+            self.key_reservations.remove(run_id);
+        }
         // Update the run state
         self.runs.insert(*run_id, *new_state);
 
@@ -868,6 +1240,16 @@ impl ReplayReducer {
         if let Some(run_instance) = self.run_instances.get_mut(run_id) {
             run_instance.transition_to(*new_state).map_err(Self::map_run_instance_error)?;
             run_instance.record_state_change_at(timestamp);
+            if *new_state == RunState::Ready {
+                let priority = self
+                    .tasks
+                    .get(&run_instance.task_id())
+                    .map(|t| t.task_spec.metadata().priority())
+                    .unwrap_or(0);
+                run_instance
+                    .set_effective_priority(priority)
+                    .map_err(Self::map_run_instance_error)?;
+            }
         }
 
         let history = self.run_history.get_mut(run_id).ok_or(ReplayReducerError::CorruptedData)?;
@@ -909,6 +1291,9 @@ impl ReplayReducer {
 
         let attempts = self.attempt_history.entry(*run_id).or_default();
         attempts.push(AttemptHistoryEntry {
+            disposition: None,
+            accepted_start: None,
+            finish_origin: Default::default(),
             attempt_id: *attempt_id,
             started_at: timestamp,
             finished_at: None,
@@ -920,13 +1305,22 @@ impl ReplayReducer {
         Ok(())
     }
 
-    fn apply_attempt_finished(
+    pub(super) fn apply_attempt_finished(
         &mut self,
         run_id: &actionqueue_core::ids::RunId,
         attempt_id: &actionqueue_core::ids::AttemptId,
         outcome: AttemptOutcome,
         timestamp: u64,
     ) -> Result<(), ReplayReducerError> {
+        if outcome.result() == AttemptResultKind::Success {
+            let task = self
+                .get_run_instance(run_id)
+                .ok_or(ReplayReducerError::InvalidTransition)?
+                .task_id();
+            if !self.required_children_terminal(task) {
+                return Err(ReplayReducerError::InvalidTransition);
+            }
+        }
         // Verify the run exists and is actively running.
         let current_state = self.runs.get(run_id).ok_or(ReplayReducerError::InvalidTransition)?;
         if *current_state != RunState::Running {
@@ -940,6 +1334,16 @@ impl ReplayReducer {
             return Err(ReplayReducerError::CorruptedData);
         }
 
+        if matches!(outcome.result(), AttemptResultKind::Failure | AttemptResultKind::Timeout) {
+            run_instance
+                .account_disposition(
+                    &actionqueue_core::disposition::DispositionOutcome::RetryableFailure {
+                        error: actionqueue_core::bounded::BoundedError::new("").unwrap(),
+                    },
+                    1,
+                )
+                .map_err(|_| ReplayReducerError::CorruptedData)?;
+        }
         run_instance.finish_attempt(*attempt_id).map_err(Self::map_run_instance_error)?;
 
         let attempts =
@@ -962,7 +1366,7 @@ impl ReplayReducer {
         Ok(())
     }
 
-    fn apply_run_canceled(
+    pub(super) fn apply_run_canceled(
         &mut self,
         run_id: &actionqueue_core::ids::RunId,
         timestamp: u64,
@@ -1014,6 +1418,7 @@ impl ReplayReducer {
         self.lease_metadata.insert(
             *run_id,
             LeaseMetadata {
+                granted_at_sequence: self.latest_sequence + 1,
                 owner: metadata_owner,
                 expiry,
                 acquired_at: timestamp,
@@ -1067,7 +1472,7 @@ impl ReplayReducer {
         run_id: &actionqueue_core::ids::RunId,
         owner: String,
         expiry: u64,
-        _timestamp: u64,
+        timestamp: u64,
     ) -> Result<(), ReplayReducerError> {
         let current_state = self.validate_lease_run_precondition(run_id, LeaseEventKind::Expire)?;
 
@@ -1077,7 +1482,7 @@ impl ReplayReducer {
         self.lease_metadata.remove(run_id);
 
         if current_state == RunState::Leased {
-            self.transition_run_to_ready_after_lease_close(run_id)?;
+            self.transition_run_to_ready_after_lease_close(run_id, timestamp)?;
         }
 
         Ok(())
@@ -1088,7 +1493,7 @@ impl ReplayReducer {
         run_id: &actionqueue_core::ids::RunId,
         owner: String,
         expiry: u64,
-        _timestamp: u64,
+        timestamp: u64,
     ) -> Result<(), ReplayReducerError> {
         let current_state =
             self.validate_lease_run_precondition(run_id, LeaseEventKind::Release)?;
@@ -1099,7 +1504,7 @@ impl ReplayReducer {
         self.lease_metadata.remove(run_id);
 
         if current_state == RunState::Leased {
-            self.transition_run_to_ready_after_lease_close(run_id)?;
+            self.transition_run_to_ready_after_lease_close(run_id, timestamp)?;
         }
 
         Ok(())
@@ -1185,17 +1590,11 @@ impl ReplayReducer {
     fn transition_run_to_ready_after_lease_close(
         &mut self,
         run_id: &RunId,
+        timestamp: u64,
     ) -> Result<(), ReplayReducerError> {
-        let run_instance =
-            self.run_instances.get_mut(run_id).ok_or(ReplayReducerError::CorruptedData)?;
-
-        if run_instance.state() != RunState::Leased {
-            return Err(ReplayReducerError::CorruptedData);
-        }
-
-        run_instance.transition_to(RunState::Ready).map_err(Self::map_run_instance_error)?;
-        self.runs.insert(*run_id, RunState::Ready);
-        Ok(())
+        // Lease-close records carry this transition, including its history,
+        // effective priority and timestamp, just like RunStateChanged records.
+        self.apply_run_state_changed(run_id, &RunState::Leased, &RunState::Ready, timestamp)
     }
 
     fn apply_engine_paused(&mut self, timestamp: u64) -> Result<(), ReplayReducerError> {
@@ -1237,7 +1636,7 @@ impl ReplayReducer {
         Ok(())
     }
 
-    fn apply_dependency_declared(&mut self, task_id: TaskId, depends_on: &[TaskId]) {
+    pub(crate) fn apply_dependency_declared(&mut self, task_id: TaskId, depends_on: &[TaskId]) {
         if !self.tasks.contains_key(&task_id) {
             tracing::warn!(
                 %task_id,
@@ -1273,6 +1672,9 @@ impl ReplayReducer {
 
         self.leases.remove(run_id);
         self.lease_metadata.remove(run_id);
+        self.key_reservations.remove(run_id);
+        self.waits.pending.remove(run_id);
+        self.administrative_pending.remove(run_id);
 
         Ok(())
     }
@@ -1287,40 +1689,17 @@ impl ReplayReducer {
             self.runs.iter().filter(|(_, state)| state.is_terminal()).map(|(id, _)| *id).collect();
 
         for run_id in &terminal_run_ids {
+            if self.waits.records().any(|w| w.run_id == *run_id)
+                || self
+                    .get_attempt_history(run_id)
+                    .is_some_and(|h| h.iter().any(|a| a.accepted_start.is_some()))
+            {
+                continue;
+            }
             self.run_history.remove(run_id);
             self.attempt_history.remove(run_id);
             self.lease_metadata.remove(run_id);
         }
-    }
-
-    /// Seeds the run history for a run from validated snapshot data.
-    pub(crate) fn set_run_history(&mut self, run_id: RunId, history: Vec<RunStateHistoryEntry>) {
-        self.run_history.insert(run_id, history);
-    }
-
-    /// Seeds the attempt history for a run from validated snapshot data.
-    pub(crate) fn set_attempt_history(
-        &mut self,
-        run_id: RunId,
-        attempts: Vec<AttemptHistoryEntry>,
-    ) {
-        self.attempt_history.insert(run_id, attempts);
-    }
-
-    /// Seeds both the active lease projection and lease metadata from snapshot data.
-    ///
-    /// During snapshot bootstrap, `set_lease_metadata` alone is insufficient because
-    /// `get_lease()` queries the `leases` map (not `lease_metadata`). This method
-    /// populates both maps so that post-bootstrap lease queries (e.g. heartbeat
-    /// causality checks) find the correct owner/expiry state.
-    pub(crate) fn set_lease_for_bootstrap(&mut self, run_id: RunId, metadata: LeaseMetadata) {
-        self.leases.insert(run_id, (metadata.owner.clone(), metadata.expiry));
-        self.lease_metadata.insert(run_id, metadata);
-    }
-
-    /// Sets reducer sequence during trusted bootstrap hydration.
-    pub(crate) fn set_latest_sequence_for_bootstrap(&mut self, sequence: u64) {
-        self.latest_sequence = sequence;
     }
 
     fn map_run_instance_error(error: RunInstanceError) -> ReplayReducerError {
@@ -1389,6 +1768,12 @@ impl ReplayReducer {
     }
 
     /// Returns an iterator over all actor records.
+    pub fn control_history(
+        &self,
+    ) -> &std::collections::BTreeMap<u64, actionqueue_core::control::ControlAttribution> {
+        &self.control_history
+    }
+
     pub fn actors(&self) -> impl Iterator<Item = (&ActorId, &ActorRecord)> {
         self.actors.iter()
     }
@@ -1472,7 +1857,7 @@ impl ReplayReducer {
         );
     }
 
-    fn apply_budget_consumed(
+    pub(crate) fn apply_budget_consumed(
         &mut self,
         task_id: actionqueue_core::ids::TaskId,
         dimension: BudgetDimension,
@@ -1517,6 +1902,7 @@ impl ReplayReducer {
         self.subscriptions.insert(
             subscription_id,
             SubscriptionRecord {
+                matched_sequence: None,
                 subscription_id,
                 task_id,
                 filter,
@@ -1549,6 +1935,12 @@ impl Default for ReplayReducer {
 /// Errors that can occur during replay reduction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReplayReducerError {
+    /// Invalid durable continuation.
+    Wait(actionqueue_core::mutation::WaitRejection),
+    /// Invalid compound admission.
+    Admission(actionqueue_core::admission::AdmissionRejection),
+    /// Invalid durable signal record.
+    Signal(actionqueue_core::continuation::SignalRejection),
     /// Invalid state transition during replay.
     InvalidTransition,
     /// Duplicate event detected.
@@ -1630,6 +2022,15 @@ pub enum TaskCausalityError {
         /// Task ID referenced by the event.
         task_id: TaskId,
     },
+    /// Task cancellation predates task creation.
+    CanceledBeforeCreation {
+        /// Canceled task identifier.
+        task_id: TaskId,
+        /// Durable creation timestamp.
+        created_at: u64,
+        /// Rejected cancellation timestamp.
+        canceled_at: u64,
+    },
     /// Task cancellation for a task that is already canceled.
     AlreadyCanceled {
         /// Canceled task identifier.
@@ -1646,6 +2047,13 @@ impl std::fmt::Display for TaskCausalityError {
         match self {
             TaskCausalityError::UnknownTask { task_id } => {
                 write!(f, "task canceled rejected: unknown task {task_id}")
+            }
+            TaskCausalityError::CanceledBeforeCreation { task_id, created_at, canceled_at } => {
+                write!(
+                    f,
+                    "task canceled rejected for task {task_id}: canceled_at {canceled_at} \
+                     precedes created_at {created_at}"
+                )
             }
             TaskCausalityError::AlreadyCanceled {
                 task_id,
@@ -1802,6 +2210,9 @@ impl std::fmt::Display for LeaseCausalityError {
 impl std::fmt::Display for ReplayReducerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Admission(e) => write!(f, "{e}"),
+            Self::Wait(e) => write!(f, "{e}"),
+            Self::Signal(e) => write!(f, "{e}"),
             ReplayReducerError::InvalidTransition => {
                 write!(f, "Invalid state transition during replay")
             }
@@ -1823,7 +2234,7 @@ impl std::fmt::Display for ReplayReducerError {
 impl std::error::Error for ReplayReducerError {}
 
 /// Returns a stable string key for a `Capability`, used as HashMap key.
-fn capability_key(cap: &Capability) -> String {
+pub(crate) fn capability_key(cap: &Capability) -> String {
     match cap {
         Capability::CanSubmit => "CanSubmit".to_string(),
         Capability::CanExecute => "CanExecute".to_string(),
@@ -1831,6 +2242,7 @@ fn capability_key(cap: &Capability) -> String {
         Capability::CanApprove => "CanApprove".to_string(),
         Capability::CanCancel => "CanCancel".to_string(),
         Capability::Custom(s) => format!("Custom:{s}"),
+        Capability::Queue(action) => format!("Queue:{action:?}"),
     }
 }
 

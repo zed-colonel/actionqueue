@@ -1,6 +1,7 @@
 //! Task constraints that enforce execution limits and behavior.
 
 use super::safety::SafetyLevel;
+use crate::executor::{ExecutorTraitError, ExecutorTraits};
 
 /// Typed validation errors for [`TaskConstraints`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -14,10 +15,8 @@ pub enum TaskConstraintsError {
     EmptyConcurrencyKey,
     /// A timeout of zero seconds was provided.
     ZeroTimeout,
-    /// An empty list was provided as required capabilities.
-    EmptyCapabilities,
-    /// An individual entry in required_capabilities is an empty string.
-    EmptyCapabilityEntry,
+    /// A routing label or trait count violates its bounds.
+    InvalidExecutorTrait(ExecutorTraitError),
 }
 
 impl std::fmt::Display for TaskConstraintsError {
@@ -32,11 +31,8 @@ impl std::fmt::Display for TaskConstraintsError {
             TaskConstraintsError::ZeroTimeout => {
                 write!(f, "timeout_secs must not be zero")
             }
-            TaskConstraintsError::EmptyCapabilities => {
-                write!(f, "required capabilities list must not be empty")
-            }
-            TaskConstraintsError::EmptyCapabilityEntry => {
-                write!(f, "required_capabilities contains an empty string")
+            TaskConstraintsError::InvalidExecutorTrait(error) => {
+                write!(f, "invalid executor traits: {error}")
             }
         }
     }
@@ -69,19 +65,19 @@ pub struct TaskConstraints {
     /// Policy for concurrency key behavior during retry wait.
     #[cfg_attr(feature = "serde", serde(default))]
     concurrency_key_hold_policy: ConcurrencyKeyHoldPolicy,
+    concurrency_key_wait_policy: ConcurrencyKeyWaitPolicy,
     /// Safety level classification for the task's side-effect characteristics.
     #[cfg_attr(feature = "serde", serde(default))]
     safety_level: SafetyLevel,
-    /// Required executor capabilities for dispatching this task.
+    /// Required executor traits for dispatching this task.
     ///
-    /// In v0.x the local executor handles all tasks (this field is ignored at
-    /// dispatch time). In Sprint 4 (v1.0), remote actors declare capabilities
-    /// and only actors with matching capabilities will be offered this task.
+    /// Remote actors declare executor traits; exact subset matching determines
+    /// routing eligibility. These labels grant no authorization.
     ///
     /// When `Some`, the list must be non-empty. When `None`, any executor can
     /// handle the task.
     #[cfg_attr(feature = "serde", serde(default))]
-    required_capabilities: Option<Vec<String>>,
+    required_executor_traits: Option<ExecutorTraits>,
 }
 
 impl TaskConstraints {
@@ -96,8 +92,9 @@ impl TaskConstraints {
             timeout_secs,
             concurrency_key,
             concurrency_key_hold_policy: ConcurrencyKeyHoldPolicy::default(),
+            concurrency_key_wait_policy: ConcurrencyKeyWaitPolicy::default(),
             safety_level: SafetyLevel::default(),
-            required_capabilities: None,
+            required_executor_traits: None,
         };
         constraints.validate()?;
         Ok(constraints)
@@ -114,14 +111,6 @@ impl TaskConstraints {
         if let Some(ref key) = self.concurrency_key {
             if key.is_empty() {
                 return Err(TaskConstraintsError::EmptyConcurrencyKey);
-            }
-        }
-        if let Some(ref caps) = self.required_capabilities {
-            if caps.is_empty() {
-                return Err(TaskConstraintsError::EmptyCapabilities);
-            }
-            if caps.iter().any(String::is_empty) {
-                return Err(TaskConstraintsError::EmptyCapabilityEntry);
             }
         }
         Ok(())
@@ -206,27 +195,46 @@ impl TaskConstraints {
         self.safety_level = safety_level;
     }
 
-    /// Returns the required executor capabilities, if any.
-    ///
-    /// In v0.x the local executor handles all tasks (this field is ignored).
-    /// In Sprint 4 (v1.0), only remote actors declaring all listed capabilities
-    /// will be offered this task.
-    pub fn required_capabilities(&self) -> Option<&[String]> {
-        self.required_capabilities.as_deref()
+    /// Returns the concurrency-key policy for continuation waits.
+    pub fn concurrency_key_wait_policy(&self) -> ConcurrencyKeyWaitPolicy {
+        self.concurrency_key_wait_policy
     }
 
-    /// Attaches required capabilities, returning the modified constraints.
+    /// Sets the durable continuation key policy.
+    pub fn set_concurrency_key_wait_policy(&mut self, policy: ConcurrencyKeyWaitPolicy) {
+        self.concurrency_key_wait_policy = policy;
+    }
+
+    /// Returns the required executor traits, if any.
+    ///
+    /// These requirements select executors; they grant no queue permission.
+    pub fn required_executor_traits(&self) -> Option<&ExecutorTraits> {
+        self.required_executor_traits.as_ref()
+    }
+
+    /// Attaches required executor traits, returning the modified constraints.
     ///
     /// The list must be non-empty; an empty vec is rejected at validation.
-    pub fn with_capabilities(mut self, caps: Vec<String>) -> Result<Self, TaskConstraintsError> {
-        if caps.is_empty() {
-            return Err(TaskConstraintsError::EmptyCapabilities);
-        }
-        if caps.iter().any(String::is_empty) {
-            return Err(TaskConstraintsError::EmptyCapabilityEntry);
-        }
-        self.required_capabilities = Some(caps);
+    pub fn with_required_executor_traits(
+        mut self,
+        traits: Vec<String>,
+    ) -> Result<Self, TaskConstraintsError> {
+        self.set_required_executor_traits(Some(traits))?;
         Ok(self)
+    }
+
+    /// Sets routing requirements atomically, rejecting invalid or empty lists.
+    pub fn set_required_executor_traits(
+        &mut self,
+        traits: Option<Vec<String>>,
+    ) -> Result<(), TaskConstraintsError> {
+        let validated = traits
+            .map(|values| {
+                ExecutorTraits::new(values).map_err(TaskConstraintsError::InvalidExecutorTrait)
+            })
+            .transpose()?;
+        self.required_executor_traits = validated;
+        Ok(())
     }
 }
 
@@ -237,6 +245,7 @@ impl<'de> serde::Deserialize<'de> for TaskConstraints {
         D: serde::Deserializer<'de>,
     {
         #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
         struct TaskConstraintsWire {
             max_attempts: u32,
             timeout_secs: Option<u64>,
@@ -244,9 +253,11 @@ impl<'de> serde::Deserialize<'de> for TaskConstraints {
             #[serde(default)]
             concurrency_key_hold_policy: ConcurrencyKeyHoldPolicy,
             #[serde(default)]
+            concurrency_key_wait_policy: ConcurrencyKeyWaitPolicy,
+            #[serde(default)]
             safety_level: SafetyLevel,
             #[serde(default)]
-            required_capabilities: Option<Vec<String>>,
+            required_executor_traits: Option<ExecutorTraits>,
         }
 
         let wire = TaskConstraintsWire::deserialize(deserializer)?;
@@ -255,8 +266,9 @@ impl<'de> serde::Deserialize<'de> for TaskConstraints {
             timeout_secs: wire.timeout_secs,
             concurrency_key: wire.concurrency_key,
             concurrency_key_hold_policy: wire.concurrency_key_hold_policy,
+            concurrency_key_wait_policy: wire.concurrency_key_wait_policy,
             safety_level: wire.safety_level,
-            required_capabilities: wire.required_capabilities,
+            required_executor_traits: wire.required_executor_traits,
         };
         constraints.validate().map_err(serde::de::Error::custom)?;
         Ok(constraints)
@@ -279,8 +291,9 @@ impl TaskConstraints {
             timeout_secs,
             concurrency_key,
             concurrency_key_hold_policy: ConcurrencyKeyHoldPolicy::default(),
+            concurrency_key_wait_policy: ConcurrencyKeyWaitPolicy::default(),
             safety_level: SafetyLevel::default(),
-            required_capabilities: None,
+            required_executor_traits: None,
         }
     }
 }
@@ -288,6 +301,27 @@ impl TaskConstraints {
 impl Default for TaskConstraints {
     fn default() -> Self {
         Self::new(1, None, None).expect("default TaskConstraints must be valid")
+    }
+}
+
+/// Concurrency-key policy for a continuation wait (ADR-009).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum ConcurrencyKeyWaitPolicy {
+    /// Release at Awaiting and reacquire through ordinary eligibility on wake.
+    #[default]
+    ReleaseWhileAwaiting,
+    /// Keep the key across awaiting and pending wake until execution releases it.
+    HoldWhileAwaiting,
+}
+
+impl ConcurrencyKeyWaitPolicy {
+    /// Whether entering Awaiting releases the held concurrency key.
+    pub fn releases_while_awaiting(self) -> bool {
+        match self {
+            Self::ReleaseWhileAwaiting => true,
+            Self::HoldWhileAwaiting => false,
+        }
     }
 }
 
@@ -388,34 +422,51 @@ mod tests {
     }
 
     #[test]
-    fn with_capabilities_rejects_empty_vec() {
+    fn with_required_executor_traits_rejects_empty_vec() {
         let constraints = TaskConstraints::default();
-        let result = constraints.with_capabilities(vec![]);
-        assert_eq!(result, Err(TaskConstraintsError::EmptyCapabilities));
+        let result = constraints.with_required_executor_traits(vec![]);
+        assert_eq!(
+            result,
+            Err(TaskConstraintsError::InvalidExecutorTrait(
+                crate::executor::ExecutorTraitError::Collection { count: 0 }
+            ))
+        );
     }
 
     #[test]
-    fn with_capabilities_accepts_non_empty_vec() {
+    fn with_required_executor_traits_accepts_non_empty_vec() {
         let constraints = TaskConstraints::default();
-        let result = constraints.with_capabilities(vec!["gpu".to_string()]);
+        let result = constraints.with_required_executor_traits(vec!["gpu".to_string()]);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap().required_capabilities(), Some(&["gpu".to_string()][..]));
+        assert_eq!(
+            result.unwrap().required_executor_traits(),
+            Some(&crate::executor::ExecutorTraits::new(vec!["gpu".to_string()]).unwrap())
+        );
     }
 
     #[test]
-    fn validate_passes_for_default_and_valid_capabilities() {
-        // Verify validate() passes on default constraints (no capabilities)
-        // and on constraints with valid non-empty capability entries.
+    fn validate_passes_for_default_and_valid_executor_traits() {
+        // Verify validate() passes on default constraints (no executor traits)
+        // and on constraints with valid non-empty executor trait entries.
         let mut constraints = TaskConstraints::default();
         assert!(constraints.validate().is_ok());
-        constraints = constraints.with_capabilities(vec!["cap1".to_string()]).unwrap();
+        constraints = constraints.with_required_executor_traits(vec!["cap1".to_string()]).unwrap();
         assert!(constraints.validate().is_ok());
     }
 
     #[test]
-    fn with_capabilities_rejects_empty_string_entry() {
+    fn with_required_executor_traits_rejects_empty_string_entry() {
         let constraints = TaskConstraints::default();
-        let result = constraints.with_capabilities(vec!["gpu".to_string(), String::new()]);
-        assert_eq!(result, Err(TaskConstraintsError::EmptyCapabilityEntry));
+        let result =
+            constraints.with_required_executor_traits(vec!["gpu".to_string(), String::new()]);
+        assert_eq!(
+            result,
+            Err(TaskConstraintsError::InvalidExecutorTrait(
+                crate::executor::ExecutorTraitError::Label {
+                    index: 1,
+                    source: crate::bounded::BoundedValueError::Empty,
+                }
+            ))
+        );
     }
 }

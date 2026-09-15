@@ -1,0 +1,23 @@
+{
+  "id": "AQ-CF-PUBLIC-ADMISSION",
+  "mode": "admission",
+  "required_features": [
+    "workflow",
+    "budget",
+    "actor",
+    "platform"
+  ],
+  "variants": [
+    "ordinary",
+    "replay",
+    "crash"
+  ],
+  "expected": {
+    "tasks": 1,
+    "parent_state": "completed",
+    "parent_attempts": 1,
+    "parent_failures": 0,
+    "active_waits": 0,
+    "wake": null
+  }
+}

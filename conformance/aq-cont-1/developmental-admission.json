@@ -1,0 +1,10 @@
+{
+  "cases": ["AQ-DD-009", "AQ-DD-010"],
+  "key_prefix": "campaign/c1/arm/a/execution-unit",
+  "trace_id": "trace",
+  "correlation_id": "correlation",
+  "origin_ref": "exoskeleton://campaign/c1/arm/a",
+  "purpose_ref": "purpose/c1",
+  "authorization_ref": "unverified/reference",
+  "expected": "Exact retries preserve one task and its original run identities; changed meaning conflicts; attribution does not affect scheduling or grant authority."
+}

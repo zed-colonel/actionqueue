@@ -22,7 +22,9 @@ mod wf {
     use actionqueue_core::task::run_policy::RunPolicy;
     use actionqueue_core::task::task_spec::{TaskPayload, TaskSpec};
     use actionqueue_engine::time::clock::MockClock;
-    use actionqueue_executor_local::handler::{ExecutorContext, ExecutorHandler, HandlerOutput};
+    use actionqueue_executor_local::handler::{
+        AttemptDisposition, ExecutorContext, ExecutorHandler,
+    };
     use actionqueue_runtime::config::{BackoffStrategyConfig, RuntimeConfig};
     use actionqueue_runtime::engine::ActionQueueEngine;
     use actionqueue_storage::recovery::bootstrap::load_projection_from_storage;
@@ -35,18 +37,18 @@ mod wf {
     }
 
     impl ExecutorHandler for FailThenSucceedHandler {
-        fn execute(&self, _ctx: ExecutorContext) -> HandlerOutput {
+        fn execute(&self, _ctx: ExecutorContext) -> AttemptDisposition {
             let n = self.call_count.fetch_add(1, Ordering::SeqCst);
             if n < self.fail_count {
-                HandlerOutput::RetryableFailure {
-                    error: format!("attempt {n} failed"),
-                    consumption: vec![],
-                }
+                actionqueue_core::disposition::AttemptDisposition::retryable_failure(
+                    actionqueue_core::bounded::BoundedError::new(format!("attempt {n} failed"))
+                        .unwrap(),
+                )
             } else {
-                HandlerOutput::Success {
-                    output: Some(b"final-output".to_vec()),
-                    consumption: vec![],
-                }
+                actionqueue_core::disposition::AttemptDisposition::complete(
+                    (Some(b"final-output".to_vec()))
+                        .map(|v| actionqueue_core::data_ref::DataRef::from_bytes(v).unwrap()),
+                )
             }
         }
     }
@@ -82,8 +84,12 @@ mod wf {
             .expect("valid spec");
 
             let engine = ActionQueueEngine::new(engine_config(&data_dir), handler);
-            let mut eng =
-                engine.bootstrap_with_clock(MockClock::new(1000)).expect("bootstrap must succeed");
+            let mut eng = engine
+                .bootstrap_with_clock(MockClock::new(1000))
+                .expect("bootstrap must succeed")
+                .with_host(crate::support::host_support::host(
+                    actionqueue_core::control::ControlScope::SingleTenant,
+                ));
             eng.submit_task(spec).expect("submit task");
             let _summary = eng.run_until_idle().await.expect("run must complete");
 

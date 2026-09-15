@@ -1,0 +1,23 @@
+{
+  "id": "AQ-CF-PUBLIC-DEADLINE",
+  "mode": "deadline",
+  "required_features": [
+    "workflow",
+    "budget",
+    "actor",
+    "platform"
+  ],
+  "variants": [
+    "ordinary",
+    "replay",
+    "crash"
+  ],
+  "expected": {
+    "tasks": 1,
+    "parent_state": "completed",
+    "parent_attempts": 2,
+    "parent_failures": 0,
+    "active_waits": 0,
+    "wake": "deadline"
+  }
+}

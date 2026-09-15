@@ -10,7 +10,7 @@ use crate::snapshot::model::{
 };
 
 /// The snapshot format version written by this implementation.
-const SNAPSHOT_FORMAT_VERSION: u32 = 4;
+const SNAPSHOT_FORMAT_VERSION: u32 = 9;
 
 /// Builds a validated [`Snapshot`] from the current state of a [`ReplayReducer`].
 ///
@@ -35,8 +35,10 @@ pub fn build_snapshot_from_projection(
         })
         .collect();
 
+    // Emit runs in per-task index order so hydration rebuilds `runs_by_task` exactly
+    // as WAL replay did; cascades then emit records in the same order on every replica.
     let runs: Vec<SnapshotRun> = reducer
-        .run_instances()
+        .runs_in_index_order()
         .map(|ri| {
             let run_id = ri.id();
             let state_history = reducer
@@ -56,17 +58,21 @@ pub fn build_snapshot_from_projection(
                 .map(|a| {
                     a.iter()
                         .map(|entry| SnapshotAttemptHistoryEntry {
+                            disposition: entry.disposition.clone(),
+                            accepted_start: entry.accepted_start.clone(),
+                            finish_origin: entry.finish_origin,
                             attempt_id: entry.attempt_id(),
                             started_at: entry.started_at(),
                             finished_at: entry.finished_at(),
                             result: entry.result(),
                             error: entry.error().map(|s| s.to_string()),
-                            output: entry.output().map(|b| b.to_vec()),
+                            output: entry.output.clone(),
                         })
                         .collect()
                 })
                 .unwrap_or_default();
             let lease = reducer.get_lease_metadata(&run_id).map(|lm| SnapshotLeaseMetadata {
+                granted_at_sequence: lm.granted_at_sequence(),
                 owner: lm.owner().to_string(),
                 expiry: lm.expiry(),
                 acquired_at: lm.acquired_at(),
@@ -87,7 +93,7 @@ pub fn build_snapshot_from_projection(
                 deps.sort_by_key(|id| *id.as_uuid());
                 deps
             },
-            declared_at: timestamp,
+            declared_at: reducer.dependency_declared_at.get(&task_id).copied().unwrap_or(0),
         })
         .collect();
 
@@ -106,6 +112,7 @@ pub fn build_snapshot_from_projection(
     let subscriptions: Vec<SnapshotSubscription> = reducer
         .subscriptions()
         .map(|(_id, record)| SnapshotSubscription {
+            matched_sequence: record.matched_sequence,
             subscription_id: record.subscription_id,
             task_id: record.task_id,
             filter: record.filter.clone(),
@@ -120,7 +127,7 @@ pub fn build_snapshot_from_projection(
         .map(|(_, record)| SnapshotActor {
             actor_id: record.actor_id,
             identity: record.identity.clone(),
-            capabilities: record.capabilities.clone(),
+            executor_traits: record.executor_traits.clone(),
             department: record.department.clone(),
             heartbeat_interval_secs: record.heartbeat_interval_secs,
             tenant_id: record.tenant_id,
@@ -173,6 +180,25 @@ pub fn build_snapshot_from_projection(
         .collect();
 
     let snapshot = Snapshot {
+        control_history: reducer.control_history.iter().map(|(s, c)| (*s, c.clone())).collect(),
+        waits: reducer.waits.records().cloned().collect(),
+        cancellations: {
+            let mut c: Vec<_> = reducer.cancellations.values().cloned().collect();
+            c.sort_by_key(|c| c.sequence);
+            c
+        },
+        dispatch_sequences: reducer.dispatch_sequences.iter().map(|(r, s)| (*r, *s)).collect(),
+        administrative_wakes: reducer.administrative_wakes.values().cloned().collect(),
+        administrative_pending: reducer
+            .administrative_pending
+            .iter()
+            .map(|(r, c)| (*r, *c))
+            .collect(),
+        pending_resumes: reducer.waits.pending.iter().map(|(r, w)| (*r, *w)).collect(),
+        key_reservations: reducer.key_reservations.iter().map(|(r, k)| (*r, k.clone())).collect(),
+        signals: reducer.signals().records().cloned().collect(),
+        last_signal_sequence: reducer.signals().last_sequence().get(),
+        admissions: reducer.admissions().cloned().collect(),
         version: SNAPSHOT_FORMAT_VERSION,
         timestamp,
         metadata: SnapshotMetadata {

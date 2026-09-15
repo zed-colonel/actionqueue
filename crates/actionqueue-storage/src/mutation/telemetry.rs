@@ -1,0 +1,219 @@
+//! Process-lifetime observations at the mutation authority boundary. Never replayed as counters.
+use std::{
+    collections::{BTreeMap, BTreeSet, HashMap},
+    sync::{Arc, Mutex},
+};
+
+use actionqueue_core::{continuation::*, ids::WaitId};
+
+use crate::wal::event::{WalEvent, WalEventType as E};
+#[derive(Debug, Clone, Default)]
+pub struct QueueTelemetry(Arc<Mutex<Observations>>);
+#[derive(Debug, Clone, Default)]
+pub struct Observations {
+    pub admissions_created: u64,
+    pub admission_duplicates: u64,
+    pub admission_conflicts: u64,
+    pub broad_waits_established: u64,
+    pub match_wait_candidates: u64,
+    pub match_signal_candidates: u64,
+    pub signal_duplicates: u64,
+    pub signals: BTreeMap<(String, String), u64>,
+    pub waits_satisfied: BTreeMap<&'static str, u64>,
+    pub wait_latency_count: u64,
+    pub wait_latency_sum: u64,
+    pub disposition_rejected: u64,
+    pub recovery_reconciliations: u64,
+    pub compound_bytes_count: u64,
+    pub compound_bytes_sum: u64,
+    pub projection_mismatches: u64,
+    allowlist: BTreeSet<(String, String)>,
+    waits: HashMap<WaitId, u64>,
+}
+/// Validates the finite namespace/kind metric configuration without allocating telemetry.
+pub fn validate_signal_allowlist(pairs: &BTreeSet<(String, String)>) -> Result<(), &'static str> {
+    if pairs.len() > 64
+        || pairs
+            .iter()
+            .any(|(ns, k)| SignalNamespace::new(ns).is_err() || SignalKind::new(k).is_err())
+    {
+        return Err("invalid metric allowlist");
+    }
+    Ok(())
+}
+impl QueueTelemetry {
+    pub fn snapshot(&self) -> Observations {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+    /// Finite host configuration; unknown pairs share one bucket. Maximum 64 pairs.
+    pub fn set_signal_allowlist(
+        &self,
+        pairs: BTreeSet<(String, String)>,
+    ) -> Result<(), &'static str> {
+        validate_signal_allowlist(&pairs)?;
+        let mut o = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if !o.signals.is_empty() {
+            return Err("telemetry already active");
+        }
+        o.allowlist = pairs;
+        Ok(())
+    }
+    pub fn admission_lookup(&self, duplicate: bool, conflict: bool) {
+        let mut o = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        o.admission_duplicates += u64::from(duplicate);
+        o.admission_conflicts += u64::from(conflict);
+    }
+    pub(crate) fn matching_work(&self, work: crate::recovery::work::MatchingWork) {
+        let mut o = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        o.match_wait_candidates += work.waits;
+        o.match_signal_candidates += work.signals;
+    }
+    pub fn signal_duplicate(&self) {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).signal_duplicates += 1;
+    }
+    pub fn disposition_rejected(&self) {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).disposition_rejected += 1;
+    }
+    pub fn projection_mismatch(&self) {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).projection_mismatches += 1;
+    }
+    pub(crate) fn committed(
+        &self,
+        e: &WalEvent,
+        bytes: usize,
+        p: &impl super::authority::MutationProjection,
+    ) {
+        let mut o = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        match e.event() {
+            E::AdmissionCommitted { .. } => o.admissions_created += 1,
+            E::SignalAdmitted { record } => signal(&mut o, record),
+            E::AttemptDispositionCommitted { record } => {
+                o.admissions_created += record.children.len() as u64;
+                for s in &record.signals {
+                    signal(&mut o, s);
+                }
+                if let Some(w) = record.wait_record() {
+                    established(&mut o, &w);
+                }
+                o.compound_bytes_count += 1;
+                o.compound_bytes_sum += bytes as u64;
+            }
+            E::WaitEstablished { record } => {
+                established(&mut o, record);
+            }
+            E::WaitSatisfied { record }
+            | E::WaitTimedOut { record }
+            | E::WaitCanceled { record } => {
+                resolved(&mut o, record);
+            }
+            E::TaskCancellationCommitted { record } | E::RunCancellationCommitted { record } => {
+                // Compound cancellation derives its affected waits in the reducer. Observe
+                // exactly the resolutions published by this frame, including every affected run.
+                if let Some(waits) = p.wait_index() {
+                    for resolution in waits.records().filter_map(|w| w.resolution.as_ref()) {
+                        if resolution.sequence == record.sequence {
+                            resolved(&mut o, resolution);
+                        }
+                    }
+                }
+            }
+            E::AttemptClosed { record } if record.origin == AttemptFinishOrigin::Recovery => {
+                o.recovery_reconciliations += 1
+            }
+            _ => {}
+        }
+    }
+}
+fn established(o: &mut Observations, w: &crate::mutation::wait::WaitRecord) {
+    o.waits.insert(w.spec.wait_id(), w.timestamp);
+    if w.spec.filter().is_some_and(|f| f.correlation_id.is_none() && f.source_ref.is_none()) {
+        o.broad_waits_established += 1;
+    }
+}
+fn resolved(o: &mut Observations, record: &crate::mutation::wait::WaitResolution) {
+    use crate::mutation::wait::WaitResolutionKind as K;
+    let reason = match record.kind {
+        K::Signal(_) => "signal",
+        K::Children(_) => "children",
+        K::Deadline => "deadline",
+        K::Control(_) => "control",
+        K::Canceled(_) => "canceled",
+    };
+    *o.waits_satisfied.entry(reason).or_default() += 1;
+    if let Some(start) = o.waits.remove(&record.wait_id) {
+        o.wait_latency_count += 1;
+        o.wait_latency_sum += record.timestamp.saturating_sub(start);
+    }
+}
+fn signal(o: &mut Observations, r: &crate::mutation::signal::SignalRecord) {
+    let e = r.envelope();
+    let pair = (e.namespace.as_str().to_owned(), e.kind.as_str().to_owned());
+    let key =
+        if o.allowlist.contains(&pair) { pair } else { ("overflow".into(), "overflow".into()) };
+    *o.signals.entry(key).or_default() += 1;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn resolution_releases_pending_timing_state() {
+        let t = QueueTelemetry::default();
+        let id = WaitId::new();
+        {
+            let mut o = t.0.lock().unwrap();
+            o.waits.insert(id, 20);
+            resolved(
+                &mut o,
+                &crate::mutation::wait::WaitResolution {
+                    run_id: actionqueue_core::ids::RunId::new(),
+                    wait_id: id,
+                    sequence: 2,
+                    timestamp: 30,
+                    kind: crate::mutation::wait::WaitResolutionKind::Canceled(None),
+                },
+            );
+        }
+        for _ in 0..3 {
+            let o = t.snapshot();
+            assert!(o.waits.is_empty());
+            assert_eq!(o.waits_satisfied["canceled"], 1);
+            assert_eq!(o.wait_latency_count, 1);
+            assert_eq!(o.wait_latency_sum, 10);
+        }
+    }
+    #[test]
+    fn finite_allowlist_and_overflow_bound_cardinality() {
+        let t = QueueTelemetry::default();
+        let too_many = (0..65).map(|n| ("service".into(), format!("event-{n}"))).collect();
+        assert!(t.set_signal_allowlist(too_many).is_err());
+        t.set_signal_allowlist([("service".into(), "known".into())].into()).unwrap();
+        let mut o = t.0.lock().unwrap();
+        for n in 0..200 {
+            let e = SignalEnvelope {
+                signal_id: actionqueue_core::ids::SignalId::new(format!("id-{n}")).unwrap(),
+                tenant_id: None,
+                namespace: SignalNamespace::new("service").unwrap(),
+                kind: SignalKind::new(if n == 0 { "known".into() } else { format!("unknown-{n}") })
+                    .unwrap(),
+                correlation_id: None,
+                causation: None,
+                source_ref: None,
+                payload: None,
+                payload_hash: None,
+                occurred_at: None,
+                received_at: 1,
+                control_context: None,
+            };
+            let record = crate::mutation::signal::SignalRecord::new(
+                e,
+                actionqueue_core::ids::SignalSequence::new(n + 1),
+                n + 1,
+            )
+            .unwrap();
+            signal(&mut o, &record);
+        }
+        assert_eq!(o.signals.len(), 2);
+        assert_eq!(o.signals[&("overflow".into(), "overflow".into())], 199);
+    }
+}

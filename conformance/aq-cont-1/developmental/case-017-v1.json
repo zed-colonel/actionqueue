@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "id": "AQ-CF-DD-017",
+  "steps": [
+    {
+      "op": "developmental",
+      "case": 17
+    }
+  ],
+  "variants": [
+    "ordinary",
+    "replay",
+    "crash"
+  ]
+}

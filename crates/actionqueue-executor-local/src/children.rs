@@ -33,6 +33,15 @@ impl ChildState {
         Self { task_id, run_states, all_terminal }
     }
 
+    /// Builds a view with authoritative task terminality, including cron exhaustion.
+    pub fn with_terminal_status(
+        task_id: TaskId,
+        run_states: Vec<(RunId, RunState)>,
+        status: Option<actionqueue_core::continuation::TaskTerminalStatus>,
+    ) -> Self {
+        Self { task_id, run_states, all_terminal: status.is_some() }
+    }
+
     /// Returns the child task's identifier.
     pub fn task_id(&self) -> TaskId {
         self.task_id

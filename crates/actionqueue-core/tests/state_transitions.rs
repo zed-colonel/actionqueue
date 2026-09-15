@@ -104,6 +104,7 @@ fn transition_constructor() {
         Err(RunTransitionError::InvalidTransition {
             from: RunState::Ready,
             to: RunState::Scheduled,
+            reason: actionqueue_core::run::RunTransitionRejection::NotInTransitionTable,
         })
     );
 }

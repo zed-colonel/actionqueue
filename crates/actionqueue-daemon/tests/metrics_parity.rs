@@ -442,7 +442,8 @@ fn seeded_wal_append_telemetry(successes: u64, failures: u64) -> WalAppendTeleme
             .as_nanos()
     );
     let wal_path = std::env::temp_dir().join(unique);
-    let wal_writer = WalFsWriter::new(wal_path.clone()).expect("test wal writer should initialize");
+    let wal_writer =
+        WalFsWriter::new_raw_for_test(wal_path.clone()).expect("test wal writer should initialize");
     let mut writer = InstrumentedWalWriter::new(wal_writer, telemetry.clone());
 
     let mut sequence = 1u64;
@@ -706,7 +707,10 @@ async fn metrics_parity_enforces_bounded_run_and_attempt_labels_without_extras()
         BTreeSet::from(["result".to_string()])
     );
 
-    assert_eq!(samples.iter().filter(|sample| sample.name == "actionqueue_runs_total").count(), 8);
+    assert_eq!(
+        samples.iter().filter(|sample| sample.name == "actionqueue_runs_total").count(),
+        RUN_STATE_LABEL_VALUES.len()
+    );
     assert_eq!(
         samples.iter().filter(|sample| sample.name == "actionqueue_attempts_total").count(),
         3

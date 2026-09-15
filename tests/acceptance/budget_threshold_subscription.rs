@@ -9,9 +9,10 @@
 //! 3. Task B runs and reports 400 tokens out of a 500 budget (80%).
 //! 4. Budget threshold event fires → subscription triggered → run 2 promoted.
 
+#[path = "host_support.rs"]
+mod host_support;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use actionqueue_core::budget::{BudgetConsumption, BudgetDimension};
@@ -23,19 +24,12 @@ use actionqueue_core::task::metadata::TaskMetadata;
 use actionqueue_core::task::run_policy::RunPolicy;
 use actionqueue_core::task::task_spec::{TaskPayload, TaskSpec};
 use actionqueue_engine::time::clock::MockClock;
-use actionqueue_executor_local::handler::{ExecutorContext, ExecutorHandler, HandlerOutput};
+use actionqueue_executor_local::handler::{AttemptDisposition, ExecutorContext, ExecutorHandler};
 use actionqueue_runtime::config::{BackoffStrategyConfig, RuntimeConfig};
 use actionqueue_runtime::engine::ActionQueueEngine;
 
-static COUNTER: AtomicUsize = AtomicUsize::new(0);
-
-fn data_dir(label: &str) -> PathBuf {
-    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let dir = PathBuf::from("target")
-        .join("tmp")
-        .join(format!("7f-budget-thresh-{label}-{}-{n}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("data dir");
-    dir
+fn data_dir(label: &str) -> tempfile::TempDir {
+    tempfile::Builder::new().prefix(label).tempdir().expect("test data dir")
 }
 
 /// Handler: Task B reports 400 token consumption; everything else succeeds.
@@ -43,15 +37,14 @@ fn data_dir(label: &str) -> PathBuf {
 struct ThresholdHandler;
 
 impl ExecutorHandler for ThresholdHandler {
-    fn execute(&self, ctx: ExecutorContext) -> HandlerOutput {
+    fn execute(&self, ctx: ExecutorContext) -> AttemptDisposition {
         // Look up the task_id from the run's payload to decide behavior.
         if ctx.input.payload == b"task-b" {
-            HandlerOutput::Success {
-                output: None,
-                consumption: vec![BudgetConsumption::new(BudgetDimension::Token, 400)],
-            }
+            actionqueue_core::disposition::AttemptDisposition::complete(None)
+                .with_consumption(vec![BudgetConsumption::new(BudgetDimension::Token, 400)])
+                .unwrap()
         } else {
-            HandlerOutput::Success { output: None, consumption: vec![] }
+            actionqueue_core::disposition::AttemptDisposition::complete(None)
         }
     }
 }
@@ -74,8 +67,10 @@ async fn budget_threshold_triggers_subscription_promotion() {
     let clock = MockClock::new(1000);
     let task_b_id = TaskId::new();
     let handler = ThresholdHandler;
-    let engine = ActionQueueEngine::new(make_config(dir.clone()), handler);
-    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap");
+    let engine = ActionQueueEngine::new(make_config(dir.path().to_path_buf()), handler);
+    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap").with_host(
+        crate::host_support::host(actionqueue_core::control::ControlScope::SingleTenant),
+    );
 
     // Task B: Once, budget 500 tokens.
     let spec_b = TaskSpec::new(
@@ -140,5 +135,4 @@ async fn budget_threshold_triggers_subscription_promotion() {
     }
 
     boot.shutdown().expect("shutdown");
-    let _ = std::fs::remove_dir_all(&dir);
 }

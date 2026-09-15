@@ -1,21 +1,15 @@
 # actionqueue-runtime
 
-Async dispatch loop, embedded API, and runtime configuration for the ActionQueue task queue engine.
+Release 0.2.0 implements AQ-CONT-1. See the [release and compatibility notes](../../docs/releases/0.2.0.md).
 
-## Overview
+Embedded execution, host-authenticated controls, and structural inspection for
+AQ-CONT-1. Configure `HostControlContext` on the engine before admissions,
+signals, cancellation or inspection. Missing context fails closed.
 
-This crate composes storage, engine, and executor primitives into a cohesive runtime:
+`BootstrappedEngine::ensure_task` and `admit_signal` use the same typed service as
+HTTP v2. `Inspector` and the engine getters return redacted DTOs from a single
+projection revision. `control` exposes task/run/wait cancellation and explicit
+wait resolution. `store` exports verified offline inspect, backup and restore.
 
-- **DispatchLoop** -- Full task lifecycle: promote, select, gate, lease, execute, finish, release
-- **ActionQueueEngine / BootstrappedEngine** -- Primary entry point for embedding ActionQueue as a library
-- **RuntimeConfig** -- Backoff, concurrency, lease, and snapshot configuration
-
-The dispatch loop is async (tokio). Handlers run via `spawn_blocking`. The dispatch loop owns all WAL mutation authority exclusively.
-
-## Part of the ActionQueue workspace
-
-See the [workspace root](https://github.com/zed-colonel/actionqueue) for full documentation.
-
-## License
-
-Apache-2.0
+See [AQ-12 APIs](../../docs/aq-12-apis.md) for schemas, authorization, disclosure,
+query bounds, metric semantics and operating modes.

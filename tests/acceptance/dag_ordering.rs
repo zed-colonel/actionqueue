@@ -19,7 +19,9 @@ mod wf {
     use actionqueue_core::task::run_policy::RunPolicy;
     use actionqueue_core::task::task_spec::{TaskPayload, TaskSpec};
     use actionqueue_engine::time::clock::MockClock;
-    use actionqueue_executor_local::handler::{ExecutorContext, ExecutorHandler, HandlerOutput};
+    use actionqueue_executor_local::handler::{
+        AttemptDisposition, ExecutorContext, ExecutorHandler,
+    };
     use actionqueue_runtime::config::RuntimeConfig;
     use actionqueue_runtime::engine::ActionQueueEngine;
     use actionqueue_storage::mutation::authority::StorageMutationAuthority;
@@ -31,11 +33,11 @@ mod wf {
     }
 
     impl ExecutorHandler for TrackingHandler {
-        fn execute(&self, ctx: ExecutorContext) -> HandlerOutput {
+        fn execute(&self, ctx: ExecutorContext) -> AttemptDisposition {
             let name =
                 String::from_utf8(ctx.input.payload.clone()).unwrap_or_else(|_| "?".to_string());
             self.log.lock().unwrap().push(name);
-            HandlerOutput::Success { output: None, consumption: vec![] }
+            actionqueue_core::disposition::AttemptDisposition::complete(None)
         }
     }
 
@@ -72,8 +74,12 @@ mod wf {
         {
             let log = Arc::clone(&execution_log);
             let engine = ActionQueueEngine::new(engine_config(&data_dir), TrackingHandler { log });
-            let mut eng =
-                engine.bootstrap_with_clock(MockClock::new(1000)).expect("bootstrap must succeed");
+            let mut eng = engine
+                .bootstrap_with_clock(MockClock::new(1000))
+                .expect("bootstrap must succeed")
+                .with_host(crate::support::host_support::host(
+                    actionqueue_core::control::ControlScope::SingleTenant,
+                ));
             eng.submit_task(make_once_spec(step1_id, b"step1")).expect("submit step1");
             eng.submit_task(make_once_spec(step2_id, b"step2")).expect("submit step2");
             eng.submit_task(make_once_spec(step3_id, b"step3")).expect("submit step3");
@@ -85,7 +91,11 @@ mod wf {
         {
             let recovery = load_projection_from_storage(&data_dir).expect("recovery must succeed");
             let mut authority =
-                StorageMutationAuthority::new(recovery.wal_writer, recovery.projection);
+                StorageMutationAuthority::new(recovery.wal_writer, recovery.projection).with_host(
+                    crate::support::host_support::host(
+                        actionqueue_core::control::ControlScope::SingleTenant,
+                    ),
+                );
 
             let seq = authority.projection().latest_sequence() + 1;
             let _ = authority
@@ -118,8 +128,12 @@ mod wf {
         {
             let log = Arc::clone(&execution_log);
             let engine = ActionQueueEngine::new(engine_config(&data_dir), TrackingHandler { log });
-            let mut eng =
-                engine.bootstrap_with_clock(MockClock::new(1000)).expect("bootstrap must succeed");
+            let mut eng = engine
+                .bootstrap_with_clock(MockClock::new(1000))
+                .expect("bootstrap must succeed")
+                .with_host(crate::support::host_support::host(
+                    actionqueue_core::control::ControlScope::SingleTenant,
+                ));
             let _ = eng.run_until_idle().await.expect("run must complete");
 
             // Verify all three runs reached Completed.

@@ -51,6 +51,7 @@
 
 use std::path::PathBuf;
 
+use actionqueue_core::time::clock::Clock;
 use actionqueue_storage::mutation::authority::StorageMutationAuthority;
 use actionqueue_storage::recovery::bootstrap::{
     load_projection_from_storage, RecoveryBootstrapError,
@@ -212,6 +213,12 @@ impl BootstrapState {
         (self.http_router, self.router_state)
     }
 
+    /// Waits for background maintenance after callers have drained HTTP requests.
+    /// Consuming the owner then releases its store references.
+    pub async fn shutdown(self) {
+        crate::http::maintenance::shutdown(&self.router_state).await;
+    }
+
     /// Returns the WAL path.
     pub fn wal_path(&self) -> &PathBuf {
         &self.wal_path
@@ -254,6 +261,13 @@ impl BootstrapState {
 /// let state = bootstrap(config).expect("bootstrap should succeed");
 /// ```
 pub fn bootstrap(config: DaemonConfig) -> Result<BootstrapState, BootstrapError> {
+    bootstrap_with_authenticator(config, None)
+}
+/// Bootstraps a host-integrated daemon with explicit authentication for controls.
+pub fn bootstrap_with_authenticator(
+    config: DaemonConfig,
+    hook: Option<crate::http::auth::HostAuthenticator>,
+) -> Result<BootstrapState, BootstrapError> {
     // Initialize structured logging subscriber.
     // Uses RUST_LOG env var for filtering (e.g. RUST_LOG=actionqueue=debug).
     // init() is a no-op if a subscriber is already set (e.g. in tests).
@@ -263,28 +277,39 @@ pub fn bootstrap(config: DaemonConfig) -> Result<BootstrapState, BootstrapError>
 
     // Validate configuration first
     config.validate()?;
-
-    let recovery = load_projection_from_storage(&config.data_dir).map_err(map_recovery_error)?;
-    let wal_path = recovery.wal_path.clone();
-    let snapshot_path = recovery.snapshot_path.clone();
-    let projection = recovery.projection.clone();
-    let wal_append_telemetry = recovery.wal_append_telemetry.clone();
-    let recovery_observations = recovery.recovery_observations;
-
-    let control_authority = if config.enable_control {
-        Some(std::sync::Arc::new(std::sync::Mutex::new(StorageMutationAuthority::new(
-            recovery.wal_writer,
-            projection.clone(),
-        ))))
-    } else {
-        None
-    };
+    if config.enable_control && hook.is_none() {
+        return Err(BootstrapError::Dependency("host_auth_required".into()));
+    }
 
     // Create metrics registry
     let metrics =
         std::sync::Arc::new(MetricsRegistry::new(config.metrics_bind).map_err(|error| {
             BootstrapError::Dependency(format!("metrics_registry_init_failed: {error}"))
         })?);
+
+    let recovery = load_projection_from_storage(&config.data_dir).map_err(map_recovery_error)?;
+    let wal_path = recovery.wal_path.clone();
+    let snapshot_path = recovery.snapshot_path.clone();
+
+    let wal_append_telemetry = recovery.wal_append_telemetry.clone();
+    let recovery_observations = recovery.recovery_observations;
+
+    let store_session = recovery.wal_writer.inner().session().cloned();
+    let mut authority = StorageMutationAuthority::new(recovery.wal_writer, recovery.projection);
+    authority
+        .telemetry()
+        .set_signal_allowlist(config.signal_metric_allowlist.clone())
+        .map_err(|_| BootstrapError::Dependency("invalid signal metric allowlist".into()))?;
+    if config.enable_control {
+        actionqueue_runtime::waits::recover_execution(&mut authority, SystemClock.now())
+            .map_err(|e| BootstrapError::Dependency(format!("execution_recovery: {e}")))?;
+    }
+    actionqueue_runtime::waits::recover_cancellations(&mut authority, SystemClock.now())
+        .map_err(|e| BootstrapError::Dependency(format!("control_reconciliation: {e}")))?;
+    actionqueue_runtime::waits::reconcile(&mut authority, SystemClock.now())
+        .map_err(|e| BootstrapError::Dependency(format!("wait_reconciliation: {e}")))?;
+    let projection = authority.projection().clone();
+    let control_authority = std::sync::Arc::new(std::sync::Mutex::new(authority));
 
     // Create a single authoritative daemon clock handle for router and metrics wiring.
     let clock: SharedDaemonClock = std::sync::Arc::new(SystemClock);
@@ -302,22 +327,19 @@ pub fn bootstrap(config: DaemonConfig) -> Result<BootstrapState, BootstrapError>
         recovery_observations,
     };
     let shared_projection = std::sync::Arc::new(std::sync::RwLock::new(projection.clone()));
-    let router_state_inner = if let Some(authority) = control_authority {
-        crate::http::RouterStateInner::with_control_authority(
-            router_config,
-            shared_projection,
-            observability,
-            authority,
-            ready_status,
-        )
-    } else {
-        crate::http::RouterStateInner::new(
-            router_config,
-            shared_projection,
-            observability,
-            ready_status,
-        )
-    };
+    let mut router_state_inner = crate::http::RouterStateInner::with_control_authority(
+        router_config,
+        shared_projection,
+        observability,
+        control_authority,
+        ready_status,
+    );
+    #[cfg(feature = "actor")]
+    {
+        router_state_inner.remote_policy = config.remote_policy;
+    }
+    router_state_inner.store_session = store_session;
+    router_state_inner.host_authenticator = hook;
     let router_state = std::sync::Arc::new(router_state_inner);
 
     // Build the concrete HTTP router using the assembly entry
@@ -340,10 +362,9 @@ pub fn bootstrap(config: DaemonConfig) -> Result<BootstrapState, BootstrapError>
 fn map_recovery_error(error: RecoveryBootstrapError) -> BootstrapError {
     match error {
         RecoveryBootstrapError::WalInit(msg) => BootstrapError::WalInit(msg),
-        RecoveryBootstrapError::WalRead(msg)
-        | RecoveryBootstrapError::SnapshotLoad(msg)
-        | RecoveryBootstrapError::WalReplay(msg)
-        | RecoveryBootstrapError::SnapshotBootstrap(msg) => BootstrapError::Dependency(msg),
+        RecoveryBootstrapError::WalReplay(msg) | RecoveryBootstrapError::SnapshotBootstrap(msg) => {
+            BootstrapError::Dependency(msg)
+        }
     }
 }
 
@@ -353,25 +374,17 @@ mod tests {
 
     #[test]
     fn test_bootstrap_with_valid_config() {
-        let config = DaemonConfig::default();
+        let data_dir = std::env::temp_dir()
+            .join(format!("aq-daemon-bootstrap-{}", actionqueue_core::ids::TaskId::new()));
+        let config = DaemonConfig { data_dir: data_dir.clone(), ..Default::default() };
         let control_flag = config.enable_control;
-        let result = bootstrap(config);
-
-        // We expect success if data directory exists or can be created
-        // The exact result may vary based on filesystem permissions
-        if let Ok(state) = result {
-            // Assert router state wiring
-            // RouterState is Arc<RouterStateInner>, and RouterStateInner is public
-            let router_state = state.router_state();
-
-            // Access the inner fields through Arc deref
-            assert!(router_state.ready_status.is_ready());
-            assert_eq!(router_state.router_config.control_enabled, control_flag);
-            assert_eq!(router_state.router_config.metrics_enabled, state.metrics().is_enabled());
-        } else {
-            // Skip assertions if bootstrap fails due to file system issues
-            assert!(matches!(result, Err(BootstrapError::WalInit(_))));
-        }
+        let state = bootstrap(config).expect("bootstrap in isolated test directory");
+        let router_state = state.router_state();
+        assert!(router_state.ready_status.is_ready());
+        assert_eq!(router_state.router_config.control_enabled, control_flag);
+        assert_eq!(router_state.router_config.metrics_enabled, state.metrics().is_enabled());
+        drop(state);
+        std::fs::remove_dir_all(data_dir).expect("remove bootstrap test directory");
     }
 
     #[test]

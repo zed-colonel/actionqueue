@@ -14,14 +14,16 @@ pub enum RunTransitionError {
         from: RunState,
         /// Target lifecycle state.
         to: RunState,
+        /// Why the transition was rejected.
+        reason: RunTransitionRejection,
     },
 }
 
 impl std::fmt::Display for RunTransitionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::InvalidTransition { from, to } => {
-                write!(f, "invalid run transition: {from:?} -> {to:?}")
+            Self::InvalidTransition { from, to, reason } => {
+                write!(f, "invalid run transition: {from:?} -> {to:?}: {reason:?}")
             }
         }
     }
@@ -41,10 +43,9 @@ impl Transition {
     /// Creates a new transition from `from` to `to`.
     /// Returns a typed error if the transition is not valid.
     pub fn new(from: RunState, to: RunState) -> Result<Self, RunTransitionError> {
-        if is_valid_transition(from, to) {
-            Ok(Transition { from, to })
-        } else {
-            Err(RunTransitionError::InvalidTransition { from, to })
+        match transition_rejection(from, to) {
+            None => Ok(Transition { from, to }),
+            Some(reason) => Err(RunTransitionError::InvalidTransition { from, to, reason }),
         }
     }
 
@@ -79,14 +80,13 @@ impl Transition {
 /// - RetryWait -> Canceled
 /// - Suspended -> Ready (budget replenished / explicit resume)
 /// - Suspended -> Canceled
+/// - Running -> Awaiting (continuation registered)
+/// - Awaiting -> Ready (continuation resolved)
+/// - Awaiting -> Failed (deadline policy)
+/// - Awaiting -> Canceled
 ///
 /// Terminal states (Completed, Failed, Canceled) have no valid transitions.
 pub fn is_valid_transition(from: RunState, to: RunState) -> bool {
-    // Terminal states cannot transition to any other state
-    if from.is_terminal() {
-        return false;
-    }
-
     matches!(
         (from, to),
         (RunState::Scheduled, RunState::Ready)
@@ -106,22 +106,44 @@ pub fn is_valid_transition(from: RunState, to: RunState) -> bool {
             | (RunState::RetryWait, RunState::Canceled)
             | (RunState::Suspended, RunState::Ready)
             | (RunState::Suspended, RunState::Canceled)
+            | (RunState::Running, RunState::Awaiting)
+            | (RunState::Awaiting, RunState::Ready)
+            | (RunState::Awaiting, RunState::Failed)
+            | (RunState::Awaiting, RunState::Canceled)
     )
+}
+
+/// Classifies invalid transitions, with terminal finality taking precedence.
+/// Eligibility comes only from the canonical table; reasons classify table misses.
+pub fn transition_rejection(from: RunState, to: RunState) -> Option<RunTransitionRejection> {
+    if is_valid_transition(from, to) {
+        return None;
+    }
+    Some(if from.is_terminal() {
+        RunTransitionRejection::TerminalStateIsFinal
+    } else if from == RunState::Awaiting {
+        RunTransitionRejection::AwaitingResolvesOnlyToReadyFailedCanceled
+    } else if to == RunState::Awaiting {
+        RunTransitionRejection::AwaitingRequiresRunning
+    } else {
+        RunTransitionRejection::NotInTransitionTable
+    })
 }
 
 /// Returns all valid transitions from a given state.
 pub fn valid_transitions(from: RunState) -> Vec<RunState> {
-    let states = [
-        RunState::Scheduled,
-        RunState::Ready,
-        RunState::Leased,
-        RunState::Running,
-        RunState::RetryWait,
-        RunState::Suspended,
-        RunState::Completed,
-        RunState::Failed,
-        RunState::Canceled,
-    ];
+    RunState::ALL.into_iter().filter(|&to| is_valid_transition(from, to)).collect()
+}
 
-    states.into_iter().filter(|&to| is_valid_transition(from, to)).collect()
+/// Reason a lifecycle edge is forbidden.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunTransitionRejection {
+    /// Completed, Failed and Canceled are final.
+    TerminalStateIsFinal,
+    /// Only Running can register a continuation.
+    AwaitingRequiresRunning,
+    /// A continuation resumes through Ready, or ends in Failed/Canceled.
+    AwaitingResolvesOnlyToReadyFailedCanceled,
+    /// No such edge exists in the canonical table.
+    NotInTransitionTable,
 }

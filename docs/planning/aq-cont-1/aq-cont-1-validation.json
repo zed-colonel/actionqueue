@@ -1,0 +1,309 @@
+{
+  "package": "aq-cont-1-planning",
+  "profile": "AQ-PLAN-2 / STACK-DEVELOPMENTAL-DIAGNOSTICS-1",
+  "date": "2026-08-10",
+  "check_count": 59,
+  "passed_count": 59,
+  "failed_count": 0,
+  "hardening_invariant_count": 20,
+  "implementation_pr_count": 14,
+  "developmental_campaign_case_count": 18,
+  "new_actionqueue_protocol_primitives": 0,
+  "checks": [
+    {
+      "name": "aq-cont-1-planning-package-README.md: exists",
+      "passed": true,
+      "detail": "aq-cont-1-planning/aq-cont-1-planning-package-README.md"
+    },
+    {
+      "name": "aq-cont-1-planning-package-README.md: nonempty",
+      "passed": true,
+      "detail": "3125"
+    },
+    {
+      "name": "aq-cont-1-planning-package-README.md: code fences balanced",
+      "passed": true,
+      "detail": "0"
+    },
+    {
+      "name": "aq-cont-1-planning-package-README.md: no NUL bytes",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "actionqueue-hardening-implementation-ready.md: exists",
+      "passed": true,
+      "detail": "aq-cont-1-planning/actionqueue-hardening-implementation-ready.md"
+    },
+    {
+      "name": "actionqueue-hardening-implementation-ready.md: nonempty",
+      "passed": true,
+      "detail": "168369"
+    },
+    {
+      "name": "actionqueue-hardening-implementation-ready.md: code fences balanced",
+      "passed": true,
+      "detail": "226"
+    },
+    {
+      "name": "actionqueue-hardening-implementation-ready.md: no NUL bytes",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "aq-cont-1-developmental-campaign-execution-profile.md: exists",
+      "passed": true,
+      "detail": "aq-cont-1-planning/aq-cont-1-developmental-campaign-execution-profile.md"
+    },
+    {
+      "name": "aq-cont-1-developmental-campaign-execution-profile.md: nonempty",
+      "passed": true,
+      "detail": "12487"
+    },
+    {
+      "name": "aq-cont-1-developmental-campaign-execution-profile.md: code fences balanced",
+      "passed": true,
+      "detail": "12"
+    },
+    {
+      "name": "aq-cont-1-developmental-campaign-execution-profile.md: no NUL bytes",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "aq-cont-1-implementation-plan.md: exists",
+      "passed": true,
+      "detail": "aq-cont-1-planning/aq-cont-1-implementation-plan.md"
+    },
+    {
+      "name": "aq-cont-1-implementation-plan.md: nonempty",
+      "passed": true,
+      "detail": "86682"
+    },
+    {
+      "name": "aq-cont-1-implementation-plan.md: code fences balanced",
+      "passed": true,
+      "detail": "80"
+    },
+    {
+      "name": "aq-cont-1-implementation-plan.md: no NUL bytes",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "developmental-diagnostics-cross-stack-profile.yaml: exists",
+      "passed": true,
+      "detail": "aq-cont-1-planning/developmental-diagnostics-cross-stack-profile.yaml"
+    },
+    {
+      "name": "developmental-diagnostics-cross-stack-profile.yaml: YAML parses",
+      "passed": true,
+      "detail": "dict"
+    },
+    {
+      "name": "aq-cont-1-developmental-campaign-acceptance-matrix.yaml: exists",
+      "passed": true,
+      "detail": "aq-cont-1-planning/aq-cont-1-developmental-campaign-acceptance-matrix.yaml"
+    },
+    {
+      "name": "aq-cont-1-developmental-campaign-acceptance-matrix.yaml: YAML parses",
+      "passed": true,
+      "detail": "dict"
+    },
+    {
+      "name": "aq-cont-1-work-breakdown.yaml: exists",
+      "passed": true,
+      "detail": "aq-cont-1-planning/aq-cont-1-work-breakdown.yaml"
+    },
+    {
+      "name": "aq-cont-1-work-breakdown.yaml: YAML parses",
+      "passed": true,
+      "detail": "dict"
+    },
+    {
+      "name": "constitutional-stack-implementation-contracts.yaml: exists",
+      "passed": true,
+      "detail": "aq-cont-1-planning/constitutional-stack-implementation-contracts.yaml"
+    },
+    {
+      "name": "constitutional-stack-implementation-contracts.yaml: YAML parses",
+      "passed": true,
+      "detail": "dict"
+    },
+    {
+      "name": "top-level sections 0-32 sequential",
+      "passed": true,
+      "detail": "actual=[0, 1, 2, 3, 4, 5, 6, 7]...[25, 26, 27, 28, 29, 30, 31, 32]; expected=0-32"
+    },
+    {
+      "name": "ActionQueue invariants AQ-H1 through AQ-H20 sequential",
+      "passed": true,
+      "detail": "actual=[1, 2, 3, 4, 5, 6, 7, 8]...[13, 14, 15, 16, 17, 18, 19, 20]; expected=1-20"
+    },
+    {
+      "name": "implementation plan has AQ-01 through AQ-14 once",
+      "passed": true,
+      "detail": "['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12', '13', '14']"
+    },
+    {
+      "name": "developmental campaign matrix: declared case count",
+      "passed": true,
+      "detail": "18"
+    },
+    {
+      "name": "developmental campaign matrix: actual case count",
+      "passed": true,
+      "detail": "18"
+    },
+    {
+      "name": "developmental campaign matrix: unique case IDs",
+      "passed": true,
+      "detail": "['AQ-DD-001', 'AQ-DD-002', 'AQ-DD-003', 'AQ-DD-004', 'AQ-DD-005', 'AQ-DD-006', 'AQ-DD-007', 'AQ-DD-008', 'AQ-DD-009', 'AQ-DD-010', 'AQ-DD-011', 'AQ-DD-012', 'AQ-DD-013', 'AQ-DD-014', 'AQ-DD-015', 'AQ-DD-016', 'AQ-DD-017', 'AQ-DD-018']"
+    },
+    {
+      "name": "developmental campaign matrix: ID prefix",
+      "passed": true,
+      "detail": "['AQ-DD-001', 'AQ-DD-002', 'AQ-DD-003', 'AQ-DD-004', 'AQ-DD-005']"
+    },
+    {
+      "name": "developmental campaign matrix: every case group declared",
+      "passed": true,
+      "detail": "['attribution_neutrality', 'durable_execution', 'privacy_and_observability', 'recovery_and_idempotency', 'semantic_non_ownership']"
+    },
+    {
+      "name": "developmental campaign matrix: complete scenario/expected fields",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "WBS has 14 pull requests",
+      "passed": true,
+      "detail": "14"
+    },
+    {
+      "name": "WBS PR IDs sequential",
+      "passed": true,
+      "detail": "['AQ-01', 'AQ-02', 'AQ-03', 'AQ-04', 'AQ-05', 'AQ-06', 'AQ-07', 'AQ-08', 'AQ-09', 'AQ-10', 'AQ-11', 'AQ-12', 'AQ-13', 'AQ-14']"
+    },
+    {
+      "name": "AQ WBS: dependency IDs exist",
+      "passed": true,
+      "detail": "[]"
+    },
+    {
+      "name": "AQ WBS: dependencies precede dependents",
+      "passed": true,
+      "detail": "[]"
+    },
+    {
+      "name": "WBS plan revision current",
+      "passed": true,
+      "detail": "AQ-PLAN-2"
+    },
+    {
+      "name": "WBS declares no protocol change",
+      "passed": true,
+      "detail": "False"
+    },
+    {
+      "name": "WBS developmental case count",
+      "passed": true,
+      "detail": "{'document': 'aq-cont-1-developmental-campaign-execution-profile.md', 'acceptance_matrix': 'aq-cont-1-developmental-campaign-acceptance-matrix.yaml', 'case_count': 18, 'rules': ['use existing trace, correlation, causation, and bounded origin_ref seams only', 'campaign and arm attribution cannot change scheduler or authority behavior', 'no queue-owned developmental ontology or free-form experiment metadata', 'physical attempts are not application-owned samples or replications', 'queue terminal states are execution facts, not performance or acceptance judgments']}"
+    },
+    {
+      "name": "profile declares no lower-layer contract change",
+      "passed": true,
+      "detail": "False"
+    },
+    {
+      "name": "profile adds no ActionQueue primitive",
+      "passed": true,
+      "detail": "{'ActionQueue': [], 'WorldInterface': []}"
+    },
+    {
+      "name": "profile adds no WorldInterface primitive",
+      "passed": true,
+      "detail": "{'ActionQueue': [], 'WorldInterface': []}"
+    },
+    {
+      "name": "profile adds no authority path",
+      "passed": true,
+      "detail": "[]"
+    },
+    {
+      "name": "base implementation contract matches frozen source-package hash",
+      "passed": true,
+      "detail": "842d5ae8bfbd4b8c3767f7b589267ab26de1b40a2bf722b0ab1d182768d48922"
+    },
+    {
+      "name": "design contains AQ-H19 neutral attribution",
+      "passed": true,
+      "detail": "### AQ-H19 — Developmental correlation is neutral attribution"
+    },
+    {
+      "name": "design contains AQ-H20 execution not judgment",
+      "passed": true,
+      "detail": "### AQ-H20 — Execution outcome is not performance judgment"
+    },
+    {
+      "name": "design includes existing-seam profile",
+      "passed": true,
+      "detail": "### 15.10 Developmental campaign attribution profile"
+    },
+    {
+      "name": "design includes developmental conformance",
+      "passed": true,
+      "detail": "### 28.18 Developmental campaign execution conformance"
+    },
+    {
+      "name": "addendum states no new primitive",
+      "passed": true,
+      "detail": "No developmental primitive is added"
+    },
+    {
+      "name": "addendum states retries are not samples",
+      "passed": true,
+      "detail": "Retries are not samples"
+    },
+    {
+      "name": "addendum separates completion from correctness",
+      "passed": true,
+      "detail": "Completion boundary"
+    },
+    {
+      "name": "addendum states same general substrate",
+      "passed": true,
+      "detail": "It is the same general durable execution substrate"
+    },
+    {
+      "name": "plan revision current",
+      "passed": true,
+      "detail": "**Planning profile:** `AQ-PLAN-2`"
+    },
+    {
+      "name": "plan retains fourteen PRs",
+      "passed": true,
+      "detail": "fourteen ordered pull requests"
+    },
+    {
+      "name": "README states 18 cases",
+      "passed": true,
+      "detail": "eighteen conformance cases"
+    },
+    {
+      "name": "README states no lower change",
+      "passed": true,
+      "detail": "protocol, persistence authority, scheduler semantics, and fourteen-PR critical path remain unchanged"
+    },
+    {
+      "name": "no queue-owned campaign struct introduced",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "no developmental metric labels",
+      "passed": true,
+      "detail": ""
+    }
+  ]
+}

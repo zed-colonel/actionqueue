@@ -109,7 +109,7 @@ pub fn derive_cron_cached(
 }
 
 /// Default number of future cron runs to maintain as a pre-scheduled window.
-pub const CRON_WINDOW_SIZE: u32 = 5;
+pub use actionqueue_core::task::run_policy::CRON_WINDOW_SIZE;
 
 /// Derives the next `count` cron runs for a task.
 ///

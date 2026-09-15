@@ -4,9 +4,10 @@
 //! the dispatch loop stops dispatching that task. The run stays in RetryWait
 //! (non-terminal) rather than being dispatched further.
 
+#[path = "host_support.rs"]
+mod host_support;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use actionqueue_core::budget::{BudgetConsumption, BudgetDimension};
@@ -17,19 +18,12 @@ use actionqueue_core::task::metadata::TaskMetadata;
 use actionqueue_core::task::run_policy::RunPolicy;
 use actionqueue_core::task::task_spec::{TaskPayload, TaskSpec};
 use actionqueue_engine::time::clock::MockClock;
-use actionqueue_executor_local::handler::{ExecutorContext, ExecutorHandler, HandlerOutput};
+use actionqueue_executor_local::handler::{AttemptDisposition, ExecutorContext, ExecutorHandler};
 use actionqueue_runtime::config::{BackoffStrategyConfig, RuntimeConfig};
 use actionqueue_runtime::engine::ActionQueueEngine;
 
-static COUNTER: AtomicUsize = AtomicUsize::new(0);
-
-fn data_dir(label: &str) -> PathBuf {
-    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let dir = PathBuf::from("target")
-        .join("tmp")
-        .join(format!("7a-budget-enforce-{label}-{}-{n}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("data dir should be creatable");
-    dir
+fn data_dir(label: &str) -> tempfile::TempDir {
+    tempfile::Builder::new().prefix(label).tempdir().expect("test data dir")
 }
 
 /// Handler that always issues a retryable failure and reports token consumption.
@@ -39,14 +33,15 @@ struct TokenConsumingHandler {
 }
 
 impl ExecutorHandler for TokenConsumingHandler {
-    fn execute(&self, _ctx: ExecutorContext) -> HandlerOutput {
-        HandlerOutput::RetryableFailure {
-            error: "always-retry".to_string(),
-            consumption: vec![BudgetConsumption::new(
-                BudgetDimension::Token,
-                self.tokens_per_attempt,
-            )],
-        }
+    fn execute(&self, _ctx: ExecutorContext) -> AttemptDisposition {
+        actionqueue_core::disposition::AttemptDisposition::retryable_failure(
+            actionqueue_core::bounded::BoundedError::new("always-retry".to_string()).unwrap(),
+        )
+        .with_consumption(vec![BudgetConsumption::new(
+            BudgetDimension::Token,
+            self.tokens_per_attempt,
+        )])
+        .unwrap()
     }
 }
 
@@ -71,8 +66,10 @@ async fn budget_exhaustion_blocks_dispatch_after_cap_reached() {
 
     let clock = MockClock::new(1000);
     let handler = TokenConsumingHandler { tokens_per_attempt: 500 };
-    let engine = ActionQueueEngine::new(make_config(dir.clone()), handler);
-    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap");
+    let engine = ActionQueueEngine::new(make_config(dir.path().to_path_buf()), handler);
+    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap").with_host(
+        crate::host_support::host(actionqueue_core::control::ControlScope::SingleTenant),
+    );
 
     // max_attempts=5 so budget exhaustion blocks before the retry cap fires.
     let task_id = TaskId::new();
@@ -117,5 +114,4 @@ async fn budget_exhaustion_blocks_dispatch_after_cap_reached() {
     assert_ne!(*state, RunState::Failed, "run must NOT fail after budget exhaustion");
 
     boot.shutdown().expect("shutdown");
-    let _ = std::fs::remove_dir_all(&dir);
 }

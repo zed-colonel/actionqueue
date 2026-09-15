@@ -36,7 +36,10 @@ fn try_transition(
     let mut authority = actionqueue_storage::mutation::authority::StorageMutationAuthority::new(
         recovery.wal_writer,
         recovery.projection,
-    );
+    )
+    .with_host(crate::support::host_support::host(
+        actionqueue_core::control::ControlScope::SingleTenant,
+    ));
 
     let sequence = authority
         .projection()
@@ -208,7 +211,10 @@ fn duplicate_attempt_finished_is_rejected() {
     let mut authority = actionqueue_storage::mutation::authority::StorageMutationAuthority::new(
         recovery.wal_writer,
         recovery.projection,
-    );
+    )
+    .with_host(crate::support::host_support::host(
+        actionqueue_core::control::ControlScope::SingleTenant,
+    ));
 
     // Ready -> Leased.
     let leased_seq = next_seq(&authority);
@@ -225,6 +231,19 @@ fn duplicate_attempt_finished_is_rejected() {
         )
         .expect("Ready -> Leased should succeed");
 
+    let grant = next_seq(&authority);
+    let _ = authority
+        .submit_command(
+            MutationCommand::LeaseAcquire(actionqueue_core::mutation::LeaseAcquireCommand::new(
+                grant,
+                run_id,
+                "fixture",
+                u64::MAX,
+                0,
+            )),
+            DurabilityPolicy::Immediate,
+        )
+        .unwrap();
     // Leased -> Running.
     let running_seq = next_seq(&authority);
     let _ = authority
@@ -247,7 +266,12 @@ fn duplicate_attempt_finished_is_rejected() {
     let _ = authority
         .submit_command(
             MutationCommand::AttemptStart(AttemptStartCommand::new(
-                start_seq, run_id, attempt_id, start_seq,
+                start_seq,
+                run_id,
+                attempt_id,
+                start_seq,
+                support::fence_for(authority.projection(), run_id),
+                authority.projection().pending_resume(run_id).map(|c| c.context_id),
             )),
             DurabilityPolicy::Immediate,
         )
@@ -310,4 +334,34 @@ where
     P: actionqueue_storage::mutation::authority::MutationProjection,
 {
     authority.projection().latest_sequence().checked_add(1).expect("sequence should not overflow")
+}
+
+/// Generic state changes cannot establish the compound continuation invariant.
+#[test]
+fn generic_awaiting_transition_requires_continuation_record() {
+    let data_dir = support::unique_data_dir("aq-02-awaiting-guard");
+    let task = TaskId::new();
+    support::submit_once_task_via_cli(&task.to_string(), &data_dir);
+    let run = support::single_run_id_for_task(&data_dir, task);
+    let invalid = try_transition(&data_dir, run, RunState::Scheduled, RunState::Awaiting);
+    assert!(matches!(
+        invalid,
+        Err(MutationAuthorityError::Validation(MutationValidationError::InvalidTransition { .. }))
+    ));
+    for (from, to) in [
+        (RunState::Scheduled, RunState::Ready),
+        (RunState::Ready, RunState::Leased),
+        (RunState::Leased, RunState::Running),
+    ] {
+        let _ = try_transition(&data_dir, run, from, to).unwrap();
+    }
+    let guarded = try_transition(&data_dir, run, RunState::Running, RunState::Awaiting);
+    assert!(matches!(
+        guarded,
+        Err(MutationAuthorityError::Validation(
+            MutationValidationError::AwaitingTransitionRequiresContinuationRecord
+        ))
+    ));
+    support::assert_run_state_from_storage(&data_dir, run, RunState::Running);
+    std::fs::remove_dir_all(&data_dir).unwrap();
 }

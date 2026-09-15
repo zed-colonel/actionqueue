@@ -233,10 +233,24 @@ mod tests {
             _durability: DurabilityPolicy,
         ) -> Result<MutationOutcome, Self::Error> {
             let (sequence, run_id) = match &command {
+                MutationCommand::AdmissionCommit(_) => {
+                    panic!("unexpected admission in promotion test")
+                }
                 MutationCommand::RunStateTransition(details) => {
                     (details.sequence(), details.run_id())
                 }
-                MutationCommand::TaskCreate(_)
+                MutationCommand::AttemptDispositionCommit(_)
+                | MutationCommand::WaitEstablish(_)
+                | MutationCommand::WaitSatisfy(_)
+                | MutationCommand::WaitTimeout(_)
+                | MutationCommand::WaitResolve(_)
+                | MutationCommand::WaitCancel(_)
+                | MutationCommand::Cancel(_)
+                | MutationCommand::SignalAdmit(_)
+                | MutationCommand::SignalPin(_)
+                | MutationCommand::SignalUnpin(_)
+                | MutationCommand::RetireSignals(_)
+                | MutationCommand::TaskCreate(_)
                 | MutationCommand::RunCreate(_)
                 | MutationCommand::AttemptStart(_)
                 | MutationCommand::AttemptFinish(_)
@@ -263,7 +277,9 @@ mod tests {
                 | MutationCommand::RoleAssign(_)
                 | MutationCommand::CapabilityGrant(_)
                 | MutationCommand::CapabilityRevoke(_)
-                | MutationCommand::LedgerAppend(_) => {
+                | MutationCommand::LedgerAppend(_)
+                | MutationCommand::Control { .. }
+                | MutationCommand::RecoveryControl(_) => {
                     return Err("unexpected command in promotion authority test");
                 }
             };

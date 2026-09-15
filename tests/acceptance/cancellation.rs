@@ -198,7 +198,10 @@ fn try_transition(
     let mut authority = actionqueue_storage::mutation::authority::StorageMutationAuthority::new(
         recovery.wal_writer,
         recovery.projection,
-    );
+    )
+    .with_host(crate::support::host_support::host(
+        actionqueue_core::control::ControlScope::SingleTenant,
+    ));
 
     let sequence = authority
         .projection()

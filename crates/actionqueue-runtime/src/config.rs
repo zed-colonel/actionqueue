@@ -7,6 +7,19 @@ use std::time::Duration;
 /// Configuration for the ActionQueue runtime.
 #[derive(Debug, Clone)]
 pub struct RuntimeConfig {
+    /// Feature profile for new stores. Platform tenancy requires explicit opt-in.
+    pub store_features: Vec<String>,
+    /// Labels offered by the local executor; absence satisfies only unconstrained tasks.
+    pub local_executor_traits: Option<actionqueue_core::executor::ExecutorTraits>,
+    /// Limits for newly committed continuation data. The disposition quota must
+    /// accommodate [`RuntimeConfig::minimum_disposition_bytes`].
+    pub continuation_limits: actionqueue_core::limits::ContinuationLimits,
+    /// Finite creation quotas for resident signal identities, bytes and pins.
+    pub signal_limits: actionqueue_core::limits::SignalLimits,
+    /// Minimum age/window for explicit retirement. Never runs automatically.
+    pub signal_retention: actionqueue_core::limits::SignalRetentionPolicy,
+    /// Creation-only admission limits; hard ceilings cannot be raised.
+    pub admission_limits: actionqueue_core::limits::AdmissionLimits,
     /// Directory for WAL and snapshot storage.
     pub data_dir: PathBuf,
     /// Backoff strategy for retry delay computation.
@@ -44,6 +57,15 @@ pub enum BackoffStrategyConfig {
 impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
+            store_features: actionqueue_storage::store::capabilities()
+                .into_iter()
+                .filter(|f| f != "platform")
+                .collect(),
+            local_executor_traits: None,
+            continuation_limits: Default::default(),
+            signal_limits: Default::default(),
+            signal_retention: Default::default(),
+            admission_limits: actionqueue_core::limits::AdmissionLimits::default(),
             data_dir: PathBuf::from("data"),
             backoff_strategy: BackoffStrategyConfig::Fixed { interval: Duration::from_secs(5) },
             dispatch_concurrency: NonZeroUsize::new(4).expect("4 is non-zero"),
@@ -57,6 +79,11 @@ impl Default for RuntimeConfig {
 /// Errors that can occur during configuration validation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfigError {
+    /// The disposition quota cannot accommodate runtime failure and recovery records.
+    DispositionLimitTooLow {
+        /// Minimum safe framed record size for this runtime.
+        minimum: usize,
+    },
     /// The data directory path is empty.
     EmptyDataDir,
     /// The tick interval is zero.
@@ -76,6 +103,13 @@ pub enum ConfigError {
 impl std::fmt::Display for ConfigError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            ConfigError::DispositionLimitTooLow { minimum } => {
+                write!(
+                    f,
+                    "continuation disposition_bytes must be >= {minimum} for durable failure and \
+                     recovery"
+                )
+            }
             ConfigError::EmptyDataDir => write!(f, "data_dir must not be empty"),
             ConfigError::ZeroTickInterval => write!(f, "tick_interval must be greater than zero"),
             ConfigError::BackoffBaseExceedsMax => {
@@ -99,9 +133,72 @@ impl std::fmt::Display for ConfigError {
 
 impl std::error::Error for ConfigError {}
 
+pub(crate) const RESULT_TOO_LARGE: &str = "invalid handler disposition";
+pub(crate) const EXECUTOR_INTERRUPTED: &str = "executor interrupted before durable disposition";
+
 impl RuntimeConfig {
+    /// Smallest disposition quota that always fits the runtime's output-free
+    /// failure and recovery closures. Uses the actual framed WAL encoding with
+    /// the largest timestamp; UUIDs have fixed width and resume data is referenced
+    /// by the accepted start, not copied into the closure.
+    pub fn minimum_disposition_bytes() -> usize {
+        use actionqueue_core::{
+            bounded::BoundedError, disposition::AttemptDisposition, mutation::LeaseFence,
+            run::RunState,
+        };
+        use actionqueue_storage::{
+            mutation::disposition::DispositionRecord,
+            wal::{
+                codec::encode,
+                event::{WalEvent, WalEventType},
+            },
+        };
+        let record = DispositionRecord {
+            sequence: u64::MAX,
+            run_id: "ffffffff-ffff-ffff-ffff-ffffffffffff".parse().unwrap(),
+            attempt_id: "ffffffff-ffff-ffff-ffff-ffffffffffff".parse().unwrap(),
+            fence: LeaseFence::new("\\".repeat(256).into(), u64::MAX),
+            timestamp: u64::MAX,
+            disposition: AttemptDisposition::terminal_failure(
+                BoundedError::new(RESULT_TOO_LARGE).unwrap(),
+            ),
+            children: vec![],
+            signals: vec![],
+            target_state: RunState::Failed,
+            failure_attempt_count: u32::MAX,
+        };
+        use actionqueue_storage::mutation::disposition::DispositionRejection as R;
+        [
+            R::TooLarge,
+            R::Invalid,
+            R::ChildrenNonterminal,
+            R::InvalidChildWait,
+            R::UnsupportedFeature,
+            R::WaitCapacity,
+        ]
+        .into_iter()
+        .map(|reason| {
+            let mut record = record.clone();
+            record.disposition =
+                AttemptDisposition::terminal_failure(disposition_rejection_error(reason));
+            encode(&WalEvent::new(u64::MAX, WalEventType::AttemptDispositionCommitted { record }))
+                .expect("minimal disposition encodes")
+                .len()
+        })
+        .max()
+        .expect("nonempty rejection vocabulary")
+    }
+
+    pub(crate) fn validate_continuation_limits(
+        limits: actionqueue_core::limits::ContinuationLimits,
+    ) -> Result<(), ConfigError> {
+        let minimum = Self::minimum_disposition_bytes();
+        limits.validate_record(minimum).map_err(|_| ConfigError::DispositionLimitTooLow { minimum })
+    }
+
     /// Validates this configuration.
     pub fn validate(&self) -> Result<(), ConfigError> {
+        Self::validate_continuation_limits(self.continuation_limits)?;
         if self.data_dir.as_os_str().is_empty() {
             return Err(ConfigError::EmptyDataDir);
         }
@@ -126,6 +223,37 @@ impl RuntimeConfig {
             return Err(ConfigError::LeaseTimeoutTooHigh);
         }
         Ok(())
+    }
+}
+
+/// Rejected parent completion while required children are active.
+pub const CHILDREN_NONTERMINAL: &str = "children_nonterminal";
+/// Rejected child target ownership or structural deadlock.
+pub const INVALID_CHILD_WAIT: &str = "invalid_child_wait";
+/// Rejected compound effect shape or admission.
+pub const INVALID_DISPOSITION: &str = "invalid_disposition";
+/// Disposition requires an unavailable store feature.
+pub const UNSUPPORTED_DISPOSITION_FEATURE: &str = "unsupported_disposition_feature";
+/// Store or tenant active-wait capacity rejected a local handler's continuation.
+pub const WAIT_CAPACITY: &str = "wait_capacity";
+
+/// Shared error vocabulary for rejection fallback and the minimum record budget.
+pub(crate) fn disposition_rejection_error(
+    reason: actionqueue_storage::mutation::disposition::DispositionRejection,
+) -> actionqueue_core::bounded::BoundedError {
+    use actionqueue_core::bounded::{BoundedCode, BoundedError, BoundedMessage};
+    use actionqueue_storage::mutation::disposition::DispositionRejection as R;
+    let (code, message) = match reason {
+        R::TooLarge => ("result_too_large", RESULT_TOO_LARGE),
+        R::ChildrenNonterminal => (CHILDREN_NONTERMINAL, CHILDREN_NONTERMINAL),
+        R::InvalidChildWait => (INVALID_CHILD_WAIT, INVALID_CHILD_WAIT),
+        R::UnsupportedFeature => (UNSUPPORTED_DISPOSITION_FEATURE, UNSUPPORTED_DISPOSITION_FEATURE),
+        R::WaitCapacity => (WAIT_CAPACITY, WAIT_CAPACITY),
+        _ => (INVALID_DISPOSITION, INVALID_DISPOSITION),
+    };
+    BoundedError {
+        code: BoundedCode::new(code).expect("bounded rejection code"),
+        message: BoundedMessage::new(message).expect("bounded rejection message"),
     }
 }
 

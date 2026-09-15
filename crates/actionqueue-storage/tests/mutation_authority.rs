@@ -16,11 +16,11 @@ use actionqueue_core::task::metadata::TaskMetadata;
 use actionqueue_core::task::run_policy::RunPolicy;
 use actionqueue_core::task::task_spec::{TaskPayload, TaskSpec};
 use actionqueue_engine::index::scheduled::ScheduledIndex;
-use actionqueue_engine::scheduler::attempt_finish::submit_attempt_finish_via_authority;
+#[path = "../../../tests/acceptance/legacy_attempt_finish.rs"]
+mod legacy_attempt_finish;
 use actionqueue_engine::scheduler::promotion::{
     promote_scheduled_to_ready, promote_scheduled_to_ready_via_authority, PromotionParams,
 };
-use actionqueue_executor_local::ExecutorResponse;
 use actionqueue_storage::mutation::authority::{
     MutationAuthorityError, MutationProjection, MutationValidationError, StorageMutationAuthority,
 };
@@ -30,8 +30,9 @@ use actionqueue_storage::wal::event::{WalEvent, WalEventType};
 use actionqueue_storage::wal::fs_reader::WalFsReader;
 use actionqueue_storage::wal::fs_writer::WalFsWriter;
 use actionqueue_storage::wal::writer::{WalWriter, WalWriterError};
+use legacy_attempt_finish::submit_attempt_finish_via_authority;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct InMemoryProjection {
     latest_sequence: u64,
     tasks: std::collections::HashSet<TaskId>,
@@ -46,6 +47,17 @@ struct InMemoryProjection {
 }
 
 impl MutationProjection for InMemoryProjection {
+    // This test double isolates WAL/mutation mechanics. Authorization is
+    // exercised with the real ReplayReducer in the control acceptance suite.
+    fn prepare_control(
+        &self,
+        _platform: bool,
+        _host: &actionqueue_core::control::HostControlContext,
+        command: MutationCommand,
+    ) -> Result<MutationCommand, actionqueue_core::control::ControlError> {
+        Ok(command)
+    }
+
     type Error = &'static str;
 
     fn latest_sequence(&self) -> u64 {
@@ -191,6 +203,26 @@ impl WalWriter for RecordingWriter {
     }
 }
 
+/// Single-tenant fixture host binding for embedded control conveniences.
+fn host() -> actionqueue_core::control::HostControlContext {
+    actionqueue_core::control::HostControlContext {
+        actor_id: None,
+        scope: actionqueue_core::control::ControlScope::SingleTenant,
+        attribution: actionqueue_core::causal::ControlMutationContext::new(
+            actionqueue_core::bounded::OpaqueRef::new("fixture-host").unwrap(),
+        ),
+    }
+}
+/// Lease fence for the next attempt start. A run without a lease gets a fence no
+/// authority accepts, so a missing lease surfaces as a rejection, not a panic.
+fn fence_for(projection: &ReplayReducer, run: RunId) -> actionqueue_core::mutation::LeaseFence {
+    projection
+        .get_lease_metadata(&run)
+        .map(|l| {
+            actionqueue_core::mutation::LeaseFence::new(l.owner().into(), l.granted_at_sequence())
+        })
+        .unwrap_or_else(|| actionqueue_core::mutation::LeaseFence::new("missing".into(), 0))
+}
 fn task_spec(task_id: TaskId) -> TaskSpec {
     TaskSpec::new(
         task_id,
@@ -213,7 +245,7 @@ fn d04_t_p1_valid_command_flows_through_authority() {
 
     let writer = RecordingWriter::default();
     let projection = InMemoryProjection::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(host());
 
     let _ = authority
         .submit_command(
@@ -264,7 +296,7 @@ fn d04_t_n1_validation_failure_does_not_append_or_apply() {
     projection.latest_sequence = 2;
 
     let writer = RecordingWriter::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(host());
 
     let result = authority.submit_command(
         MutationCommand::RunStateTransition(RunStateTransitionCommand::new(
@@ -301,7 +333,7 @@ fn d04_t_n2_append_failure_does_not_apply() {
     projection.latest_sequence = 2;
 
     let writer = RecordingWriter { fail_append: true, ..RecordingWriter::default() };
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(host());
 
     let result = authority.submit_command(
         MutationCommand::RunStateTransition(RunStateTransitionCommand::new(
@@ -332,7 +364,7 @@ fn d04_t_n3_flush_failure_reports_durability_stage() {
     projection.latest_sequence = 2;
 
     let writer = RecordingWriter { fail_flush: true, ..RecordingWriter::default() };
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(host());
 
     let result = authority.submit_command(
         MutationCommand::RunStateTransition(RunStateTransitionCommand::new(
@@ -353,7 +385,7 @@ fn d04_t_n3_flush_failure_reports_durability_stage() {
 }
 
 #[test]
-fn d04_t_n4_append_success_apply_failure_exposes_replay_recovery_semantics() {
+fn d04_t_n4_prepare_failure_rejects_before_durable_append() {
     let task_id = TaskId::new();
     let run = scheduled_run(task_id, 100, 100);
 
@@ -364,7 +396,7 @@ fn d04_t_n4_append_success_apply_failure_exposes_replay_recovery_semantics() {
     projection.fail_apply = true;
 
     let writer = RecordingWriter::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(host());
 
     let result = authority.submit_command(
         MutationCommand::RunStateTransition(RunStateTransitionCommand::new(
@@ -380,21 +412,9 @@ fn d04_t_n4_append_success_apply_failure_exposes_replay_recovery_semantics() {
     assert!(matches!(result, Err(MutationAuthorityError::Apply { sequence: 3, .. })));
 
     let (writer, projection) = authority.into_parts();
-    assert_eq!(writer.events.len(), 1);
+    assert!(writer.events.is_empty());
+    assert_eq!(projection.latest_sequence, 2);
     assert_eq!(projection.run_state(&run.id()), Some(RunState::Scheduled));
-
-    let mut replay = ReplayReducer::new();
-    replay
-        .apply(&WalEvent::new(
-            1,
-            WalEventType::TaskCreated { task_spec: task_spec(task_id), timestamp: 10 },
-        ))
-        .expect("task apply should succeed");
-    replay
-        .apply(&WalEvent::new(2, WalEventType::RunCreated { run_instance: run.clone() }))
-        .expect("run apply should succeed");
-    replay.apply(&writer.events[0]).expect("replay apply should converge with durable event");
-    assert_eq!(replay.get_run_state(&run.id()), Some(&RunState::Ready));
 }
 
 #[test]
@@ -408,7 +428,7 @@ fn d04_t_n5_non_monotonic_sequence_rejected() {
     projection.latest_sequence = 4;
 
     let writer = RecordingWriter::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(host());
 
     let result = authority.submit_command(
         MutationCommand::RunStateTransition(RunStateTransitionCommand::new(
@@ -442,7 +462,7 @@ fn p6_011_t_p1_task_cancel_success_appends_canonical_event_and_applies_projectio
     projection.latest_sequence = 3;
 
     let writer = RecordingWriter::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(host());
 
     let outcome = authority
         .submit_command(
@@ -474,7 +494,7 @@ fn p6_011_t_n1_task_cancel_unknown_task_is_rejected_pre_append() {
 
     let writer = RecordingWriter::default();
     let projection = InMemoryProjection::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(host());
 
     let result = authority.submit_command(
         MutationCommand::TaskCancel(TaskCancelCommand::new(1, missing_task_id, 1_000)),
@@ -502,7 +522,7 @@ fn p6_011_t_n2_task_cancel_already_canceled_is_rejected_pre_append() {
     projection.latest_sequence = 7;
 
     let writer = RecordingWriter::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(host());
 
     let result = authority.submit_command(
         MutationCommand::TaskCancel(TaskCancelCommand::new(8, task_id, 2_000)),
@@ -526,9 +546,9 @@ fn d04_t_p2_replay_driver_converges_with_authority_written_wal() {
     let temp_dir = tempfile::TempDir::new().expect("temp dir should be created");
     let wal_path = temp_dir.path().join("d04-authority-converge.wal");
 
-    let writer = WalFsWriter::new(wal_path.clone()).expect("wal writer should open");
+    let writer = WalFsWriter::new_raw_for_test(wal_path.clone()).expect("wal writer should open");
     let projection = ReplayReducer::new();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(host());
 
     let task_id = TaskId::new();
     let run = scheduled_run(task_id, 1_000, 1_000);
@@ -576,9 +596,9 @@ fn d04_t_p3_engine_scheduler_path_uses_storage_authority_end_to_end() {
     let temp_dir = tempfile::TempDir::new().expect("temp dir should be created");
     let wal_path = temp_dir.path().join("d04-engine-authority-path.wal");
 
-    let writer = WalFsWriter::new(wal_path.clone()).expect("wal writer should open");
+    let writer = WalFsWriter::new_raw_for_test(wal_path.clone()).expect("wal writer should open");
     let projection = ReplayReducer::new();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(host());
 
     let task_id = TaskId::new();
     let run_due = scheduled_run(task_id, 1_000, 1_000);
@@ -635,9 +655,9 @@ fn d04_t_n6_non_authority_scheduler_path_does_not_persist_mutation() {
     let temp_dir = tempfile::TempDir::new().expect("temp dir should be created");
     let wal_path = temp_dir.path().join("d04-n6-no-authority-submit.wal");
 
-    let writer = WalFsWriter::new(wal_path.clone()).expect("wal writer should open");
+    let writer = WalFsWriter::new_raw_for_test(wal_path.clone()).expect("wal writer should open");
     let projection = ReplayReducer::new();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(host());
 
     let task_id = TaskId::new();
     let run = scheduled_run(task_id, 1_000, 1_000);
@@ -688,11 +708,18 @@ fn f002_t_p1_authority_accepts_attempt_start_and_appends_canonical_event() {
     projection.latest_sequence = 3;
 
     let writer = RecordingWriter::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(host());
 
     let outcome = authority
         .submit_command(
-            MutationCommand::AttemptStart(AttemptStartCommand::new(4, run.id(), attempt_id, 1_500)),
+            MutationCommand::AttemptStart(AttemptStartCommand::new(
+                4,
+                run.id(),
+                attempt_id,
+                1_500,
+                actionqueue_core::mutation::LeaseFence::new("test".into(), 1),
+                None,
+            )),
             DurabilityPolicy::Immediate,
         )
         .expect("attempt-start command should succeed");
@@ -700,7 +727,7 @@ fn f002_t_p1_authority_accepts_attempt_start_and_appends_canonical_event() {
     assert_eq!(outcome.sequence(), 4);
     assert!(matches!(
         outcome.applied(),
-        AppliedMutation::AttemptStart { run_id, attempt_id: applied_attempt_id }
+        AppliedMutation::AttemptStart { run_id, attempt_id: applied_attempt_id, .. }
             if *run_id == run.id() && *applied_attempt_id == attempt_id
     ));
 
@@ -722,9 +749,9 @@ fn f002_t_p2_authority_attempt_finish_converges_with_replay_attempt_lineage() {
     let temp_dir = tempfile::TempDir::new().expect("temp dir should be created");
     let wal_path = temp_dir.path().join("f002-attempt-lineage-converge.wal");
 
-    let writer = WalFsWriter::new(wal_path.clone()).expect("wal writer should open");
+    let writer = WalFsWriter::new_raw_for_test(wal_path.clone()).expect("wal writer should open");
     let projection = ReplayReducer::new();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(host());
 
     let task_id = TaskId::new();
     let run = scheduled_run(task_id, 1_000, 1_000);
@@ -768,8 +795,20 @@ fn f002_t_p2_authority_attempt_finish_converges_with_replay_attempt_lineage() {
         .expect("ready->leased should succeed");
     let _ = authority
         .submit_command(
-            MutationCommand::RunStateTransition(RunStateTransitionCommand::new(
+            MutationCommand::LeaseAcquire(LeaseAcquireCommand::new(
                 5,
+                run.id(),
+                "fixture",
+                2000,
+                1000,
+            )),
+            DurabilityPolicy::Immediate,
+        )
+        .unwrap();
+    let _ = authority
+        .submit_command(
+            MutationCommand::RunStateTransition(RunStateTransitionCommand::new(
+                6,
                 run.id(),
                 RunState::Leased,
                 RunState::Running,
@@ -780,7 +819,14 @@ fn f002_t_p2_authority_attempt_finish_converges_with_replay_attempt_lineage() {
         .expect("leased->running should succeed");
     let _ = authority
         .submit_command(
-            MutationCommand::AttemptStart(AttemptStartCommand::new(6, run.id(), attempt_id, 1_100)),
+            MutationCommand::AttemptStart(AttemptStartCommand::new(
+                7,
+                run.id(),
+                attempt_id,
+                1_100,
+                fence_for(authority.projection(), run.id()),
+                authority.projection().pending_resume(run.id()).map(|c| c.context_id),
+            )),
             DurabilityPolicy::Immediate,
         )
         .expect("attempt start should succeed");
@@ -788,7 +834,7 @@ fn f002_t_p2_authority_attempt_finish_converges_with_replay_attempt_lineage() {
     let attempt_finish = authority
         .submit_command(
             MutationCommand::AttemptFinish(AttemptFinishCommand::new(
-                7,
+                8,
                 run.id(),
                 attempt_id,
                 AttemptOutcome::failure("synthetic failure"),
@@ -797,7 +843,7 @@ fn f002_t_p2_authority_attempt_finish_converges_with_replay_attempt_lineage() {
             DurabilityPolicy::Immediate,
         )
         .expect("attempt finish should succeed");
-    assert_eq!(attempt_finish.sequence(), 7);
+    assert_eq!(attempt_finish.sequence(), 8);
     assert!(matches!(
         attempt_finish.applied(),
         AppliedMutation::AttemptFinish {
@@ -822,7 +868,7 @@ fn f002_t_p2_authority_attempt_finish_converges_with_replay_attempt_lineage() {
 
     let replayed_instance =
         replayed.get_run_instance(&run.id()).expect("replayed run instance should exist");
-    assert_eq!(replayed.latest_sequence(), 7);
+    assert_eq!(replayed.latest_sequence(), 8);
     assert_eq!(replayed_instance.attempt_count(), projected_instance.attempt_count());
     assert_eq!(replayed_instance.current_attempt_id(), projected_instance.current_attempt_id());
 }
@@ -832,9 +878,9 @@ fn p6_017_t_p1_authority_attempt_finish_timeout_persists_in_projection_and_repla
     let temp_dir = tempfile::TempDir::new().expect("temp dir should be created");
     let wal_path = temp_dir.path().join("p6-017-attempt-timeout-parity.wal");
 
-    let writer = WalFsWriter::new(wal_path.clone()).expect("wal writer should open");
+    let writer = WalFsWriter::new_raw_for_test(wal_path.clone()).expect("wal writer should open");
     let projection = ReplayReducer::new();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(host());
 
     let task_id = TaskId::new();
     let run = scheduled_run(task_id, 1_000, 1_000);
@@ -878,8 +924,20 @@ fn p6_017_t_p1_authority_attempt_finish_timeout_persists_in_projection_and_repla
         .expect("ready->leased should succeed");
     let _ = authority
         .submit_command(
-            MutationCommand::RunStateTransition(RunStateTransitionCommand::new(
+            MutationCommand::LeaseAcquire(LeaseAcquireCommand::new(
                 5,
+                run.id(),
+                "fixture",
+                2000,
+                1000,
+            )),
+            DurabilityPolicy::Immediate,
+        )
+        .unwrap();
+    let _ = authority
+        .submit_command(
+            MutationCommand::RunStateTransition(RunStateTransitionCommand::new(
+                6,
                 run.id(),
                 RunState::Leased,
                 RunState::Running,
@@ -890,20 +948,32 @@ fn p6_017_t_p1_authority_attempt_finish_timeout_persists_in_projection_and_repla
         .expect("leased->running should succeed");
     let _ = authority
         .submit_command(
-            MutationCommand::AttemptStart(AttemptStartCommand::new(6, run.id(), attempt_id, 1_100)),
+            MutationCommand::AttemptStart(AttemptStartCommand::new(
+                7,
+                run.id(),
+                attempt_id,
+                1_100,
+                fence_for(authority.projection(), run.id()),
+                authority.projection().pending_resume(run.id()).map(|c| c.context_id),
+            )),
             DurabilityPolicy::Immediate,
         )
         .expect("attempt start should succeed");
 
     let timeout_finish = {
-        let __finish_cmd =
-            actionqueue_engine::scheduler::attempt_finish::build_attempt_finish_command(
-                7,
-                run.id(),
-                attempt_id,
-                &ExecutorResponse::Timeout { timeout_secs: 9 },
-                1_200,
-            );
+        let __finish_cmd = legacy_attempt_finish::build_attempt_finish_command(
+            8,
+            run.id(),
+            attempt_id,
+            &actionqueue_core::disposition::AttemptDisposition::complete(None).timed_out(
+                actionqueue_core::bounded::BoundedError::new(format!(
+                    "attempt timed out after {}s",
+                    9
+                ))
+                .unwrap(),
+            ),
+            1_200,
+        );
         submit_attempt_finish_via_authority(
             __finish_cmd,
             DurabilityPolicy::Immediate,
@@ -952,9 +1022,9 @@ fn f002_t_p3_authority_lease_lifecycle_chain_converges_with_replay() {
     let temp_dir = tempfile::TempDir::new().expect("temp dir should be created");
     let wal_path = temp_dir.path().join("f002-lease-lifecycle-converge.wal");
 
-    let writer = WalFsWriter::new(wal_path.clone()).expect("wal writer should open");
+    let writer = WalFsWriter::new_raw_for_test(wal_path.clone()).expect("wal writer should open");
     let projection = ReplayReducer::new();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(host());
 
     let task_id = TaskId::new();
     let run = scheduled_run(task_id, 1_000, 1_000);
@@ -1054,7 +1124,7 @@ fn f002_t_n1_unknown_run_attempt_command_is_rejected_pre_append() {
 
     let writer = RecordingWriter::default();
     let projection = InMemoryProjection::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(host());
 
     let result = authority.submit_command(
         MutationCommand::AttemptStart(AttemptStartCommand::new(
@@ -1062,6 +1132,8 @@ fn f002_t_n1_unknown_run_attempt_command_is_rejected_pre_append() {
             missing_run_id,
             attempt_id,
             1_000,
+            actionqueue_core::mutation::LeaseFence::new("test".into(), 1),
+            None,
         )),
         DurabilityPolicy::Immediate,
     );
@@ -1092,7 +1164,7 @@ fn f002_t_n2_mismatched_attempt_finish_is_rejected_pre_append() {
     projection.latest_sequence = 5;
 
     let writer = RecordingWriter::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(host());
 
     let result = authority.submit_command(
         MutationCommand::AttemptFinish(AttemptFinishCommand::new(
@@ -1136,7 +1208,7 @@ fn f002_t_n3_lease_heartbeat_owner_mismatch_is_rejected_pre_append() {
     projection.latest_sequence = 8;
 
     let writer = RecordingWriter::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(host());
 
     let result = authority.submit_command(
         MutationCommand::LeaseHeartbeat(LeaseHeartbeatCommand::new(
@@ -1175,7 +1247,7 @@ fn f002_t_n4_lease_close_without_active_lease_is_rejected_pre_append() {
     projection.latest_sequence = 2;
 
     let writer = RecordingWriter::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(host());
 
     let release = authority.submit_command(
         MutationCommand::LeaseRelease(LeaseReleaseCommand::new(
@@ -1225,9 +1297,9 @@ fn f002_t_n5_non_authority_projection_apply_cannot_persist_attempt_or_lease_muta
     let temp_dir = tempfile::TempDir::new().expect("temp dir should be created");
     let wal_path = temp_dir.path().join("f002-non-authority-ephemeral-attempt-lease.wal");
 
-    let writer = WalFsWriter::new(wal_path.clone()).expect("wal writer should open");
+    let writer = WalFsWriter::new_raw_for_test(wal_path.clone()).expect("wal writer should open");
     let projection = ReplayReducer::new();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(host());
 
     let task_id = TaskId::new();
     let run = scheduled_run(task_id, 1_000, 1_000);
@@ -1360,7 +1432,7 @@ fn p6_013_t_p1_engine_pause_and_resume_map_to_canonical_events() {
     let projection = InMemoryProjection { latest_sequence: 0, ..InMemoryProjection::default() };
 
     let writer = RecordingWriter::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(host());
 
     let pause = authority
         .submit_command(
@@ -1396,7 +1468,7 @@ fn p6_013_t_n1_engine_pause_rejected_when_already_paused() {
     };
 
     let writer = RecordingWriter::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(host());
 
     let result = authority.submit_command(
         MutationCommand::EnginePause(EnginePauseCommand::new(10, 1_000)),
@@ -1423,7 +1495,7 @@ fn p6_013_t_n2_engine_resume_rejected_when_not_paused() {
     };
 
     let writer = RecordingWriter::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(host());
 
     let result = authority.submit_command(
         MutationCommand::EngineResume(EngineResumeCommand::new(5, 1_000)),
@@ -1454,7 +1526,7 @@ fn d04_sprint3_p1_budget_allocate_valid_flow() {
     projection.latest_sequence = 1;
 
     let writer = RecordingWriter::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(host());
 
     let outcome = authority
         .submit_command(
@@ -1502,7 +1574,7 @@ fn d04_sprint3_p2_budget_consume_valid_flow() {
     projection.latest_sequence = 2;
 
     let writer = RecordingWriter::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(host());
 
     let outcome = authority
         .submit_command(
@@ -1549,7 +1621,7 @@ fn d04_sprint3_p3_budget_replenish_valid_flow() {
     projection.latest_sequence = 3;
 
     let writer = RecordingWriter::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(host());
 
     let outcome = authority
         .submit_command(
@@ -1597,7 +1669,7 @@ fn d04_sprint3_p4_run_suspend_valid_flow() {
     projection.latest_sequence = 5;
 
     let writer = RecordingWriter::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(host());
 
     let outcome = authority
         .submit_command(
@@ -1641,7 +1713,7 @@ fn d04_sprint3_p5_run_resume_valid_flow() {
     projection.latest_sequence = 6;
 
     let writer = RecordingWriter::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(host());
 
     let outcome = authority
         .submit_command(
@@ -1677,7 +1749,7 @@ fn d04_sprint3_p6_subscription_create_valid_flow() {
     projection.latest_sequence = 1;
 
     let writer = RecordingWriter::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(host());
 
     let outcome = authority
         .submit_command(
@@ -1722,7 +1794,7 @@ fn d04_sprint3_p7_subscription_cancel_valid_flow() {
     projection.latest_sequence = 3;
 
     let writer = RecordingWriter::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(host());
 
     let outcome = authority
         .submit_command(
@@ -1759,7 +1831,7 @@ fn d04_sprint3_n1_budget_allocate_unknown_task_rejected() {
 
     let writer = RecordingWriter::default();
     let projection = InMemoryProjection::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(host());
 
     let result = authority.submit_command(
         MutationCommand::BudgetAllocate(BudgetAllocateCommand::new(
@@ -1789,7 +1861,7 @@ fn d04_sprint3_n2_budget_consume_unknown_task_rejected() {
 
     let writer = RecordingWriter::default();
     let projection = InMemoryProjection::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(host());
 
     let result = authority.submit_command(
         MutationCommand::BudgetConsume(BudgetConsumeCommand::new(
@@ -1822,7 +1894,7 @@ fn d04_sprint3_n3_budget_replenish_not_allocated_rejected() {
     projection.latest_sequence = 1;
 
     let writer = RecordingWriter::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(host());
 
     let result = authority.submit_command(
         MutationCommand::BudgetReplenish(BudgetReplenishCommand::new(
@@ -1858,7 +1930,7 @@ fn d04_sprint3_n4_run_suspend_wrong_state_rejected() {
     projection.latest_sequence = 3;
 
     let writer = RecordingWriter::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(host());
 
     let result = authority.submit_command(
         MutationCommand::RunSuspend(RunSuspendCommand::new(4, run.id(), None, 4_000)),
@@ -1889,7 +1961,7 @@ fn d04_sprint3_n5_run_resume_wrong_state_rejected() {
     projection.latest_sequence = 3;
 
     let writer = RecordingWriter::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(host());
 
     let result = authority.submit_command(
         MutationCommand::RunResume(RunResumeCommand::new(4, run.id(), 5_000)),
@@ -1920,14 +1992,14 @@ fn d04_sprint3_n6_subscription_create_duplicate_rejected() {
     projection.latest_sequence = 2;
 
     let writer = RecordingWriter::default();
-    let mut authority = StorageMutationAuthority::new(writer, projection);
+    let mut authority = StorageMutationAuthority::new(writer, projection).with_host(host());
 
     let result = authority.submit_command(
         MutationCommand::SubscriptionCreate(SubscriptionCreateCommand::new(
             3,
             sub_id,
             task_id,
-            EventFilter::Custom { key: "my-event".to_string() },
+            EventFilter::TaskCompleted { task_id },
             6_000,
         )),
         DurabilityPolicy::Immediate,

@@ -19,17 +19,24 @@ use crate::snapshot::model::{
 
 /// Current snapshot schema version accepted by the explicit mapping boundary.
 ///
-/// Version history:
-/// - v4: Sprint 1 release (WAL v2, JSON snapshots)
-/// - v5: Sprint 2 additions — parent_task_id on TaskSpec, output on AttemptOutcome,
-///   required_capabilities on TaskConstraints
-/// - v6: Sprint 2 review — dependency declarations persisted in snapshots
-/// - v7: Sprint 3 — budgets, subscriptions, Suspended run state
-pub const SNAPSHOT_SCHEMA_VERSION: u32 = 8;
+/// AQ-CONT-1 version history:
+/// - v2: Compound admission.
+/// - v3: Durable signal ingress.
+/// - v4: Wait establishment and resolution.
+/// - v5: Immutable checkpoints and accepted resume assignments.
+/// - v6: Compound dispositions and separate durable failure accounting.
+/// - v7: Required/detached children, scoped child admission, and terminal child waits.
+/// - v8: Host control attribution in the durable projection.
+/// - v9: Durable subscription match provenance in WAL order.
+pub const SNAPSHOT_SCHEMA_VERSION: u32 = 9;
 
 /// Typed mapping and validation errors for snapshot/core parity enforcement.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SnapshotMappingError {
+    /// Invalid immutable admission facts.
+    InvalidAdmission,
+    /// Invalid signal projection image.
+    InvalidSignal,
     /// Snapshot metadata schema version is unknown to this mapping boundary.
     UnsupportedSchemaVersion {
         /// Schema version expected by the current implementation.
@@ -204,6 +211,8 @@ pub enum SnapshotMappingError {
 impl std::fmt::Display for SnapshotMappingError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::InvalidSignal => write!(f, "invalid signal snapshot"),
+            Self::InvalidAdmission => write!(f, "invalid admission snapshot"),
             Self::UnsupportedSchemaVersion { expected, found } => {
                 write!(f, "unsupported snapshot schema version: expected {expected}, found {found}")
             }
@@ -332,6 +341,12 @@ pub fn validate_snapshot(snapshot: &Snapshot) -> Result<(), SnapshotMappingError
         });
     }
 
+    crate::recovery::signals::SignalIndex::hydrate(
+        &snapshot.signals,
+        snapshot.last_signal_sequence,
+        snapshot.metadata.wal_sequence,
+    )
+    .map_err(|_| SnapshotMappingError::InvalidSignal)?;
     let task_count = snapshot.tasks.len() as u64;
     if snapshot.metadata.task_count != task_count {
         return Err(SnapshotMappingError::TaskCountMismatch {
@@ -366,8 +381,66 @@ pub fn validate_snapshot(snapshot: &Snapshot) -> Result<(), SnapshotMappingError
         }
     }
 
+    let tasks: std::collections::HashMap<_, _> =
+        snapshot.tasks.iter().map(|t| (t.task_spec.id(), t)).collect();
+    let mut keys = HashSet::new();
+    let mut admitted_tasks = HashSet::new();
+    let mut sequences = HashSet::new();
+    for r in &snapshot.admissions {
+        let invalid = SnapshotMappingError::InvalidAdmission;
+        if !keys.insert((r.tenant_id(), r.key().clone()))
+            || !admitted_tasks.insert(r.task_id())
+            || (!sequences.insert(r.sequence())
+                && !snapshot
+                    .runs
+                    .iter()
+                    .flat_map(|run| &run.attempts)
+                    .filter_map(|a| a.disposition.as_ref())
+                    .any(|d| {
+                        d.sequence == r.sequence()
+                            && snapshot
+                                .admissions
+                                .iter()
+                                .filter(|a| a.sequence() == r.sequence())
+                                .all(|a| d.children.iter().any(|c| &c.admission == a))
+                    }))
+            || r.sequence() == 0
+            || r.sequence() > snapshot.metadata.wal_sequence
+            || r.request().digest().map_err(|_| invalid.clone())? != *r.digest()
+        {
+            return Err(invalid);
+        }
+        let task = tasks.get(&r.task_id()).ok_or(invalid.clone())?;
+        if task.task_spec != *r.request().task_spec() || task.created_at != r.timestamp() {
+            return Err(invalid);
+        }
+        for id in r
+            .request()
+            .dependencies()
+            .iter()
+            .copied()
+            .chain(r.request().task_spec().parent_task_id())
+        {
+            if id == r.task_id()
+                || tasks.get(&id).is_none_or(|t| t.task_spec.tenant_id() != r.tenant_id())
+            {
+                return Err(invalid);
+            }
+        }
+        if r.tenant_id().is_some_and(|id| !snapshot.tenants.iter().any(|t| t.tenant_id == id)) {
+            return Err(invalid);
+        }
+    }
     let mut run_ids = HashSet::new();
     for run in &snapshot.runs {
+        if run.lease.as_ref().is_some_and(|l| {
+            l.granted_at_sequence == 0 || l.granted_at_sequence > snapshot.metadata.wal_sequence
+        }) {
+            return Err(SnapshotMappingError::InvalidLeasePresence {
+                run_id: run.run_id(),
+                state: run.run_instance.state(),
+            });
+        }
         let core_run = map_snapshot_run_to_core(run)?;
         let run_id = core_run.id();
         let task_id = core_run.task_id();
@@ -488,14 +561,10 @@ fn validate_core_run_payload(run_instance: &CoreRunInstance) -> Result<(), Snaps
     }
 
     // NOTE: We do NOT check scheduled_at > created_at for Ready runs here.
-    // Repeat-policy and cron-policy runs are derived as Scheduled with future
-    // scheduled_at times and later promoted to Ready. Their scheduled_at
-    // legitimately exceeds created_at. The construction-time check in
-    // RunInstance::new_ready_with_id() guards direct Ready creation.
+    // Runs can be promoted by subscriptions even before scheduled_at. The check
+    // in RunInstance::new_ready_with_id() guards direct Ready creation.
 
-    if run_instance.current_attempt_id().is_some()
-        && !matches!(run_instance.state(), RunState::Running | RunState::Canceled)
-    {
+    if run_instance.current_attempt_id().is_some() && run_instance.state() != RunState::Running {
         return Err(SnapshotMappingError::InvalidAttemptLineageState {
             run_id,
             state: run_instance.state(),
@@ -561,21 +630,29 @@ fn validate_snapshot_run_details(snapshot_run: &SnapshotRun) -> Result<(), Snaps
         });
     }
 
-    if let Some(current_attempt_id) = snapshot_run.run_instance.current_attempt_id() {
-        let unfinished: Vec<&SnapshotAttemptHistoryEntry> = snapshot_run
-            .attempts
-            .iter()
-            .filter(|entry| entry.attempt_id == current_attempt_id)
-            .collect();
-        if unfinished.len() != 1 || unfinished[0].finished_at.is_some() {
-            return Err(SnapshotMappingError::InvalidActiveAttemptHistory { run_id });
-        }
+    let unfinished: Vec<&SnapshotAttemptHistoryEntry> =
+        snapshot_run.attempts.iter().filter(|entry| entry.finished_at.is_none()).collect();
+    // Cancellation clears current_attempt_id without inventing an attempt
+    // outcome. That unfinished history remains durable, but is no longer active.
+    let current_attempt_id = snapshot_run.run_instance.current_attempt_id();
+    let canceled = snapshot_run.run_instance.state() == RunState::Canceled;
+    if unfinished.len() > 1
+        || (!canceled && unfinished.first().map(|entry| entry.attempt_id) != current_attempt_id)
+        || current_attempt_id.is_some_and(|id| {
+            snapshot_run.attempts.iter().filter(|entry| entry.attempt_id == id).count() != 1
+        })
+    {
+        return Err(SnapshotMappingError::InvalidActiveAttemptHistory { run_id });
     }
 
     if snapshot_run.lease.is_some()
         && !matches!(
             snapshot_run.run_instance.state(),
-            RunState::Ready | RunState::Leased | RunState::Running
+            RunState::Ready
+                | RunState::Leased
+                | RunState::Running
+                | RunState::RetryWait
+                | RunState::Suspended
         )
     {
         return Err(SnapshotMappingError::InvalidLeasePresence {
@@ -608,6 +685,9 @@ pub fn map_snapshot_attempt_history(
     entries
         .into_iter()
         .map(|entry| crate::recovery::reducer::AttemptHistoryEntry {
+            disposition: entry.disposition.clone(),
+            accepted_start: entry.accepted_start.clone(),
+            finish_origin: entry.finish_origin,
             attempt_id: entry.attempt_id,
             started_at: entry.started_at,
             finished_at: entry.finished_at,
@@ -623,6 +703,7 @@ pub fn map_snapshot_lease_metadata(
     lease: Option<SnapshotLeaseMetadata>,
 ) -> Option<crate::recovery::reducer::LeaseMetadata> {
     lease.map(|metadata| crate::recovery::reducer::LeaseMetadata {
+        granted_at_sequence: metadata.granted_at_sequence,
         owner: metadata.owner,
         expiry: metadata.expiry,
         acquired_at: metadata.acquired_at,

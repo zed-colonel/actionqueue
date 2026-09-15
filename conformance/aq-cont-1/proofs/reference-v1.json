@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "id": "AQ-CF-PROOF-REFERENCE",
+  "target": "conformance_reference_adapter",
+  "case_ids": [
+    "AQ-H14",
+    "AQ-H20"
+  ],
+  "minimum_passed": 1,
+  "evidence_kind": "complete_test_binary",
+  "assertions": "All tests in this named binary must pass; replay/crash assertions execute inside their test controllers."
+}

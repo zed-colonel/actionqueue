@@ -1,22 +1,20 @@
 # actionqueue-budget
 
-Budget enforcement, suspend/resume, and event subscriptions for the ActionQueue task queue engine.
+Release 0.2.0 implements AQ-CONT-1. See the [release and compatibility notes](../../docs/releases/0.2.0.md).
 
-## Overview
+Budget tracking and dispatch eligibility for ActionQueue. `BudgetTracker` mirrors
+storage's complete allocation, consumption, and exhaustion records; `BudgetGate`
+blocks leasing while any dimension is exhausted. Dimensions are Token, CostCents,
+and TimeSecs. Replenishment replaces the limit and resets consumption.
 
-This crate provides in-memory budget tracking and event subscription matching:
+Running handlers can observe cooperative cancellation and return `Suspended`.
+Explicit suspension resume is available without the budget feature. Awaiting runs
+hold no execution lease and incur no wall-clock consumption. A matched signal or
+deadline commits pending resume input even when budget blocks dispatch; replenishing
+budget neither resolves a wait nor resumes a suspended run.
 
-- **BudgetTracker** -- Per-task budget state (allocations, consumption, exhaustion)
-- **BudgetGate** -- Pre-dispatch eligibility check against budget limits
-- **SubscriptionRegistry** -- Active event subscription state management
-- **Event matching** -- ActionQueueEvent-to-subscription filter matching
+Internal structural subscriptions belong to `actionqueue-engine::reactivity`.
+Runtime subscription APIs and persisted records retain the `budget` profile.
+External continuation uses durable signal admission and waits, independently.
 
-Budget dimensions: Token, CostCents, TimeSecs. Suspended attempts do not count toward max_attempts. Requires the `budget` feature flag at the workspace level.
-
-## Part of the ActionQueue workspace
-
-See the [workspace root](https://github.com/zed-colonel/actionqueue) for full documentation.
-
-## License
-
-Apache-2.0
+License: Apache-2.0.

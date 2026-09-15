@@ -1,7 +1,7 @@
 [package]
 name = "actionqueue-executor-local"
 authors = ["Keith <zed.colonel@gmail.com>"]
-version = "0.1.2"
+version = "0.2.0"
 edition = "2021"
 license = "Apache-2.0"
 description = "Local executor with dispatch queue, retry, backoff, and timeout for the ActionQueue task queue engine."
@@ -11,9 +11,9 @@ keywords = ["executor", "retry", "backoff", "timeout", "task-queue"]
 categories = ["concurrency"]
 
 [dependencies]
-actionqueue-core = "0.1.2"
+actionqueue-core = "0.2.0"
 tracing = "0.1"
 
 [dev-dependencies]
-actionqueue-core = { version = "0.1.2", features = ["testing"] }
+actionqueue-core = { version = "0.2.0", features = ["testing"] }
 proptest = "1.4"

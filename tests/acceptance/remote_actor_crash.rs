@@ -3,16 +3,18 @@
 //! Verifies that when an actor stops sending heartbeats, the engine
 //! auto-deregisters the actor after the timeout threshold.
 
+#[path = "host_support.rs"]
+mod host_support;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use actionqueue_core::actor::{ActorCapabilities, ActorRegistration};
+use actionqueue_core::actor::{ActorRegistration, ExecutorTraits};
 use actionqueue_core::ids::ActorId;
 use actionqueue_engine::time::clock::Clock;
-use actionqueue_executor_local::handler::{ExecutorContext, ExecutorHandler, HandlerOutput};
+use actionqueue_executor_local::handler::{AttemptDisposition, ExecutorContext, ExecutorHandler};
 use actionqueue_runtime::config::{BackoffStrategyConfig, RuntimeConfig};
 use actionqueue_runtime::engine::ActionQueueEngine;
 
@@ -40,9 +42,8 @@ static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 fn data_dir(label: &str) -> PathBuf {
     let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let dir = PathBuf::from("target")
-        .join("tmp")
-        .join(format!("8c-actor-crash-{label}-{}-{n}", std::process::id()));
+    let dir =
+        std::env::temp_dir().join(format!("8c-actor-crash-{label}-{}-{n}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("data dir");
     dir
 }
@@ -50,8 +51,8 @@ fn data_dir(label: &str) -> PathBuf {
 struct NoopHandler;
 
 impl ExecutorHandler for NoopHandler {
-    fn execute(&self, _ctx: ExecutorContext) -> HandlerOutput {
-        HandlerOutput::success()
+    fn execute(&self, _ctx: ExecutorContext) -> AttemptDisposition {
+        AttemptDisposition::complete(None)
     }
 }
 
@@ -71,10 +72,12 @@ async fn actor_crash_detected_at_timeout() {
     let dir = data_dir("crash");
     let clock = AdvancableClock::new(1000);
     let engine = ActionQueueEngine::new(make_config(dir), NoopHandler);
-    let mut boot = engine.bootstrap_with_clock(clock.clone()).expect("bootstrap");
+    let mut boot = engine.bootstrap_with_clock(clock.clone()).expect("bootstrap").with_host(
+        crate::host_support::host(actionqueue_core::control::ControlScope::SingleTenant),
+    );
 
     let actor_id = ActorId::new();
-    let caps = ActorCapabilities::new(vec!["work".to_string()]).expect("caps");
+    let caps = ExecutorTraits::new(vec!["work".to_string()]).expect("caps");
     // interval=10s, multiplier=3 → timeout=30s
     let reg = ActorRegistration::new(actor_id, "crashed-actor", caps, 10);
     boot.register_actor(reg).expect("register");
@@ -99,12 +102,14 @@ async fn only_crashed_actor_deregistered() {
     let dir = data_dir("partial-crash");
     let clock = AdvancableClock::new(1000);
     let engine = ActionQueueEngine::new(make_config(dir), NoopHandler);
-    let mut boot = engine.bootstrap_with_clock(clock.clone()).expect("bootstrap");
+    let mut boot = engine.bootstrap_with_clock(clock.clone()).expect("bootstrap").with_host(
+        crate::host_support::host(actionqueue_core::control::ControlScope::SingleTenant),
+    );
 
     let crashed_id = ActorId::new();
     let alive_id = ActorId::new();
 
-    let caps = ActorCapabilities::new(vec!["work".to_string()]).expect("caps");
+    let caps = ExecutorTraits::new(vec!["work".to_string()]).expect("caps");
     boot.register_actor(ActorRegistration::new(crashed_id, "crashed", caps.clone(), 10))
         .expect("register crashed");
     boot.register_actor(ActorRegistration::new(alive_id, "alive", caps, 10))
@@ -112,6 +117,10 @@ async fn only_crashed_actor_deregistered() {
 
     // Advance to t=1025 and send a heartbeat for the alive actor only.
     clock.advance(25);
+    boot.set_control_context(Some(actionqueue_core::control::HostControlContext {
+        actor_id: Some(alive_id),
+        ..crate::host_support::host(actionqueue_core::control::ControlScope::SingleTenant)
+    }));
     boot.actor_heartbeat(alive_id).expect("heartbeat for alive");
 
     // Advance past crashed actor's timeout but not alive actor's new timeout.

@@ -1,10 +1,9 @@
 //! Stats route module.
 //!
-//! This module provides the aggregate statistics endpoint (`GET /api/v1/stats`)
+//! This module provides the aggregate statistics endpoint (`GET /api/v2/stats`)
 //! for the daemon. The stats endpoint returns read-only operational summaries
 //! derived from authoritative state without speculation, consistent with
-//! `actionqueue-charter.md`, `actionqueue-scope-appendix-v0.1.md`, and invariant
-//! boundaries in `invariant-boundaries-v0.1.md`.
+//! `docs/actionqueue-charter.md` and `docs/invariant-boundaries-v1.0.md`.
 //!
 //! # Overview
 //!
@@ -40,6 +39,8 @@
 //!     "leased": 1,
 //!     "running": 4,
 //!     "retry_wait": 0,
+//!     "suspended": 0,
+//!     "awaiting": 0,
 //!     "completed": 1,
 //!     "failed": 0,
 //!     "canceled": 1
@@ -108,6 +109,10 @@ pub struct StatsRunsByState {
     pub running: usize,
     /// Number of runs in RetryWait state.
     pub retry_wait: usize,
+    /// Number of runs in Suspended state.
+    pub suspended: usize,
+    /// Number of runs in Awaiting state.
+    pub awaiting: usize,
     /// Number of runs in Completed state.
     pub completed: usize,
     /// Number of runs in Failed state.
@@ -134,6 +139,8 @@ impl StatsResponse {
         let mut leased = 0;
         let mut running = 0;
         let mut retry_wait = 0;
+        let mut suspended = 0;
+        let mut awaiting = 0;
         let mut completed = 0;
         let mut failed = 0;
         let mut canceled = 0;
@@ -146,7 +153,8 @@ impl StatsResponse {
                 actionqueue_core::run::state::RunState::Leased => leased += 1,
                 actionqueue_core::run::state::RunState::Running => running += 1,
                 actionqueue_core::run::state::RunState::RetryWait => retry_wait += 1,
-                actionqueue_core::run::state::RunState::Suspended => {}
+                actionqueue_core::run::state::RunState::Suspended => suspended += 1,
+                actionqueue_core::run::state::RunState::Awaiting => awaiting += 1,
                 actionqueue_core::run::state::RunState::Completed => completed += 1,
                 actionqueue_core::run::state::RunState::Failed => failed += 1,
                 actionqueue_core::run::state::RunState::Canceled => canceled += 1,
@@ -165,6 +173,8 @@ impl StatsResponse {
                 leased,
                 running,
                 retry_wait,
+                suspended,
+                awaiting,
                 completed,
                 failed,
                 canceled,
@@ -176,7 +186,7 @@ impl StatsResponse {
 
 /// Stats handler.
 ///
-/// This handler responds to `GET /api/v1/stats` requests with a deterministic,
+/// This handler responds to `GET /api/v2/stats` requests with a deterministic,
 /// side-effect-free payload containing aggregate statistics derived from
 /// authoritative state.
 ///
@@ -195,7 +205,7 @@ pub async fn handle(state: State<super::RouterState>) -> impl IntoResponse {
 
 /// Registers the stats route in the router builder.
 ///
-/// This function adds the `/api/v1/stats` endpoint to the router configuration.
+/// This function adds the `/api/v2/stats` endpoint to the router configuration.
 /// The route is always available when HTTP is enabled and does not depend
 /// on any feature flags.
 ///
@@ -205,7 +215,7 @@ pub async fn handle(state: State<super::RouterState>) -> impl IntoResponse {
 pub fn register_routes(
     router: axum::Router<super::RouterState>,
 ) -> axum::Router<super::RouterState> {
-    router.route("/api/v1/stats", axum::routing::get(handle))
+    router.route("/api/v2/stats", axum::routing::get(handle))
 }
 
 #[cfg(test)]
@@ -224,6 +234,8 @@ mod tests {
                 leased: 1,
                 running: 4,
                 retry_wait: 0,
+                suspended: 0,
+                awaiting: 0,
                 completed: 1,
                 failed: 0,
                 canceled: 1,
@@ -258,6 +270,8 @@ mod tests {
                 leased: 0,
                 running: 0,
                 retry_wait: 0,
+                suspended: 0,
+                awaiting: 0,
                 completed: 0,
                 failed: 0,
                 canceled: 0,
@@ -279,6 +293,8 @@ mod tests {
             leased: 3,
             running: 4,
             retry_wait: 5,
+            suspended: 9,
+            awaiting: 10,
             completed: 6,
             failed: 7,
             canceled: 8,
@@ -290,6 +306,8 @@ mod tests {
         assert!(json.contains("\"leased\":3"));
         assert!(json.contains("\"running\":4"));
         assert!(json.contains("\"retry_wait\":5"));
+        assert!(json.contains("\"suspended\":9"));
+        assert!(json.contains("\"awaiting\":10"));
         assert!(json.contains("\"completed\":6"));
         assert!(json.contains("\"failed\":7"));
         assert!(json.contains("\"canceled\":8"));

@@ -8,9 +8,10 @@
 //! time=11000 — far beyond the mock clock's value of 1000. Without the
 //! subscription trigger, that run would remain Scheduled indefinitely.
 
+#[path = "host_support.rs"]
+mod host_support;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use actionqueue_core::ids::TaskId;
@@ -21,19 +22,12 @@ use actionqueue_core::task::metadata::TaskMetadata;
 use actionqueue_core::task::run_policy::RunPolicy;
 use actionqueue_core::task::task_spec::{TaskPayload, TaskSpec};
 use actionqueue_engine::time::clock::MockClock;
-use actionqueue_executor_local::handler::{ExecutorContext, ExecutorHandler, HandlerOutput};
+use actionqueue_executor_local::handler::{AttemptDisposition, ExecutorContext, ExecutorHandler};
 use actionqueue_runtime::config::{BackoffStrategyConfig, RuntimeConfig};
 use actionqueue_runtime::engine::ActionQueueEngine;
 
-static COUNTER: AtomicUsize = AtomicUsize::new(0);
-
-fn data_dir(label: &str) -> PathBuf {
-    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let dir = PathBuf::from("target")
-        .join("tmp")
-        .join(format!("7e-sub-promo-{label}-{}-{n}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("data dir");
-    dir
+fn data_dir(label: &str) -> tempfile::TempDir {
+    tempfile::Builder::new().prefix(label).tempdir().expect("test data dir")
 }
 
 /// Handler that always succeeds.
@@ -41,8 +35,8 @@ fn data_dir(label: &str) -> PathBuf {
 struct AlwaysSucceedHandler;
 
 impl ExecutorHandler for AlwaysSucceedHandler {
-    fn execute(&self, _ctx: ExecutorContext) -> HandlerOutput {
-        HandlerOutput::Success { output: None, consumption: vec![] }
+    fn execute(&self, _ctx: ExecutorContext) -> AttemptDisposition {
+        actionqueue_core::disposition::AttemptDisposition::complete(None)
     }
 }
 
@@ -64,8 +58,10 @@ async fn subscription_promotes_future_scheduled_run_on_completion() {
 
     let clock = MockClock::new(1000);
     let handler = AlwaysSucceedHandler;
-    let engine = ActionQueueEngine::new(make_config(dir.clone()), handler);
-    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap");
+    let engine = ActionQueueEngine::new(make_config(dir.path().to_path_buf()), handler);
+    let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap").with_host(
+        crate::host_support::host(actionqueue_core::control::ControlScope::SingleTenant),
+    );
 
     // Task B: Once, scheduled now (time=1000).
     let task_b_id = TaskId::new();
@@ -121,5 +117,4 @@ async fn subscription_promotes_future_scheduled_run_on_completion() {
     }
 
     boot.shutdown().expect("shutdown");
-    let _ = std::fs::remove_dir_all(&dir);
 }

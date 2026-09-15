@@ -133,6 +133,7 @@ fn capability_key(cap: &Capability) -> String {
         Capability::CanApprove => "CanApprove".to_string(),
         Capability::CanCancel => "CanCancel".to_string(),
         Capability::Custom(s) => format!("Custom:{s}"),
+        Capability::Queue(action) => format!("Queue:{action:?}"),
     }
 }
 

@@ -17,7 +17,7 @@
 //! - At bootstrap, tree registration happens before terminal marking, so
 //!   orphan prevention never fires during WAL replay.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
 use actionqueue_core::ids::TaskId;
 
@@ -82,9 +82,10 @@ impl std::error::Error for HierarchyError {}
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct HierarchyTracker {
     /// parent_task_id → set of direct child task_ids.
-    children: HashMap<TaskId, HashSet<TaskId>>,
+    children: HashMap<TaskId, BTreeSet<TaskId>>,
     /// child_task_id → parent_task_id.
     parents: HashMap<TaskId, TaskId>,
+    detached: HashSet<TaskId>,
     /// task_ids that have reached terminal state.
     terminal_tasks: HashSet<TaskId>,
     /// Maximum allowed nesting depth (root = 0).
@@ -105,6 +106,7 @@ impl HierarchyTracker {
         Self {
             children: HashMap::new(),
             parents: HashMap::new(),
+            detached: HashSet::new(),
             terminal_tasks: HashSet::new(),
             max_depth,
         }
@@ -137,9 +139,18 @@ impl HierarchyTracker {
         Ok(())
     }
 
-    /// Returns an iterator over the direct children of `parent`.
-    pub fn children_of(&self, parent: TaskId) -> impl Iterator<Item = TaskId> + '_ {
-        self.children.get(&parent).into_iter().flat_map(|s| s.iter().copied())
+    /// Registers a relationship with an explicit durable lifecycle policy.
+    pub fn register_child_with_policy(
+        &mut self,
+        parent: TaskId,
+        child: TaskId,
+        policy: actionqueue_core::task::task_spec::ChildLifecyclePolicy,
+    ) -> Result<(), HierarchyError> {
+        self.register_child(parent, child)?;
+        if policy == actionqueue_core::task::task_spec::ChildLifecyclePolicy::Detached {
+            self.detached.insert(child);
+        }
+        Ok(())
     }
 
     /// Returns the parent of `child`, if any.
@@ -205,9 +216,15 @@ impl HierarchyTracker {
             }
         }
 
+        // Detached descendants can remain active after their parent completes.
+        // Keep their ancestry until the entire subtree is terminal.
+        if to_remove.iter().any(|id| !self.terminal_tasks.contains(id)) {
+            return;
+        }
         for id in to_remove {
             self.children.remove(&id);
             self.parents.remove(&id);
+            self.detached.remove(&id);
             self.terminal_tasks.remove(&id);
         }
     }
@@ -234,6 +251,9 @@ impl HierarchyTracker {
         }
 
         while let Some(current) = queue.pop_front() {
+            if self.detached.contains(&current) {
+                continue;
+            }
             if self.terminal_tasks.contains(&current) {
                 // Terminal descendants need no cascading; still descend their children
                 // because a deeper non-terminal descendant may still need canceling.
@@ -425,5 +445,23 @@ mod tests {
     fn max_depth_default_is_eight() {
         let tracker = HierarchyTracker::new();
         assert_eq!(tracker.max_depth, DEFAULT_MAX_DEPTH);
+    }
+    #[test]
+    fn cancellation_order_is_stable_and_detached_subtrees_remain_independent() {
+        use actionqueue_core::task::task_spec::ChildLifecyclePolicy;
+        let mut tracker = HierarchyTracker::new();
+        tracker.register_child(tid(1), tid(3)).unwrap();
+        tracker.register_child(tid(1), tid(2)).unwrap();
+        tracker.register_child(tid(2), tid(4)).unwrap();
+        tracker.register_child_with_policy(tid(1), tid(5), ChildLifecyclePolicy::Detached).unwrap();
+        tracker.register_child(tid(5), tid(6)).unwrap();
+        assert_eq!(tracker.collect_cancellation_cascade(tid(1)), vec![tid(2), tid(3), tid(4)]);
+        assert_eq!(tracker.collect_cancellation_cascade(tid(5)), vec![tid(6)]);
+        for id in [1, 2, 3, 4] {
+            tracker.mark_terminal(tid(id));
+        }
+        tracker.gc_subtree(tid(1));
+        assert_eq!(tracker.parent_of(tid(6)), Some(tid(5)));
+        assert_eq!(tracker.parent_of(tid(5)), Some(tid(1)));
     }
 }

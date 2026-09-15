@@ -26,9 +26,41 @@ pub enum DurabilityPolicy {
 }
 
 /// Semantic mutation command proposed by an engine-facing caller.
+// Commands are submitted individually to the single mutation owner. Keep the bounded
+// disposition inline: boxing it adds an allocation to every handler completion and
+// changes the public construction API without reducing any retained queue storage.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[must_use = "mutation commands should be submitted to a MutationAuthority"]
 pub enum MutationCommand {
+    /// A recovery-derived control, independently checked against durable antecedents.
+    RecoveryControl(Box<MutationCommand>),
+    /// Explicit host control; nested envelopes are rejected.
+    Control { host: crate::control::HostControlContext, command: Box<MutationCommand> },
+    /// Atomically commit a complete lease-fenced worker disposition.
+    AttemptDispositionCommit(AttemptDispositionCommitCommand),
+    /// Atomic continuation establishment.
+    WaitEstablish(WaitEstablishCommand),
+    /// Resolve using the earliest eligible durable signal.
+    WaitSatisfy(WaitSatisfyCommand),
+    /// Resolve a due deadline using its durable policy.
+    WaitTimeout(WaitTimeoutCommand),
+    /// Host-attested explicit wake.
+    WaitResolve(WaitResolveCommand),
+    /// Cancel one specific wait and its run.
+    WaitCancel(WaitCancelCommand),
+    /// Atomic task or run cancellation.
+    Cancel(CancelCommand),
+    /// Atomically admit a task and its initial runs.
+    AdmissionCommit(AdmissionCommitCommand),
+    /// Admit a durable signal.
+    SignalAdmit(SignalAdmitCommand),
+    /// Acquire an independent retention pin.
+    SignalPin(SignalPinCommand),
+    /// Release one retention pin.
+    SignalUnpin(SignalPinCommand),
+    /// Retire a bounded batch from matching.
+    RetireSignals(RetireSignalsCommand),
     /// Request durable creation of a task specification.
     TaskCreate(TaskCreateCommand),
     /// Request durable creation of a run instance.
@@ -139,6 +171,8 @@ impl EngineResumeCommand {
 
 /// Semantic command for task creation.
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Fixture construction command. Production storage rejects standalone task creation;
+/// callers must use [`AdmissionCommitCommand`] to establish all admission facts.
 pub struct TaskCreateCommand {
     sequence: u64,
     task_spec: TaskSpec,
@@ -240,20 +274,40 @@ impl RunStateTransitionCommand {
 }
 
 /// Semantic command for attempt-start lifecycle mutation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AttemptStartCommand {
     sequence: u64,
     run_id: RunId,
     attempt_id: AttemptId,
     timestamp: u64,
+    fence: LeaseFence,
+    resume: Option<crate::continuation::ResumeContextId>,
 }
 
 impl AttemptStartCommand {
     /// Creates a new attempt-start command.
-    pub fn new(sequence: u64, run_id: RunId, attempt_id: AttemptId, timestamp: u64) -> Self {
-        Self { sequence, run_id, attempt_id, timestamp }
+    // Require both fencing expectations at construction so callers cannot
+    // accidentally omit the expected resume identity through a builder default.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        sequence: u64,
+        run_id: RunId,
+        attempt_id: AttemptId,
+        timestamp: u64,
+        fence: LeaseFence,
+        resume: Option<crate::continuation::ResumeContextId>,
+    ) -> Self {
+        Self { sequence, run_id, attempt_id, timestamp, fence, resume }
     }
 
+    /// Expected current lease fence.
+    pub fn fence(&self) -> &LeaseFence {
+        &self.fence
+    }
+    /// Expected pending or retry-eligible wake.
+    pub fn resume(&self) -> Option<crate::continuation::ResumeContextId> {
+        self.resume
+    }
     /// Returns the expected WAL sequence.
     pub fn sequence(&self) -> u64 {
         self.sequence
@@ -288,6 +342,9 @@ pub enum AttemptResultKind {
     /// Attempt was preempted (e.g. budget exhaustion) and the run is now Suspended.
     /// Does not count toward the max_attempts retry cap.
     Suspended,
+    /// Attempt yielded to a continuation; excluded from the failure count (AQ-H13).
+    /// Durable continuation state; storage uses explicit versioned wire DTOs.
+    Awaiting,
 }
 
 /// Semantic grouping of attempt result kind, optional error detail, and optional
@@ -314,7 +371,7 @@ pub struct AttemptOutcome {
 /// Typed validation error for [`AttemptOutcome`] reconstruction from raw parts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AttemptOutcomeError {
-    /// A `Success` or `Suspended` outcome was provided with a non-None error field.
+    /// A `Success`, `Suspended`, or `Awaiting` outcome was provided with a non-None error field.
     SuccessWithError {
         /// The unexpected error detail.
         error: String,
@@ -335,7 +392,11 @@ impl std::fmt::Display for AttemptOutcomeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             AttemptOutcomeError::SuccessWithError { error } => {
-                write!(f, "Success/Suspended outcome must not have an error detail, got: {error}")
+                write!(
+                    f,
+                    "Success/Suspended/Awaiting outcome must not have an error detail, got: \
+                     {error}"
+                )
             }
             AttemptOutcomeError::NonSuccessWithoutError { result } => {
                 write!(f, "{result:?} outcome must have an error detail")
@@ -389,11 +450,19 @@ impl AttemptOutcome {
         Self { result: AttemptResultKind::Suspended, error: None, output }
     }
 
+    /// Creates an awaiting outcome: the attempt paused on a durable continuation.
+    ///
+    /// Awaiting attempts carry no error and, like suspension, do not count
+    /// toward the retry cap.
+    pub fn awaiting() -> Self {
+        Self { result: AttemptResultKind::Awaiting, error: None, output: None }
+    }
+
     /// Reconstructs an outcome from raw parts with semantic validation.
     ///
     /// This is intended for WAL replay / deserialization paths where the result
     /// kind, error, and output are stored separately. Validates that:
-    /// - `Success` / `Suspended` have `error == None` (output is optional)
+    /// - `Success` / `Suspended` / `Awaiting` have `error == None` (output is optional)
     /// - `Failure` / `Timeout` have `error == Some(_)` and `output == None`
     ///
     /// # Errors
@@ -406,7 +475,9 @@ impl AttemptOutcome {
         output: Option<Vec<u8>>,
     ) -> Result<Self, AttemptOutcomeError> {
         match result {
-            AttemptResultKind::Success | AttemptResultKind::Suspended => {
+            AttemptResultKind::Success
+            | AttemptResultKind::Suspended
+            | AttemptResultKind::Awaiting => {
                 if let Some(err) = error {
                     return Err(AttemptOutcomeError::SuccessWithError { error: err });
                 }
@@ -452,9 +523,19 @@ pub struct AttemptFinishCommand {
     attempt_id: AttemptId,
     outcome: AttemptOutcome,
     timestamp: u64,
+    origin: crate::continuation::AttemptFinishOrigin,
 }
 
 impl AttemptFinishCommand {
+    /// Marks closure as restart recovery rather than executor output.
+    pub fn with_recovery_origin(mut self) -> Self {
+        self.origin = crate::continuation::AttemptFinishOrigin::Recovery;
+        self
+    }
+    /// Durable closure origin.
+    pub fn origin(&self) -> crate::continuation::AttemptFinishOrigin {
+        self.origin
+    }
     /// Creates a new attempt-finish command.
     pub fn new(
         sequence: u64,
@@ -463,7 +544,7 @@ impl AttemptFinishCommand {
         outcome: AttemptOutcome,
         timestamp: u64,
     ) -> Self {
-        Self { sequence, run_id, attempt_id, outcome, timestamp }
+        Self { sequence, run_id, attempt_id, outcome, timestamp, origin: Default::default() }
     }
 
     /// Returns the expected WAL sequence.
@@ -746,6 +827,14 @@ impl MutationOutcome {
 /// Applied semantic mutation metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppliedMutation {
+    /// Continuation commit or idempotent retry.
+    Wait(WaitOutcome),
+    /// Durable admission result.
+    Admission(crate::admission::EnsureTaskOutcome),
+    /// Durable signal admission result.
+    Signal(crate::continuation::AdmitSignalOutcome),
+    /// Number of pin or retirement state changes (zero for an idempotent no-op).
+    SignalRetention { changed: usize },
     /// Task specification was durably created.
     TaskCreate {
         /// Created task identifier.
@@ -769,10 +858,21 @@ pub enum AppliedMutation {
     },
     /// Attempt start was durably applied.
     AttemptStart {
+        /// Immutable continuation assignment.
+        assignment: Option<crate::continuation::ResumeAssignment>,
         /// Run that owns the attempt.
         run_id: RunId,
         /// Attempt that started.
         attempt_id: AttemptId,
+    },
+    /// An exact duplicate start; never spawn another worker.
+    AlreadyStarted {
+        /// Run owning the attempt.
+        run_id: RunId,
+        /// Original accepted attempt.
+        attempt_id: AttemptId,
+        /// Original assignment.
+        assignment: Option<crate::continuation::ResumeAssignment>,
     },
     /// Attempt finish was durably applied.
     AttemptFinish {
@@ -1146,9 +1246,6 @@ impl SubscriptionCreateCommand {
                 "budget threshold percentage must be 0-100, got {threshold_pct}"
             );
         }
-        if let EventFilter::Custom { key } = &filter {
-            debug_assert!(!key.is_empty(), "custom event key must not be empty");
-        }
         Self { sequence, subscription_id, task_id, filter, timestamp }
     }
 
@@ -1502,5 +1599,27 @@ impl LedgerAppendCommand {
     /// Returns the command timestamp.
     pub fn timestamp(&self) -> u64 {
         self.timestamp
+    }
+}
+
+pub mod admission;
+pub use admission::*;
+
+pub mod attempt;
+pub use attempt::*;
+
+pub mod signal;
+pub use signal::*;
+
+pub mod control;
+pub use control::*;
+
+pub mod wait;
+pub use wait::*;
+
+impl MutationCommand {
+    /// Attaches trusted host attribution to the same durable mutation frame.
+    pub fn with_control(self, host: &crate::control::HostControlContext) -> Self {
+        Self::Control { host: host.clone(), command: Box::new(self) }
     }
 }

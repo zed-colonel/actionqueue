@@ -105,6 +105,16 @@ impl<W: WalWriter> InstrumentedWalWriter<W> {
 }
 
 impl<W: WalWriter> WalWriter for InstrumentedWalWriter<W> {
+    fn fence(&mut self) {
+        self.inner.fence();
+    }
+    fn recovery_required(&self) -> bool {
+        self.inner.recovery_required()
+    }
+    fn store_session(&self) -> Option<&crate::store::StoreSession> {
+        self.inner.store_session()
+    }
+
     fn append(&mut self, event: &WalEvent) -> Result<(), WalWriterError> {
         match self.inner.append(event) {
             Ok(()) => {
@@ -129,6 +139,18 @@ impl<W: WalWriter> WalWriter for InstrumentedWalWriter<W> {
 
 /// A writer that can append events to the WAL.
 pub trait WalWriter {
+    /// Permanently fences a session-backed writer after an uncertain authority operation.
+    /// Stateless test writers may use the default; durable implementations must retain it.
+    fn fence(&mut self) {}
+    /// Whether this writer must be reopened through recovery before further use.
+    fn recovery_required(&self) -> bool {
+        false
+    }
+    /// Returns the lifetime store session when backed by target storage.
+    fn store_session(&self) -> Option<&crate::store::StoreSession> {
+        None
+    }
+
     /// Append an event to the WAL.
     fn append(&mut self, event: &WalEvent) -> Result<(), WalWriterError>;
 
@@ -142,8 +164,6 @@ pub trait WalWriter {
 /// Errors that can occur during WAL writing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WalWriterError {
-    /// The writer was closed.
-    Closed,
     /// I/O error during write.
     IoError(String),
     /// The event could not be encoded.
@@ -155,15 +175,14 @@ pub enum WalWriterError {
         /// The sequence number that was provided.
         provided: u64,
     },
-    /// Writer is permanently poisoned after a truncation-recovery failure.
-    /// Callers must restart the process.
+    /// Writer is permanently fenced after an uncertain write or publication.
+    /// Callers must reopen through recovery.
     Poisoned,
 }
 
 impl std::fmt::Display for WalWriterError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            WalWriterError::Closed => write!(f, "WAL writer is closed"),
             WalWriterError::IoError(e) => write!(f, "I/O error: {e}"),
             WalWriterError::EncodeError(e) => write!(f, "Encode error: {e}"),
             WalWriterError::SequenceViolation { expected, provided } => {

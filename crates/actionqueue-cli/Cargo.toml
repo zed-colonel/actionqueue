@@ -1,7 +1,7 @@
 [package]
 name = "actionqueue-cli"
 authors = ["Keith <zed.colonel@gmail.com>"]
-version = "0.1.2"
+version = "0.2.0"
 edition = "2021"
 license = "Apache-2.0"
 description = "Command-line interface for the ActionQueue task queue engine."
@@ -11,19 +11,30 @@ keywords = ["cli", "task-queue", "daemon", "command-line"]
 categories = ["command-line-utilities"]
 
 [[bin]]
-name = "actionqueue-cli"
+name = "actionqueue"
 path = "src/main.rs"
 
 [features]
+platform = ["actionqueue-daemon/platform", "actionqueue-storage/platform"]
+actor = ["actionqueue-daemon/actor", "actionqueue-storage/actor"]
+budget = ["actionqueue-daemon/budget", "actionqueue-storage/budget"]
 default = ["serde"]
 serde = ["actionqueue-core/serde"]
-workflow = ["actionqueue-core/workflow", "actionqueue-engine/workflow"]
+workflow = ["actionqueue-runtime/workflow","actionqueue-daemon/workflow", "actionqueue-storage/workflow", "actionqueue-core/workflow", "actionqueue-engine/workflow"]
 
 [dependencies]
-actionqueue-core = { version = "0.1.2", features = ["serde"] }
-actionqueue-daemon = "0.1.2"
-actionqueue-engine = "0.1.2"
-actionqueue-storage = "0.1.2"
+actionqueue-core = { version = "0.2.0", features = ["serde"] }
+actionqueue-daemon = "0.2.0"
+actionqueue-engine = "0.2.0"
+actionqueue-runtime = "0.2.0"
+actionqueue-storage = "0.2.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tracing = "0.1"
+
+tokio = { version = "1", features = ["rt-multi-thread", "net", "signal", "macros"] }
+axum = "0.7"
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+tower = { version = "0.4", features = ["util"] }

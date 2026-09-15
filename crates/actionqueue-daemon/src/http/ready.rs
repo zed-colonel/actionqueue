@@ -1,30 +1,6 @@
-//! Ready route module.
-//!
-//! This module provides the readiness endpoint (`GET /ready`) for the daemon.
-//! The ready endpoint is side-effect free and provides a deterministic response
-//! indicating daemon readiness. It reflects whether the daemon has completed
-//! bootstrap and is fully operational.
-//!
-//! # Invariant boundaries
-//!
-//! The ready handler performs no IO, reads no storage, and mutates no runtime state.
-//! It reflects the bootstrap state and is constant-time.
-//!
-//! # Response schema
-//!
-//! When ready: `{"status": "ready"}`
-//! When not ready: `{"status": "<reason>"}`
-//!
-//! The status is "ready" when the daemon has completed bootstrap. Otherwise,
-//! it includes a reason string indicating why the daemon is not yet ready.
-//!
-//! # Readiness vocabulary (WP-2)
-//!
-//! The only allowed not-ready reasons in WP-2 are:
-//! - `ReadyStatus::REASON_CONFIG_INVALID`: Configuration was invalid during bootstrap.
-//! - `ReadyStatus::REASON_BOOTSTRAP_INCOMPLETE`: Bootstrap process was incomplete.
-//!
-//! These reasons are defined as static constants on [`ReadyStatus`](crate::bootstrap::ReadyStatus).
+//! Live readiness reflects bootstrap completion and operational failures.
+//! Storage checks execute on the blocking pool so an in-flight WAL operation
+//! cannot block an async worker.
 
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -73,17 +49,36 @@ impl ReadyResponse {
 /// # Invariant boundaries
 ///
 /// This handler performs no IO, reads no storage, and mutates no runtime state.
-/// It reflects the bootstrap state contained in RouterState.
+/// It checks both bootstrap completion and live authority failure state.
 #[tracing::instrument(skip_all)]
 pub async fn handle(state: State<super::RouterState>) -> impl IntoResponse {
-    if state.ready_status.is_ready() {
-        (StatusCode::OK, Json(ReadyResponse::ready()))
-    } else {
-        (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(ReadyResponse::not_ready(state.ready_status.reason())),
-        )
-    }
+    tokio::task::spawn_blocking(move || {
+        let failed = state.operational_failed.load(std::sync::atomic::Ordering::Acquire)
+            || state.shared_projection.is_poisoned()
+            || state
+                .control_authority
+                .as_ref()
+                .is_some_and(|a| a.lock().map(|a| a.recovery_required()).unwrap_or(true));
+        if failed {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ReadyResponse::not_ready("recovery_required")),
+            );
+        }
+        if state.ready_status.is_ready() {
+            (StatusCode::OK, Json(ReadyResponse::ready()))
+        } else {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ReadyResponse::not_ready(state.ready_status.reason())),
+            )
+        }
+    })
+    .await
+    .unwrap_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(ReadyResponse::not_ready("recovery_required")),
+    ))
 }
 
 /// Registers the ready route in the router builder.

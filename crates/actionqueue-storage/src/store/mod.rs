@@ -1,0 +1,101 @@
+//! Storage identity, compatibility, and lifetime ownership.
+pub mod error;
+pub mod manifest;
+pub mod session;
+pub use error::StoreError;
+pub use manifest::{capabilities, StoreManifest};
+pub use session::{open_store, OpenOptions, StoreSession};
+
+pub(crate) fn check_event_profile(
+    event: &crate::wal::event::WalEventType,
+    profile: &[String],
+) -> Result<(), StoreError> {
+    use crate::wal::event::WalEventType as E;
+    let required = match event {
+        E::AttemptDispositionCommitted { record } => {
+            for child in &record.children {
+                check_event_profile(
+                    &E::AdmissionCommitted {
+                        record: child.admission.clone(),
+                        runs: child.runs.clone(),
+                    },
+                    profile,
+                )?;
+            }
+            for signal in &record.signals {
+                check_event_profile(&E::SignalAdmitted { record: signal.clone() }, profile)?;
+            }
+            if let Some(wait) = record.wait_record() {
+                check_event_profile(&E::WaitEstablished { record: wait }, profile)?;
+            }
+            None
+        }
+        E::WaitEstablished { record } => {
+            record.spec.filter().and_then(|f| f.tenant_id).map(|_| "platform")
+        }
+        E::TaskCancellationCommitted { record } | E::RunCancellationCommitted { record } => {
+            record.tenant_id.map(|_| "platform")
+        }
+        E::SignalAdmitted { record } => record.envelope().tenant_id.map(|_| "platform"),
+        E::SignalPinned { record } | E::SignalUnpinned { record } => {
+            record.tenant_id.map(|_| "platform")
+        }
+        E::SignalsRetired { record } => record.tenant_id.map(|_| "platform"),
+        E::AdmissionCommitted { record, .. } => {
+            return check_event_profile(
+                &E::TaskCreated {
+                    task_spec: record.request().task_spec().clone(),
+                    timestamp: record.timestamp(),
+                },
+                profile,
+            );
+        }
+        E::BudgetAllocated { .. }
+        | E::BudgetConsumed { .. }
+        | E::BudgetExhausted { .. }
+        | E::BudgetReplenished { .. }
+        | E::SubscriptionCreated { .. }
+        | E::SubscriptionTriggered { .. }
+        | E::SubscriptionCanceled { .. } => Some("budget"),
+        E::ActorRegistered { .. } | E::ActorDeregistered { .. } | E::ActorHeartbeat { .. } => {
+            Some("actor")
+        }
+        E::TenantCreated { .. }
+        | E::RoleAssigned { .. }
+        | E::CapabilityGranted { .. }
+        | E::CapabilityRevoked { .. }
+        | E::LedgerEntryAppended { .. } => Some("platform"),
+        E::TaskCreated { task_spec, .. } => {
+            if task_spec.tenant_id().is_some() {
+                require_feature(profile, "platform")?;
+            }
+            if task_spec.parent_task_id().is_some() { /* hierarchy is a retained base operation */ }
+            #[cfg(feature = "workflow")]
+            if matches!(
+                task_spec.run_policy(),
+                actionqueue_core::task::run_policy::RunPolicy::Cron(_)
+            ) {
+                require_feature(profile, "workflow")?;
+            }
+            None
+        }
+        _ => None,
+    };
+    if let Some(feature) = required {
+        require_feature(profile, feature)?;
+    }
+    Ok(())
+}
+fn require_feature(profile: &[String], feature: &str) -> Result<(), StoreError> {
+    if profile.iter().any(|f| f == feature) {
+        Ok(())
+    } else {
+        Err(StoreError::UnsupportedFeatures(vec![feature.into()]))
+    }
+}
+
+pub mod backup;
+pub use backup::{backup_store, inspect_store, restore_store, BackupDescriptor, StoreInspection};
+
+#[doc(hidden)]
+pub mod fault;

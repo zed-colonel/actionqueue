@@ -1,5 +1,7 @@
 # ── Build artifacts ──────────────────────────────────────────────
 target/
+.aq-cargo/
+.aq-checks/
 **/*.rs.bk
 
 # ── Local runtime data ──────────────────────────────────────────
@@ -30,5 +32,6 @@ CLAUDE.md
 plans/
 dev-output/
 
-# ── Local scripts ───────────────────────────────────────────
-scripts/
+# Python bytecode
+__pycache__/
+*.pyc

@@ -84,7 +84,7 @@ fn assert_writer_corruption(
     expected_offset: u64,
     expected_reason: WalCorruptionReasonCode,
 ) {
-    let result = WalFsWriter::new(path.to_path_buf());
+    let result = WalFsWriter::new_raw_for_test(path.to_path_buf());
     assert!(matches!(
         result,
         Err(WalFsWriterInitError::Corruption(WalCorruption { offset, reason }))
@@ -134,13 +134,13 @@ fn d02_t_p1_clean_wal_bootstrap_succeeds_and_sequence_continues() {
     let path = temp_wal_path();
 
     {
-        let mut writer = WalFsWriter::new(path.clone()).expect("writer open");
+        let mut writer = WalFsWriter::new_raw_for_test(path.clone()).expect("writer open");
         writer.append(&task_created(1, 1000)).expect("append seq 1");
         writer.append(&task_created(2, 2000)).expect("append seq 2");
         writer.flush().expect("flush");
     }
 
-    let mut reopened = WalFsWriter::new(path.clone()).expect("writer reopen");
+    let mut reopened = WalFsWriter::new_raw_for_test(path.clone()).expect("writer reopen");
     reopened.append(&task_created(3, 3000)).expect("append seq 3 after bootstrap");
 
     let _ = fs::remove_file(path);
@@ -151,7 +151,7 @@ fn d02_t_p2_clean_reader_and_replay_flows_stay_green() {
     let path = temp_wal_path();
 
     {
-        let mut writer = WalFsWriter::new(path.clone()).expect("writer open");
+        let mut writer = WalFsWriter::new_raw_for_test(path.clone()).expect("writer open");
         writer.append(&task_created(1, 1000)).expect("append task");
         writer.append(&run_created(2, 1000, 2000)).expect("append run");
         writer
@@ -179,11 +179,11 @@ fn d02_t_n1_partial_trailing_header_fails_writer_reader_and_replay() {
     let first_len = codec::encode(&first).expect("encode should succeed").len() as u64;
 
     {
-        let mut writer = WalFsWriter::new(path.clone()).expect("writer open");
+        let mut writer = WalFsWriter::new_raw_for_test(path.clone()).expect("writer open");
         writer.append(&first).expect("append first");
     }
 
-    append_bytes(&path, &codec::VERSION.to_le_bytes()[..2]);
+    append_bytes(&path, &codec::MAGIC[..2]);
 
     assert_writer_corruption(&path, first_len, WalCorruptionReasonCode::IncompleteHeader);
     assert_reader_corruption(&path, first_len, WalCorruptionReasonCode::IncompleteHeader);
@@ -210,15 +210,12 @@ fn d02_t_n2_partial_trailing_payload_fails_writer_reader_and_replay() {
     let first_len = codec::encode(&first).expect("encode should succeed").len() as u64;
 
     {
-        let mut writer = WalFsWriter::new(path.clone()).expect("writer open");
+        let mut writer = WalFsWriter::new_raw_for_test(path.clone()).expect("writer open");
         writer.append(&first).expect("append first");
     }
 
-    let mut partial = Vec::new();
-    partial.extend_from_slice(&codec::VERSION.to_le_bytes());
-    partial.extend_from_slice(&10u32.to_le_bytes());
-    partial.extend_from_slice(&0u32.to_le_bytes()); // CRC (dummy)
-    partial.extend_from_slice(&[0u8; 3]); // only 3 of 10 payload bytes
+    let mut partial = codec::encode(&task_created(99, 3000)).unwrap();
+    partial.pop();
     append_bytes(&path, &partial);
 
     assert_writer_corruption(&path, first_len, WalCorruptionReasonCode::IncompletePayload);
@@ -235,17 +232,12 @@ fn d02_t_n3_decode_invalid_tail_fails_writer_reader_and_replay() {
     let first_len = codec::encode(&first).expect("encode should succeed").len() as u64;
 
     {
-        let mut writer = WalFsWriter::new(path.clone()).expect("writer open");
+        let mut writer = WalFsWriter::new_raw_for_test(path.clone()).expect("writer open");
         writer.append(&first).expect("append first");
     }
 
-    // With CRC-32 validation, wrong CRC is detected first as CrcMismatch.
-    let payload = b"nope";
-    let mut invalid = Vec::new();
-    invalid.extend_from_slice(&codec::VERSION.to_le_bytes());
-    invalid.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-    invalid.extend_from_slice(&0xDEADBEEFu32.to_le_bytes()); // wrong CRC
-    invalid.extend_from_slice(payload);
+    let mut invalid = codec::encode(&task_created(99, 3000)).unwrap();
+    invalid[codec::HEADER_LEN] ^= 0xff;
     append_bytes(&path, &invalid);
 
     assert_writer_corruption(&path, first_len, WalCorruptionReasonCode::CrcMismatch);
@@ -265,17 +257,14 @@ fn d02_t_n4_corruption_offset_is_record_start_boundary() {
         as u64;
 
     {
-        let mut writer = WalFsWriter::new(path.clone()).expect("writer open");
+        let mut writer = WalFsWriter::new_raw_for_test(path.clone()).expect("writer open");
         writer.append(&first).expect("append first");
         writer.append(&second).expect("append second");
     }
 
     // Start a third record but do not complete its payload.
-    let mut partial = Vec::new();
-    partial.extend_from_slice(&codec::VERSION.to_le_bytes());
-    partial.extend_from_slice(&9u32.to_le_bytes());
-    partial.extend_from_slice(&0u32.to_le_bytes()); // CRC (dummy)
-    partial.extend_from_slice(&[1u8, 2u8]); // only 2 of 9 payload bytes
+    let mut partial = codec::encode(&task_created(99, 3000)).unwrap();
+    partial.pop();
     append_bytes(&path, &partial);
 
     assert_writer_corruption(&path, expected_offset, WalCorruptionReasonCode::IncompletePayload);
@@ -290,7 +279,8 @@ fn d02_t_n5_reducer_errors_remain_distinct_from_wal_corruption_errors() {
     // Reducer semantic error path (valid WAL bytes, invalid lifecycle semantics).
     let reducer_path = temp_wal_path();
     {
-        let mut writer = WalFsWriter::new(reducer_path.clone()).expect("writer open reducer case");
+        let mut writer =
+            WalFsWriter::new_raw_for_test(reducer_path.clone()).expect("writer open reducer case");
         writer.append(&task_created(1, 1000)).expect("append task");
         writer.append(&run_created(2, 1000, 2000)).expect("append run");
         writer
@@ -307,11 +297,11 @@ fn d02_t_n5_reducer_errors_remain_distinct_from_wal_corruption_errors() {
     let first = task_created(1, 3000);
     let first_len = codec::encode(&first).expect("encode should succeed").len() as u64;
     {
-        let mut writer =
-            WalFsWriter::new(corruption_path.clone()).expect("writer open corruption case");
+        let mut writer = WalFsWriter::new_raw_for_test(corruption_path.clone())
+            .expect("writer open corruption case");
         writer.append(&first).expect("append first");
     }
-    append_bytes(&corruption_path, &codec::VERSION.to_le_bytes()[..1]);
+    append_bytes(&corruption_path, &codec::MAGIC[..1]);
 
     let corruption_reader =
         WalFsReader::new(corruption_path.clone()).expect("reader open corruption case");

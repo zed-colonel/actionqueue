@@ -1,6 +1,8 @@
 # actionqueue-executor-local
 
-Local executor with dispatch queue, retry, backoff, and timeout for the ActionQueue task queue engine.
+Release 0.2.0 implements AQ-CONT-1. See the [release and compatibility notes](../../docs/releases/0.2.0.md).
+
+Local executor with dispatch queue, backoff, and timeout for the ActionQueue task queue engine.
 
 ## Overview
 
@@ -10,7 +12,6 @@ This crate provides the execution infrastructure for running task attempts:
 - **AttemptRunner** -- request/response pipeline with timeout enforcement
 - **TimeoutGuard** -- watchdog-based timeout with panic-safe cleanup
 - **BackoffStrategy** -- pluggable delay computation (fixed, exponential)
-- **RetryDecision** -- cap-enforced retry logic with no N+1 paths
 - **DispatchQueue** -- FIFO intake with backpressure
 
 ## Part of the ActionQueue workspace

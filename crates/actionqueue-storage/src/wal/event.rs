@@ -15,6 +15,7 @@ use actionqueue_core::task::task_spec::TaskSpec;
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct WalEvent {
+    control: Option<actionqueue_core::control::ControlAttribution>,
     /// Monotonically increasing sequence number for the event.
     sequence: u64,
     /// The type and payload of this event.
@@ -24,9 +25,18 @@ pub struct WalEvent {
 impl WalEvent {
     /// Creates a new WAL event.
     pub fn new(sequence: u64, event: WalEventType) -> Self {
-        Self { sequence, event }
+        Self { sequence, event, control: None }
     }
 
+    /// Attaches host attribution in the mutation's own durable frame.
+    pub fn with_control(mut self, control: actionqueue_core::control::ControlAttribution) -> Self {
+        self.control = Some(control);
+        self
+    }
+    /// Durable host context, never inferred during replay.
+    pub fn control(&self) -> Option<&actionqueue_core::control::ControlAttribution> {
+        self.control.as_ref()
+    }
     /// Returns the monotonically increasing sequence number.
     pub fn sequence(&self) -> u64 {
         self.sequence
@@ -42,6 +52,63 @@ impl WalEvent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum WalEventType {
+    /// One fully validated end-of-attempt semantic commit.
+    AttemptDispositionCommitted {
+        record: crate::mutation::disposition::DispositionRecord,
+    },
+    /// Lease-fenced schema-2 start with atomic continuation assignment.
+    AcceptedAttemptStarted {
+        record: crate::recovery::resume::AcceptedStart,
+    },
+    /// Schema-2 finish with structural recovery attribution.
+    AttemptClosed {
+        record: crate::recovery::resume::AttemptClosure,
+    },
+    WaitEstablished {
+        record: crate::mutation::wait::WaitRecord,
+    },
+    WaitSatisfied {
+        record: crate::mutation::wait::WaitResolution,
+    },
+    WaitTimedOut {
+        record: crate::mutation::wait::WaitResolution,
+    },
+    WaitCanceled {
+        record: crate::mutation::wait::WaitResolution,
+    },
+    TaskCancellationCommitted {
+        record: crate::mutation::wait::CancelRecord,
+    },
+    RunCancellationCommitted {
+        record: crate::mutation::wait::CancelRecord,
+    },
+    /// Immutable signal admitted with independent store signal order.
+    SignalAdmitted {
+        record: crate::mutation::signal::SignalRecord,
+    },
+    /// Independent retention pin acquired.
+    SignalPinned {
+        record: crate::mutation::signal::SignalPinRecord,
+    },
+    /// Independent retention pin released.
+    SignalUnpinned {
+        record: crate::mutation::signal::SignalPinRecord,
+    },
+    /// Bounded retirement from retained matching.
+    SignalsRetired {
+        record: crate::mutation::signal::SignalsRetiredRecord,
+    },
+    /// One durable task admission, including all initial run identities.
+    AdmissionCommitted {
+        /// Immutable admission facts.
+        record: crate::mutation::admission::AdmissionRecord,
+        /// Complete initial run set.
+        runs: Vec<actionqueue_core::run::RunInstance>,
+    },
+    /// Binds sequence one to the immutable manifest.
+    StoreInitialized {
+        manifest_digest: [u8; 32],
+    },
     /// A new task definition has been persisted.
     TaskCreated {
         /// The task specification that was created.
@@ -92,7 +159,7 @@ pub enum WalEventType {
         error: Option<String>,
         /// Optional opaque output bytes produced by the handler.
         ///
-        /// Populated from `HandlerOutput::Success { output }` via the executor
+        /// Retained for explicit recovery/control closure records.
         /// response chain. Stored in the WAL for recovery and projection queries.
         // NOTE: #[serde(default)] is inert for postcard (non-self-describing format).
         // Retained for documentation symmetry with the snapshot model.
@@ -293,12 +360,12 @@ pub enum WalEventType {
         timestamp: u64,
     },
 
-    // ── WAL v5: Actor events (discriminants 23-25) ─────────────────────────
+    // ── Actor events (explicit storage-owned wire kinds) ─────────────────────────
     /// A remote actor has registered with the hub.
     ActorRegistered {
         actor_id: ActorId,
         identity: String,
-        capabilities: Vec<String>,
+        executor_traits: Vec<String>,
         department: Option<String>,
         heartbeat_interval_secs: u64,
         tenant_id: Option<TenantId>,
@@ -306,17 +373,32 @@ pub enum WalEventType {
     },
 
     /// A remote actor has deregistered (explicit or heartbeat timeout).
-    ActorDeregistered { actor_id: ActorId, timestamp: u64 },
+    ActorDeregistered {
+        actor_id: ActorId,
+        timestamp: u64,
+    },
 
     /// A remote actor sent a heartbeat.
-    ActorHeartbeat { actor_id: ActorId, timestamp: u64 },
+    ActorHeartbeat {
+        actor_id: ActorId,
+        timestamp: u64,
+    },
 
-    // ── WAL v5: Platform events (discriminants 26-31) ──────────────────────
+    // ── Platform events (explicit storage-owned wire kinds) ──────────────────────
     /// An organizational tenant was created.
-    TenantCreated { tenant_id: TenantId, name: String, timestamp: u64 },
+    TenantCreated {
+        tenant_id: TenantId,
+        name: String,
+        timestamp: u64,
+    },
 
     /// A role was assigned to an actor within a tenant.
-    RoleAssigned { actor_id: ActorId, role: Role, tenant_id: TenantId, timestamp: u64 },
+    RoleAssigned {
+        actor_id: ActorId,
+        role: Role,
+        tenant_id: TenantId,
+        timestamp: u64,
+    },
 
     /// A capability was granted to an actor within a tenant.
     CapabilityGranted {

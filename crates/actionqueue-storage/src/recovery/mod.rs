@@ -7,3 +7,24 @@
 pub mod bootstrap;
 pub mod reducer;
 pub mod replay;
+
+pub mod projection;
+
+pub mod signals;
+mod validation;
+
+pub mod waits;
+
+pub mod checkpoints;
+pub mod resume;
+
+mod dispositions;
+
+mod task_status;
+
+mod reactivity;
+
+pub mod inspection;
+
+#[doc(hidden)]
+pub mod work;

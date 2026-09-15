@@ -4,8 +4,8 @@
 
 use actionqueue_core::ids::{ActorId, LedgerEntryId, TenantId};
 use actionqueue_core::mutation::{
-    CapabilityGrantCommand, DurabilityPolicy, LedgerAppendCommand, MutationAuthority,
-    MutationCommand, RoleAssignCommand, TenantCreateCommand,
+    CapabilityGrantCommand, LedgerAppendCommand, MutationCommand, RoleAssignCommand,
+    TenantCreateCommand,
 };
 use actionqueue_core::platform::{Capability, LedgerEntry, Role, TenantRegistration};
 use axum::extract::State;
@@ -33,30 +33,24 @@ struct CreateTenantRequest {
 
 async fn create_tenant(
     State(state): State<RouterState>,
+    axum::Extension(host): axum::Extension<actionqueue_core::control::HostControlContext>,
     Json(body): Json<CreateTenantRequest>,
 ) -> impl IntoResponse {
-    let Some(authority) = state.control_authority.as_ref() else {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
-    };
-    let mut auth = match authority.lock() {
-        Ok(a) => a,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
-    let seq = auth.projection().latest_sequence() + 1;
-    let ts = now_secs();
-    match auth.submit_command(
-        MutationCommand::TenantCreate(TenantCreateCommand::new(
-            seq,
-            TenantRegistration::new(body.tenant_id, body.name),
-            ts,
-        )),
-        DurabilityPolicy::Immediate,
-    ) {
-        Ok(_) => (StatusCode::CREATED, Json(serde_json::json!({ "tenant_id": body.tenant_id })))
-            .into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": e.to_string() })))
-            .into_response(),
-    }
+    host_mutation(
+        &state,
+        &host,
+        |seq, ts| {
+            if body.name.is_empty() {
+                return Err(StatusCode::BAD_REQUEST.into_response());
+            }
+            Ok(MutationCommand::TenantCreate(TenantCreateCommand::new(
+                seq,
+                TenantRegistration::new(body.tenant_id, body.name),
+                ts,
+            )))
+        },
+        (StatusCode::CREATED, Json(serde_json::json!({ "tenant_id": body.tenant_id }))),
+    )
 }
 
 #[derive(serde::Deserialize)]
@@ -67,124 +61,111 @@ struct AssignRoleRequest {
 
 async fn assign_role(
     State(state): State<RouterState>,
+    axum::Extension(host): axum::Extension<actionqueue_core::control::HostControlContext>,
     axum::extract::Path(actor_id): axum::extract::Path<ActorId>,
     Json(body): Json<AssignRoleRequest>,
 ) -> impl IntoResponse {
-    let Some(authority) = state.control_authority.as_ref() else {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
-    };
-    let role = parse_role(&body.role);
-    let mut auth = match authority.lock() {
-        Ok(a) => a,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
-    let seq = auth.projection().latest_sequence() + 1;
-    let ts = now_secs();
-    match auth.submit_command(
-        MutationCommand::RoleAssign(RoleAssignCommand::new(
-            seq,
-            actor_id,
-            role,
-            body.tenant_id,
-            ts,
-        )),
-        DurabilityPolicy::Immediate,
-    ) {
-        Ok(_) => StatusCode::OK.into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": e.to_string() })))
-            .into_response(),
-    }
+    host_mutation(
+        &state,
+        &host,
+        |seq, ts| {
+            if body.role.is_empty() {
+                return Err(StatusCode::BAD_REQUEST.into_response());
+            }
+            Ok(MutationCommand::RoleAssign(RoleAssignCommand::new(
+                seq,
+                actor_id,
+                parse_role(&body.role),
+                body.tenant_id,
+                ts,
+            )))
+        },
+        StatusCode::OK,
+    )
 }
 
 #[derive(serde::Deserialize)]
 struct GrantCapabilityRequest {
-    capability: String,
+    capability: Capability,
     tenant_id: TenantId,
 }
 
 async fn grant_capability(
     State(state): State<RouterState>,
+    axum::Extension(host): axum::Extension<actionqueue_core::control::HostControlContext>,
     axum::extract::Path(actor_id): axum::extract::Path<ActorId>,
     Json(body): Json<GrantCapabilityRequest>,
 ) -> impl IntoResponse {
-    let Some(authority) = state.control_authority.as_ref() else {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
-    };
-    let capability = parse_capability(&body.capability);
-    let mut auth = match authority.lock() {
-        Ok(a) => a,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
-    let seq = auth.projection().latest_sequence() + 1;
-    let ts = now_secs();
-    match auth.submit_command(
-        MutationCommand::CapabilityGrant(CapabilityGrantCommand::new(
-            seq,
-            actor_id,
-            capability,
-            body.tenant_id,
-            ts,
-        )),
-        DurabilityPolicy::Immediate,
-    ) {
-        Ok(_) => StatusCode::OK.into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": e.to_string() })))
-            .into_response(),
-    }
+    host_mutation(
+        &state,
+        &host,
+        |seq, ts| {
+            Ok(MutationCommand::CapabilityGrant(CapabilityGrantCommand::new(
+                seq,
+                actor_id,
+                body.capability,
+                body.tenant_id,
+                ts,
+            )))
+        },
+        StatusCode::OK,
+    )
 }
 
 #[derive(serde::Deserialize)]
 struct AppendLedgerRequest {
     tenant_id: TenantId,
     ledger_key: String,
-    #[serde(default)]
-    actor_id: Option<ActorId>,
+
     payload_base64: String,
 }
 
 async fn append_ledger_entry(
     State(state): State<RouterState>,
+    axum::Extension(host): axum::Extension<actionqueue_core::control::HostControlContext>,
     Json(body): Json<AppendLedgerRequest>,
 ) -> impl IntoResponse {
+    let entry_id = LedgerEntryId::new();
+    host_mutation(
+        &state,
+        &host,
+        |seq, ts| {
+            let payload = base64_decode(&body.payload_base64).map_err(|_| {
+                (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "invalid_base64" })))
+                    .into_response()
+            })?;
+            if body.ledger_key.is_empty() {
+                return Err(StatusCode::BAD_REQUEST.into_response());
+            }
+            let entry = LedgerEntry::new(entry_id, body.tenant_id, body.ledger_key, payload, ts);
+            let entry = if let Some(aid) = host.actor_id { entry.with_actor(aid) } else { entry };
+            Ok(MutationCommand::LedgerAppend(LedgerAppendCommand::new(seq, entry, ts)))
+        },
+        (StatusCode::CREATED, Json(serde_json::json!({ "entry_id": entry_id }))),
+    )
+}
+
+/// Keep sequence allocation, host attribution and response mapping in one lane.
+fn host_mutation(
+    state: &RouterState,
+    host: &actionqueue_core::control::HostControlContext,
+    build: impl FnOnce(u64, u64) -> Result<MutationCommand, axum::response::Response>,
+    success: impl IntoResponse,
+) -> axum::response::Response {
     let Some(authority) = state.control_authority.as_ref() else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
-
-    let payload = match base64_decode(&body.payload_base64) {
-        Ok(p) => p,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": "invalid_base64" })),
-            )
-                .into_response()
-        }
+    let Ok(mut authority) = authority.lock() else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
-
-    let entry_id = LedgerEntryId::new();
-    let ts = now_secs();
-    let entry = LedgerEntry::new(entry_id, body.tenant_id, body.ledger_key, payload, ts);
-    let entry = if let Some(aid) = body.actor_id { entry.with_actor(aid) } else { entry };
-
-    let mut auth = match authority.lock() {
-        Ok(a) => a,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    let command = match build(authority.projection().latest_sequence() + 1, state.clock.now()) {
+        Ok(command) => command,
+        Err(response) => return response,
     };
-    let seq = auth.projection().latest_sequence() + 1;
-    match auth.submit_command(
-        MutationCommand::LedgerAppend(LedgerAppendCommand::new(seq, entry, ts)),
-        DurabilityPolicy::Immediate,
-    ) {
-        Ok(_) => {
-            (StatusCode::CREATED, Json(serde_json::json!({ "entry_id": entry_id }))).into_response()
-        }
-        Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": e.to_string() })))
-            .into_response(),
+    match super::execute_host_mutation(state, &mut authority, host, command) {
+        Ok(_) => success.into_response(),
+        Err(error) => super::api::service_response(Err(error)),
     }
-}
-
-fn now_secs() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs()
 }
 
 fn parse_role(s: &str) -> Role {
@@ -193,17 +174,6 @@ fn parse_role(s: &str) -> Role {
         "Auditor" => Role::Auditor,
         "Gatekeeper" => Role::Gatekeeper,
         other => Role::Custom(other.to_string()),
-    }
-}
-
-fn parse_capability(s: &str) -> Capability {
-    match s {
-        "CanSubmit" => Capability::CanSubmit,
-        "CanExecute" => Capability::CanExecute,
-        "CanReview" => Capability::CanReview,
-        "CanApprove" => Capability::CanApprove,
-        "CanCancel" => Capability::CanCancel,
-        other => Capability::Custom(other.to_string()),
     }
 }
 

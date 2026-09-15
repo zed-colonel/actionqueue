@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "id": "AQ-CF-DD-013",
+  "steps": [
+    {
+      "op": "start",
+      "task": 1
+    },
+    {
+      "op": "finish_output",
+      "task": 1,
+      "bytes": [
+        119,
+        114,
+        111,
+        110,
+        103,
+        32,
+        97,
+        110,
+        115,
+        119,
+        101,
+        114
+      ]
+    }
+  ],
+  "variants": [
+    "ordinary",
+    "replay",
+    "crash"
+  ]
+}

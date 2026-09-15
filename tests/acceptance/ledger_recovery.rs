@@ -2,6 +2,7 @@
 //!
 //! Verifies that ledger entries survive WAL recovery.
 
+mod host_support;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -11,7 +12,7 @@ use std::time::Duration;
 use actionqueue_core::ids::{LedgerEntryId, TenantId};
 use actionqueue_core::platform::{LedgerEntry, TenantRegistration};
 use actionqueue_engine::time::clock::Clock;
-use actionqueue_executor_local::handler::{ExecutorContext, ExecutorHandler, HandlerOutput};
+use actionqueue_executor_local::handler::{AttemptDisposition, ExecutorContext, ExecutorHandler};
 use actionqueue_runtime::config::{BackoffStrategyConfig, RuntimeConfig};
 use actionqueue_runtime::engine::ActionQueueEngine;
 
@@ -40,9 +41,7 @@ static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 fn data_dir(label: &str) -> PathBuf {
     let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let dir = PathBuf::from("target")
-        .join("tmp")
-        .join(format!("8h-ledger-{label}-{}-{n}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("8h-ledger-{label}-{}-{n}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("data dir");
     dir
 }
@@ -50,13 +49,14 @@ fn data_dir(label: &str) -> PathBuf {
 struct NoopHandler;
 
 impl ExecutorHandler for NoopHandler {
-    fn execute(&self, _ctx: ExecutorContext) -> HandlerOutput {
-        HandlerOutput::success()
+    fn execute(&self, _ctx: ExecutorContext) -> AttemptDisposition {
+        AttemptDisposition::complete(None)
     }
 }
 
 fn make_config(dir: PathBuf) -> RuntimeConfig {
     RuntimeConfig {
+        store_features: actionqueue_storage::store::capabilities(),
         data_dir: dir,
         backoff_strategy: BackoffStrategyConfig::Fixed { interval: Duration::ZERO },
         dispatch_concurrency: NonZeroUsize::new(1).expect("non-zero"),
@@ -77,7 +77,10 @@ async fn ledger_entries_survive_wal_recovery() {
     {
         let clock = AdvancableClock::new(1000);
         let engine = ActionQueueEngine::new(make_config(dir.clone()), NoopHandler);
-        let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap");
+        let mut boot = engine
+            .bootstrap_with_clock(clock)
+            .expect("bootstrap")
+            .with_host(crate::host_support::host(actionqueue_core::control::ControlScope::Store));
 
         boot.create_tenant(TenantRegistration::new(tenant_id, "Recovery Corp")).expect("tenant");
 
@@ -90,6 +93,7 @@ async fn ledger_entries_survive_wal_recovery() {
                 format!("payload-{i}").into_bytes(),
                 1000 + i as u64,
             );
+            host_support::bind_engine_tenant(&mut boot, tenant_id, None);
             boot.append_ledger_entry(entry).expect("append entry");
         }
 
@@ -101,7 +105,10 @@ async fn ledger_entries_survive_wal_recovery() {
     {
         let clock = AdvancableClock::new(2000);
         let engine = ActionQueueEngine::new(make_config(dir), NoopHandler);
-        let boot = engine.bootstrap_with_clock(clock).expect("bootstrap after crash");
+        let boot = engine
+            .bootstrap_with_clock(clock)
+            .expect("bootstrap after crash")
+            .with_host(crate::host_support::host(actionqueue_core::control::ControlScope::Store));
 
         assert_eq!(boot.ledger().len(), 5, "all 5 ledger entries must survive WAL recovery");
 
@@ -137,9 +144,13 @@ async fn ledger_entry_payload_roundtrip() {
     {
         let clock = AdvancableClock::new(1000);
         let engine = ActionQueueEngine::new(make_config(dir.clone()), NoopHandler);
-        let mut boot = engine.bootstrap_with_clock(clock).expect("bootstrap");
+        let mut boot = engine
+            .bootstrap_with_clock(clock)
+            .expect("bootstrap")
+            .with_host(crate::host_support::host(actionqueue_core::control::ControlScope::Store));
         boot.create_tenant(TenantRegistration::new(tenant_id, "Corp")).expect("tenant");
         let entry = LedgerEntry::new(entry_id, tenant_id, "audit", payload.clone(), 1000);
+        host_support::bind_engine_tenant(&mut boot, tenant_id, None);
         boot.append_ledger_entry(entry).expect("append");
         boot.shutdown().expect("shutdown");
     }
@@ -147,7 +158,10 @@ async fn ledger_entry_payload_roundtrip() {
     {
         let clock = AdvancableClock::new(2000);
         let engine = ActionQueueEngine::new(make_config(dir), NoopHandler);
-        let boot = engine.bootstrap_with_clock(clock).expect("bootstrap");
+        let boot = engine
+            .bootstrap_with_clock(clock)
+            .expect("bootstrap")
+            .with_host(crate::host_support::host(actionqueue_core::control::ControlScope::Store));
 
         let recovered = boot.ledger().entry_by_id(entry_id).expect("entry present");
         assert_eq!(recovered.payload(), payload.as_slice(), "payload must match exactly");

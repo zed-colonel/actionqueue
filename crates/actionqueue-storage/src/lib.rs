@@ -16,29 +16,28 @@
 //! # Example
 //!
 //! ```
+//! use actionqueue_core::admission::{AdmissionPlan, EnsureTaskRequest};
+//! use actionqueue_core::causal::CausalContext;
 //! use actionqueue_core::ids::TaskId;
+//! use actionqueue_core::ids::{AdmissionKey, CorrelationId, TraceId};
 //! use actionqueue_core::mutation::{
-//!     DurabilityPolicy, MutationAuthority, MutationCommand, TaskCreateCommand,
+//!     AdmissionCommitCommand, DurabilityPolicy, MutationAuthority, MutationCommand,
 //! };
+//! use actionqueue_core::run::RunInstance;
 //! use actionqueue_core::task::constraints::TaskConstraints;
 //! use actionqueue_core::task::metadata::TaskMetadata;
 //! use actionqueue_core::task::run_policy::RunPolicy;
 //! use actionqueue_core::task::task_spec::{TaskPayload, TaskSpec};
-//! use actionqueue_storage::mutation::StorageMutationAuthority;
 //! use actionqueue_storage::recovery::reducer::ReplayReducer;
 //! use actionqueue_storage::wal::fs_writer::WalFsWriter;
 //!
-//! // Build a unique temporary WAL path for this process.
-//! let unique = std::time::SystemTime::now()
-//!     .duration_since(std::time::UNIX_EPOCH)
-//!     .expect("clock should be after unix epoch")
-//!     .as_nanos();
-//! let wal_path = std::env::temp_dir().join(format!("actionqueue-storage-example-{unique}.wal"));
-//!
-//! // Authority lane owns durable ordering: validate -> append -> durability -> apply.
-//! let wal_writer = WalFsWriter::new(wal_path.clone()).expect("failed to create WAL writer");
-//! let projection = ReplayReducer::new();
-//! let mut authority = StorageMutationAuthority::new(wal_writer, projection);
+//! let root = std::env::temp_dir().join(format!("aq-example-{}", TaskId::new()));
+//! let session = actionqueue_storage::store::open_store(
+//!     &root,
+//!     actionqueue_storage::store::OpenOptions::Initialize { features: vec![] },
+//! )
+//! .unwrap();
+//! let mut authority = session.into_authority().unwrap();
 //!
 //! let task_id = TaskId::new();
 //! let task_spec = TaskSpec::new(
@@ -50,18 +49,46 @@
 //! )
 //! .expect("task spec should be valid");
 //!
+//! authority.set_control_context(Some(actionqueue_core::control::HostControlContext {
+//!     actor_id: None,
+//!     scope: actionqueue_core::control::ControlScope::SingleTenant,
+//!     attribution: actionqueue_core::causal::ControlMutationContext::new(
+//!         actionqueue_core::bounded::OpaqueRef::new("example-host").unwrap(),
+//!     ),
+//! }));
+//! let request = EnsureTaskRequest::new(
+//!     AdmissionKey::new("example/1").unwrap(),
+//!     task_spec.clone(),
+//!     vec![],
+//!     CausalContext::new(TraceId::new("trace/1").unwrap(), CorrelationId::new("work/1").unwrap()),
+//!     None,
+//! )
+//! .unwrap();
+//! let digest = request.digest().unwrap();
+//! let plan = AdmissionPlan::new(
+//!     request,
+//!     vec![RunInstance::new_scheduled(task_id, 0, 0).unwrap()],
+//!     digest,
+//! )
+//! .unwrap();
 //! authority
 //!     .submit_command(
-//!         MutationCommand::TaskCreate(TaskCreateCommand::new(1, task_spec, 0)),
+//!         MutationCommand::AdmissionCommit(AdmissionCommitCommand::new(2, plan, None, 0)),
 //!         DurabilityPolicy::Immediate,
 //!     )
 //!     .expect("authority command should succeed");
 //!
 //! # // Clean up
-//! # let _ = std::fs::remove_file(wal_path);
+//! # let _ = std::fs::remove_dir_all(root);
 //! ```
 
 pub mod mutation;
 pub mod recovery;
 pub mod snapshot;
 pub mod wal;
+
+/// Target store identity and ownership.
+pub mod store;
+
+#[cfg(feature = "serde")]
+mod structural_filter;

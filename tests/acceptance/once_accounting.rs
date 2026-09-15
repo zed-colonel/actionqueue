@@ -11,7 +11,7 @@ async fn assert_once_read_surfaces(
     router: &mut axum::Router<()>,
     completion: &support::CompletionEvidence,
 ) {
-    let stats = support::get_json(router, "/api/v1/stats").await;
+    let stats = support::get_json(router, "/api/v2/stats").await;
     assert_eq!(stats["total_tasks"], 1);
     assert_eq!(stats["total_runs"], 1);
     assert_eq!(stats["runs_by_state"]["completed"], 1);
@@ -19,18 +19,18 @@ async fn assert_once_read_surfaces(
     assert_eq!(stats["runs_by_state"]["running"], 0);
     assert_eq!(stats["runs_by_state"]["scheduled"], 0);
 
-    let runs = support::get_json(router, "/api/v1/runs").await;
-    let run_items = runs["runs"].as_array().expect("runs list should be an array");
+    let runs = support::get_json(router, "/api/v2/runs").await;
+    let run_items = runs["items"].as_array().expect("runs list should be an array");
     assert_eq!(run_items.len(), 1);
     assert_eq!(run_items[0]["run_id"], completion.run_id.to_string());
     assert_eq!(run_items[0]["state"], "Completed");
     assert_eq!(run_items[0]["attempt_count"], 1);
 
-    let run_get_path = format!("/api/v1/runs/{}", completion.run_id);
+    let run_get_path = format!("/api/v2/runs/{}", completion.run_id);
     let run_get = support::get_json(router, &run_get_path).await;
     assert_eq!(run_get["state"], "Completed");
     assert_eq!(run_get["attempt_count"], 1);
-    let attempts = run_get["attempts"].as_array().expect("attempts should be an array");
+    let attempts = run_get["attempts"]["items"].as_array().expect("attempts should be an array");
     assert_eq!(attempts.len(), 1);
     assert_eq!(attempts[0]["attempt_id"], completion.attempt_id.to_string());
     assert_eq!(attempts[0]["result"], "Success");
@@ -59,11 +59,12 @@ async fn once_accounting_proves_one_run_and_no_redispatch_after_restart() {
 
     // 3) Durably complete run through authority lane
     let completion = support::complete_once_run_via_authority(&data_dir, task_id);
-    // Once policy: task_create(1) + run_create(2) + promote(3) + lease(4) +
-    // running(5) + attempt_start(6) + attempt_finish(7) + completed(8)
+    // Once policy: admission + promote + lease + running + attempt_start +
+    // attempt_finish + completed, plus StoreInitialized.
     assert_eq!(
-        completion.final_sequence, 8,
-        "Once policy completion should produce exactly 8 WAL events"
+        completion.final_sequence, 9,
+        "Once policy completion should produce 8 mutations including lease grant plus \
+         StoreInitialized"
     );
 
     // 4) Pre-restart readback assertions + metrics parity
@@ -78,11 +79,12 @@ async fn once_accounting_proves_one_run_and_no_redispatch_after_restart() {
 
     // 6) No-redispatch proof
     support::assert_no_scheduled_runs_left(&data_dir);
-    let run_get_path = format!("/api/v1/runs/{}", completion.run_id);
+    let run_get_path = format!("/api/v2/runs/{}", completion.run_id);
     let run_get = support::get_json(&mut restarted_router, &run_get_path).await;
     assert_eq!(run_get["attempt_count"], 1);
     assert_eq!(run_get["state"], "Completed");
-    let history = run_get["state_history"].as_array().expect("state_history should be an array");
+    let history =
+        run_get["state_history"]["items"].as_array().expect("state_history should be an array");
     let tail = history.last().expect("state_history should not be empty");
     assert_eq!(tail["to"], "Completed");
 

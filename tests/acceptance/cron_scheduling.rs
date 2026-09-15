@@ -20,7 +20,9 @@ mod wf {
     use actionqueue_core::task::task_spec::{TaskPayload, TaskSpec};
     use actionqueue_engine::derive::cron::CRON_WINDOW_SIZE;
     use actionqueue_engine::time::clock::Clock;
-    use actionqueue_executor_local::handler::{ExecutorContext, ExecutorHandler, HandlerOutput};
+    use actionqueue_executor_local::handler::{
+        AttemptDisposition, ExecutorContext, ExecutorHandler,
+    };
     use actionqueue_runtime::config::RuntimeConfig;
     use actionqueue_runtime::engine::ActionQueueEngine;
 
@@ -28,8 +30,8 @@ mod wf {
     struct InstantSuccessHandler;
 
     impl ExecutorHandler for InstantSuccessHandler {
-        fn execute(&self, _ctx: ExecutorContext) -> HandlerOutput {
-            HandlerOutput::Success { output: None, consumption: vec![] }
+        fn execute(&self, _ctx: ExecutorContext) -> AttemptDisposition {
+            actionqueue_core::disposition::AttemptDisposition::complete(None)
         }
     }
 
@@ -70,7 +72,12 @@ mod wf {
         let clock = AdvancableClock::new(1000);
 
         let engine = ActionQueueEngine::new(engine_config(&data_dir), InstantSuccessHandler);
-        let mut eng = engine.bootstrap_with_clock(clock).expect("bootstrap must succeed");
+        let mut eng = engine
+            .bootstrap_with_clock(clock)
+            .expect("bootstrap must succeed")
+            .with_host(crate::support::host_support::host(
+                actionqueue_core::control::ControlScope::SingleTenant,
+            ));
 
         // Unbounded cron: no max_occurrences limit.
         let cron_policy = CronPolicy::new("* * * * * * *").expect("valid cron expression");
@@ -108,7 +115,12 @@ mod wf {
 
         let clock = AdvancableClock::new(1000);
         let engine = ActionQueueEngine::new(engine_config(&data_dir), InstantSuccessHandler);
-        let mut eng = engine.bootstrap_with_clock(clock).expect("bootstrap must succeed");
+        let mut eng = engine
+            .bootstrap_with_clock(clock)
+            .expect("bootstrap must succeed")
+            .with_host(crate::support::host_support::host(
+                actionqueue_core::control::ControlScope::SingleTenant,
+            ));
 
         let cron_policy = CronPolicy::new("* * * * * * *")
             .expect("valid cron expression")
@@ -146,7 +158,12 @@ mod wf {
 
         let clock = AdvancableClock::new(1000);
         let engine = ActionQueueEngine::new(engine_config(&data_dir), InstantSuccessHandler);
-        let mut eng = engine.bootstrap_with_clock(clock.clone()).expect("bootstrap must succeed");
+        let mut eng = engine
+            .bootstrap_with_clock(clock.clone())
+            .expect("bootstrap must succeed")
+            .with_host(crate::support::host_support::host(
+                actionqueue_core::control::ControlScope::SingleTenant,
+            ));
 
         let cron_policy = CronPolicy::new("* * * * * * *")
             .expect("valid cron expression")
@@ -214,7 +231,12 @@ mod wf {
 
         let clock = AdvancableClock::new(1000);
         let engine = ActionQueueEngine::new(engine_config(&data_dir), InstantSuccessHandler);
-        let mut eng = engine.bootstrap_with_clock(clock.clone()).expect("bootstrap must succeed");
+        let mut eng = engine
+            .bootstrap_with_clock(clock.clone())
+            .expect("bootstrap must succeed")
+            .with_host(crate::support::host_support::host(
+                actionqueue_core::control::ControlScope::SingleTenant,
+            ));
 
         // Unbounded cron — should maintain a rolling window of CRON_WINDOW_SIZE.
         let cron_policy = CronPolicy::new("* * * * * * *").expect("valid cron expression");

@@ -1,0 +1,21 @@
+{
+  "cargo_profile": "release",
+  "deferred_durability": {
+    "appends": 50000,
+    "appends_per_second": 966450,
+    "elapsed_ms": 51
+  },
+  "immediate_durability": {
+    "appends": 5000,
+    "appends_per_second": 825250,
+    "elapsed_ms": 6
+  },
+  "note": "environment-specific evidence captured at the pre-AQ-CONT-1 freeze; not a target threshold",
+  "wal_only_replay": {
+    "elapsed_ms": 88,
+    "records": 55000,
+    "records_per_second": 624101,
+    "replayed_tasks": 55000,
+    "wal_bytes": 2936980
+  }
+}

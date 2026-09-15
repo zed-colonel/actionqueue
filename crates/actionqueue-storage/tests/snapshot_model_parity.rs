@@ -4,7 +4,6 @@
 //! remain strict projections of canonical core semantics.
 
 use std::fs;
-use std::io::Write;
 use std::path::PathBuf;
 
 use actionqueue_core::budget::BudgetDimension;
@@ -42,6 +41,9 @@ fn test_attempt_entry_in_progress(
     started_at: u64,
 ) -> SnapshotAttemptHistoryEntry {
     SnapshotAttemptHistoryEntry {
+        disposition: None,
+        accepted_start: None,
+        finish_origin: Default::default(),
         attempt_id,
         started_at,
         finished_at: None,
@@ -116,11 +118,11 @@ fn run_with_state(task_id: TaskId, run_id_raw: u128, state: RunState) -> RunInst
         RunState::Canceled => {
             run.transition_to(RunState::Canceled).expect("scheduled->canceled should pass")
         }
-        RunState::Suspended => {
+        RunState::Suspended | RunState::Awaiting => {
             run.transition_to(RunState::Ready).expect("scheduled->ready should pass");
             run.transition_to(RunState::Leased).expect("ready->leased should pass");
             run.transition_to(RunState::Running).expect("leased->running should pass");
-            run.transition_to(RunState::Suspended).expect("running->suspended should pass");
+            run.transition_to(state).expect("running->waiting should pass");
         }
     }
 
@@ -198,27 +200,39 @@ fn snapshot_state_history_for_run(run: &RunInstance) -> Vec<SnapshotRunStateHist
         RunState::Canceled => {
             push_transition(RunState::Scheduled, RunState::Canceled);
         }
-        RunState::Suspended => {
+        RunState::Suspended | RunState::Awaiting => {
             push_transition(RunState::Scheduled, RunState::Ready);
             push_transition(RunState::Ready, RunState::Leased);
             push_transition(RunState::Leased, RunState::Running);
-            push_transition(RunState::Running, RunState::Suspended);
+            push_transition(RunState::Running, run.state());
         }
     }
 
     entries
 }
 
-fn write_framed_snapshot(path: &PathBuf, frame_version: u32, snapshot: &Snapshot) {
-    let payload = serde_json::to_vec(snapshot).expect("snapshot should serialize");
-    let mut file = std::fs::File::create(path).expect("snapshot file should be creatable");
-    file.write_all(&frame_version.to_le_bytes()).expect("version frame write should succeed");
-    file.write_all(&(payload.len() as u32).to_le_bytes())
-        .expect("length frame write should succeed");
-    let crc = crc32fast::hash(&payload);
-    file.write_all(&crc.to_le_bytes()).expect("crc frame write should succeed");
-    file.write_all(&payload).expect("payload frame write should succeed");
-    file.flush().expect("snapshot file flush should succeed");
+fn write_framed_snapshot(path: &std::path::Path, _version: u32, snapshot: &Snapshot) {
+    let envelope = serde_json::json!({
+        "store_id": uuid::Uuid::nil(), "snapshot_schema": 9, "projection_version": 9,
+        "wal_sequence": snapshot.metadata.wal_sequence,
+        "digest": {"algorithm":"sha256", "version":5,"hex":"unused for invalid schema"},
+        "reserved": {"waits":[],"checkpoints":[],"resume_assignments":[],"causal_control":[]},
+        "projection":snapshot
+    });
+    if snapshot.metadata.schema_version == SNAPSHOT_SCHEMA_VERSION {
+        use actionqueue_storage::snapshot::writer::{SnapshotFsWriter, SnapshotWriter};
+        let mut writer = SnapshotFsWriter::new_raw_for_test(path.to_path_buf()).unwrap();
+        writer.write(snapshot).unwrap();
+        writer.close().unwrap();
+    } else {
+        let payload = serde_json::to_vec(&envelope).unwrap();
+        let mut bytes = b"AQCONT1S".to_vec();
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&crc32fast::hash(&payload).to_le_bytes());
+        bytes.extend_from_slice(&payload);
+        fs::write(path, bytes).unwrap();
+    }
 }
 
 #[test]
@@ -258,7 +272,18 @@ fn d06_t_n1_mapping_boundary_rejects_duplicate_run_ids() {
         .expect("run should build");
 
     let snapshot = Snapshot {
-        version: 4,
+        control_history: vec![],
+        dispatch_sequences: Vec::new(),
+        administrative_wakes: Vec::new(),
+        administrative_pending: Vec::new(),
+        waits: vec![],
+        cancellations: vec![],
+        pending_resumes: vec![],
+        key_reservations: vec![],
+        signals: vec![],
+        last_signal_sequence: 0,
+        admissions: vec![],
+        version: 9,
         timestamp: 1,
         metadata: SnapshotMetadata {
             schema_version: SNAPSHOT_SCHEMA_VERSION,
@@ -307,84 +332,57 @@ fn d06_t_n1_mapping_boundary_rejects_duplicate_run_ids() {
 
 #[test]
 fn d06_t_n2_loader_rejects_snapshot_payload_that_fails_mapping_invariants() {
+    use actionqueue_storage::{
+        recovery::reducer::ReplayReducer,
+        snapshot::build::build_snapshot_from_projection,
+        wal::event::{WalEvent, WalEventType},
+    };
     let path = temp_snapshot_path();
     let task_id = TaskId::from_uuid(uuid::Uuid::from_u128(0xA200));
-    let run_id = RunId::from_uuid(uuid::Uuid::from_u128(0xB200));
-
-    // Ready with scheduled_at > created_at is rejected at deserialization.
-    let invalid_json = serde_json::json!({
-        "id": run_id,
-        "task_id": task_id,
-        "state": "Ready",
-        "current_attempt_id": null,
-        "attempt_count": 0,
-        "created_at": 1_000,
-        "scheduled_at": 2_000,
-        "effective_priority": 0
-    });
-    let deser_result = serde_json::from_value::<RunInstance>(invalid_json);
-    assert!(
-        deser_result.is_err(),
-        "Ready with scheduled_at > created_at must be rejected at deserialization"
-    );
-
-    // Also verify the loader rejects a raw snapshot containing this violation.
-    // Build the snapshot JSON by hand (bypassing RunInstance construction).
-    let snapshot_json = serde_json::json!({
-        "version": 4,
-        "timestamp": 2,
-        "metadata": {
-            "schema_version": SNAPSHOT_SCHEMA_VERSION,
-            "wal_sequence": 20,
-            "task_count": 1,
-            "run_count": 1
-        },
-        "tasks": [{
-            "task_spec": serde_json::to_value(task_spec_with_id(task_id))
-                .expect("task spec should serialize"),
-            "created_at": 0,
-            "updated_at": null,
-            "canceled_at": null
-        }],
-        "runs": [{
-            "run_instance": {
-                "id": run_id,
-                "task_id": task_id,
-                "state": "Ready",
-                "current_attempt_id": null,
-                "attempt_count": 0,
-                "created_at": 1_000,
-                "scheduled_at": 2_000,
-                "effective_priority": 0,
-                "last_state_change_at": 0
+    let mut projection = ReplayReducer::new();
+    projection
+        .apply(&WalEvent::new(
+            1,
+            WalEventType::TaskCreated { task_spec: task_spec_with_id(task_id), timestamp: 1000 },
+        ))
+        .unwrap();
+    projection
+        .apply(&WalEvent::new(
+            2,
+            WalEventType::RunCreated {
+                run_instance: run_with_state(task_id, 0xB200, RunState::Scheduled),
             },
-            "state_history": [{"from": null, "to": "Scheduled", "timestamp": 1_000}],
-            "attempt_history": []
-        }],
-        "engine": { "is_paused": false, "paused_at": null }
+        ))
+        .unwrap();
+    let snapshot = build_snapshot_from_projection(&projection, 1000).unwrap();
+    let mut snapshot_json = serde_json::to_value(snapshot).unwrap();
+    // An active attempt outside Running is invalid, independently of scheduling.
+    let run_json = &mut snapshot_json["runs"][0]["run_instance"];
+    run_json["current_attempt_id"] = serde_json::json!(AttemptId::new());
+    let error = serde_json::from_value::<RunInstance>(run_json.clone()).unwrap_err();
+    assert!(error.to_string().contains("active attempt_id is only valid in Running state"));
+    let envelope = serde_json::json!({
+        "store_id": uuid::Uuid::nil(), "snapshot_schema": 9, "projection_version": 9,
+        "wal_sequence": 2,
+        "digest": {"algorithm":"sha256", "version":5,"hex":"domain validation must fail first"},
+        "reserved": {"waits":[],"checkpoints":[],"resume_assignments":[],"causal_control":[]},
+        "projection": snapshot_json
     });
-
-    let payload = serde_json::to_vec(&snapshot_json).expect("raw snapshot json should serialize");
-    let crc = crc32fast::hash(&payload);
-    {
-        let mut file = std::fs::File::create(&path).expect("snapshot file should be creatable");
-        file.write_all(&4u32.to_le_bytes()).expect("version write");
-        file.write_all(&(payload.len() as u32).to_le_bytes()).expect("length write");
-        file.write_all(&crc.to_le_bytes()).expect("crc write");
-        file.write_all(&payload).expect("payload write");
-        file.flush().expect("flush");
-    }
-
-    let mut loader = SnapshotFsLoader::new(path.clone());
-    let load_result = loader.load();
-
-    // Rejected at serde decode (DecodeError) due to causality constraint.
+    let payload = serde_json::to_vec(&envelope).unwrap();
+    let mut bytes = b"AQCONT1S".to_vec();
+    bytes.extend_from_slice(&1u32.to_le_bytes());
+    bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(&crc32fast::hash(&payload).to_le_bytes());
+    bytes.extend_from_slice(&payload);
+    fs::write(&path, &bytes).unwrap();
+    let error = SnapshotFsLoader::new(path.clone()).load().unwrap_err();
     assert!(
-        matches!(load_result, Err(SnapshotLoaderError::DecodeError(_))),
-        "snapshot with invalid Ready causality must be rejected, got: {load_result:?}"
+        matches!(error, SnapshotLoaderError::DecodeError(ref message)
+        if message.contains("active attempt_id is only valid in Running state")),
+        "{error}"
     );
-
-    let _ = fs::remove_file(path);
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+    fs::remove_file(path).unwrap();
 }
 
 #[test]
@@ -394,7 +392,18 @@ fn d06_t_n3_schema_migration_guard_rejects_unknown_schema_version() {
     let run = run_with_state(task_id, 0xB300, RunState::Scheduled);
 
     let snapshot = Snapshot {
-        version: 4,
+        control_history: vec![],
+        dispatch_sequences: Vec::new(),
+        administrative_wakes: Vec::new(),
+        administrative_pending: Vec::new(),
+        waits: vec![],
+        cancellations: vec![],
+        pending_resumes: vec![],
+        key_reservations: vec![],
+        signals: vec![],
+        last_signal_sequence: 0,
+        admissions: vec![],
+        version: 9,
         timestamp: 3,
         metadata: SnapshotMetadata {
             schema_version: SNAPSHOT_SCHEMA_VERSION + 1,
@@ -520,7 +529,18 @@ fn d06_t_n6_mapping_rejects_attempt_history_count_mismatch() {
 fn p6_011_t_n3_mapping_rejects_task_canceled_at_before_created_at() {
     let task_id = TaskId::from_uuid(uuid::Uuid::from_u128(0xA700));
     let snapshot = Snapshot {
-        version: 4,
+        control_history: vec![],
+        dispatch_sequences: Vec::new(),
+        administrative_wakes: Vec::new(),
+        administrative_pending: Vec::new(),
+        waits: vec![],
+        cancellations: vec![],
+        pending_resumes: vec![],
+        key_reservations: vec![],
+        signals: vec![],
+        last_signal_sequence: 0,
+        admissions: vec![],
+        version: 9,
         timestamp: 7,
         metadata: SnapshotMetadata {
             schema_version: SNAPSHOT_SCHEMA_VERSION,
@@ -560,7 +580,18 @@ fn p6_011_t_n3_mapping_rejects_task_canceled_at_before_created_at() {
 fn p6_013_t_n5_mapping_rejects_engine_paused_without_paused_at() {
     let task_id = TaskId::from_uuid(uuid::Uuid::from_u128(0xA800));
     let snapshot = Snapshot {
-        version: 4,
+        control_history: vec![],
+        dispatch_sequences: Vec::new(),
+        administrative_wakes: Vec::new(),
+        administrative_pending: Vec::new(),
+        waits: vec![],
+        cancellations: vec![],
+        pending_resumes: vec![],
+        key_reservations: vec![],
+        signals: vec![],
+        last_signal_sequence: 0,
+        admissions: vec![],
+        version: 9,
         timestamp: 8,
         metadata: SnapshotMetadata {
             schema_version: SNAPSHOT_SCHEMA_VERSION,
@@ -589,7 +620,18 @@ fn p6_013_t_n5_mapping_rejects_engine_paused_without_paused_at() {
 fn p6_013_t_n6_mapping_rejects_engine_pause_resume_ordering() {
     let task_id = TaskId::from_uuid(uuid::Uuid::from_u128(0xA801));
     let snapshot = Snapshot {
-        version: 4,
+        control_history: vec![],
+        dispatch_sequences: Vec::new(),
+        administrative_wakes: Vec::new(),
+        administrative_pending: Vec::new(),
+        waits: vec![],
+        cancellations: vec![],
+        pending_resumes: vec![],
+        key_reservations: vec![],
+        signals: vec![],
+        last_signal_sequence: 0,
+        admissions: vec![],
+        version: 9,
         timestamp: 9,
         metadata: SnapshotMetadata {
             schema_version: SNAPSHOT_SCHEMA_VERSION,
@@ -642,6 +684,9 @@ fn p6_017_t_p3_snapshot_mapping_preserves_timeout_attempt_result_and_error() {
     let mut snapshot_run = map_core_run_to_snapshot(run);
     snapshot_run.state_history = snapshot_state_history_for_run(&snapshot_run.run_instance);
     snapshot_run.attempts = vec![SnapshotAttemptHistoryEntry {
+        disposition: None,
+        accepted_start: None,
+        finish_origin: Default::default(),
         attempt_id,
         started_at: 1_001,
         finished_at: Some(1_002),
@@ -673,7 +718,18 @@ fn dependency_declarations_survive_snapshot_roundtrip() {
     let path = temp_snapshot_path();
 
     let snapshot = Snapshot {
-        version: 4,
+        control_history: vec![],
+        dispatch_sequences: Vec::new(),
+        administrative_wakes: Vec::new(),
+        administrative_pending: Vec::new(),
+        waits: vec![],
+        cancellations: vec![],
+        pending_resumes: vec![],
+        key_reservations: vec![],
+        signals: vec![],
+        last_signal_sequence: 0,
+        admissions: vec![],
+        version: 9,
         timestamp: 100,
         metadata: SnapshotMetadata {
             schema_version: SNAPSHOT_SCHEMA_VERSION,
@@ -734,7 +790,18 @@ fn budget_entries_roundtrip_through_snapshot() {
     let path = temp_snapshot_path();
 
     let snapshot = Snapshot {
-        version: 4,
+        control_history: vec![],
+        dispatch_sequences: Vec::new(),
+        administrative_wakes: Vec::new(),
+        administrative_pending: Vec::new(),
+        waits: vec![],
+        cancellations: vec![],
+        pending_resumes: vec![],
+        key_reservations: vec![],
+        signals: vec![],
+        last_signal_sequence: 0,
+        admissions: vec![],
+        version: 9,
         timestamp: 100,
         metadata: SnapshotMetadata {
             schema_version: SNAPSHOT_SCHEMA_VERSION,
@@ -791,7 +858,18 @@ fn subscription_entries_roundtrip_through_snapshot() {
     let path = temp_snapshot_path();
 
     let snapshot = Snapshot {
-        version: 4,
+        control_history: vec![],
+        dispatch_sequences: Vec::new(),
+        administrative_wakes: Vec::new(),
+        administrative_pending: Vec::new(),
+        waits: vec![],
+        cancellations: vec![],
+        pending_resumes: vec![],
+        key_reservations: vec![],
+        signals: vec![],
+        last_signal_sequence: 0,
+        admissions: vec![],
+        version: 9,
         timestamp: 100,
         metadata: SnapshotMetadata {
             schema_version: SNAPSHOT_SCHEMA_VERSION,
@@ -805,6 +883,7 @@ fn subscription_entries_roundtrip_through_snapshot() {
         dependency_declarations: Vec::new(),
         budgets: Vec::new(),
         subscriptions: vec![SnapshotSubscription {
+            matched_sequence: None,
             subscription_id: sub_id,
             task_id,
             filter: EventFilter::TaskCompleted { task_id },
@@ -877,7 +956,18 @@ fn suspended_run_state_in_snapshot_history() {
     };
 
     let snapshot = Snapshot {
-        version: 4,
+        control_history: vec![],
+        dispatch_sequences: Vec::new(),
+        administrative_wakes: Vec::new(),
+        administrative_pending: Vec::new(),
+        waits: vec![],
+        cancellations: vec![],
+        pending_resumes: vec![],
+        key_reservations: vec![],
+        signals: vec![],
+        last_signal_sequence: 0,
+        admissions: vec![],
+        version: 9,
         timestamp: 100,
         metadata: SnapshotMetadata {
             schema_version: SNAPSHOT_SCHEMA_VERSION,

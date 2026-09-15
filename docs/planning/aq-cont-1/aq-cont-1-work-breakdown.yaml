@@ -1,0 +1,226 @@
+document: AQ-CONT-1 Implementation Plan
+status: development-planning-baseline-with-developmental-execution-profile
+date: '2026-08-10'
+planning_profile: AQ-PLAN-2
+contract: AQ-CONT-1
+stack_revision: STACK-2026-07-20-CLEAN-1
+developmental_diagnostics_profile: STACK-DEVELOPMENTAL-DIAGNOSTICS-1
+normative_protocol_change: false
+repository: zed-colonel/actionqueue
+baseline_commit: 97c9dc26c19c697dbfb204ed503e82c5f053394f
+clean_break:
+  legacy_runtime_compatibility: false
+  legacy_store_readers: false
+  live_dual_authority: false
+  offline_characterization: true
+  integration_branch: aq-cont-1
+  baseline_tag: actionqueue/pre-aq-cont-1
+developmental_execution_profile:
+  document: aq-cont-1-developmental-campaign-execution-profile.md
+  acceptance_matrix: aq-cont-1-developmental-campaign-acceptance-matrix.yaml
+  case_count: 18
+  rules:
+  - use existing trace, correlation, causation, and bounded origin_ref seams only
+  - campaign and arm attribution cannot change scheduler or authority behavior
+  - no queue-owned developmental ontology or free-form experiment metadata
+  - physical attempts are not application-owned samples or replications
+  - queue terminal states are execution facts, not performance or acceptance judgments
+pull_requests:
+- id: AQ-01
+  title: Freeze evidence, establish the development contract, and install developmental neutrality checks
+  depends_on: []
+  risk: medium
+  primary_areas:
+  - contract
+  - conformance
+  - archive
+  exit_gate: Baseline green; contract, archive, and boundary checks installed.
+  developmental_profile_additions:
+  - commit the developmental campaign execution profile and eighteen-case matrix
+  - forbid queue-owned campaign/evaluation types, free-form experiment metadata, and campaign scheduler backchannels
+- id: AQ-02
+  title: Introduce target core vocabulary, state, routing terminology, and neutral causal attribution
+  depends_on:
+  - AQ-01
+  risk: high
+  primary_areas:
+  - actionqueue-core
+  exit_gate: Pure types, Awaiting transitions, serialization, and terminology tests pass.
+  developmental_profile_additions:
+  - document correlation_id and origin_ref as bounded opaque attribution only
+  - add no campaign, intervention-arm, benchmark, binding-constraint, or saturation type
+- id: AQ-03
+  title: Establish the fresh AQ-CONT-1 persistence lineage
+  depends_on:
+  - AQ-02
+  risk: critical
+  primary_areas:
+  - actionqueue-storage
+  - runtime-bootstrap
+  exit_gate: Target replay, reject-old, backup/restore, and projection equivalence pass.
+- id: AQ-04
+  title: Implement compound idempotent task admission
+  depends_on:
+  - AQ-03
+  risk: critical
+  primary_areas:
+  - core
+  - engine
+  - storage
+  - runtime
+  exit_gate: Admission conflict, race, crash, and replay suites pass.
+  developmental_profile_additions:
+  - prove stable developmental execution-unit keys deduplicate and changed digest-bearing meaning conflicts
+- id: AQ-05
+  title: Add durable signal admission and retained signal indexing
+  depends_on:
+  - AQ-03
+  risk: high
+  primary_areas:
+  - core
+  - engine
+  - storage
+  - runtime
+  exit_gate: Signal deduplication, conflict, sequence, retention, and replay pass.
+- id: AQ-06
+  title: Implement Awaiting, waits, deadlines, and race-free matching
+  depends_on:
+  - AQ-05
+  risk: critical
+  primary_areas:
+  - core
+  - engine
+  - storage
+  - runtime
+  exit_gate: Full no-lost-wakeup, timeout, cancellation, and recovery matrix passes.
+  developmental_profile_additions:
+  - prove asynchronous developmental work resumes once without special queue semantics
+- id: AQ-07
+  title: Add immutable checkpoints and resume context
+  depends_on:
+  - AQ-06
+  risk: high
+  primary_areas:
+  - core
+  - storage
+  - executor-local
+  - runtime
+  exit_gate: Checkpoint and exactly-once resume-context crash suite passes.
+  developmental_profile_additions:
+  - preserve checkpoint and resume lineage needed to distinguish recovery from fresh application work
+- id: AQ-08
+  title: Replace HandlerOutput with AttemptDisposition
+  depends_on:
+  - AQ-04
+  - AQ-06
+  - AQ-07
+  risk: critical
+  primary_areas:
+  - executor-local
+  - core
+  - storage
+  - runtime
+  exit_gate: One target handler path; lease-fenced compound disposition tests pass.
+- id: AQ-09
+  title: Rebuild workflow coordination around transactional child admission
+  depends_on:
+  - AQ-08
+  risk: critical
+  primary_areas:
+  - workflow
+  - runtime
+  - storage
+  exit_gate: Child/wait atomicity, DAG, hierarchy, and recovery tests pass.
+  developmental_profile_additions:
+  - prove bounded arm fan-out uses ordinary atomic child admission and DAG semantics
+- id: AQ-10
+  title: Separate budgets and internal reactivity from durable continuation
+  depends_on:
+  - AQ-06
+  - AQ-08
+  risk: high
+  primary_areas:
+  - budget
+  - core
+  - runtime
+  exit_gate: Budget/suspension/awaiting feature matrix passes; external custom events removed.
+- id: AQ-11
+  title: Update remote actors, platform controls, and mutation attribution
+  depends_on:
+  - AQ-08
+  - AQ-10
+  risk: high
+  primary_areas:
+  - actor
+  - platform
+  - runtime
+  exit_gate: Fence, tenant, routing-trait, and control-attribution suites pass.
+  developmental_profile_additions:
+  - prove campaign references grant no tenant, routing, or control authority
+- id: AQ-12
+  title: Complete APIs, structural developmental inspection, and observability
+  depends_on:
+  - AQ-04
+  - AQ-05
+  - AQ-06
+  - AQ-07
+  - AQ-08
+  - AQ-09
+  - AQ-10
+  - AQ-11
+  risk: high
+  primary_areas:
+  - runtime
+  - daemon
+  - cli
+  exit_gate: Embedded/daemon/CLI parity, structural origin/correlation inspection, security, redaction, and no-semantic-output
+    tests pass.
+  developmental_profile_additions:
+  - support authorized exact correlation and origin filtering with redaction
+  - show explicit ordinary scheduling-field differences and no winner/score/saturation/acceptance output
+  - keep developmental identifiers out of metric labels
+- id: AQ-13
+  title: Build conformance, model, chaos, performance, and developmental-neutrality suites
+  depends_on:
+  - AQ-12
+  risk: critical
+  primary_areas:
+  - conformance
+  - acceptance
+  - chaos
+  - benchmarks
+  exit_gate: Full target conformance and crash matrix plus all 18 AQ-DD developmental-neutrality cases pass with
+    immutable fixture hashes.
+  developmental_profile_additions:
+  - run all eighteen AQ-DD cases with required replay and crash variants
+  - prove reference neutrality and execution-versus-evaluation separation
+- id: AQ-14
+  title: Release cutover and downstream developmental-profile handoff
+  depends_on:
+  - AQ-13
+  risk: high
+  primary_areas:
+  - release
+  - documentation
+  - downstream-example
+  exit_gate: All release blockers clear; target release, conformance manifest, and additive developmental execution
+    profile are published.
+  developmental_profile_additions:
+  - publish the additive profile and matrix with no protocol or authority-path change
+  - include developmental profile revision and matrix hash in the release manifest
+release_order:
+- AQ-CONT-1
+- WI-FABRIC-2
+- EXO-V3
+release_additions:
+- publish aq-cont-1-developmental-campaign-execution-profile.md
+- publish aq-cont-1-developmental-campaign-acceptance-matrix.yaml and hash
+- declare AQ-CONT-1 protocol and authority paths unchanged by the profile
+forbidden_release_symbols:
+- HandlerOutput
+- TaskSubmissionPort
+- SubmissionChannel
+- ActorCapabilities
+- required_capabilities
+- EventFilter::Custom
+- ActionQueueEvent::CustomEvent

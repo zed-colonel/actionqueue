@@ -1,0 +1,299 @@
+[
+  {
+    "id": "serialization",
+    "point": "compound_after_serialization",
+    "kind": 336,
+    "occurrence": 1,
+    "steps": [
+      {
+        "op": "start",
+        "task": 1
+      },
+      {
+        "op": "fanout",
+        "task": 1,
+        "children": [
+          2,
+          3
+        ]
+      }
+    ],
+    "outcome": "absent"
+  },
+  {
+    "id": "append",
+    "point": "wal_before_append",
+    "kind": 336,
+    "occurrence": 1,
+    "steps": [
+      {
+        "op": "start",
+        "task": 1
+      },
+      {
+        "op": "fanout",
+        "task": 1,
+        "children": [
+          2,
+          3
+        ]
+      }
+    ],
+    "outcome": "absent"
+  },
+  {
+    "id": "sync",
+    "point": "wal_before_sync",
+    "kind": 336,
+    "occurrence": 1,
+    "steps": [
+      {
+        "op": "start",
+        "task": 1
+      },
+      {
+        "op": "fanout",
+        "task": 1,
+        "children": [
+          2,
+          3
+        ]
+      }
+    ],
+    "outcome": "optional"
+  },
+  {
+    "id": "publication",
+    "point": "authority_before_publish",
+    "kind": 336,
+    "occurrence": 1,
+    "steps": [
+      {
+        "op": "start",
+        "task": 1
+      },
+      {
+        "op": "fanout",
+        "task": 1,
+        "children": [
+          2,
+          3
+        ]
+      }
+    ],
+    "outcome": "compound"
+  },
+  {
+    "id": "disposition_response",
+    "point": "authority_after_publish",
+    "kind": 336,
+    "occurrence": 1,
+    "steps": [
+      {
+        "op": "start",
+        "task": 1
+      },
+      {
+        "op": "fanout",
+        "task": 1,
+        "children": [
+          2,
+          3
+        ]
+      }
+    ],
+    "outcome": "compound"
+  },
+  {
+    "id": "partial_header",
+    "point": "wal_partial_header",
+    "kind": 336,
+    "occurrence": 1,
+    "steps": [
+      {
+        "op": "start",
+        "task": 1
+      },
+      {
+        "op": "fanout",
+        "task": 1,
+        "children": [
+          2,
+          3
+        ]
+      }
+    ],
+    "outcome": "absent"
+  },
+  {
+    "id": "partial_payload",
+    "point": "wal_partial_payload",
+    "kind": 336,
+    "occurrence": 1,
+    "steps": [
+      {
+        "op": "start",
+        "task": 1
+      },
+      {
+        "op": "fanout",
+        "task": 1,
+        "children": [
+          2,
+          3
+        ]
+      }
+    ],
+    "outcome": "absent"
+  },
+  {
+    "id": "admission_response",
+    "point": "authority_after_publish",
+    "kind": 256,
+    "occurrence": 1,
+    "steps": [
+      {
+        "op": "start",
+        "task": 1
+      }
+    ],
+    "outcome": "admitted"
+  },
+  {
+    "id": "signal_matching",
+    "point": "authority_after_publish",
+    "kind": 288,
+    "occurrence": 1,
+    "steps": [
+      {
+        "op": "start",
+        "task": 1
+      },
+      {
+        "op": "wait",
+        "task": 1,
+        "deadline": null
+      },
+      {
+        "op": "signal",
+        "signal": 1
+      }
+    ],
+    "outcome": "signal"
+  },
+  {
+    "id": "wait_scan",
+    "point": "authority_after_publish",
+    "kind": 304,
+    "occurrence": 1,
+    "steps": [
+      {
+        "op": "start",
+        "task": 1
+      },
+      {
+        "op": "wait",
+        "task": 1,
+        "deadline": null
+      }
+    ],
+    "outcome": "wait"
+  },
+  {
+    "id": "wake_dispatch",
+    "point": "authority_after_publish",
+    "kind": 305,
+    "occurrence": 1,
+    "steps": [
+      {
+        "op": "start",
+        "task": 1
+      },
+      {
+        "op": "wait",
+        "task": 1,
+        "deadline": null
+      },
+      {
+        "op": "signal",
+        "signal": 1
+      }
+    ],
+    "outcome": "wake"
+  },
+  {
+    "id": "snapshot_before_rename",
+    "point": "snapshot_before_rename",
+    "kind": null,
+    "occurrence": 1,
+    "steps": [
+      {
+        "op": "start",
+        "task": 1
+      },
+      {
+        "op": "fanout",
+        "task": 1,
+        "children": [
+          2,
+          3
+        ]
+      },
+      {
+        "op": "snapshot"
+      }
+    ],
+    "outcome": "compound"
+  },
+  {
+    "id": "snapshot_after_rename",
+    "point": "snapshot_after_rename",
+    "kind": null,
+    "occurrence": 1,
+    "steps": [
+      {
+        "op": "start",
+        "task": 1
+      },
+      {
+        "op": "fanout",
+        "task": 1,
+        "children": [
+          2,
+          3
+        ]
+      },
+      {
+        "op": "snapshot"
+      }
+    ],
+    "outcome": "compound"
+  },
+  {
+    "id": "accepted_resume",
+    "point": "authority_after_publish",
+    "kind": 19,
+    "occurrence": 2,
+    "steps": [
+      {
+        "op": "start",
+        "task": 1
+      },
+      {
+        "op": "wait",
+        "task": 1,
+        "deadline": null
+      },
+      {
+        "op": "signal",
+        "signal": 1
+      },
+      {
+        "op": "finish",
+        "task": 1,
+        "success": true
+      }
+    ],
+    "outcome": "accepted"
+  }
+]

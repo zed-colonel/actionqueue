@@ -45,7 +45,7 @@ where
 
 /// Creates a deterministic test WAL directory isolated per scenario label.
 fn wal_test_dir(label: &str) -> PathBuf {
-    let dir = PathBuf::from("target").join("tmp").join(format!(
+    let dir = std::env::temp_dir().join(format!(
         "{label}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
@@ -96,7 +96,10 @@ fn cm_a_sequence_collision_rejected_by_authority() {
     let run_id = run_ids[0];
 
     // Step 3: Create a StorageMutationAuthority from the recovery.
-    let mut authority = StorageMutationAuthority::new(recovery.wal_writer, recovery.projection);
+    let mut authority = StorageMutationAuthority::new(recovery.wal_writer, recovery.projection)
+        .with_host(crate::support::host_support::host(
+            actionqueue_core::control::ControlScope::SingleTenant,
+        ));
 
     // Record the projection state before the stale command.
     let pre_sequence = authority.projection().latest_sequence();
@@ -173,7 +176,10 @@ fn cm_b_sequential_mutations_preserve_monotonicity() {
     assert_eq!(run_ids.len(), 1, "task should have exactly one run");
     let run_id = run_ids[0];
 
-    let mut authority = StorageMutationAuthority::new(recovery.wal_writer, recovery.projection);
+    let mut authority = StorageMutationAuthority::new(recovery.wal_writer, recovery.projection)
+        .with_host(crate::support::host_support::host(
+            actionqueue_core::control::ControlScope::SingleTenant,
+        ));
 
     // Record sequence after bootstrap.
     let mut previous_sequence = authority.projection().latest_sequence();
@@ -270,7 +276,7 @@ fn cm_c_wal_writer_rejects_non_monotonic_append() {
     let task_spec = test_task_spec(task_id);
 
     // Step 1: Create a WAL file with WalFsWriter.
-    let mut writer = WalFsWriter::new(wal_path.clone())
+    let mut writer = WalFsWriter::new_raw_for_test(wal_path.clone())
         .expect("WAL writer creation should succeed for new file");
 
     // Step 2: Append an event with sequence=1.
