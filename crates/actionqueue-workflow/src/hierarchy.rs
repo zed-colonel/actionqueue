@@ -153,11 +153,6 @@ impl HierarchyTracker {
         Ok(())
     }
 
-    /// Returns an iterator over the direct children of `parent`.
-    pub fn children_of(&self, parent: TaskId) -> impl Iterator<Item = TaskId> + '_ {
-        self.children.get(&parent).into_iter().flat_map(|s| s.iter().copied())
-    }
-
     /// Returns the parent of `child`, if any.
     pub fn parent_of(&self, child: TaskId) -> Option<TaskId> {
         self.parents.get(&child).copied()

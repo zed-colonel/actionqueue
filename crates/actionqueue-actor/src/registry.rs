@@ -77,11 +77,6 @@ impl ActorRegistry {
         };
         ids.iter().copied().filter(|&id| self.is_active(id)).collect()
     }
-
-    /// Returns an iterator over all actor IDs (active and deregistered).
-    pub fn all_actor_ids(&self) -> impl Iterator<Item = ActorId> + '_ {
-        self.actors.keys().copied()
-    }
 }
 
 #[cfg(test)]

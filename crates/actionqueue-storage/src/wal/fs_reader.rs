@@ -53,9 +53,6 @@ impl WalFsReader {
     pub fn is_end(&self) -> bool {
         self.is_end
     }
-    pub fn reset_eof(&mut self) {
-        self.is_end = false;
-    }
     pub fn position(&mut self) -> Result<u64, WalReaderError> {
         self.file.stream_position().map_err(|e| WalReaderError::IoError(e.to_string()))
     }

@@ -164,8 +164,6 @@ pub trait WalWriter {
 /// Errors that can occur during WAL writing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WalWriterError {
-    /// The writer was closed.
-    Closed,
     /// I/O error during write.
     IoError(String),
     /// The event could not be encoded.
@@ -185,7 +183,6 @@ pub enum WalWriterError {
 impl std::fmt::Display for WalWriterError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            WalWriterError::Closed => write!(f, "WAL writer is closed"),
             WalWriterError::IoError(e) => write!(f, "I/O error: {e}"),
             WalWriterError::EncodeError(e) => write!(f, "Encode error: {e}"),
             WalWriterError::SequenceViolation { expected, provided } => {

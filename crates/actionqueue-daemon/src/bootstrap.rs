@@ -362,10 +362,9 @@ pub fn bootstrap_with_authenticator(
 fn map_recovery_error(error: RecoveryBootstrapError) -> BootstrapError {
     match error {
         RecoveryBootstrapError::WalInit(msg) => BootstrapError::WalInit(msg),
-        RecoveryBootstrapError::WalRead(msg)
-        | RecoveryBootstrapError::SnapshotLoad(msg)
-        | RecoveryBootstrapError::WalReplay(msg)
-        | RecoveryBootstrapError::SnapshotBootstrap(msg) => BootstrapError::Dependency(msg),
+        RecoveryBootstrapError::WalReplay(msg) | RecoveryBootstrapError::SnapshotBootstrap(msg) => {
+            BootstrapError::Dependency(msg)
+        }
     }
 }
 

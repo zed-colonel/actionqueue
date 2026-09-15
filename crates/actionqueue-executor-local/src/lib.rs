@@ -22,7 +22,6 @@ pub mod attempt_runner;
 pub mod backoff;
 pub mod children;
 pub mod handler;
-pub mod identity;
 pub mod pool;
 pub mod timeout;
 pub mod types;
@@ -38,7 +37,6 @@ pub use handler::{
     AttemptDisposition, AttemptMetadata, ExecutorContext, ExecutorHandler, HandlerInput,
 };
 pub use handler::{CancellationContext, CancellationToken};
-pub use identity::{ExecutorIdentity, LocalExecutorIdentity};
 pub use pool::{DispatchQueue, DispatchQueueError};
 pub use timeout::{
     classify_timeout, GuardedExecution, SystemTimeoutClock, TimeoutClassification, TimeoutClock,

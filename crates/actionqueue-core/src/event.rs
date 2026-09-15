@@ -48,11 +48,6 @@ pub enum ActionQueueEvent {
         /// The actor that deregistered.
         actor_id: ActorId,
     },
-    /// A remote actor's heartbeat timed out.
-    ActorHeartbeatTimeout {
-        /// The actor whose heartbeat timed out.
-        actor_id: ActorId,
-    },
     /// A ledger entry was appended in the platform layer.
     LedgerEntryAppended {
         /// The tenant whose ledger received the entry.

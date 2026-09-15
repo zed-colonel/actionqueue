@@ -166,17 +166,6 @@ impl DependencyGate {
         self.prerequisites.contains_key(&task_id)
     }
 
-    /// Returns all task_ids that are waiting for their prerequisites to be met.
-    ///
-    /// Excludes tasks whose prerequisites have all been satisfied and tasks
-    /// whose prerequisites have failed (those are in the `failed` set).
-    pub fn waiting_task_ids(&self) -> impl Iterator<Item = TaskId> + '_ {
-        self.prerequisites
-            .keys()
-            .copied()
-            .filter(move |&id| !self.satisfied.contains(&id) && !self.failed.contains(&id))
-    }
-
     /// Called when a prerequisite task has reached terminal success.
     ///
     /// Returns the list of task_ids that became newly eligible as a result

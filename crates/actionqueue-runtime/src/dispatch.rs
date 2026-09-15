@@ -33,7 +33,6 @@ use actionqueue_engine::selection::default_selector::{ready_inputs_from_index, s
 use actionqueue_engine::time::clock::Clock;
 use actionqueue_executor_local::backoff::BackoffStrategy;
 use actionqueue_executor_local::handler::ExecutorHandler;
-use actionqueue_executor_local::identity::{ExecutorIdentity, LocalExecutorIdentity};
 use actionqueue_executor_local::types::ExecutorRequest;
 use actionqueue_executor_local::{AttemptRunner, SystemAttemptTimer};
 use actionqueue_storage::mutation::authority::{MutationAuthorityError, StorageMutationAuthority};
@@ -236,26 +235,22 @@ impl std::fmt::Display for DispatchError {
 
 impl std::error::Error for DispatchError {}
 
+/// Lease owner recorded for attempts the in-process executor runs.
+const LOCAL_LEASE_OWNER: &str = "runtime";
+
 /// The core dispatch loop that composes all engine primitives.
 ///
 /// Workers execute handler logic via `tokio::task::spawn_blocking` and send
 /// results back through an unbounded MPSC channel. All WAL mutation authority
 /// remains exclusively owned by the dispatch loop — workers never touch the WAL.
-///
-/// The `I: ExecutorIdentity` generic defaults to `LocalExecutorIdentity` so
-/// existing construction sites don't need changes for v0.x. Sprint 4 remote
-/// actors will supply their own identity via this parameter.
 pub struct DispatchLoop<
     W: WalWriter,
     H: ExecutorHandler,
     C: Clock = actionqueue_engine::time::clock::SystemClock,
-    I: ExecutorIdentity = LocalExecutorIdentity,
 > {
     authority: StorageMutationAuthority<W, ReplayReducer>,
     runner: Arc<AttemptRunner<H, SystemAttemptTimer>>,
     clock: C,
-    /// Identity of the executor acquiring leases.
-    identity: I,
     local_executor_traits: Option<actionqueue_core::executor::ExecutorTraits>,
     key_gate: KeyGate,
     backoff: Box<dyn BackoffStrategy + Send + Sync>,
@@ -561,7 +556,6 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
             authority,
             runner: Arc::new(AttemptRunner::new(handler)),
             clock,
-            identity: LocalExecutorIdentity,
             local_executor_traits: config.local_executor_traits,
             key_gate: KeyGate::new(),
             backoff,
@@ -1027,7 +1021,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
                     run.state() == RunState::Running
                         && run.current_attempt_id() == Some(inf.attempt_id)
                 }) && self.projection().get_lease_metadata(&inf.run_id).is_some_and(|lease| {
-                    lease.owner() == self.identity.identity()
+                    lease.owner() == LOCAL_LEASE_OWNER
                         && current_time < lease.expiry()
                         && current_time.saturating_add(heartbeat_threshold) >= lease.expiry()
                         && self
@@ -1063,7 +1057,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
                     MutationCommand::LeaseHeartbeat(LeaseHeartbeatCommand::new(
                         seq,
                         run_id,
-                        self.identity.identity(),
+                        LOCAL_LEASE_OWNER,
                         new_expiry,
                         current_time,
                     )),
@@ -1501,7 +1495,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
             &mut self.authority,
             run.id(),
             attempt_id,
-            self.identity.identity(),
+            LOCAL_LEASE_OWNER,
             current_time,
             lease_expiry,
         )

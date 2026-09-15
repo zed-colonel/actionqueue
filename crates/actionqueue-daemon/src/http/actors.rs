@@ -31,12 +31,6 @@ pub struct RegisterActorRequest {
     pub tenant_id: Option<actionqueue_core::ids::TenantId>,
 }
 
-/// Response body for actor registration.
-#[derive(serde::Serialize)]
-pub struct RegisterActorResponse {
-    pub actor_id: ActorId,
-}
-
 /// Registers routes for the actor API.
 pub fn register_routes(router: axum::Router<RouterState>) -> axum::Router<RouterState> {
     router

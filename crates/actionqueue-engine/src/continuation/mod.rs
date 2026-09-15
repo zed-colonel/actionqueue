@@ -17,5 +17,3 @@ pub fn satisfy(
 pub fn timeout(sequence: u64, run_id: RunId, wait_id: WaitId, now: u64) -> MutationCommand {
     MutationCommand::WaitTimeout(WaitTimeoutCommand::new(sequence, run_id, wait_id, now))
 }
-
-pub mod retention;

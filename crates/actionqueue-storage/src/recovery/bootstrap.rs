@@ -48,8 +48,6 @@ pub struct RecoveryBootstrap {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecoveryBootstrapError {
     WalInit(String),
-    WalRead(String),
-    SnapshotLoad(String),
     WalReplay(String),
     SnapshotBootstrap(String),
 }

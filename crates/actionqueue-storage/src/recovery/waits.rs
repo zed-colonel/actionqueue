@@ -275,32 +275,6 @@ impl ReplayReducer {
                 .iter()
                 .any(|id| s > after(&self.waits.records[id].spec))
     }
-    pub fn signal_retirement_candidates(
-        &self,
-        tenant: Option<TenantId>,
-        policy: actionqueue_core::limits::SignalRetentionPolicy,
-        now: u64,
-        limit: usize,
-    ) -> Vec<SignalSequence> {
-        self.signals
-            .records()
-            .filter(|r| {
-                r.is_retained()
-                    && r.envelope().tenant_id == tenant
-                    && policy.permits(
-                        actionqueue_core::limits::SignalRetentionCandidate {
-                            received_at: r.envelope().received_at,
-                            sequence: r.sequence().get(),
-                            protected: self.signal_is_protected(r.sequence()),
-                        },
-                        self.signals.last_sequence().get(),
-                        now,
-                    )
-            })
-            .take(limit.min(actionqueue_core::limits::MAX_SIGNAL_BATCH))
-            .map(|r| r.sequence())
-            .collect()
-    }
     fn wait_sequence(&self, seq: u64) -> Result<(), WaitRejection> {
         if self.latest_sequence.checked_add(1) != Some(seq) {
             Err(WaitRejection::StaleSequence)
