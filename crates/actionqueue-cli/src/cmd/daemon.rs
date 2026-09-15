@@ -20,6 +20,15 @@ pub fn run(args: DaemonArgs) -> Result<CommandOutput, CliError> {
         config.metrics_bind = Some(parse_socket_addr(metrics_bind, "metrics_bind")?);
     }
     config.enable_control = args.enable_control;
+    for label in &args.signal_metric_labels {
+        let Some((namespace, kind)) = label.split_once(':') else {
+            return Err(CliError::validation(
+                "daemon_config_invalid",
+                format!("invalid signal metric label '{label}': expected namespace:kind"),
+            ));
+        };
+        config.signal_metric_allowlist.insert((namespace.to_string(), kind.to_string()));
+    }
 
     config.validate().map_err(|error| {
         CliError::validation(
@@ -148,6 +157,7 @@ mod tests {
             bind: None,
             metrics_bind: None,
             enable_control: true,
+            signal_metric_labels: Vec::new(),
             json: true,
         };
         assert!(run(args.clone()).is_err());
@@ -166,5 +176,25 @@ mod tests {
         )
         .is_ok());
         std::fs::remove_dir_all(root).unwrap();
+    }
+    /// Label pairs are validated with the daemon configuration before any store is opened.
+    #[test]
+    fn signal_metric_labels_are_validated_before_bootstrap() {
+        let root = std::env::temp_dir()
+            .join(format!("aq-cli-labels-{}", actionqueue_core::ids::TaskId::new()));
+        let args = |labels: &[&str]| DaemonArgs {
+            auth_file: None,
+            data_dir: Some(root.join("store")),
+            bind: None,
+            metrics_bind: None,
+            enable_control: false,
+            signal_metric_labels: labels.iter().map(|l| l.to_string()).collect(),
+            json: true,
+        };
+        for invalid in [&["no-separator"][..], &["missing-kind:"], &[":missing-namespace"]] {
+            let error = run(args(invalid)).unwrap_err();
+            assert_eq!(error.code(), "daemon_config_invalid", "{invalid:?}");
+        }
+        assert!(!root.exists(), "rejected labels must not create a store");
     }
 }

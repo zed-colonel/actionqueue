@@ -6,6 +6,7 @@ The canonical executable is `actionqueue`.
 
 ```text
 actionqueue daemon --data-dir STORE --enable-control --auth-file host.json
+actionqueue daemon --data-dir STORE --signal-metric-label NAMESPACE:KIND --auth-file host.json
 actionqueue ensure-task --file request.json --daemon http://127.0.0.1:8787 --token-file token
 actionqueue task inspect TASK_ID --offline --data-dir STORE --json
 actionqueue admission inspect --key KEY --offline --data-dir STORE

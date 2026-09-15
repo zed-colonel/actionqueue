@@ -215,6 +215,16 @@ macro_rules! get {
             inspect(s, h, q, move |i| value(i.$method(id)?)).await
         }
     };
+    ($name:ident, $id:ty, $method:ident, query) => {
+        async fn $name(
+            State(s): State<RouterState>,
+            Extension(h): Extension<HostControlContext>,
+            Path(id): Path<$id>,
+            Params(q): Params<Query>,
+        ) -> Response {
+            inspect(s, h, q.clone(), move |i| value(i.$method(id, &q)?)).await
+        }
+    };
 }
 get!(task, TaskId, get_task);
 get!(run, RunId, get_run);
@@ -250,46 +260,11 @@ async fn signal_waits(
     };
     inspect(s, h, q.clone(), move |i| value(i.linked_waits(&id, &q)?)).await
 }
-async fn checkpoint_consumers(
-    State(s): State<RouterState>,
-    Extension(h): Extension<HostControlContext>,
-    Path(id): Path<CheckpointId>,
-    Params(q): Params<Query>,
-) -> Response {
-    inspect(s, h, q.clone(), move |i| value(i.checkpoint_consumers(id, &q)?)).await
-}
-async fn attempts(
-    State(s): State<RouterState>,
-    Extension(h): Extension<HostControlContext>,
-    Path(run): Path<RunId>,
-    Params(q): Params<Query>,
-) -> Response {
-    inspect(s, h, q.clone(), move |i| value(i.list_attempts(run, &q)?)).await
-}
-async fn task_controls(
-    State(s): State<RouterState>,
-    Extension(h): Extension<HostControlContext>,
-    Path(id): Path<TaskId>,
-    Params(q): Params<Query>,
-) -> Response {
-    inspect(s, h, q.clone(), move |i| value(i.task_controls(id, &q)?)).await
-}
-async fn run_controls(
-    State(s): State<RouterState>,
-    Extension(h): Extension<HostControlContext>,
-    Path(id): Path<RunId>,
-    Params(q): Params<Query>,
-) -> Response {
-    inspect(s, h, q.clone(), move |i| value(i.run_controls(id, &q)?)).await
-}
-async fn history(
-    State(s): State<RouterState>,
-    Extension(h): Extension<HostControlContext>,
-    Path(run): Path<RunId>,
-    Params(q): Params<Query>,
-) -> Response {
-    inspect(s, h, q.clone(), move |i| value(i.run_history(run, &q)?)).await
-}
+get!(checkpoint_consumers, CheckpointId, checkpoint_consumers, query);
+get!(attempts, RunId, list_attempts, query);
+get!(task_controls, TaskId, task_controls, query);
+get!(run_controls, RunId, run_controls, query);
+get!(history, RunId, run_history, query);
 #[derive(Deserialize)]
 struct AdmissionQuery {
     key: AdmissionKey,

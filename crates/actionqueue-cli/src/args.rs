@@ -29,6 +29,8 @@ pub struct DaemonArgs {
     pub metrics_bind: Option<String>,
     /// Explicit control-endpoint enablement.
     pub enable_control: bool,
+    /// `namespace:kind` pairs reported as distinct signal metric labels.
+    pub signal_metric_labels: Vec<String>,
     /// Emit JSON success payload on stdout when true.
     pub json: bool,
 }
@@ -108,12 +110,16 @@ fn parse_daemon(args: &[String]) -> Result<Command, String> {
     let mut metrics_bind: Option<String> = None;
     let mut auth_file = None;
     let mut enable_control = false;
+    let mut signal_metric_labels = Vec::new();
     let mut json = false;
 
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--data-dir" => data_dir = Some(PathBuf::from(require_value(&mut iter, "--data-dir")?)),
+            "--signal-metric-label" => {
+                signal_metric_labels.push(require_value(&mut iter, "--signal-metric-label")?)
+            }
             "--bind" => bind = Some(require_value(&mut iter, "--bind")?),
             "--metrics-bind" => metrics_bind = Some(require_value(&mut iter, "--metrics-bind")?),
             "--auth-file" => {
@@ -135,6 +141,7 @@ fn parse_daemon(args: &[String]) -> Result<Command, String> {
         bind,
         metrics_bind,
         enable_control,
+        signal_metric_labels,
         json,
     }))
 }
@@ -150,6 +157,10 @@ Options:
     --metrics-bind <ADDR>   Metrics endpoint bind address (default: 127.0.0.1:9090)
     --enable-control        Enable authenticated control endpoints (requires --auth-file)
     --auth-file <PATH>      Trusted host bearer identity configuration
+    --signal-metric-label <NAMESPACE:KIND>
+                            Report this signal namespace/kind as its own metric
+                            label pair (repeatable, at most 64); all other pairs
+                            share the overflow bucket
     --json                  Emit machine-readable JSON on stdout
     --help, -h              Show this help message
 "#;

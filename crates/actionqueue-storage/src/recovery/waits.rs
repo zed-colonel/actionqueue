@@ -228,7 +228,7 @@ impl ReplayReducer {
             resumed_at: r.timestamp,
         }
     }
-    pub fn earliest_signal(&self, spec: &WaitSpec) -> Option<SignalSequence> {
+    fn earliest_signal(&self, spec: &WaitSpec) -> Option<SignalSequence> {
         self.signals
             .retained_candidates(spec.filter()?, after(spec), 1)
             .first()

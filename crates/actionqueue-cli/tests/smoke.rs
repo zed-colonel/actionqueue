@@ -383,6 +383,8 @@ fn daemon_serves_authenticated_cli_requests_and_releases_store_on_sigterm() {
             &address,
             "--metrics-bind",
             &metrics_address,
+            "--signal-metric-label",
+            "reference:effect-reconciled",
             "--enable-control",
             "--auth-file",
         ])

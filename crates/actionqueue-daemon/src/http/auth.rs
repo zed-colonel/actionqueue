@@ -20,43 +20,38 @@ pub type HostAuthenticator = Arc<
 /// The host could not authenticate this request.
 #[derive(Debug, Clone, Copy)]
 pub struct AuthenticationError;
+/// Fail-closed host authentication: without a configured hook, or when the hook
+/// rejects, nothing downstream sees a `HostControlContext`.
+async fn run_authenticated(state: &RouterState, mut request: Request, next: Next) -> Response {
+    let host = state
+        .host_authenticator
+        .as_ref()
+        .and_then(|hook| hook(request.headers(), request.uri()).ok());
+    let Some(host) = host else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    request.extensions_mut().insert(host);
+    next.run(request).await
+}
 /// Authentication middleware for actor/platform/control routes, which are
 /// registered only when control is enabled.
 pub async fn authenticate(
     State(state): State<RouterState>,
-    mut request: Request,
+    request: Request,
     next: Next,
 ) -> Response {
     super::maintenance::start(&state);
-    let Some(hook) = &state.host_authenticator else {
-        return StatusCode::UNAUTHORIZED.into_response();
-    };
-    let host = match hook(request.headers(), request.uri()) {
-        Ok(host) => host,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
-    };
-    request.extensions_mut().insert(host);
-    next.run(request).await
+    run_authenticated(&state, request, next).await
 }
 
 /// Authentication for inspection is independent of the control-enable switch.
 /// Every store profile fails closed when no host hook is configured.
 pub async fn authenticate_inspection(
     State(state): State<RouterState>,
-    mut request: Request,
+    request: Request,
     next: Next,
 ) -> Response {
-    if let Some(hook) = &state.host_authenticator {
-        match hook(request.headers(), request.uri()) {
-            Ok(host) => {
-                request.extensions_mut().insert(host);
-            }
-            Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
-        }
-    } else {
-        return StatusCode::UNAUTHORIZED.into_response();
-    }
-    next.run(request).await
+    run_authenticated(&state, request, next).await
 }
 /// Builds a trusted bearer hook from operator-owned configuration bytes. This is
 /// configuration ingress, never an HTTP request body. Each token binds exactly

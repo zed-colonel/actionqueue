@@ -32,6 +32,14 @@ impl InspectionIndex {
         }
     }
 }
+/// Recorded queue object affected by a control frame; never derived from time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ControlTarget {
+    Task(TaskId),
+    Run(actionqueue_core::ids::RunId),
+    Wait(actionqueue_core::ids::WaitId),
+    Signal(actionqueue_core::ids::SignalSequence),
+}
 impl super::reducer::ReplayReducer {
     /// Exact, namespace-local lookup; no parsing or normalization of references.
     pub fn tasks_by_reference(
@@ -46,9 +54,6 @@ impl super::reducer::ReplayReducer {
             .into_iter()
             .flat_map(|ids| ids.iter().copied())
     }
-}
-
-impl super::reducer::ReplayReducer {
     /// Control targets are recorded identities, never inferred from wall-clock timestamps.
     pub fn task_control_sequence(&self, task: TaskId) -> Option<u64> {
         self.control_sequences(ControlTarget::Task(task)).next_back().or_else(|| {
@@ -58,17 +63,6 @@ impl super::reducer::ReplayReducer {
                 .or_else(|| self.task_admission(task).map(|a| a.sequence()))
         })
     }
-}
-
-/// Recorded queue object affected by a control frame; never derived from time.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ControlTarget {
-    Task(TaskId),
-    Run(actionqueue_core::ids::RunId),
-    Wait(actionqueue_core::ids::WaitId),
-    Signal(actionqueue_core::ids::SignalSequence),
-}
-impl super::reducer::ReplayReducer {
     /// False only for a standalone snapshot before retained-WAL indexes are restored.
     pub fn control_targets_available(&self) -> bool {
         !self.inspection_index.history_unavailable

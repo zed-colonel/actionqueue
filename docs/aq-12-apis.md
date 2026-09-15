@@ -137,7 +137,9 @@ metrics scrapes do not add observations.
 
 Signal namespace/kind labels default to `overflow/overflow`.
 `DaemonConfig::signal_metric_allowlist` and `QueueTelemetry::set_signal_allowlist` accept at most 64 validated pairs before
-observation begins; all other pairs remain in the single overflow bucket. No
+observation begins; all other pairs remain in the single overflow bucket. The CLI
+daemon fills that allowlist from repeatable `--signal-metric-label namespace:kind`
+flags and reports every signal under the overflow bucket when none is given. No
 identity, opaque causal/control reference, payload, external locator or arbitrary
 error becomes a metric label. Histogram observations are accumulated once at
 commit, with cumulative count/sum and the positive-infinity bucket.
