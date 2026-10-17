@@ -1,0 +1,86 @@
+document: AQ-PERF-1 Implementation Plan
+status: planned
+date: '2026-10-17'
+plan_revision: AQ-PERF-1-PLAN-1
+repository: zed-colonel/actionqueue
+baseline_commit: 29e096c4f06985d1a9bd9d5fe5a3a6a5db8a6860
+baseline_release: 0.2.0
+target_release: 0.3.0
+integration_branch: aq-perf-1
+normative_contract_change: false
+release_policy: One 0.3.0 release after every item lands. release.py verify and the crates.io publish
+  are run by the operator outside CraftingTable.
+checks: .craftingtable/checks.json, committed with this plan and adopted by the operator before AQ-P1.
+pull_requests:
+- id: AQ-P1
+  title: Retained-history scale benchmark with the 0.2.0 baseline
+  depends_on: []
+  risk: low
+  primary_areas:
+  - benches
+  - storage-telemetry
+  exit_gate: benches/retained_history.rs measures, at a given number of retained terminal runs,
+    per-admission and per-cancellation time, full-projection clones and reducer visits, and WAL-only
+    and snapshot-plus-tail bootstrap time. The 0.2.0 baseline at 1,000 and 10,000 runs is recorded;
+    timing stays informational, structural counts are asserted. The adopted checks (fmt, clippy,
+    test-default, test-all-features) pass.
+- id: AQ-P2
+  title: Mutation cost independent of retained history
+  depends_on:
+  - AQ-P1
+  risk: high
+  primary_areas:
+  - storage-reducer
+  - mutation-authority
+  - runtime-dispatch
+  - daemon-publication
+  exit_gate: At 100,000 retained runs, per-admission and per-cancellation cost stays within twice its cost
+    at 1,000 (the benchmark), with no full-projection copy per mutation, counted. Every crash-atomicity
+    acceptance suite passes unchanged (a fenced authority's image equals the pre-mutation image at each
+    fault point). The runtime's per-admission rebuilds and the daemon's per-mutation publication cost the
+    change, not the history. Projection digests and the WAL and snapshot formats are unchanged. An ADR
+    records the approach chosen in the design step.
+- id: AQ-P3
+  title: Bounded bootstrap from a WAL-bound snapshot plus tail, with full verification as an explicit command
+  depends_on:
+  - AQ-P2
+  risk: high
+  primary_areas:
+  - recovery
+  - snapshot-format
+  - wal
+  - cli
+  exit_gate: Starts by measuring bootstrap again after AQ-P2 and scopes the rest by that measurement.
+    Bootstrap time follows the WAL tail after the latest snapshot, not total history (the benchmark at
+    10,000 and 100,000 runs). A snapshot is bound to its WAL prefix and published from the live
+    projection without replaying that prefix. The operation-history index survives hydration. Full
+    verification is an explicit store verify command and part of backup verification. Any snapshot
+    schema change has a documented upgrade path. An ADR records it, and the docs that say recovery
+    validates against the complete WAL are amended; the frozen contracts are not edited.
+- id: AQ-P4
+  title: 'Retained terminal history: design only'
+  depends_on:
+  - AQ-P2
+  risk: medium
+  primary_areas:
+  - retention
+  - recovery
+  - contract
+  exit_gate: An accepted ADR for keeping terminal runs out of the live projection (archive or compaction)
+    within the hardening contract's preservation rules (section 21.5), with its format, digest and
+    WAL-retention consequences and a scoped follow-up plan. No format change ships in this plan.
+- id: AQ-P5
+  title: 0.3.0 release candidate
+  depends_on:
+  - AQ-P2
+  - AQ-P3
+  - AQ-P4
+  risk: medium
+  primary_areas:
+  - release
+  - docs
+  - downstream
+  exit_gate: Workspace versions are 0.3.0. docs/releases/0.3.0.md gives the release notes and upgrade
+    notes (recovery behaviour, any snapshot schema change, the verify command, measured budgets).
+    release.py prepare passes. The operator runs release.py verify and the publish after merge; the
+    WorldInterface pin bump is a WorldInterface item.

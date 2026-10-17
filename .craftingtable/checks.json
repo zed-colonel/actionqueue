@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "checks": [
+    {
+      "id": "fmt",
+      "argv": ["cargo", "fmt", "--all", "--", "--check"],
+      "definitionPaths": ["rustfmt.toml", "rust-toolchain.toml", ".cargo/config.toml"]
+    },
+    {
+      "id": "clippy",
+      "argv": ["cargo", "clippy", "--locked", "--workspace", "--all-targets", "--features", "workflow,budget,actor,platform", "--", "-D", "warnings"],
+      "definitionPaths": ["clippy.toml", "rust-toolchain.toml", ".cargo/config.toml"]
+    },
+    {
+      "id": "test-default",
+      "argv": ["cargo", "test", "--locked", "--workspace", "--", "--test-threads=1"],
+      "definitionPaths": ["rust-toolchain.toml", ".cargo/config.toml"]
+    },
+    {
+      "id": "test-all-features",
+      "argv": ["cargo", "test", "--locked", "--workspace", "--features", "workflow,budget,actor,platform", "--", "--test-threads=1"],
+      "definitionPaths": ["rust-toolchain.toml", ".cargo/config.toml"]
+    }
+  ]
+}
