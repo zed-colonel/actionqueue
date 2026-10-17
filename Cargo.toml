@@ -425,6 +425,15 @@ name = "continuation"
 path = "benches/continuation.rs"
 harness = false
 
+[[bench]]
+name = "retained_history"
+path = "benches/retained_history.rs"
+harness = false
+
+[[test]]
+name = "acceptance_retained_history"
+path = "tests/acceptance/retained_history.rs"
+
 [[test]]
 name = "conformance_reference_adapter"
 path = "tests/conformance/reference_adapter.rs"
