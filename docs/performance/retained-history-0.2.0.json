@@ -1,0 +1,160 @@
+{
+  "environment": {
+    "label": "Instrumented ActionQueue 0.2.0 retained-history baseline",
+    "baseline_release": "0.2.0",
+    "baseline_revision": "29e096c4f06985d1a9bd9d5fe5a3a6a5db8a6860",
+    "starting_revision": "0b8d08ec1f9dc2caeaebe904ad2e58d9e5ccc9b8",
+    "measured_revision": "7986dde92a43306fed384c9e6ef41c3991b36384",
+    "command": [
+      "cargo",
+      "bench",
+      "--locked",
+      "--bench",
+      "retained_history",
+      "--",
+      "--retained-runs",
+      "1000",
+      "--retained-runs",
+      "10000"
+    ],
+    "profile": "bench (optimized, default Cargo bench profile)",
+    "root_features": [],
+    "storage_instrumentation_feature": "testing (root dev-dependency)",
+    "store_manifest_features": [],
+    "rustc": "rustc 1.89.0 (29483883e 2025-08-04)\nbinary: rustc\ncommit-hash: 29483883eed69d5fb4db01964cdf2af4d86e9cb2\ncommit-date: 2025-08-04\nhost: x86_64-unknown-linux-gnu\nrelease: 1.89.0\nLLVM version: 20.1.7",
+    "cargo": "cargo 1.89.0 (c24e10642 2025-06-23)",
+    "kernel": "Linux 7.2.5-3-omarchy x86_64 GNU/Linux",
+    "cpu": {
+      "Architecture": "x86_64",
+      "CPU(s)": "16",
+      "Model name": "Intel(R) Core(TM) i9-9900K CPU @ 3.60GHz",
+      "Thread(s) per core": "2",
+      "Core(s) per socket": "8",
+      "Socket(s)": "1"
+    },
+    "memory_total_bytes": 67329191936,
+    "temporary_storage": "Filesystem     Type 1K-blocks     Used Available Use% Mounted on\n/dev/nvme0n1p1 ext4 960310988 44247856 867208708   5% /mnt/workhorse/craftingtable/runs/4d4980d5-954e-4859-8ea2-0caa6b509597/scratch",
+    "storage_device": "nvme0n1 WDS100T3X0C-00SJG0   931.5G 0",
+    "storage_mount": "/dev/nvme0n1p1[/craftingtable/runs/4d4980d5-954e-4859-8ea2-0caa6b509597/scratch] ext4 rw,nosuid,nodev,relatime",
+    "cache_conditions": "Fresh temporary store per size; same process, sizes in ascending order; page cache not dropped. WAL just written/read before WAL-only recovery; snapshot just published with prefix verification before snapshot recovery. Shared workstation, no CPU pinning or isolation; one sample per size; compile time excluded from phase timings.",
+    "scope": "Filesystem storage authority, immediate durability, single-tenant scope without tenant identity; fixed three-byte payload, one Once run per task, retained canceled runs, no attempts or waits. Excludes runtime dependency rebuilding and daemon publication.",
+    "started_at_utc": "2026-10-17T22:52:37.369830+00:00",
+    "load_average_before": [
+      3.54052734375,
+      4.2060546875,
+      3.1796875
+    ],
+    "finished_at_utc": "2026-10-17T23:07:21.376291+00:00",
+    "command_wall_seconds_including_build_and_setup": 884.0063315680018,
+    "load_average_after": [
+      6.2314453125,
+      5.8515625,
+      4.85986328125
+    ],
+    "exit_code": 0
+  },
+  "results": [
+    {
+      "admission": {
+        "cloned_run_entries": 209900,
+        "elapsed_ns": 282475789,
+        "full_projection_clones": 200,
+        "mean_ns_per_operation": 2824757.89,
+        "operations": 100,
+        "reducer_event_visits": 100
+      },
+      "batch_size": 100,
+      "cancellation": {
+        "cloned_run_entries": 220000,
+        "elapsed_ns": 298927594,
+        "full_projection_clones": 200,
+        "mean_ns_per_operation": 2989275.94,
+        "operations": 100,
+        "reducer_event_visits": 100
+      },
+      "final_admissions": 1100,
+      "final_runs": 1100,
+      "final_sequence": 2201,
+      "final_tasks": 1100,
+      "prefix_events": 2001,
+      "projection_digest": {
+        "algorithm": "sha256",
+        "hex": "74efc9d100743c3cc0fff8922d3c5a75df846f5921fa0ce6afa64e1abc85fcbf",
+        "version": 9
+      },
+      "retained_terminal_runs": 1000,
+      "snapshot_bytes": 2619958,
+      "snapshot_plus_tail_bootstrap": {
+        "cloned_run_entries": 1429900,
+        "elapsed_ns": 1639763482,
+        "full_projection_clones": 2400,
+        "mean_ns_per_operation": 1639763482.0,
+        "operations": 1,
+        "reducer_event_visits": 2401
+      },
+      "tail_events": 200,
+      "wal_bytes": 837058,
+      "wal_only_bootstrap": {
+        "cloned_run_entries": 1214950,
+        "elapsed_ns": 931340949,
+        "full_projection_clones": 2200,
+        "mean_ns_per_operation": 931340949.0,
+        "operations": 1,
+        "reducer_event_visits": 2201
+      },
+      "wal_sha256": "c42873310ef54b1ccecf8226026696b60bcb1097f54759523c6bc34aff9211d7"
+    },
+    {
+      "admission": {
+        "cloned_run_entries": 2009900,
+        "elapsed_ns": 2619946202,
+        "full_projection_clones": 200,
+        "mean_ns_per_operation": 26199462.02,
+        "operations": 100,
+        "reducer_event_visits": 100
+      },
+      "batch_size": 100,
+      "cancellation": {
+        "cloned_run_entries": 2020000,
+        "elapsed_ns": 2542989151,
+        "full_projection_clones": 200,
+        "mean_ns_per_operation": 25429891.51,
+        "operations": 100,
+        "reducer_event_visits": 100
+      },
+      "final_admissions": 10100,
+      "final_runs": 10100,
+      "final_sequence": 20201,
+      "final_tasks": 10100,
+      "prefix_events": 20001,
+      "projection_digest": {
+        "algorithm": "sha256",
+        "hex": "18cbd6db6123e87251c3dec4d4df6dc3bf887fd0f0328ce3d76e2deb16cab871",
+        "version": 9
+      },
+      "retained_terminal_runs": 10000,
+      "snapshot_bytes": 26231173,
+      "snapshot_plus_tail_bootstrap": {
+        "cloned_run_entries": 104029900,
+        "elapsed_ns": 214391076573,
+        "full_projection_clones": 20400,
+        "mean_ns_per_operation": 214391076573.0,
+        "operations": 1,
+        "reducer_event_visits": 20401
+      },
+      "tail_events": 200,
+      "wal_bytes": 7689876,
+      "wal_only_bootstrap": {
+        "cloned_run_entries": 102014950,
+        "elapsed_ns": 184150172081,
+        "full_projection_clones": 20200,
+        "mean_ns_per_operation": 184150172081.0,
+        "operations": 1,
+        "reducer_event_visits": 20201
+      },
+      "wal_sha256": "971d353674a650b4cb31d5cab522cc45e3a6750583be96fab92e822937773b4d"
+    }
+  ],
+  "schema_version": 1,
+  "structural_expectations": "0.2.0"
+}

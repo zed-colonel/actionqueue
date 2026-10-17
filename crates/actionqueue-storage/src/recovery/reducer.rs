@@ -288,7 +288,7 @@ impl TaskRecord {
 }
 
 /// A reducer that applies WAL events to reconstruct state.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ReplayReducer {
     pub(crate) inspection_index: super::inspection::InspectionIndex,
     pub(crate) control_history:
@@ -363,6 +363,49 @@ pub struct ReplayReducer {
     pub(crate) capability_grants: HashMap<(ActorId, String, TenantId), CapabilityGrantRecord>,
     /// Ledger entries (append-only, ordered by insertion).
     pub(crate) ledger_entries: Vec<LedgerEntryRecord>,
+}
+
+impl Clone for ReplayReducer {
+    fn clone(&self) -> Self {
+        #[cfg(feature = "testing")]
+        super::work::projection_clone(self.run_instances.len());
+        Self {
+            inspection_index: self.inspection_index.clone(),
+            control_history: self.control_history.clone(),
+            dispatch_sequences: self.dispatch_sequences.clone(),
+            checkpoints: self.checkpoints.clone(),
+            administrative_wakes: self.administrative_wakes.clone(),
+            administrative_pending: self.administrative_pending.clone(),
+            waits: self.waits.clone(),
+            cancellations: self.cancellations.clone(),
+            key_reservations: self.key_reservations.clone(),
+            signals: self.signals.clone(),
+            admissions: self.admissions.clone(),
+            admission_by_task: self.admission_by_task.clone(),
+            runs: self.runs.clone(),
+            tasks: self.tasks.clone(),
+            run_instances: self.run_instances.clone(),
+            runs_by_task: self.runs_by_task.clone(),
+            run_history: self.run_history.clone(),
+            attempt_history: self.attempt_history.clone(),
+            leases: self.leases.clone(),
+            lease_metadata: self.lease_metadata.clone(),
+            latest_sequence: self.latest_sequence,
+            task_canceled_at: self.task_canceled_at.clone(),
+            engine_paused: self.engine_paused,
+            engine_paused_at: self.engine_paused_at,
+            engine_resumed_at: self.engine_resumed_at,
+            dependency_declarations: self.dependency_declarations.clone(),
+            dependency_declared_at: self.dependency_declared_at.clone(),
+            budgets: self.budgets.clone(),
+            subscriptions: self.subscriptions.clone(),
+            actors: self.actors.clone(),
+            tenants: self.tenants.clone(),
+            role_assignments: self.role_assignments.clone(),
+            capability_grants: self.capability_grants.clone(),
+            ledger_entries: self.ledger_entries.clone(),
+        }
+    }
 }
 
 impl ReplayReducer {
@@ -610,6 +653,8 @@ impl ReplayReducer {
     }
     /// Applies an event to the current state.
     pub fn apply(&mut self, event: &WalEvent) -> Result<(), ReplayReducerError> {
+        #[cfg(feature = "testing")]
+        super::work::reducer_event();
         // Validate sequence order (must be monotonically increasing).
         // This check also prevents duplicate events since a repeated sequence
         // would not be strictly greater than latest_sequence.

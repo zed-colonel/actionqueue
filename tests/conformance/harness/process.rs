@@ -2,10 +2,26 @@
 #![allow(dead_code)]
 use std::{
     io::{BufRead, BufReader},
+    path::PathBuf,
     process::{Child, Command, Stdio},
     sync::mpsc,
     time::Duration,
 };
+
+/// Cargo places test executables in `<profile>/deps` and examples in `<profile>/examples`.
+/// Resolve sibling artifacts from that location, including external target directories
+/// and release/custom profiles, rather than assuming `<checkout>/target/debug`.
+pub fn cargo_binary(relative: &str) -> PathBuf {
+    let executable = std::env::current_exe().expect("running Cargo executable");
+    let directory = executable.parent().expect("Cargo executable directory");
+    assert!(
+        matches!(directory.file_name().and_then(|s| s.to_str()), Some("deps" | "examples")),
+        "expected a Cargo test or example executable: {}",
+        executable.display()
+    );
+    directory.parent().expect("Cargo profile directory").join(relative)
+}
+
 pub struct Process(Child);
 impl Drop for Process {
     fn drop(&mut self) {
