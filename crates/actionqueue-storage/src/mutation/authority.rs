@@ -228,15 +228,16 @@ impl MutationProjection for ReplayReducer {
             if let actionqueue_core::task::run_policy::RunPolicy::Cron(policy) =
                 admission.request().task_spec().run_policy()
             {
-                let runs: Vec<_> = self.runs_for_task(run.task_id()).collect();
-                let after = runs
-                    .iter()
-                    .map(|r| r.scheduled_at())
-                    .max()
-                    .unwrap_or_else(|| run.created_at().saturating_sub(1));
+                let empty = Default::default();
+                let summary = self.derived.summaries.get(&run.task_id()).unwrap_or(&empty);
+                let after = if summary.total == 0 {
+                    run.created_at().saturating_sub(1)
+                } else {
+                    summary.last_scheduled
+                };
                 if !self.is_task_canceled(run.task_id())
-                    && policy.max_occurrences().is_none_or(|max| runs.len() < max as usize)
-                    && runs.iter().filter(|r| !r.state().is_terminal()).count()
+                    && policy.max_occurrences().is_none_or(|max| summary.total < max as usize)
+                    && summary.active
                         < actionqueue_core::task::run_policy::CRON_WINDOW_SIZE as usize
                     && run.created_at() >= admission.timestamp()
                     && policy.next_occurrences_after(after, 1).first() == Some(&run.scheduled_at())

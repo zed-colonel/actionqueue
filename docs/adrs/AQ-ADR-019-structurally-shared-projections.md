@@ -24,8 +24,9 @@ copying. Long-lived readers retain old paths and records until they drop their
 roots. Record copies and candidate visits are measured separately from shallow
 projection clones; wholesale copied run counts must remain zero.
 
-Measurements and acceptance results will be recorded after the measured spike and
-scale runs, using the retained-history workload from AQ-P1.
+The measured spike below uses the retained-history workload from AQ-P1. Final
+scale observations and acceptance results follow the linked measurement protocol
+and remain run-local verification artifacts.
 
 Runtime consumers use `ProjectionChange` for the last frame and sequence cursors
 for multi-frame services. The cursor indexes hold **one latest modification per
@@ -77,3 +78,7 @@ Attempt positions are keyed by run and attempt, retaining the first position for
 legacy duplicate identities. This preserves the historical first-match finish
 rejection while avoiding scans or copies of earlier attempt records. Accepted
 starts continue to enforce globally unique attempt identities.
+
+Subscription cancellation authorization uses direct identity lookup. Cron
+replenishment validation uses the same total/active/last-scheduled summary as
+terminality, so validating a new occurrence does not scan retained occurrences.
