@@ -58,6 +58,7 @@ pub struct ProjectionWork {
     pub shallow_projection_clones: usize,
     pub record_copies: usize,
     pub subscription_candidates: usize,
+    pub cancellation_run_candidates: usize,
     /// Sum of source run counts across complete reducer copies.
     pub cloned_run_entries: usize,
     /// Entries into `ReplayReducer::apply`, including nested and rejected applications.
@@ -71,6 +72,7 @@ thread_local! {
             shallow_projection_clones: 0,
             record_copies: 0,
             subscription_candidates: 0,
+            cancellation_run_candidates: 0,
             cloned_run_entries: 0,
             reducer_event_visits: 0,
         })
@@ -177,4 +179,13 @@ pub(crate) fn measure<T>(operation: impl FnOnce() -> T) -> (T, MatchingWork) {
     let result = operation();
     let work = MATCHING.with(|c| c.get().unwrap_or_default());
     (result, work)
+}
+
+#[cfg(feature = "testing")]
+pub(crate) fn cancellation_candidate() {
+    PROJECTION_WORK.with(|c| {
+        let mut w = c.get();
+        w.cancellation_run_candidates += 1;
+        c.set(w);
+    });
 }

@@ -57,3 +57,9 @@ Borrowed record getters remain available. History getters now return `History<T>
 instead of a contiguous slice; consumers that need ownership use `to_vec`.
 This is an in-memory Rust API change for the planned 0.3.0 release. WAL event DTOs,
 snapshot schema 9, canonical normalization, and digest encoding are unchanged.
+
+A follow-up review of the spike added an active-run index per task. Compound task
+cancellation and its subscription observations visit only unfinished runs, even
+when one repeating task owns a large terminal history. The structural workload
+also counts cancellation run candidates; a focused 1,001-run case requires one
+visit for its one unfinished run. The final record-copy counts include this index.

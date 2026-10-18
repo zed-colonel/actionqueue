@@ -702,10 +702,12 @@ impl ReplayReducer {
                 if !p.is_task_canceled(id) {
                     p.apply_task_canceled(&id, r.timestamp)?;
                 }
-                p.runs_for_task(id).map(|r| r.id()).collect()
+                p.active_run_ids_for_task(id).collect()
             }
         };
         for id in runs {
+            #[cfg(feature = "testing")]
+            super::work::cancellation_candidate();
             if p.get_run_state(&id).is_some_and(|s| s.is_terminal()) {
                 continue;
             }

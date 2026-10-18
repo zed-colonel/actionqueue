@@ -109,6 +109,7 @@ impl Measurement {
             "shallow_projection_clones": self.work.shallow_projection_clones,
             "record_copies": self.work.record_copies,
             "subscription_candidates": self.work.subscription_candidates,
+            "cancellation_run_candidates": self.work.cancellation_run_candidates,
             "reducer_event_visits": self.work.reducer_event_visits,
         })
     }
@@ -139,6 +140,7 @@ fn assert_shared(
     }
     assert_eq!(admission.work.shallow_projection_clones, 2 * BATCH);
     assert_eq!(cancel.work.shallow_projection_clones, 2 * BATCH);
+    assert_eq!(cancel.work.cancellation_run_candidates, BATCH);
     assert_eq!(admission.work.reducer_event_visits, BATCH);
     assert_eq!(cancel.work.reducer_event_visits, BATCH);
     // Path copying only edits the addressed task/run/bucket, independent of N.

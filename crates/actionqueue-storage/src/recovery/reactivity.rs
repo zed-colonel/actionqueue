@@ -90,7 +90,7 @@ impl ReplayReducer {
                     actionqueue_core::mutation::CancelTarget::Run(id) => runs.push(id),
                     actionqueue_core::mutation::CancelTarget::Task(id) => {
                         tasks.insert(id);
-                        runs.extend(self.runs_for_task(id).map(|r| r.id()));
+                        runs.extend(self.active_run_ids_for_task(id));
                     }
                 }
             }

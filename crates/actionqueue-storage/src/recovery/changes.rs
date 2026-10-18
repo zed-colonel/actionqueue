@@ -28,6 +28,7 @@ pub(crate) struct RunSummary {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct DerivedIndexes {
     pub attempt_positions: HashMap<AttemptId, (RunId, usize)>,
+    pub active_runs: HashMap<TaskId, BTreeSet<RunId>>,
     pub summaries: HashMap<TaskId, RunSummary>,
     pub children: HashMap<TaskId, BTreeSet<TaskId>>,
     pub dependents: HashMap<TaskId, BTreeSet<TaskId>>,
@@ -80,6 +81,10 @@ impl ReplayReducer {
     pub fn cancellation_targets(&self) -> impl Iterator<Item = TaskId> + '_ {
         self.derived.cancellation_targets.iter().copied()
     }
+    /// Only unfinished runs, excluding a task's retained terminal history.
+    pub fn active_run_ids_for_task(&self, task: TaskId) -> impl Iterator<Item = RunId> + '_ {
+        self.derived.active_runs.get(&task).into_iter().flat_map(|ids| ids.iter().copied())
+    }
     pub fn has_unfinished_runs(&self, task: TaskId) -> bool {
         self.derived.summaries.get(&task).is_some_and(|s| s.active > 0)
     }
@@ -94,6 +99,16 @@ impl ReplayReducer {
         before: Option<RunState>,
         after: RunState,
     ) {
+        if after.is_terminal() {
+            if let Some(ids) = self.derived.active_runs.get_mut(&run.task_id()) {
+                ids.remove(&run.id());
+                if ids.is_empty() {
+                    self.derived.active_runs.remove(&run.task_id());
+                }
+            }
+        } else {
+            self.derived.active_runs.entry(run.task_id()).or_default().insert(run.id());
+        }
         self.change.runs.insert(run.id());
         self.change.tasks.insert(run.task_id());
         let s = self.derived.summaries.entry(run.task_id()).or_default();
@@ -122,7 +137,9 @@ impl ReplayReducer {
             candidates.extend(
                 self.derived.dependents.get(id).into_iter().flat_map(|ids| ids.iter()).copied(),
             );
-            candidates.extend(self.children_of(*id));
+            if self.is_task_canceled(*id) {
+                candidates.extend(self.children_of(*id));
+            }
         }
         for id in &self.change.runs {
             if let Some(old) = self.derived.run_sequence.insert(*id, sequence) {
@@ -168,6 +185,9 @@ impl ReplayReducer {
         for run in self.run_instances.values() {
             let s = self.derived.summaries.entry(run.task_id()).or_default();
             s.total += 1;
+            if !run.state().is_terminal() {
+                self.derived.active_runs.entry(run.task_id()).or_default().insert(run.id());
+            }
             s.active += usize::from(!run.state().is_terminal());
             s.completed += usize::from(run.state() == RunState::Completed);
             s.last_scheduled = s.last_scheduled.max(run.scheduled_at());
@@ -211,5 +231,62 @@ impl ReplayReducer {
         };
         self.finish_change(self.latest_sequence);
         self.change = Default::default();
+    }
+}
+
+#[cfg(all(test, feature = "testing"))]
+mod tests {
+    use super::*;
+    use crate::{
+        mutation::wait::CancelRecord,
+        wal::event::{WalEvent, WalEventType as E},
+    };
+    use actionqueue_core::{
+        mutation::CancelTarget,
+        task::{
+            run_policy::RunPolicy,
+            task_spec::{TaskPayload, TaskSpec},
+        },
+    };
+    fn apply(p: &mut ReplayReducer, event: E) {
+        p.apply(&WalEvent::new(p.latest_sequence() + 1, event)).unwrap();
+    }
+    #[test]
+    fn cancellation_of_a_repeating_task_visits_only_its_unfinished_runs() {
+        let mut p = ReplayReducer::new();
+        let id = TaskId::new();
+        let task_spec = TaskSpec::new(
+            id,
+            TaskPayload::new(vec![]),
+            RunPolicy::repeat(1001, 1).unwrap(),
+            Default::default(),
+            Default::default(),
+        )
+        .unwrap();
+        apply(&mut p, E::TaskCreated { task_spec, timestamp: 1 });
+        for _ in 0..1000 {
+            let run_instance = RunInstance::new_scheduled(id, 1, 1).unwrap();
+            let run_id = run_instance.id();
+            apply(&mut p, E::RunCreated { run_instance });
+            apply(&mut p, E::RunCanceled { run_id, timestamp: 2 });
+        }
+        let run_instance = RunInstance::new_scheduled(id, 1, 1).unwrap();
+        let active = run_instance.id();
+        apply(&mut p, E::RunCreated { run_instance });
+        let before = p.clone();
+        super::super::work::reset_projection_work();
+        let record = CancelRecord {
+            target: CancelTarget::Task(id),
+            tenant_id: None,
+            sequence: p.latest_sequence() + 1,
+            timestamp: 3,
+            control_context: None,
+        };
+        apply(&mut p, E::TaskCancellationCommitted { record });
+        assert_eq!(super::super::work::projection_work().cancellation_run_candidates, 1);
+        assert_eq!(p.latest_change().runs.iter().copied().collect::<Vec<_>>(), vec![active]);
+        assert_eq!(before.active_run_ids_for_task(id).collect::<Vec<_>>(), vec![active]);
+        assert_eq!(p.active_run_ids_for_task(id).count(), 0);
+        assert_eq!(p.run_count(), 1001);
     }
 }

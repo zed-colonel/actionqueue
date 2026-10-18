@@ -89,3 +89,36 @@ fn change_cursors_preserve_multi_frame_updates_without_reconsuming_duplicates() 
     published.trim_terminal_history();
     assert!(!published.shares_revision_with(a.projection()));
 }
+
+#[test]
+fn snapshot_hydration_restores_derived_coordination_and_change_indexes() {
+    use actionqueue_storage::{
+        snapshot::{
+            build::build_snapshot_from_projection,
+            writer::{SnapshotFsWriter, SnapshotWriter},
+        },
+        wal::writer::WalWriter,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = open(dir.path());
+    ensure(&mut a, request(1), 42).unwrap();
+    ensure(&mut a, with_dependencies(&request(2), vec![id(1)]), 42).unwrap();
+    let snapshot = build_snapshot_from_projection(a.projection(), 43).unwrap();
+    let digest = a.projection().projection_digest().unwrap();
+    let mut writer = SnapshotFsWriter::new(a.store_session().unwrap()).unwrap();
+    writer.write(&snapshot).unwrap();
+    writer.close().unwrap();
+    let (writer, _) = a.into_parts();
+    writer.close().unwrap();
+    let recovered = load_existing_projection(dir.path()).unwrap();
+    assert!(recovered.snapshot_loaded);
+    let p = &recovered.projection;
+    assert_eq!(p.projection_digest().unwrap(), digest);
+    assert_eq!(p.active_run_ids_for_task(id(1)).count(), 3);
+    assert_eq!(p.active_run_ids_for_task(id(2)).count(), 3);
+    assert_eq!(p.changed_tasks_since(0).count(), 2);
+    assert_eq!(p.changed_runs_since(0).count(), 6);
+    assert_eq!(p.prerequisites_of(id(2)).collect::<Vec<_>>(), vec![id(1)]);
+    assert_eq!(p.task_terminal_status(id(1)), None);
+    recovered.wal_writer.close().unwrap();
+}
