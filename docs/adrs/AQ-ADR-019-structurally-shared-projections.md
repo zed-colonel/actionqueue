@@ -63,3 +63,12 @@ cancellation and its subscription observations visit only unfinished runs, even
 when one repeating task owns a large terminal history. The structural workload
 also counts cancellation run candidates; a focused 1,001-run case requires one
 visit for its one unfinished run. The final record-copy counts include this index.
+
+[Measurement protocol](../performance/retained-history-aq-p2.md) specifies the
+repeated scale run, runtime and daemon boundaries, and memory observations.
+Raw results and the final acceptance report are run-local verification artifacts.
+The memory representation adds one `Arc` slot per map/history record plus shared
+tree nodes and derived indexes. Cursor-index space is bounded by task/run count;
+it does not grow with repeated mutations of the same objects. Whole-process RSS
+also includes snapshot DTOs and canonical digest intermediates, which AQ-P2 does
+not change. Long-lived readers can retain old paths until their roots are dropped.
