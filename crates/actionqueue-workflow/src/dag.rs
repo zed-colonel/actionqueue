@@ -72,6 +72,7 @@ pub struct DependencyGate {
     ///
     /// Only contains tasks with declared dependencies (not all tasks).
     prerequisites: HashMap<TaskId, HashSet<TaskId>>,
+    dependents: HashMap<TaskId, HashSet<TaskId>>,
 
     /// task_ids all of whose prerequisites have reached terminal success.
     satisfied: HashSet<TaskId>,
@@ -109,9 +110,15 @@ impl DependencyGate {
 
         let entry = self.prerequisites.entry(task_id).or_default();
         for prereq in depends_on {
+            self.dependents.entry(prereq).or_default().insert(task_id);
             entry.insert(prereq);
         }
 
+        // A newly declared dependent of an already failed prerequisite must
+        // inherit failure, including when terminal prerequisite state was restored.
+        if self.prerequisites[&task_id].iter().any(|id| self.failed.contains(id)) {
+            let _ = self.notify_failed(task_id);
+        }
         // Re-evaluate satisfaction now that prerequisites have changed.
         self.recompute_satisfaction(task_id);
         Ok(())
@@ -178,10 +185,11 @@ impl DependencyGate {
 
         // Recompute satisfaction for all tasks that declare this task as a prerequisite.
         let dependents: Vec<TaskId> = self
-            .prerequisites
-            .iter()
-            .filter(|(_, prereqs)| prereqs.contains(&completed_task_id))
-            .map(|(task_id, _)| *task_id)
+            .dependents
+            .get(&completed_task_id)
+            .into_iter()
+            .flat_map(|ids| ids.iter())
+            .copied()
             .collect();
 
         let mut newly_eligible = Vec::new();
@@ -220,10 +228,11 @@ impl DependencyGate {
         while let Some(failed_id) = queue.pop_front() {
             // Find all tasks that depend on this failed task.
             let dependents: Vec<TaskId> = self
-                .prerequisites
-                .iter()
-                .filter(|(_, prereqs)| prereqs.contains(&failed_id))
-                .map(|(task_id, _)| *task_id)
+                .dependents
+                .get(&failed_id)
+                .into_iter()
+                .flat_map(|ids| ids.iter())
+                .copied()
                 .filter(|task_id| !self.failed.contains(task_id))
                 .collect();
 
@@ -254,10 +263,11 @@ impl DependencyGate {
         let mut queue: VecDeque<TaskId> = seeds.into_iter().collect();
         while let Some(failed_id) = queue.pop_front() {
             let dependents: Vec<TaskId> = self
-                .prerequisites
-                .iter()
-                .filter(|(_, prereqs)| prereqs.contains(&failed_id))
-                .map(|(task_id, _)| *task_id)
+                .dependents
+                .get(&failed_id)
+                .into_iter()
+                .flat_map(|ids| ids.iter())
+                .copied()
                 .filter(|task_id| !self.failed.contains(task_id))
                 .collect();
             for dep in dependents {
@@ -300,14 +310,27 @@ impl DependencyGate {
     ///   the remaining prerequisites still gate eligibility correctly.
     pub fn gc_task(&mut self, task_id: TaskId) {
         // Remove from direct state sets.
-        self.prerequisites.remove(&task_id);
+        if let Some(prereqs) = self.prerequisites.remove(&task_id) {
+            for prereq in prereqs {
+                if let Some(bucket) = self.dependents.get_mut(&prereq) {
+                    bucket.remove(&task_id);
+                    if bucket.is_empty() {
+                        self.dependents.remove(&prereq);
+                    }
+                }
+            }
+        }
         self.satisfied.remove(&task_id);
         self.completed.remove(&task_id);
         self.failed.remove(&task_id);
 
         // Remove task_id from other tasks' prerequisite sets.
-        for prereqs in self.prerequisites.values_mut() {
-            prereqs.remove(&task_id);
+        if let Some(dependents) = self.dependents.remove(&task_id) {
+            for dependent in dependents {
+                if let Some(prereqs) = self.prerequisites.get_mut(&dependent) {
+                    prereqs.remove(&task_id);
+                }
+            }
         }
     }
 

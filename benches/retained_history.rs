@@ -30,7 +30,7 @@ fn main() {
         "{}",
         serde_json::to_string_pretty(&serde_json::json!({
             "schema_version": 1,
-            "structural_expectations": "0.2.0",
+            "structural_expectations": "AQ-P2",
             "results": results,
         }))
         .unwrap()

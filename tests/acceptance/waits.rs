@@ -1231,3 +1231,35 @@ fn compound_cancellation_observes_wait_latency_once_and_leaves_unrelated_waits_a
         assert_eq!(a.projection().waits().active_count(), 0);
     }
 }
+
+#[test]
+fn cancellation_observes_only_its_resolved_wait_among_retained_wait_history() {
+    use actionqueue_storage::recovery::work;
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = s::open(dir.path());
+    for n in 1..=101 {
+        let run = running(&mut a, n, None, false);
+        establish_wait(&mut a, run, spec(WaitId::new(), None));
+        let before = a.projection().clone();
+        work::reset();
+        work::reset_projection_work();
+        let expected_sequence = seq(&a);
+        let _ = apply(
+            &mut a,
+            MutationCommand::Cancel(CancelCommand {
+                expected_sequence,
+                target: CancelTarget::Run(run),
+                tenant_id: None,
+                control_context: None,
+                timestamp: 30,
+            }),
+        );
+        assert_eq!(work::counts()[0], 0, "cancellation must not traverse retained waits");
+        assert!(work::projection_work().record_copies <= 64);
+        assert_eq!(work::projection_work().full_projection_clones, 0);
+        assert_eq!(a.projection().latest_change().resolved_waits.len(), 1);
+        assert!(before.waits().active(run).is_some());
+        assert!(a.projection().waits().active(run).is_none());
+    }
+    assert_eq!(a.telemetry().snapshot().wait_latency_count, 101);
+}

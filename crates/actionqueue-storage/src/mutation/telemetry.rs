@@ -110,8 +110,20 @@ impl QueueTelemetry {
                 // Compound cancellation derives its affected waits in the reducer. Observe
                 // exactly the resolutions published by this frame, including every affected run.
                 if let Some(waits) = p.wait_index() {
-                    for resolution in waits.records().filter_map(|w| w.resolution.as_ref()) {
-                        if resolution.sequence == record.sequence {
+                    if let Some(ids) = p.resolved_wait_ids() {
+                        for id in ids {
+                            if let Some(resolution) =
+                                waits.get(id).and_then(|w| w.resolution.as_ref())
+                            {
+                                resolved(&mut o, resolution);
+                            }
+                        }
+                    } else {
+                        for resolution in waits
+                            .records()
+                            .filter_map(|w| w.resolution.as_ref())
+                            .filter(|r| r.sequence == record.sequence)
+                        {
                             resolved(&mut o, resolution);
                         }
                     }

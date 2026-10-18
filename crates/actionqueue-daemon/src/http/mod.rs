@@ -295,8 +295,9 @@ pub fn build_router(state: RouterState) -> axum::Router {
 }
 
 /// Publishes after a mutation attempt. Equal revisions must describe the same
-/// authoritative facts, so an attempt that appended nothing runs the digest
-/// tripwire instead of copying; a newly committed prefix is copied as-is.
+/// authoritative facts. Shared revision identity proves unchanged facts cheaply;
+/// independently constructed images retain the digest tripwire. New prefixes
+/// publish shared roots after durability.
 // The caller returns this response directly to Axum on the exceptional path.
 #[allow(clippy::result_large_err)]
 pub(crate) fn sync_projection<W: actionqueue_storage::wal::writer::WalWriter>(
@@ -305,8 +306,12 @@ pub(crate) fn sync_projection<W: actionqueue_storage::wal::writer::WalWriter>(
 ) -> Result<(), axum::response::Response> {
     let mut published = write_projection(state).map_err(|e| *e)?;
     if published.latest_sequence() == a.projection().latest_sequence() {
+        if published.shares_revision_with(a.projection()) {
+            return Ok(());
+        }
         if matches!((published.projection_digest(), a.projection().projection_digest()), (Ok(left), Ok(right)) if left == right)
         {
+            *published = a.projection().clone();
             return Ok(());
         }
         if !state.operational_failed.swap(true, Ordering::AcqRel) {
@@ -372,3 +377,6 @@ pub(crate) fn with_inspection_projection<T>(
 
 #[cfg(all(test, feature = "platform"))]
 mod tenant_tests;
+
+#[cfg(test)]
+mod publication_tests;

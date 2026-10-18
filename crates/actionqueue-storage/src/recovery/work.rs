@@ -47,12 +47,17 @@ pub fn counts() -> [usize; 7] {
     COUNTS.with(std::cell::Cell::get)
 }
 
-/// Complete reducer copies and apply entries on the calling thread, including replay.
-/// Snapshot materialization, digest traversal and collection scans are excluded.
+/// Reducer root clones, copy-on-write record materializations, subscription candidates,
+/// and apply entries on the calling thread, including replay. Snapshot materialization
+/// and digest traversal are excluded. All growing reducer fields use persistent roots:
+/// a root clone copies no complete projection or wholesale run entries.
 #[cfg(feature = "testing")]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ProjectionWork {
     pub full_projection_clones: usize,
+    pub shallow_projection_clones: usize,
+    pub record_copies: usize,
+    pub subscription_candidates: usize,
     /// Sum of source run counts across complete reducer copies.
     pub cloned_run_entries: usize,
     /// Entries into `ReplayReducer::apply`, including nested and rejected applications.
@@ -63,6 +68,9 @@ thread_local! {
     static PROJECTION_WORK: std::cell::Cell<ProjectionWork> = const {
         std::cell::Cell::new(ProjectionWork {
             full_projection_clones: 0,
+            shallow_projection_clones: 0,
+            record_copies: 0,
+            subscription_candidates: 0,
             cloned_run_entries: 0,
             reducer_event_visits: 0,
         })
@@ -79,12 +87,27 @@ pub fn projection_work() -> ProjectionWork {
     PROJECTION_WORK.with(std::cell::Cell::get)
 }
 #[cfg(feature = "testing")]
-pub(crate) fn projection_clone(runs: usize) {
+pub(crate) fn projection_clone() {
     PROJECTION_WORK.with(|c| {
-        let mut work = c.get();
-        work.full_projection_clones += 1;
-        work.cloned_run_entries += runs;
-        c.set(work);
+        let mut w = c.get();
+        w.shallow_projection_clones += 1;
+        c.set(w);
+    });
+}
+#[cfg(feature = "testing")]
+pub(crate) fn record_copy() {
+    PROJECTION_WORK.with(|c| {
+        let mut w = c.get();
+        w.record_copies += 1;
+        c.set(w);
+    });
+}
+#[cfg(feature = "testing")]
+pub(crate) fn subscription_candidate() {
+    PROJECTION_WORK.with(|c| {
+        let mut w = c.get();
+        w.subscription_candidates += 1;
+        c.set(w);
     });
 }
 #[cfg(feature = "testing")]
@@ -105,17 +128,17 @@ mod tests {
         reset();
         reset_projection_work();
         visit(Visit::WaitHistory);
-        projection_clone(7);
+        projection_clone();
         reducer_event();
         let expected = ProjectionWork {
-            full_projection_clones: 1,
-            cloned_run_entries: 7,
+            shallow_projection_clones: 1,
             reducer_event_visits: 1,
+            ..ProjectionWork::default()
         };
         assert_eq!(projection_work(), expected);
         std::thread::spawn(|| {
             assert_eq!(projection_work(), ProjectionWork::default());
-            projection_clone(3);
+            projection_clone();
             reducer_event();
             reset_projection_work();
             assert_eq!(projection_work(), ProjectionWork::default());

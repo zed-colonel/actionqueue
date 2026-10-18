@@ -19,6 +19,7 @@ crc32fast = "1"
 tracing = "0.1"
 uuid = { version = "1.0", features = ["v4", "serde"] }
 sha2 = "0.10"
+imbl = "7.0.0"
 
 [dev-dependencies]
 uuid = { version = "1.0", features = ["v4"] }

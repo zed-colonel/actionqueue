@@ -28,3 +28,8 @@ pub mod inspection;
 
 #[doc(hidden)]
 pub mod work;
+
+pub mod collections;
+
+mod changes;
+pub use changes::ProjectionChange;

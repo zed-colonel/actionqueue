@@ -453,3 +453,12 @@ required-features = ["workflow", "budget", "actor", "platform"]
 name = "aq_adapter"
 path = "conformance/aq-cont-1/drivers/adapter.rs"
 required-features = ["workflow", "budget", "actor", "platform"]
+
+[[test]]
+name = "acceptance_mutation_sharing"
+path = "tests/acceptance/mutation_sharing.rs"
+
+[[bench]]
+name = "mutation_surfaces"
+path = "benches/mutation_surfaces.rs"
+harness = false

@@ -35,6 +35,10 @@ use crate::wal::writer::{WalWriter, WalWriterError};
 
 /// Projection behavior required by the mutation authority.
 pub trait MutationProjection: Clone {
+    /// Waits resolved by the last frame, when the projection has an incremental change view.
+    fn resolved_wait_ids(&self) -> Option<Vec<actionqueue_core::ids::WaitId>> {
+        None
+    }
     /// Typed projection apply error.
     type Error;
 
@@ -203,6 +207,10 @@ pub trait MutationProjection: Clone {
 }
 
 impl MutationProjection for ReplayReducer {
+    fn resolved_wait_ids(&self) -> Option<Vec<actionqueue_core::ids::WaitId>> {
+        Some(self.latest_change().resolved_waits.iter().copied().collect())
+    }
+
     fn validate_wait_capacity(
         &self,
         run: RunId,
@@ -1931,10 +1939,9 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
         })?;
 
         // Publish the already validated state only after durability succeeds.
-        self.projection = prepared;
-        self.telemetry.committed(&event, frame_bytes, &self.projection);
-
+        let original = std::mem::replace(&mut self.projection, prepared);
         crate::store::fault::checkpoint("authority_after_publish").map_err(|error| {
+            self.projection = original;
             self.recovery_required = true;
             self.wal_writer.fence();
             MutationAuthorityError::Publication {
@@ -1943,6 +1950,7 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
                 error: error.to_string(),
             }
         })?;
+        self.telemetry.committed(&event, frame_bytes, &self.projection);
         tracing::debug!(sequence = event.sequence(), "command submitted");
         Ok(MutationOutcome::new(event.sequence(), applied))
     }

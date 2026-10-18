@@ -953,8 +953,8 @@ pub fn capture_checkpoint(data_dir: &Path, run_id: RunId) -> CrashRecoveryCheckp
     let pre_restart_attempt_ids = recovery
         .projection
         .get_attempt_history(&run_id)
-        .unwrap_or(&[])
-        .iter()
+        .into_iter()
+        .flatten()
         .map(|entry| entry.attempt_id())
         .collect();
 
@@ -1107,8 +1107,8 @@ pub fn attempt_ids_for_run_from_storage(data_dir: &Path, run_id: RunId) -> Vec<A
     recovery
         .projection
         .get_attempt_history(&run_id)
-        .unwrap_or(&[])
-        .iter()
+        .into_iter()
+        .flatten()
         .map(|entry| entry.attempt_id())
         .collect()
 }

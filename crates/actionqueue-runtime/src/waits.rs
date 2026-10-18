@@ -244,43 +244,10 @@ pub fn recover_cancellations<W: WalWriter>(
     now: u64,
 ) -> Result<(), WaitError> {
     loop {
-        let mut targets = std::collections::HashSet::new();
-        for task in a.projection().task_records() {
-            let id = task.task_spec().id();
-            let unfinished = a.projection().runs_for_task(id).any(|r| !r.state().is_terminal());
-            if a.projection().is_task_canceled(id) && unfinished {
-                targets.insert(id);
-            }
-            // Completed work is immutable: cascades reach only unfinished tasks.
-            if a.projection().task_terminal_status(id).is_none()
-                && task.task_spec().child_lifecycle_policy()
-                    == actionqueue_core::task::task_spec::ChildLifecyclePolicy::Required
-                && task
-                    .task_spec()
-                    .parent_task_id()
-                    .is_some_and(|p| a.projection().is_task_canceled(p))
-            {
-                targets.insert(id);
-            }
-        }
-        for (task, deps) in a.projection().dependency_declarations() {
-            if a.projection().task_terminal_status(task).is_some() {
-                continue;
-            }
-            let failed = deps.iter().any(|dep| {
-                a.projection().task_terminal_status(*dep).is_some_and(|s| {
-                    s != actionqueue_core::continuation::TaskTerminalStatus::Succeeded
-                })
-            });
-            if failed {
-                targets.insert(task);
-            }
-        }
+        let targets: Vec<_> = a.projection().cancellation_targets().collect();
         if targets.is_empty() {
             return Ok(());
         }
-        let mut targets: Vec<_> = targets.into_iter().collect();
-        targets.sort_by_key(|id| *id.as_uuid());
         for task in targets {
             let tenant_id = a.projection().get_task(&task).expect("indexed task").tenant_id();
             let _ = a.submit_command(

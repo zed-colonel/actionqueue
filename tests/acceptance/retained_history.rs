@@ -2,7 +2,7 @@
 mod retained_history;
 
 #[test]
-fn retained_history_has_0_2_0_structural_costs_and_recovery_parity() {
+fn retained_history_has_shared_structural_costs_and_recovery_parity() {
     // Empty and nonempty retained prefixes use the same 100-operation batches as the bench.
     for n in [0, 7] {
         let result = retained_history::run(n);
