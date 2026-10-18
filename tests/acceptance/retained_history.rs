@@ -11,3 +11,16 @@ fn retained_history_has_shared_structural_costs_and_recovery_parity() {
         assert_eq!(result["final_sequence"], 1 + 2 * (n + retained_history::BATCH));
     }
 }
+
+#[test]
+fn repeated_samples_start_from_identical_durable_prefixes_and_independent_files() {
+    let results = retained_history::run_repeated(7, 2);
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0]["prefix_wal_sha256"], results[1]["prefix_wal_sha256"]);
+    for result in results {
+        assert_eq!(result["retained_terminal_runs"], 7);
+        assert_eq!(result["prefix_events"], 15);
+        assert_eq!(result["final_sequence"], 215);
+        assert_eq!(result["final_runs"], 107);
+    }
+}

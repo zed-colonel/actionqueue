@@ -63,16 +63,19 @@ fn request(n: usize) -> EnsureTaskRequest {
     .unwrap()
 }
 
+fn host() -> HostControlContext {
+    HostControlContext {
+        actor_id: None,
+        scope: ControlScope::SingleTenant,
+        attribution: ControlMutationContext::new(OpaqueRef::new("retained-history").unwrap()),
+    }
+}
 fn open(path: &std::path::Path) -> Authority {
     open_store(path, OpenOptions::Initialize { features: vec![] })
         .unwrap()
         .into_authority()
         .unwrap()
-        .with_host(HostControlContext {
-            actor_id: None,
-            scope: ControlScope::SingleTenant,
-            attribution: ControlMutationContext::new(OpaqueRef::new("retained-history").unwrap()),
-        })
+        .with_host(host())
 }
 
 fn admit(a: &mut Authority, q: EnsureTaskRequest) -> EnsureTaskOutcome {
@@ -167,7 +170,7 @@ fn wal_digest(path: &std::path::Path) -> String {
     format!("{:x}", Sha256::digest(std::fs::read(path).unwrap()))
 }
 
-pub fn run(n: usize) -> Value {
+fn seed(n: usize) -> (tempfile::TempDir, Authority) {
     eprintln!("retained_history: N={n}, building canceled history");
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("store");
@@ -180,6 +183,55 @@ pub fn run(n: usize) -> Value {
             eprintln!("retained_history: N={n}, prepared {id} canceled runs");
         }
     }
+    (dir, a)
+}
+pub fn run(n: usize) -> Value {
+    let (dir, a) = seed(n);
+    measure_state(n, dir, a)
+}
+/// Reuse only the closed, durable, unmeasured prefix. Each sample receives fresh
+/// files, its own writer/session and exactly N retained runs. Timed phases and
+/// their durability/recovery assertions are identical to the single-sample path.
+pub fn run_repeated(n: usize, repetitions: usize) -> Vec<Value> {
+    assert!(repetitions > 0);
+    if repetitions == 1 {
+        return vec![run(n)];
+    }
+    let (seed_dir, a) = seed(n);
+    let seed_root = seed_dir.path().join("store");
+    let seed_wal = a.store_session().unwrap().wal_path();
+    let (writer, projection) = a.into_parts();
+    writer.close().unwrap();
+    let prefix_hash = wal_digest(&seed_wal);
+    let mut results = Vec::new();
+    for repetition in 1..=repetitions {
+        eprintln!("retained_history: N={n}, repetition {repetition}/{repetitions}");
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("store");
+        std::fs::create_dir_all(root.join("wal")).unwrap();
+        std::fs::create_dir_all(root.join("snapshots")).unwrap();
+        for name in ["manifest.json", "store.lock", "wal/actionqueue.wal"] {
+            std::fs::copy(seed_root.join(name), root.join(name)).unwrap();
+            std::fs::File::open(root.join(name)).unwrap().sync_all().unwrap();
+        }
+        for path in [root.join("wal"), root.join("snapshots"), root.clone(), dir.path().to_owned()]
+        {
+            std::fs::File::open(path).unwrap().sync_all().unwrap();
+        }
+        assert_eq!(wal_digest(&root.join("wal/actionqueue.wal")), prefix_hash);
+        let session = open_store(&root, OpenOptions::ReadWrite).unwrap();
+        let writer = WalFsWriter::new(session).unwrap();
+        let a = StorageMutationAuthority::new(writer, projection.clone()).with_host(host());
+        let mut result = measure_state(n, dir, a);
+        result["repetition"] = repetition.into();
+        result["prefix_wal_sha256"] = prefix_hash.clone().into();
+        results.push(result);
+    }
+    assert_eq!(wal_digest(&seed_wal), prefix_hash);
+    results
+}
+fn measure_state(n: usize, dir: tempfile::TempDir, mut a: Authority) -> Value {
+    let root = dir.path().join("store");
     let prefix_sequence = 1 + 2 * n as u64;
     check_projection(a.projection(), n, prefix_sequence);
     let prefix = build_snapshot_from_projection(a.projection(), 1002).unwrap();
