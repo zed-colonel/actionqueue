@@ -129,7 +129,7 @@ impl ReplayReducer {
                 return Err(R::Invalid);
             }
             let producer = self
-                .attempt_entry(link.parent_attempt_id().ok_or(R::Invalid)?)
+                .attempt_entry_for_run(run, link.parent_attempt_id().ok_or(R::Invalid)?)
                 .and_then(|a| a.disposition.as_ref())
                 .ok_or(R::Invalid)?;
             let original = producer

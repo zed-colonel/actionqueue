@@ -41,8 +41,7 @@ impl ReplayReducer {
         self.next_resume_assignment(run).map(|a| self.resume_context(run, a.context_id))
     }
     pub fn attempt_resume(&self, run: RunId, attempt: AttemptId) -> Option<ResumeContext> {
-        self.attempt_entry(attempt)
-            .filter(|_| self.attempt_owner(attempt) == Some(run))?
+        self.attempt_entry_for_run(run, attempt)?
             .accepted_start
             .as_ref()?
             .assignment

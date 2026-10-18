@@ -545,8 +545,15 @@ impl ReplayReducer {
         &self,
         attempt: actionqueue_core::ids::AttemptId,
     ) -> Option<&AttemptHistoryEntry> {
-        let (run, position) = self.derived.attempt_positions.get(&attempt)?;
-        self.attempt_history.get(run)?.get(*position)
+        self.attempt_entry_for_run(self.attempt_owner(attempt)?, attempt)
+    }
+    pub(crate) fn attempt_entry_for_run(
+        &self,
+        run: RunId,
+        attempt: actionqueue_core::ids::AttemptId,
+    ) -> Option<&AttemptHistoryEntry> {
+        let position = self.derived.attempt_positions.get(&(run, attempt))?;
+        self.attempt_history.get(&run)?.get(*position)
     }
 
     /// Every run, grouped by task in creation order (the order `runs_for_task` yields).
@@ -1338,7 +1345,7 @@ impl ReplayReducer {
         run_instance.start_attempt(*attempt_id).map_err(Self::map_run_instance_error)?;
 
         let attempts = self.attempt_history.entry(*run_id).or_default();
-        self.derived.attempt_positions.insert(*attempt_id, (*run_id, attempts.len()));
+        self.derived.attempt_positions.entry((*run_id, *attempt_id)).or_insert(attempts.len());
         attempts.push(AttemptHistoryEntry {
             disposition: None,
             accepted_start: None,
@@ -1397,10 +1404,15 @@ impl ReplayReducer {
 
         let attempts =
             self.attempt_history.get_mut(run_id).ok_or(ReplayReducerError::CorruptedData)?;
-        let entry = attempts
-            .last_mut()
-            .filter(|entry| entry.attempt_id == *attempt_id)
+        let position = *self
+            .derived
+            .attempt_positions
+            .get(&(*run_id, *attempt_id))
             .ok_or(ReplayReducerError::CorruptedData)?;
+        if position >= attempts.len() {
+            return Err(ReplayReducerError::CorruptedData);
+        }
+        let entry = &mut attempts[position];
 
         if entry.finished_at.is_some() {
             return Err(ReplayReducerError::CorruptedData);

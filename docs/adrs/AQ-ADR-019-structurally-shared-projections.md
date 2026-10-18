@@ -72,3 +72,8 @@ tree nodes and derived indexes. Cursor-index space is bounded by task/run count;
 it does not grow with repeated mutations of the same objects. Whole-process RSS
 also includes snapshot DTOs and canonical digest intermediates, which AQ-P2 does
 not change. Long-lived readers can retain old paths until their roots are dropped.
+
+Attempt positions are keyed by run and attempt, retaining the first position for
+legacy duplicate identities. This preserves the historical first-match finish
+rejection while avoiding scans or copies of earlier attempt records. Accepted
+starts continue to enforce globally unique attempt identities.

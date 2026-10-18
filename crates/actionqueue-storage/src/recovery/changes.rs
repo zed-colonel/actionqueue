@@ -27,7 +27,7 @@ pub(crate) struct RunSummary {
 }
 #[derive(Debug, Clone, Default)]
 pub(crate) struct DerivedIndexes {
-    pub attempt_positions: HashMap<AttemptId, (RunId, usize)>,
+    pub attempt_positions: HashMap<(RunId, AttemptId), usize>,
     pub active_runs: HashMap<TaskId, BTreeSet<RunId>>,
     pub summaries: HashMap<TaskId, RunSummary>,
     pub children: HashMap<TaskId, BTreeSet<TaskId>>,
@@ -199,7 +199,10 @@ impl ReplayReducer {
         }
         for (run, attempts) in self.attempt_history.iter() {
             for (position, attempt) in attempts.iter().enumerate() {
-                self.derived.attempt_positions.insert(attempt.attempt_id(), (*run, position));
+                self.derived
+                    .attempt_positions
+                    .entry((*run, attempt.attempt_id()))
+                    .or_insert(position);
             }
         }
         self.derived.ledger_ids = self.ledger_entries.iter().map(|e| e.entry_id).collect();
@@ -249,8 +252,68 @@ mod tests {
         },
     };
     fn apply(p: &mut ReplayReducer, event: E) {
-        p.apply(&WalEvent::new(p.latest_sequence() + 1, event)).unwrap();
+        let event = WalEvent::new(p.latest_sequence() + 1, event);
+        p.apply(&event).unwrap_or_else(|error| panic!("{event:?}: {error:?}"));
     }
+    #[test]
+    fn legacy_repeated_attempt_identity_preserves_first_match_finish_rejection() {
+        use actionqueue_core::{ids::AttemptId, mutation::AttemptResultKind};
+        let mut p = ReplayReducer::new();
+        let id = TaskId::new();
+        let task_spec = TaskSpec::new(
+            id,
+            TaskPayload::new(vec![]),
+            RunPolicy::Once,
+            Default::default(),
+            Default::default(),
+        )
+        .unwrap();
+        apply(&mut p, E::TaskCreated { task_spec, timestamp: 1 });
+        let run_instance = RunInstance::new_scheduled(id, 1, 1).unwrap();
+        let run_id = run_instance.id();
+        apply(&mut p, E::RunCreated { run_instance });
+        let attempt_id = AttemptId::new();
+        for (from, to) in [
+            (RunState::Scheduled, RunState::Ready),
+            (RunState::Ready, RunState::Leased),
+            (RunState::Leased, RunState::Running),
+        ] {
+            apply(
+                &mut p,
+                E::RunStateChanged { run_id, previous_state: from, new_state: to, timestamp: 2 },
+            );
+        }
+        apply(&mut p, E::AttemptStarted { run_id, attempt_id, timestamp: 3 });
+        let finish = |timestamp| E::AttemptFinished {
+            run_id,
+            attempt_id,
+            result: AttemptResultKind::Failure,
+            error: Some("failure".into()),
+            output: None,
+            timestamp,
+        };
+        apply(&mut p, finish(4));
+        for (from, to) in [
+            (RunState::Running, RunState::RetryWait),
+            (RunState::RetryWait, RunState::Ready),
+            (RunState::Ready, RunState::Leased),
+            (RunState::Leased, RunState::Running),
+        ] {
+            apply(
+                &mut p,
+                E::RunStateChanged { run_id, previous_state: from, new_state: to, timestamp: 5 },
+            );
+        }
+        apply(&mut p, E::AttemptStarted { run_id, attempt_id, timestamp: 6 });
+        let sequence = p.latest_sequence();
+        assert_eq!(p.attempt_entry_for_run(run_id, attempt_id).unwrap().finished_at(), Some(4));
+        assert_eq!(
+            p.apply(&WalEvent::new(sequence + 1, finish(7))),
+            Err(super::super::reducer::ReplayReducerError::CorruptedData)
+        );
+        assert_eq!(p.latest_sequence(), sequence);
+    }
+
     #[test]
     fn cancellation_of_a_repeating_task_visits_only_its_unfinished_runs() {
         let mut p = ReplayReducer::new();
