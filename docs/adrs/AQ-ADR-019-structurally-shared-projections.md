@@ -36,6 +36,9 @@ candidates follow reverse dependency edges and required children, in sorted roun
 Task summaries preserve Once/Repeat/Cron terminality. Hydration rebuilds these
 indexes before validating historical relationships. Active wait ownership and
 attempt positions avoid scans of retained waits or per-run attempt history.
+Bootstrap also seeds terminal cache cleanup once from the recovered hierarchy.
+Incremental consumers start at the recovered sequence, so unchanged terminal
+tasks must already be queued for cleanup rather than awaiting another mutation.
 
 The daemon publishes shared roots. For equal sequences, shared process-local
 revision identity proves equality; otherwise it compares canonical digests and

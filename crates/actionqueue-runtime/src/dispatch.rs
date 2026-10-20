@@ -398,6 +398,15 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         let dependency_gate = build_dependency_gate(authority.projection());
         // Rebuild the hierarchy tracker from task parent_task_id fields.
         let hierarchy_tracker = build_hierarchy_tracker(authority.projection());
+        // Recovery restores terminal tasks' caches too. Queue their cleanup once
+        // here: incremental updates begin at the recovered sequence and will not
+        // revisit unchanged terminal tasks on later admissions or controls.
+        let pending_gc_tasks = authority
+            .projection()
+            .task_records()
+            .map(|record| record.task_spec().id())
+            .filter(|id| hierarchy_tracker.is_terminal(*id))
+            .collect();
 
         // Rebuild budget tracker from WAL-sourced projection records.
         #[cfg(feature = "budget")]
@@ -595,7 +604,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
             rbac_enforcer,
             #[cfg(feature = "platform")]
             ledger,
-            pending_gc_tasks: std::collections::HashSet::new(),
+            pending_gc_tasks,
         };
         dispatch.rebuild_key_gate()?;
         Ok(dispatch)
@@ -2869,6 +2878,33 @@ mod tests {
                     .map(|v| actionqueue_core::data_ref::DataRef::from_bytes(v).unwrap()),
             ),
         }
+    }
+
+    #[cfg(feature = "budget")]
+    #[tokio::test]
+    async fn bootstrap_cleans_terminal_caches_without_waiting_for_another_task_change() {
+        use actionqueue_core::budget::BudgetDimension;
+        let dir = tempfile::tempdir().unwrap();
+        let mut dispatch = new_dispatch(dir.path(), DependencyHandler);
+        let worker = accepted_worker(&mut dispatch);
+        let completed = dispatch.projection().get_run_instance(&worker.run_id).unwrap().task_id();
+        dispatch.allocate_budget(completed, BudgetDimension::Token, 10).unwrap();
+        dispatch.process_worker_result(worker, &mut TickResult::default(), 1000).unwrap();
+        let active = task(b"active", None);
+        let active_id = active.id();
+        dispatch.submit_task(active).unwrap();
+        dispatch.allocate_budget(active_id, BudgetDimension::Token, 11).unwrap();
+        let digest = dispatch.projection().projection_digest().unwrap();
+        drop(dispatch);
+
+        let mut recovered = new_dispatch(dir.path(), DependencyHandler);
+        recovered.draining = true;
+        assert_eq!(recovered.budget_remaining(completed, BudgetDimension::Token), Some(10));
+        let _ = recovered.tick().await.unwrap();
+        assert_eq!(recovered.budget_remaining(completed, BudgetDimension::Token), None);
+        assert_eq!(recovered.budget_remaining(active_id, BudgetDimension::Token), Some(11));
+        assert!(recovered.projection().get_budget(&completed, BudgetDimension::Token).is_some());
+        assert_eq!(recovered.projection().projection_digest().unwrap(), digest);
     }
 
     #[test]
