@@ -219,11 +219,15 @@ fn seed(n: usize) -> (tempfile::TempDir, Authority) {
 }
 pub fn run(n: usize) -> Value {
     let (dir, a) = seed(n);
-    measure_state(n, dir, a, false)
+    let mut result = measure_state(n, dir, a, false);
+    result["cache_conditions"] =
+        "warm OS cache; no cache eviction; WAL-first order; live seed authority".into();
+    result
 }
-/// Reuse only the closed, durable, unmeasured prefix. Each sample receives fresh
-/// files, its own writer/session and exactly N retained runs. Timed phases and
-/// their durability/recovery assertions are identical to the single-sample path.
+/// One sample measures the live seed authority in WAL-first order. Multiple
+/// samples reuse the closed, durable, unmeasured prefix: each receives fresh
+/// files, its own writer/session and exactly N retained runs, alternating the
+/// bootstrap order. Timed phases and durability/recovery assertions are identical.
 pub fn run_repeated(n: usize, repetitions: usize) -> Vec<Value> {
     assert!(repetitions > 0);
     if repetitions == 1 {
@@ -258,6 +262,7 @@ pub fn run_repeated(n: usize, repetitions: usize) -> Vec<Value> {
             .unwrap()
             .with_host(host());
         let mut result = measure_state(n, dir, a, repetition % 2 == 0);
+        result["cache_conditions"] = "warm OS cache; no cache eviction; alternating order; independent copied files per repetition".into();
         result["repetition"] = repetition.into();
         result["prefix_wal_sha256"] = prefix_hash.clone().into();
         eprintln!("retained_history sample: {}", serde_json::to_string(&result).unwrap());
@@ -429,7 +434,6 @@ fn measure_state(
         "hydration_seconds":phases.snapshot_load_seconds+phases.hydration_seconds,
         "paired_startup_ratio":snapshot_measurement.elapsed_ns as f64 / wal_measurement.elapsed_ns as f64,
         "path_order":if snapshot_first { "snapshot,wal" } else { "wal,snapshot" },
-        "cache_conditions":"warm OS cache; no cache eviction; alternating order; independent copied files per repetition",
         "projection_digest": expected_digest,
         "admission": admission.json(BATCH),
         "cancellation": cancellation.json(BATCH),

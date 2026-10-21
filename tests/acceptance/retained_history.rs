@@ -18,11 +18,22 @@ fn repeated_samples_start_from_identical_durable_prefixes_and_independent_files(
     assert_eq!(results.len(), 2);
     assert_eq!(results[0]["prefix_wal_sha256"], results[1]["prefix_wal_sha256"]);
     for result in results {
+        assert_eq!(result["cache_conditions"], "warm OS cache; no cache eviction; alternating order; independent copied files per repetition");
         assert_eq!(result["retained_terminal_runs"], 7);
         assert_eq!(result["prefix_events"], 15);
         assert_eq!(result["final_sequence"], 215);
         assert_eq!(result["final_runs"], 107);
     }
+}
+
+#[test]
+fn single_sample_reports_live_seed_cache_conditions() {
+    let results = retained_history::run_repeated(7, 1);
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        results[0]["cache_conditions"],
+        "warm OS cache; no cache eviction; WAL-first order; live seed authority"
+    );
 }
 
 #[tokio::test]
