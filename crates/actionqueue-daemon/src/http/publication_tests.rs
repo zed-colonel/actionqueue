@@ -122,8 +122,7 @@ fn publication_scale_measurements() {
                 publish += at.elapsed().as_nanos();
                 let w = work::projection_work();
                 assert_eq!(w.shallow_projection_clones, 1);
-                assert_eq!(w.full_projection_clones, 0);
-                assert_eq!(w.cloned_run_entries, 0);
+                assert_eq!(w.record_copies, 0);
                 let at = Instant::now();
                 sync_projection(&state, &a).unwrap();
                 unchanged += at.elapsed().as_nanos();

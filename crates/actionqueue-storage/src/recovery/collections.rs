@@ -174,9 +174,16 @@ mod tests {
             let history: History<_> = (0..n).map(|i| Record(copies.clone(), i)).collect();
             let mut histories = HashMap::new();
             histories.insert(1, history);
+            #[cfg(feature = "testing")]
+            crate::recovery::work::reset_projection_work();
             let mut next = histories.clone();
+            #[cfg(feature = "testing")]
+            assert_eq!(crate::recovery::work::projection_work().record_copies, 0);
             next.get_mut(&1).unwrap().last_mut().unwrap().1 += 1;
             assert_eq!(copies.load(Ordering::Relaxed), 1);
+            // One history root and one actual record, at either retained size.
+            #[cfg(feature = "testing")]
+            assert_eq!(crate::recovery::work::projection_work().record_copies, 2);
             assert_eq!(histories[&1].last().unwrap().1, n - 1);
             assert_eq!(next[&1].last().unwrap().1, n);
             next.get_mut(&1).unwrap().push(Record(copies.clone(), n + 1));

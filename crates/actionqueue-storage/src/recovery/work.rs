@@ -51,16 +51,17 @@ pub fn counts() -> [usize; 7] {
 /// and apply entries on the calling thread, including replay. Snapshot materialization
 /// and digest traversal are excluded. All growing reducer fields use persistent roots:
 /// a root clone copies no complete projection or wholesale run entries.
+/// The former `full_projection_clones` and `cloned_run_entries` counters belonged to
+/// the 0.2.0 deep-clone implementation. They have no increment site after AQ-P2 and
+/// are removed; bounds on actual `record_copies` guard mutation work instead.
 #[cfg(feature = "testing")]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ProjectionWork {
-    pub full_projection_clones: usize,
     pub shallow_projection_clones: usize,
+    /// Actual shared records materialized by collection writes/removals.
     pub record_copies: usize,
     pub subscription_candidates: usize,
     pub cancellation_run_candidates: usize,
-    /// Sum of source run counts across complete reducer copies.
-    pub cloned_run_entries: usize,
     /// Entries into `ReplayReducer::apply`, including nested and rejected applications.
     pub reducer_event_visits: usize,
 }
@@ -68,12 +69,10 @@ pub struct ProjectionWork {
 thread_local! {
     static PROJECTION_WORK: std::cell::Cell<ProjectionWork> = const {
         std::cell::Cell::new(ProjectionWork {
-            full_projection_clones: 0,
             shallow_projection_clones: 0,
             record_copies: 0,
             subscription_candidates: 0,
             cancellation_run_candidates: 0,
-            cloned_run_entries: 0,
             reducer_event_visits: 0,
         })
     };
@@ -131,9 +130,11 @@ mod tests {
         reset_projection_work();
         visit(Visit::WaitHistory);
         projection_clone();
+        record_copy();
         reducer_event();
         let expected = ProjectionWork {
             shallow_projection_clones: 1,
+            record_copies: 1,
             reducer_event_visits: 1,
             ..ProjectionWork::default()
         };

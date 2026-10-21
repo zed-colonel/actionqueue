@@ -36,7 +36,7 @@ fn main() {
     println!(
         "{}",
         serde_json::to_string_pretty(&serde_json::json!({
-            "schema_version": 1,
+            "schema_version": 2,
             "structural_expectations": "AQ-P2",
             "repetitions": repetitions,
             "results": results,

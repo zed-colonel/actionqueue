@@ -49,13 +49,19 @@ so later unchanged publications use the identity check.
 The measured implementation spike used the unchanged AQ-P1 filesystem workload,
 with immediate durability for fixture setup and the measured 100-operation batches.
 At 1,000 / 10,000 retained runs, admission means were 1.119 / 1.035 ms and
-cancellation means 1.183 / 1.052 ms. Each batch used 200 shallow root clones,
-zero full projection copies and zero wholesale copied run entries. Record copies
-were 200 per admission batch and 1,000 per cancellation batch at both sizes.
+cancellation means 1.183 / 1.052 ms. Each batch used 200 shallow root clones.
+All growing fields use persistent roots; their clones share retained records.
+Record copies were 200 per admission batch and 1,000 per cancellation batch at both sizes.
 WAL-only bootstrap took 0.113 / 1.377 seconds; snapshot plus tail took
 0.889 / 7.778 seconds. This supports retaining staged mutation instead of an
 in-place or undo-journal rewrite. Final repeated scale measurements are recorded
 in the AQ-P2 performance report.
+
+The old full-projection and wholesale-run-copy counters no longer had increment
+sites after this conversion and were removed in review remediation (F-002).
+Structural assertions bound actual record materializations per mutation and count
+root clones; inspection of the persistent field types establishes that root cloning
+does not copy retained collections. A constant zero counter is not evidence of that.
 
 Borrowed record getters remain available. History getters now return `History<T>`
 instead of a contiguous slice; consumers that need ownership use `to_vec`.

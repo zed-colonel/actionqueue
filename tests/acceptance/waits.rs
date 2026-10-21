@@ -1256,7 +1256,6 @@ fn cancellation_observes_only_its_resolved_wait_among_retained_wait_history() {
         );
         assert_eq!(work::counts()[0], 0, "cancellation must not traverse retained waits");
         assert!(work::projection_work().record_copies <= 64);
-        assert_eq!(work::projection_work().full_projection_clones, 0);
         assert_eq!(a.projection().latest_change().resolved_waits.len(), 1);
         assert!(before.waits().active(run).is_some());
         assert!(a.projection().waits().active(run).is_none());

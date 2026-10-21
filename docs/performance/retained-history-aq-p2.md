@@ -40,10 +40,17 @@ repetitions; measured admissions derive fresh run identities.
 
 Report the five raw observations and median per-operation admission/cancellation
 costs at each size. Both ratios of the 100,000-run median to the 1,000-run median
-must be at most 2. Timing thresholds remain outside ordinary CI. The runner
-asserts zero complete projection copies and zero wholesale copied run entries;
-shallow root clones, copied records, subscription candidates, cancellation run
-candidates and reducer visits are reported separately. The runtime runner includes
+must be at most 2. Timing thresholds remain outside ordinary CI. The runner bounds
+actual record materializations to 10 per admission and 20 per cancellation,
+independent of retained size, and asserts the shallow root-clone counts.
+The obsolete full-copy and wholesale-run-copy counters were removed because they
+had no increment sites after the deep-clone implementation was removed. Report
+schema version 2 omits those fields; their 0.2.0 measurements remain in the baseline
+report. Absence of whole-projection
+copies also relies on the persistent types of every growing reducer field;
+constant zero counters cannot establish that property. Copied records, subscription
+candidates, cancellation run candidates and reducer visits are reported separately.
+The runtime runner bounds record materializations per operation, and includes
 incremental dependency/hierarchy updates and synchronous cancellation cascades.
 The daemon measurement times the actual publication helper, separately from
 mutation preparation and WAL sync, including its equal-revision identity path.

@@ -107,8 +107,6 @@ impl Measurement {
             "elapsed_ns": self.elapsed_ns,
             "operations": operations,
             "mean_ns_per_operation": self.elapsed_ns as f64 / operations as f64,
-            "full_projection_clones": self.work.full_projection_clones,
-            "cloned_run_entries": self.work.cloned_run_entries,
             "shallow_projection_clones": self.work.shallow_projection_clones,
             "record_copies": self.work.record_copies,
             "subscription_candidates": self.work.subscription_candidates,
@@ -137,8 +135,6 @@ fn assert_shared(
     snapshot: &Measurement,
 ) {
     for m in [admission, cancel, wal, snapshot] {
-        assert_eq!(m.work.full_projection_clones, 0);
-        assert_eq!(m.work.cloned_run_entries, 0);
         assert_eq!(m.work.subscription_candidates, 0);
     }
     assert_eq!(admission.work.shallow_projection_clones, 2 * BATCH);
