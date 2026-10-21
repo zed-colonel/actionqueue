@@ -27,7 +27,8 @@ struct SessionInner {
     _lock: File,
     writable: bool,
     writer_claimed: AtomicBool,
-    published: Mutex<u64>,
+    publication: Mutex<PublicationState>,
+    wal_uncertain: AtomicBool,
     id: uuid::Uuid,
 }
 // Closing the descriptor alone leaves an OFD lock held by a descriptor inherited
@@ -39,19 +40,34 @@ impl Drop for SessionInner {
 }
 #[derive(Debug, Clone)]
 pub struct StoreSession(Arc<SessionInner>);
+#[derive(Debug, Default)]
+pub(crate) struct PublicationState {
+    pub durable: u64,
+    pub installed: u64,
+}
 impl StoreSession {
     pub(crate) fn id(&self) -> uuid::Uuid {
         self.0.id
     }
     pub fn published_sequence(&self) -> u64 {
-        *self.0.published.lock().unwrap_or_else(|e| e.into_inner())
+        self.publication().durable
     }
     pub(crate) fn observe_snapshot(&self, sequence: u64) {
-        let mut s = self.0.published.lock().unwrap_or_else(|e| e.into_inner());
-        *s = (*s).max(sequence);
+        let mut s = self.publication();
+        s.durable = s.durable.max(sequence);
+        s.installed = s.installed.max(sequence);
     }
-    pub(crate) fn publication(&self) -> std::sync::MutexGuard<'_, u64> {
-        self.0.published.lock().unwrap_or_else(|e| e.into_inner())
+    pub(crate) fn publication(&self) -> std::sync::MutexGuard<'_, PublicationState> {
+        self.0.publication.lock().unwrap_or_else(|e| e.into_inner())
+    }
+    pub(crate) fn mark_wal_uncertain(&self) {
+        self.0.wal_uncertain.store(true, Ordering::Release);
+    }
+    pub(crate) fn wal_recovery_required(&self) -> bool {
+        self.0.wal_uncertain.load(Ordering::Acquire)
+    }
+    pub(crate) fn wal_recovered(&self) {
+        self.0.wal_uncertain.store(false, Ordering::Release);
     }
     pub fn root(&self) -> &Path {
         &self.0.root
@@ -243,7 +259,8 @@ fn open_schema(root: &Path, options: OpenOptions, schema: u32) -> Result<StoreSe
         _lock: lock,
         writable,
         writer_claimed: AtomicBool::new(false),
-        published: Mutex::new(0),
+        publication: Mutex::new(PublicationState::default()),
+        wal_uncertain: AtomicBool::new(false),
         id: uuid::Uuid::new_v4(),
     })))
 }

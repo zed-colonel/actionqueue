@@ -82,13 +82,19 @@ captures structurally shared immutable roots and the exact matching cursor under
 exclusive authority ownership. Recovery supplies private session/revision
 provenance. Independently paired projections/writers, even at equal sequences,
 cannot use this fast API. The arbitrary `SnapshotWriter` API retains full prefix
-validation. Candidates keep the session lock alive until consumed or dropped.
+validation. The runtime falls back to that API for independently paired authorities;
+the bounded publication path requires a writer and projection from the same recovery.
+Writer adapters may forward recovery provenance only when every append passes
+through unchanged. Candidates keep the session lock alive until consumed or dropped.
 
 `publish_checkpoint(candidate)` builds and encodes outside the authority lane.
 Publication is serialized per session, rejects older candidates, syncs a unique
 temporary file, atomically renames it and syncs the directory. The acknowledged
 published sequence advances only after success. Snapshot-only errors leave durable
-progress pending; uncertain WAL flushes fence the authority. Publication replays
+progress pending. A separate installed-sequence high-water mark advances at rename,
+so a directory-sync failure cannot allow an older candidate to replace the new file.
+Uncertain WAL flushes, including the separate-descriptor WAL sync during publication,
+fence the session's writer and authority until recovery. Publication replays
 zero prefix events. Existing crash boundaries remain in use.
 
 The runtime and daemon threshold is `latest_sequence - last_successfully_published_sequence`,
@@ -123,8 +129,11 @@ actionqueue store verify --data-dir DIR --json
 
 Verification is read-only: it never initializes, repairs, reconciles execution or
 runs handlers. It validates the entire WAL, recomputes the covered commitment,
-compares the exact checkpoint projection, per-task run order and operation associations, then verifies
-final snapshot-plus-tail equivalence. Backup and restore use this same verifier.
+compares the checkpoint projection digest, per-task run order and operation
+associations, then verifies final snapshot-plus-tail equivalence. Backup and restore
+use this same verifier. Verify, inspect, backup and upgrade hold a shared source
+lock and fail with `StoreInUse` while a live daemon or other writer owns the store;
+stop that owner before these offline operations.
 
 [Measured evidence](../performance/aq-p3-bootstrap.md) records paired complete
 writable startup, hydration phases, section sizes, boundary/tail I/O, zero-replay

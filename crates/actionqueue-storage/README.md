@@ -41,7 +41,9 @@ actionqueue backup --data-dir DIR --output BACKUP
 actionqueue restore --input BACKUP --data-dir DEST
 ```
 
-These are offline operations; stop the store owner first. External artifact bytes
+These are offline operations; stop the store owner first. Inspect, verify, backup
+and upgrade hold a shared source lock and return `StoreInUse` against a live writer.
+External artifact bytes
 remain application-owned. Signal retirement removes matching eligibility, while
 immutable identity/content/history remain resident and count against quotas.
 Wait/resume/history references protect retained signals from retirement.

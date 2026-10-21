@@ -188,6 +188,10 @@ pub enum DispatchError {
     SnapshotWrite(SnapshotWriterError),
     /// Snapshot writer initialization failed.
     SnapshotInit(String),
+    /// Live checkpoint capture failed, possibly fencing the WAL authority.
+    SnapshotCapture(String),
+    /// Live checkpoint encoding or publication failed.
+    SnapshotPublish(String),
     /// Continuation limits cannot guarantee durable attempt closure.
     InvalidContinuationLimits(crate::config::ConfigError),
     /// Backoff strategy configuration is invalid (e.g., base exceeds max).
@@ -219,6 +223,8 @@ impl std::fmt::Display for DispatchError {
             DispatchError::SnapshotBuild(e) => write!(f, "snapshot build error: {e}"),
             DispatchError::SnapshotWrite(e) => write!(f, "snapshot write error: {e}"),
             DispatchError::SnapshotInit(e) => write!(f, "snapshot init error: {e}"),
+            DispatchError::SnapshotCapture(e) => write!(f, "snapshot capture error: {e}"),
+            DispatchError::SnapshotPublish(e) => write!(f, "snapshot publication error: {e}"),
             DispatchError::InvalidBackoffConfig => {
                 write!(f, "invalid backoff configuration")
             }
@@ -1591,12 +1597,31 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
             return Ok(());
         }
 
-        let candidate = self
-            .authority
-            .capture_checkpoint(current_time)
-            .map_err(|e| DispatchError::SnapshotInit(e.to_string()))?;
-        actionqueue_storage::snapshot::checkpoint::publish_checkpoint(candidate)
-            .map_err(|e| DispatchError::SnapshotInit(e.to_string()))?;
+        if self.authority.supports_live_checkpoints() {
+            let candidate = self
+                .authority
+                .capture_checkpoint(current_time)
+                .map_err(|e| DispatchError::SnapshotCapture(e.to_string()))?;
+            actionqueue_storage::snapshot::checkpoint::publish_checkpoint(candidate)
+                .map_err(|e| DispatchError::SnapshotPublish(e.to_string()))?;
+        } else {
+            // Public constructors may pair a session writer and projection
+            // independently. Preserve that path with full WAL-prefix validation.
+            use actionqueue_storage::snapshot::{
+                build::build_snapshot_from_projection,
+                writer::{SnapshotFsWriter, SnapshotWriter},
+            };
+            let snapshot =
+                build_snapshot_from_projection(self.authority.projection(), current_time)
+                    .map_err(DispatchError::SnapshotBuild)?;
+            let session = self.authority.store_session().ok_or_else(|| {
+                DispatchError::SnapshotInit("snapshot requires a store session".into())
+            })?;
+            let mut writer = SnapshotFsWriter::new(session)
+                .map_err(|e| DispatchError::SnapshotInit(e.to_string()))?;
+            writer.write(&snapshot).map_err(DispatchError::SnapshotWrite)?;
+            writer.close().map_err(DispatchError::SnapshotWrite)?;
+        }
 
         Ok(())
     }
@@ -2737,6 +2762,76 @@ mod tests {
             ),
         )
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn independently_paired_authority_publishes_validated_snapshot_and_finishes() {
+        use actionqueue_storage::{
+            recovery::bootstrap::recover_read_only,
+            store::{open_store, verify_store, OpenOptions},
+            wal::{fs_writer::WalFsWriter, repair::RepairPolicy},
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let session = open_store(dir.path(), OpenOptions::Initialize { features: vec![] }).unwrap();
+        let projection = recover_read_only(&session, RepairPolicy::Strict).unwrap().projection;
+        // This writer performs its own recovery, with a different origin.
+        let writer = WalFsWriter::new(session.clone()).unwrap();
+        let authority = StorageMutationAuthority::new(writer, projection).with_host(host());
+        assert!(!authority.supports_live_checkpoints());
+        let mut dispatch = DispatchLoop::new(
+            authority,
+            DependencyHandler,
+            MockClock::new(1000),
+            DispatchConfig::new(
+                BackoffStrategyConfig::Fixed { interval: Duration::ZERO },
+                1,
+                30,
+                Some(session.snapshot_path()),
+                Some(1),
+            ),
+        )
+        .unwrap();
+        let task = task(b"success", None);
+        let task_id = task.id();
+        dispatch.submit_task(task).unwrap();
+        let summary = dispatch.run_until_idle().await.unwrap();
+        assert_eq!(summary.total_completed, 1);
+        assert_eq!(
+            dispatch
+                .projection()
+                .get_run_state(&dispatch.projection().run_ids_for_task(task_id)[0]),
+            Some(&RunState::Completed)
+        );
+        let sequence = dispatch.projection().latest_sequence();
+        assert_eq!(session.published_sequence(), sequence);
+        let digest = dispatch.projection().projection_digest().unwrap();
+        drop(dispatch);
+        drop(session);
+        let verified = verify_store(dir.path()).unwrap();
+        assert_eq!(verified.sequence, sequence);
+        assert_eq!(verified.snapshot_sequence, sequence);
+        assert_eq!(verified.projection_digest, digest);
+    }
+
+    #[test]
+    fn live_checkpoint_errors_identify_capture_and_publication_phases() {
+        use actionqueue_storage::store::fault;
+        let dir = tempfile::tempdir().unwrap();
+        let mut dispatch = new_dispatch(dir.path(), DependencyHandler);
+        dispatch.snapshot_path = Some(dir.path().join("snapshots/snapshot.bin"));
+        dispatch.snapshot_event_threshold = Some(1);
+        fault::fail_once("snapshot_before_rename");
+        assert!(matches!(
+            dispatch.maybe_write_snapshot(1000),
+            Err(DispatchError::SnapshotPublish(_))
+        ));
+        assert!(!dispatch.authority.recovery_required());
+        fault::fail_once("wal_before_sync");
+        assert!(matches!(
+            dispatch.maybe_write_snapshot(1000),
+            Err(DispatchError::SnapshotCapture(_))
+        ));
+        assert!(dispatch.authority.recovery_required());
     }
 
     #[test]

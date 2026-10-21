@@ -78,17 +78,22 @@ impl WalFsWriter {
             )
             .into());
         }
-        let actual_len = std::fs::metadata(session.wal_path())?.len();
-        if actual_len != recovered.observed_wal_len
-            || (recovered.incomplete_tail.is_none() && actual_len != recovered.cursor.end)
-            || recovered.incomplete_tail.as_ref().is_some_and(|t| {
-                !t.repairable() || t.offset != recovered.cursor.end || t.offset >= actual_len
-            })
-        {
-            return Err(StoreError::InvalidStore("WAL changed after recovery".into()).into());
-        }
         session.claim_writer()?;
+        // Do not clear session uncertainty across a concurrent publication's
+        // WAL sync failure. Publication uses the same lane for its separate fd.
+        let publication = session.publication();
         let prepared = (|| -> Result<File, WalFsWriterInitError> {
+            // Claim before checking the recovered cursor: another writer must not
+            // append between this check and opening our writable descriptor.
+            let actual_len = std::fs::metadata(session.wal_path())?.len();
+            if actual_len != recovered.observed_wal_len
+                || (recovered.incomplete_tail.is_none() && actual_len != recovered.cursor.end)
+                || recovered.incomplete_tail.as_ref().is_some_and(|t| {
+                    !t.repairable() || t.offset != recovered.cursor.end || t.offset >= actual_len
+                })
+            {
+                return Err(StoreError::InvalidStore("WAL changed after recovery".into()).into());
+            }
             let mut file = OpenOptions::new().read(true).write(true).open(session.wal_path())?;
             if let Some(tail) = &recovered.incomplete_tail {
                 file.set_len(tail.offset)?;
@@ -98,6 +103,8 @@ impl WalFsWriter {
             Ok(file)
         })();
         let file = prepared.inspect_err(|_| session.release_writer())?;
+        session.wal_recovered();
+        drop(publication);
         Ok(Self {
             file,
             current_sequence: recovered.projection.latest_sequence(),
@@ -157,10 +164,10 @@ impl WalWriter for WalFsWriter {
         self.poisoned = true;
     }
     fn recovery_required(&self) -> bool {
-        self.poisoned
+        self.poisoned || self.session.as_ref().is_some_and(StoreSession::wal_recovery_required)
     }
     fn append(&mut self, event: &WalEvent) -> Result<(), WalWriterError> {
-        if self.poisoned {
+        if self.recovery_required() {
             return Err(WalWriterError::Poisoned);
         }
         let expected = self.current_sequence.checked_add(1).ok_or(WalWriterError::Poisoned)?;
@@ -232,7 +239,7 @@ impl WalWriter for WalFsWriter {
         Ok(())
     }
     fn flush(&mut self) -> Result<(), WalWriterError> {
-        if self.poisoned {
+        if self.recovery_required() {
             return Err(WalWriterError::Poisoned);
         }
         crate::store::fault::checkpoint("wal_before_sync")

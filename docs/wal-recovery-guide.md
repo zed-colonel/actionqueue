@@ -1,7 +1,9 @@
 # WAL recovery operator guide
 
 Stop the process holding the store lock before offline work. Preserve the original
-store and diagnostics when investigating corruption. Use target-aware inspection:
+store and diagnostics when investigating corruption. Inspect, verify, backup and
+upgrade take a shared source lock and return `StoreInUse` against a live daemon or
+other writer. Use target-aware inspection:
 
 ```sh
 actionqueue store inspect --data-dir /srv/actionqueue

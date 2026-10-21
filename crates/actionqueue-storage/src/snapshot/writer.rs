@@ -96,7 +96,7 @@ impl SnapshotFsWriter {
         session.require_write().map_err(|e| SnapshotFsWriterInitError::IoError(e.to_string()))?;
         // Independent snapshot writers may be opened before recovery. Seed their
         // stale-replacement guard from the existing checkpoint as well.
-        if session.published_sequence() == 0 {
+        if session.publication().installed == 0 {
             match super::loader::load_checkpoint(session) {
                 Ok(Some(c)) => session.observe_snapshot(c.binding.cursor.sequence),
                 Ok(None) => (),
@@ -161,6 +161,8 @@ impl SnapshotFsWriter {
         self.ready_to_publish = false;
         let (bytes, sections) = super::envelope::encode_checkpoint_measured(c)
             .map_err(SnapshotWriterError::EncodeError)?;
+        self.seek_to_beginning()?;
+        self.file.set_len(0).map_err(|e| SnapshotWriterError::IoError(e.to_string()))?;
         self.file.write_all(&bytes).map_err(|e| SnapshotWriterError::IoError(e.to_string()))?;
         self.sequence = c.binding.cursor.sequence;
         self.ready_to_publish = true;
@@ -261,14 +263,18 @@ impl SnapshotWriter for SnapshotFsWriter {
         // replacement rejected even when captures finish encoding out of order.
         let session = self.session.clone();
         let mut published = session.as_ref().map(|s| s.publication());
-        if published.as_ref().is_some_and(|s| self.sequence < **s) {
+        if published.as_ref().is_some_and(|s| self.sequence < s.installed) {
             return Err(SnapshotWriterError::EncodeError("stale checkpoint candidate".into()));
         }
         // Snapshot publication must never outrun durability of its covered WAL prefix.
         if let Some(session) = &self.session {
-            File::open(session.wal_path())
+            crate::store::fault::checkpoint("snapshot_wal_before_sync")
+                .and_then(|_| File::open(session.wal_path()))
                 .and_then(|file| file.sync_all())
-                .map_err(|e| SnapshotWriterError::IoError(e.to_string()))?;
+                .map_err(|e| {
+                    session.mark_wal_uncertain();
+                    SnapshotWriterError::IoError(e.to_string())
+                })?;
         }
         // Flush all data to disk before renaming
         self.flush()?;
@@ -278,6 +284,11 @@ impl SnapshotWriter for SnapshotFsWriter {
         // Atomic rename of temp file over target
         std::fs::rename(&self.temp_path, &self.target_path)
             .map_err(|e| SnapshotWriterError::IoError(e.to_string()))?;
+        // Rename installed these bytes even if a later directory sync fails.
+        // Keep this high-water mark separate from durable acknowledgement.
+        if let Some(s) = &mut published {
+            s.installed = self.sequence;
+        }
 
         crate::store::fault::checkpoint("snapshot_after_rename")
             .map_err(|e| SnapshotWriterError::IoError(e.to_string()))?;
@@ -298,7 +309,7 @@ impl SnapshotWriter for SnapshotFsWriter {
 
         // Mark as closed so Drop does not attempt temp cleanup
         if let Some(s) = &mut published {
-            **s = self.sequence;
+            s.durable = self.sequence;
         }
         self.is_closed = true;
 

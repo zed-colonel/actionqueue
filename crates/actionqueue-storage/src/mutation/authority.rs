@@ -505,7 +505,7 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
     }
     /// Returns whether an uncertain write requires reopening and recovery.
     pub fn recovery_required(&self) -> bool {
-        self.recovery_required
+        self.recovery_required || self.wal_writer.recovery_required()
     }
     /// Checks a bound host before any duplicate lookup or mutation planning.
     pub fn authorize_control(
@@ -526,7 +526,7 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
         &self,
         request: &EnsureTaskRequest,
     ) -> Result<Option<EnsureTaskOutcome>, MutationAuthorityError<P::Error>> {
-        if self.recovery_required {
+        if self.recovery_required() {
             return Err(MutationAuthorityError::RecoveryRequired);
         }
         self.authorize_control(
@@ -556,6 +556,12 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
     /// Returns the lifetime store session for session-bound operations.
     pub fn store_session(&self) -> Option<&crate::store::StoreSession> {
         self.wal_writer.store_session()
+    }
+
+    /// Whether this authority owns the matching writer and projection from recovery.
+    /// Independently paired authorities must use the fully validating snapshot writer.
+    pub fn supports_live_checkpoints(&self) -> bool {
+        self.checkpoint_proven
     }
 
     /// Returns the authoritative projection.
@@ -1642,7 +1648,7 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
         command: MutationCommand,
         durability: DurabilityPolicy,
     ) -> Result<MutationOutcome, MutationAuthorityError<P::Error>> {
-        if self.recovery_required {
+        if self.recovery_required() {
             return Err(MutationAuthorityError::RecoveryRequired);
         }
         let platform = self.platform_profile();
@@ -2570,7 +2576,7 @@ impl<W: WalWriter> StorageMutationAuthority<W, ReplayReducer> {
         timestamp: u64,
     ) -> Result<crate::snapshot::checkpoint::CheckpointCandidate, crate::store::StoreError> {
         let invalid = |s: &str| crate::store::StoreError::InvalidStore(s.into());
-        if self.recovery_required || self.wal_writer.recovery_required() {
+        if self.recovery_required() {
             return Err(invalid("recovery required"));
         }
         if !self.checkpoint_proven {

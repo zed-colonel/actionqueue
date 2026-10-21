@@ -99,6 +99,157 @@ fn publish(a: &mut Authority) {
 fn rewrite(session: &StoreSession, c: &Checkpoint) {
     fs::write(session.snapshot_path(), envelope::encode_checkpoint(c).unwrap()).unwrap();
 }
+
+fn tree(root: &std::path::Path) -> std::collections::BTreeMap<std::path::PathBuf, Vec<u8>> {
+    fn visit(
+        root: &std::path::Path,
+        at: &std::path::Path,
+        files: &mut std::collections::BTreeMap<std::path::PathBuf, Vec<u8>>,
+    ) {
+        for entry in fs::read_dir(at).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                visit(root, &path, files);
+            } else {
+                files.insert(path.strip_prefix(root).unwrap().to_owned(), fs::read(path).unwrap());
+            }
+        }
+    }
+    let mut files = std::collections::BTreeMap::new();
+    visit(root, root, &mut files);
+    files
+}
+
+fn assert_no_staging(root: &std::path::Path) {
+    assert!(!fs::read_dir(root)
+        .unwrap()
+        .any(|entry| { entry.unwrap().file_name().to_string_lossy().starts_with(".aq-stage-") }));
+}
+
+#[test]
+fn interleaved_recoveries_claim_before_checking_and_release_on_stale_cursor() {
+    use crate::wal::fs_writer::WalFsWriterInitError;
+    let dir = tempfile::tempdir().unwrap();
+    let session = open_store(dir.path(), OpenOptions::Initialize { features: vec![] }).unwrap();
+    let earlier = recover_read_only(&session, RepairPolicy::Strict).unwrap();
+    let later = recover_read_only(&session, RepairPolicy::Strict).unwrap();
+    let mut writer = WalFsWriter::from_recovered(session.clone(), &later).unwrap();
+    use crate::wal::writer::WalWriter;
+    writer.append(&WalEvent::new(2, E::EnginePaused { timestamp: 2 })).unwrap();
+    writer.flush().unwrap();
+    // The ownership error must win even though the earlier cursor is stale.
+    assert!(matches!(
+        WalFsWriter::from_recovered(session.clone(), &earlier),
+        Err(WalFsWriterInitError::Store(StoreError::StoreInUse))
+    ));
+    drop(writer);
+    assert!(matches!(
+        WalFsWriter::from_recovered(session.clone(), &earlier),
+        Err(WalFsWriterInitError::Store(StoreError::InvalidStore(_)))
+    ));
+    // A failed cursor check releases the claim, allowing fresh recovery.
+    let fresh = recover_read_only(&session, RepairPolicy::Strict).unwrap();
+    let mut writer = WalFsWriter::from_recovered(session.clone(), &fresh).unwrap();
+    writer.append(&WalEvent::new(3, E::EngineResumed { timestamp: 3 })).unwrap();
+    writer.close().unwrap();
+    drop(session);
+    assert_eq!(verify_store(dir.path()).unwrap().sequence, 3);
+}
+
+#[test]
+fn installed_checkpoint_rejects_older_candidate_after_failed_acknowledgement() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = authority(dir.path());
+    publish(&mut a);
+    toggle(&mut a);
+    let older = a.capture_checkpoint(20).unwrap();
+    toggle(&mut a);
+    let newer = a.capture_checkpoint(30).unwrap();
+    let session = a.store_session().unwrap().clone();
+    fault::fail_once("snapshot_after_rename");
+    assert!(publish_checkpoint(newer).is_err());
+    assert_eq!(session.published_sequence(), 1);
+    let installed = fs::read(session.snapshot_path()).unwrap();
+    assert!(publish_checkpoint(older).unwrap_err().to_string().contains("stale checkpoint"));
+    assert_eq!(fs::read(session.snapshot_path()).unwrap(), installed);
+    publish(&mut a);
+    assert_eq!(session.published_sequence(), 3);
+}
+
+#[test]
+fn publication_wal_sync_failure_fences_live_authority_until_recovery() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = authority(dir.path());
+    publish(&mut a);
+    toggle(&mut a);
+    let candidate = a.capture_checkpoint(20).unwrap();
+    // The publication descriptor's sync can cover frames appended after capture.
+    toggle(&mut a);
+    let session = a.store_session().unwrap().clone();
+    let before = fs::read(session.snapshot_path()).unwrap();
+    fault::fail_once("snapshot_wal_before_sync");
+    assert!(publish_checkpoint(candidate).is_err());
+    assert!(a.recovery_required());
+    assert_eq!(session.published_sequence(), 1);
+    assert_eq!(fs::read(session.snapshot_path()).unwrap(), before);
+    let before = fs::read(session.wal_path()).unwrap();
+    let error = a
+        .submit_command(
+            MutationCommand::EnginePause(EnginePauseCommand::new(4, 40)),
+            DurabilityPolicy::Immediate,
+        )
+        .unwrap_err();
+    assert!(matches!(error, crate::mutation::MutationAuthorityError::RecoveryRequired));
+    assert!(a.capture_checkpoint(40).is_err());
+    assert_eq!(fs::read(session.wal_path()).unwrap(), before);
+    drop(a);
+    let mut a = session.into_authority().unwrap();
+    assert!(!a.recovery_required());
+    publish(&mut a);
+}
+
+#[test]
+fn backup_omits_only_physical_snapshot_damage_and_restores_from_wal() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source");
+    let mut a = authority(&source);
+    admit(&mut a);
+    publish(&mut a);
+    toggle(&mut a);
+    let session = a.store_session().unwrap().clone();
+    let bytes = fs::read(session.snapshot_path()).unwrap();
+    let mut semantic = load_checkpoint(&session).unwrap().unwrap();
+    semantic.binding.manifest[0] ^= 1;
+    let digest = a.projection().projection_digest().unwrap();
+    drop(a);
+    drop(session);
+    for damage in ["truncated", "crc", "semantic"] {
+        let snapshot_path = source.join("snapshots/snapshot.bin");
+        let mut damaged = bytes.clone();
+        match damage {
+            "truncated" => damaged.truncate(21),
+            "crc" => damaged[16] ^= 1,
+            _ => damaged = envelope::encode_checkpoint(&semantic).unwrap(),
+        }
+        fs::write(snapshot_path, damaged).unwrap();
+        let before = tree(&source);
+        let output = dir.path().join(format!("backup-{damage}"));
+        if damage == "semantic" {
+            let error = backup_store(&source, &output).unwrap_err();
+            assert!(error.to_string().contains("identity mismatch"));
+            assert!(!output.exists());
+        } else {
+            let descriptor = backup_store(&source, &output).unwrap();
+            assert!(!descriptor.files.iter().any(|f| f.path == "snapshots/snapshot.bin"));
+            assert!(!output.join("snapshots/snapshot.bin").exists());
+            let restored = dir.path().join(format!("restored-{damage}"));
+            restore_store(&output, &restored).unwrap();
+            assert_eq!(verify_store(&restored).unwrap().projection_digest, digest);
+        }
+        assert_eq!(tree(&source), before);
+        assert_no_staging(dir.path());
+    }
+}
 #[test]
 fn every_checkpoint_cut_replays_only_tail_and_next_append_continues_cursor() {
     for cut in 0..=8 {
@@ -149,7 +300,7 @@ fn every_checkpoint_cut_replays_only_tail_and_next_append_continues_cursor() {
     }
 }
 #[test]
-fn skipped_prefix_changes_are_detected_by_verify_backup_and_before_repair() {
+fn skipped_prefix_changes_are_detected_by_verify_backup_restore_and_before_repair() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("source");
     let mut a = authority(&root);
@@ -158,6 +309,8 @@ fn skipped_prefix_changes_are_detected_by_verify_backup_and_before_repair() {
     }
     publish(&mut a);
     drop(a);
+    let backup = dir.path().join("backup");
+    let mut descriptor = backup_store(&root, &backup).unwrap();
     let session = open_store(&root, OpenOptions::ReadOnly).unwrap();
     let mut reader = WalFsReader::for_session(&session).unwrap();
     reader.read_next().unwrap();
@@ -175,6 +328,21 @@ fn skipped_prefix_changes_are_detected_by_verify_backup_and_before_repair() {
     wal[start as usize..end as usize].copy_from_slice(&bytes);
     fs::write(&path, &wal).unwrap();
     drop(session);
+    // Rehashing the descriptor bypasses only the file checksum gate. Restore
+    // must still recompute the checkpoint's complete WAL-prefix commitment.
+    fs::write(backup.join("wal/actionqueue.wal"), &wal).unwrap();
+    use sha2::{Digest, Sha256};
+    let wal_file = descriptor.files.iter_mut().find(|f| f.path == "wal/actionqueue.wal").unwrap();
+    wal_file.length = wal.len() as u64;
+    wal_file.sha256 = format!("{:x}", Sha256::digest(&wal));
+    fs::write(backup.join("backup.json"), serde_json::to_vec_pretty(&descriptor).unwrap()).unwrap();
+    let backup_before = tree(&backup);
+    let restored = dir.path().join("restored");
+    let error = restore_store(&backup, &restored).unwrap_err();
+    assert!(error.to_string().contains("checkpoint differs from complete WAL prefix"), "{error}");
+    assert!(!restored.exists());
+    assert_eq!(tree(&backup), backup_before);
+    assert_no_staging(dir.path());
     // The changed pause is overwritten later, so final logical projections agree.
     let recovered = load_existing_projection(&root).unwrap();
     assert!(recovered.snapshot_loaded);
@@ -182,7 +350,7 @@ fn skipped_prefix_changes_are_detected_by_verify_backup_and_before_repair() {
     let before = fs::read(&path).unwrap();
     assert!(verify_store(&root).is_err());
     assert_eq!(fs::read(&path).unwrap(), before);
-    assert!(backup_store(&root, &dir.path().join("backup")).is_err());
+    assert!(backup_store(&root, &dir.path().join("bad-backup")).is_err());
     let session = open_store(&root, OpenOptions::ReadWrite).unwrap();
     let next = WalEvent::new(6, E::EnginePaused { timestamp: 6 });
     let partial = codec::encode_for_store(&next, session.manifest().store_id).unwrap();
@@ -292,6 +460,7 @@ fn schema9_upgrade_preserves_source_identity_history_and_requires_explicit_desti
         toggle(&mut a);
     }
     let task = admit(&mut a);
+    let image = build_snapshot_from_projection(a.projection(), 10).unwrap();
     let seq = a.projection().latest_sequence() + 1;
     let host = HostControlContext {
         scope: ControlScope::SingleTenant,
@@ -311,12 +480,14 @@ fn schema9_upgrade_preserves_source_identity_history_and_requires_explicit_desti
             )
         })
         .unwrap();
+    toggle(&mut a);
+    toggle(&mut a);
     let controls: Vec<_> = a
         .projection()
         .control_sequences(crate::recovery::inspection::ControlTarget::Task(task))
         .collect();
-    let image = build_snapshot_from_projection(a.projection(), 10).unwrap();
     let expected = a.projection().projection_digest().unwrap();
+    assert!(image.metadata.wal_sequence < a.projection().latest_sequence());
     let mut manifest = a.store_session().unwrap().manifest().clone();
     let wal_path = a.store_session().unwrap().wal_path();
     drop(a);
@@ -337,14 +508,35 @@ fn schema9_upgrade_preserves_source_identity_history_and_requires_explicit_desti
     let snapshot = envelope::encode(&image, manifest.store_id).unwrap();
     fs::write(source.join("snapshots/snapshot.bin"), &snapshot).unwrap();
     let before_manifest = fs::read(source.join("manifest.json")).unwrap();
-    assert!(open_store(&source, OpenOptions::ReadWrite).is_err());
+    let error = open_store(&source, OpenOptions::ReadWrite).unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("actionqueue store upgrade --data-dir SOURCE --output DEST"));
     assert!(!dest.exists());
+    let before = tree(&source);
+    // Fail after staging has a complete destination WAL and checkpoint temp file.
+    let failed = dir.path().join("failed-staging");
+    fault::fail_once("snapshot_before_rename");
+    let error = upgrade_store(&source, &failed).unwrap_err();
+    assert!(error.to_string().contains("snapshot_before_rename"));
+    assert!(!failed.exists());
+    assert_eq!(tree(&source), before);
+    assert_no_staging(dir.path());
     let verified = upgrade_store(&source, &dest).unwrap();
     assert_eq!(verified.store_id, manifest.store_id);
     assert_eq!(verified.projection_digest, expected);
     assert_eq!(fs::read(source.join("manifest.json")).unwrap(), before_manifest);
     assert_eq!(fs::read(&wal_path).unwrap(), wal);
     assert_eq!(fs::read(source.join("snapshots/snapshot.bin")).unwrap(), snapshot);
+    assert_eq!(tree(&source), before);
+    assert_no_staging(dir.path());
+    let upgraded_session = open_store(&dest, OpenOptions::ReadOnly).unwrap();
+    assert!(load_checkpoint(&upgraded_session).unwrap().unwrap().snapshot.timestamp > 0);
+    drop(upgraded_session);
+    assert!(upgrade_store(&dest, &dir.path().join("already-upgraded"))
+        .unwrap_err()
+        .to_string()
+        .contains("already schema 10"));
     let upgraded = fs::read(dest.join("wal/actionqueue.wal")).unwrap();
     let new_len =
         crate::wal::tail_validation::parse_record_at(&upgraded, 0).unwrap().unwrap().record_len;
@@ -371,8 +563,30 @@ fn schema9_upgrade_preserves_source_identity_history_and_requires_explicit_desti
     );
     // A damaged source snapshot is never silently omitted by the upgrade reader.
     fs::write(source.join("snapshots/snapshot.bin"), &snapshot[..21]).unwrap();
+    let before = tree(&source);
     assert!(upgrade_store(&source, &dir.path().join("bad")).is_err());
     assert!(!dir.path().join("bad").exists());
+    assert_eq!(tree(&source), before);
+    assert_no_staging(dir.path());
+}
+
+#[test]
+fn repeated_checkpoint_write_replaces_and_truncates_temporary_bytes() {
+    use super::writer::{SnapshotFsWriter, SnapshotWriter};
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = authority(&dir.path().join("store"));
+    publish(&mut a);
+    let session = a.store_session().unwrap();
+    let smaller = load_checkpoint(session).unwrap().unwrap();
+    admit(&mut a);
+    publish(&mut a);
+    let larger = load_checkpoint(a.store_session().unwrap()).unwrap().unwrap();
+    let path = dir.path().join("rewritten.bin");
+    let mut writer = SnapshotFsWriter::new_raw_for_test(path.clone()).unwrap();
+    writer.write_checkpoint(&larger).unwrap();
+    writer.write_checkpoint(&smaller).unwrap();
+    writer.close().unwrap();
+    assert_eq!(fs::read(path).unwrap(), envelope::encode_checkpoint(&smaller).unwrap());
 }
 
 fn frozen_checkpoint() -> Checkpoint {

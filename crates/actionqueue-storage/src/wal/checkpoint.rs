@@ -34,7 +34,8 @@ impl WalCursor {
 }
 
 /// Opaque evidence produced only by session recovery and the native append path.
-/// Custom writers have no constructor; transparent adapters may forward a borrow.
+/// Custom writers have no constructor. Adapters may forward a borrow only under
+/// the unchanged-append contract on `WalWriter::checkpoint_provenance`.
 #[derive(Debug)]
 #[doc(hidden)]
 pub struct WalProvenance {

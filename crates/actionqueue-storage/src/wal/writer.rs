@@ -143,6 +143,9 @@ impl<W: WalWriter> WalWriter for InstrumentedWalWriter<W> {
 /// A writer that can append events to the WAL.
 pub trait WalWriter {
     /// Opaque recovery evidence; ordinary independently supplied writers return None.
+    /// Adapters may forward this only if every append is passed to the underlying
+    /// writer unchanged, including the event bytes and sequence. An adapter that
+    /// transforms, drops, or inserts events must return None.
     #[doc(hidden)]
     fn checkpoint_provenance(&self) -> Option<&super::checkpoint::WalProvenance> {
         None

@@ -70,7 +70,11 @@ pub fn upgrade_store(source: &Path, output: &Path) -> Result<StoreVerification, 
     {
         return Err(invalid("upgrade projection or inspection parity failed"));
     }
-    let candidate = authority.capture_checkpoint(0)?;
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(invalid)?
+        .as_secs();
+    let candidate = authority.capture_checkpoint(timestamp)?;
     publish_checkpoint(candidate)?;
     drop(authority);
     let result = verify_store(&staging.0)?;
