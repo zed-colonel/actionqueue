@@ -980,6 +980,7 @@ impl ReplayReducer {
                 // event to restore the flag.
                 if let Some(record) = self.budgets.get_mut(&(*task_id, *dimension)) {
                     record.exhausted = true;
+                    self.change.tasks.insert(*task_id);
                 }
             }
             WalEventType::BudgetReplenished { task_id, dimension, new_limit, timestamp } => {
@@ -1914,6 +1915,7 @@ impl ReplayReducer {
         limit: u64,
         timestamp: u64,
     ) {
+        self.change.tasks.insert(task_id);
         self.budgets.insert(
             (task_id, dimension),
             BudgetRecord {
@@ -1934,6 +1936,7 @@ impl ReplayReducer {
         _timestamp: u64,
     ) {
         if let Some(record) = self.budgets.get_mut(&(task_id, dimension)) {
+            self.change.tasks.insert(task_id);
             record.consumed = record.consumed.saturating_add(amount);
             if record.consumed >= record.limit {
                 record.exhausted = true;
@@ -1955,6 +1958,7 @@ impl ReplayReducer {
         _timestamp: u64,
     ) {
         if let Some(record) = self.budgets.get_mut(&(task_id, dimension)) {
+            self.change.tasks.insert(task_id);
             record.limit = new_limit;
             record.consumed = 0;
             record.exhausted = false;

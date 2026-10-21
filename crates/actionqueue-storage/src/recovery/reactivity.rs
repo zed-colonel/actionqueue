@@ -1,4 +1,8 @@
 //! Record reactive evidence in WAL order, evaluating only affected subscriptions.
+#[cfg(test)]
+#[path = "reactivity_tests.rs"]
+mod replay_tests;
+
 use super::reducer::ReplayReducer;
 use crate::wal::event::{WalEvent, WalEventType as E};
 use actionqueue_core::{
@@ -11,6 +15,12 @@ pub(super) enum Observation {
     Runs(BTreeSet<RunId>),
     Terminal(bool),
     Budget(u64, bool),
+}
+pub(super) struct SubscriptionObservations {
+    runs: Vec<RunId>,
+    before: HashMap<SubscriptionId, Observation>,
+    #[cfg(feature = "testing")]
+    tasks: BTreeSet<TaskId>,
 }
 fn observed_task(filter: &EventFilter) -> TaskId {
     match filter {
@@ -59,10 +69,7 @@ impl ReplayReducer {
             }
         }
     }
-    pub(super) fn subscription_observations(
-        &self,
-        event: &WalEvent,
-    ) -> (Vec<RunId>, HashMap<SubscriptionId, Observation>) {
+    pub(super) fn subscription_observations(&self, event: &WalEvent) -> SubscriptionObservations {
         let mut tasks = BTreeSet::new();
         let mut runs = Vec::new();
         match event.event() {
@@ -73,7 +80,9 @@ impl ReplayReducer {
             E::RunStateChanged { run_id, .. }
             | E::RunCanceled { run_id, .. }
             | E::RunSuspended { run_id, .. }
-            | E::RunResumed { run_id, .. } => runs.push(*run_id),
+            | E::RunResumed { run_id, .. }
+            | E::LeaseExpired { run_id, .. }
+            | E::LeaseReleased { run_id, .. } => runs.push(*run_id),
             E::AttemptDispositionCommitted { record } => {
                 runs.push(record.run_id);
                 for c in &record.children {
@@ -99,12 +108,41 @@ impl ReplayReducer {
                 runs.extend(created.iter().map(|r| r.id()));
             }
             E::TaskCanceled { task_id, .. }
+            | E::DependencyDeclared { task_id, .. }
             | E::BudgetAllocated { task_id, .. }
             | E::BudgetConsumed { task_id, .. }
+            | E::BudgetExhausted { task_id, .. }
             | E::BudgetReplenished { task_id, .. } => {
                 tasks.insert(*task_id);
             }
-            _ => {}
+            E::TaskCreated { task_spec, .. } => {
+                tasks.insert(task_spec.id());
+            }
+            // Keep this exhaustive: every new event must classify its reactive effects.
+            E::StoreInitialized { .. }
+            | E::AcceptedAttemptStarted { .. }
+            | E::AttemptClosed { .. }
+            | E::AttemptStarted { .. }
+            | E::AttemptFinished { .. }
+            | E::LeaseAcquired { .. }
+            | E::LeaseHeartbeat { .. }
+            | E::EnginePaused { .. }
+            | E::EngineResumed { .. }
+            | E::SubscriptionCreated { .. }
+            | E::SubscriptionTriggered { .. }
+            | E::SubscriptionCanceled { .. }
+            | E::SignalAdmitted { .. }
+            | E::SignalPinned { .. }
+            | E::SignalUnpinned { .. }
+            | E::SignalsRetired { .. }
+            | E::ActorRegistered { .. }
+            | E::ActorDeregistered { .. }
+            | E::ActorHeartbeat { .. }
+            | E::TenantCreated { .. }
+            | E::RoleAssigned { .. }
+            | E::CapabilityGranted { .. }
+            | E::CapabilityRevoked { .. }
+            | E::LedgerEntryAppended { .. } => {}
         }
         for run in &runs {
             if let Some(r) = self.get_run_instance(run) {
@@ -128,16 +166,35 @@ impl ReplayReducer {
                 )
             })
             .collect();
-        (runs, observations)
+        SubscriptionObservations {
+            runs,
+            before: observations,
+            #[cfg(feature = "testing")]
+            tasks,
+        }
     }
     pub(super) fn record_subscription_matches(
         &mut self,
-        (runs, before): (Vec<RunId>, HashMap<SubscriptionId, Observation>),
+        observations: SubscriptionObservations,
         sequence: u64,
     ) {
-        for (id, old) in before {
+        // Validate the prediction against actual reducer writes, even with no subscriptions.
+        // This visits only the change, so instrumented scale runs remain history independent.
+        #[cfg(feature = "testing")]
+        {
+            let runs: BTreeSet<_> = observations.runs.iter().copied().collect();
+            assert!(
+                self.change.runs.iter().all(|id| runs.contains(id)),
+                "changed run missing from subscription candidates"
+            );
+            assert!(
+                self.change.tasks.iter().all(|id| observations.tasks.contains(id)),
+                "changed task missing from subscription candidates"
+            );
+        }
+        for (id, old) in observations.before {
             let s = self.subscriptions.get(&id).expect("observed subscription");
-            let matched = match (old, self.observation(&s.filter, &runs)) {
+            let matched = match (old, self.observation(&s.filter, &observations.runs)) {
                 (Observation::Runs(old), Observation::Runs(new)) => !new.is_subset(&old),
                 (Observation::Terminal(false), Observation::Terminal(true)) => true,
                 (Observation::Budget(old, _), Observation::Budget(new, true)) => new > old,
@@ -177,6 +234,49 @@ mod tests {
         .unwrap();
         apply(p, E::TaskCreated { task_spec, timestamp: 1 });
         id
+    }
+    #[test]
+    #[should_panic(expected = "changed run missing from subscription candidates")]
+    fn candidate_guard_detects_unobserved_run_creation_without_subscriptions() {
+        let mut p = ReplayReducer::new();
+        let id = task(&mut p);
+        p.change = Default::default();
+        let observations =
+            p.subscription_observations(&WalEvent::new(2, E::EnginePaused { timestamp: 1 }));
+        p.apply_run_created(&RunInstance::new_scheduled(id, 1, 1).unwrap()).unwrap();
+        p.record_subscription_matches(observations, 2);
+    }
+    #[test]
+    #[should_panic(expected = "changed task missing from subscription candidates")]
+    fn candidate_guard_detects_unobserved_task_terminality_without_subscriptions() {
+        let mut p = ReplayReducer::new();
+        let id = task(&mut p);
+        p.change = Default::default();
+        let observations =
+            p.subscription_observations(&WalEvent::new(2, E::EnginePaused { timestamp: 1 }));
+        p.apply_task_canceled(&id, 2).unwrap();
+        p.record_subscription_matches(observations, 2);
+    }
+    #[test]
+    #[should_panic(expected = "changed task missing from subscription candidates")]
+    fn candidate_guard_detects_unobserved_budget_consumption_without_subscriptions() {
+        use actionqueue_core::budget::BudgetDimension;
+        let mut p = ReplayReducer::new();
+        let id = task(&mut p);
+        apply(
+            &mut p,
+            E::BudgetAllocated {
+                task_id: id,
+                dimension: BudgetDimension::CostCents,
+                limit: 100,
+                timestamp: 1,
+            },
+        );
+        p.change = Default::default();
+        let observations =
+            p.subscription_observations(&WalEvent::new(3, E::EnginePaused { timestamp: 1 }));
+        p.apply_budget_consumed(id, BudgetDimension::CostCents, 50, 2);
+        p.record_subscription_matches(observations, 3);
     }
     #[test]
     fn unrelated_subscriptions_are_not_visited_and_new_subscriptions_do_not_match_retroactively() {
