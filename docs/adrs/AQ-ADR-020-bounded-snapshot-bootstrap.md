@@ -123,7 +123,7 @@ actionqueue store verify --data-dir DIR --json
 
 Verification is read-only: it never initializes, repairs, reconciles execution or
 runs handlers. It validates the entire WAL, recomputes the covered commitment,
-compares the exact checkpoint projection and operation associations, then verifies
+compares the exact checkpoint projection, per-task run order and operation associations, then verifies
 final snapshot-plus-tail equivalence. Backup and restore use this same verifier.
 
 [Measured evidence](../performance/aq-p3-bootstrap.md) records paired complete

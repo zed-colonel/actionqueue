@@ -260,6 +260,7 @@ pub(crate) fn validate_snapshot_for_session(
     }
     if prefix.latest_sequence() == 0
         || prefix.projection_digest()? != restored.projection_digest()?
+        || !prefix.same_operational_order(&restored)
     {
         return Err(invalid("snapshot differs from WAL prefix"));
     }

@@ -79,6 +79,10 @@ remains part of explicit full verification.
 
 ## Encoded section sizes
 
+The fixed `projection_sections` accounting label appears as `extensions` in the
+measurement artifact; it was renamed to comply with the contract boundary policy.
+The checkpoint bytes and measured work are identical.
+
 | Section | 10,000 runs | 100,000 runs |
 |---|---:|---:|
 | header | 130 | 130 |
@@ -87,7 +91,7 @@ remains part of explicit full verification.
 | runs | 449,876 | 4,583,492 |
 | controls | 583,496 | 5,983,496 |
 | cancellations | 491,750 | 4,991,750 |
-| extensions | 68 | 68 |
+| projection_sections | 68 | 68 |
 | control_targets | 273,496 | 2,883,496 |
 | attempt_owners | 4 | 4 |
 | framing_integrity | 52 | 52 |

@@ -53,6 +53,7 @@ pub(crate) fn verify_session(
         if reader.cursor() != c.binding.cursor
             || prefix.projection_digest()? != expected_digest
             || prefix.inspection_index.export() != c.inspection
+            || !prefix.same_operational_order(&hydrated)
         {
             return Err(invalid("checkpoint differs from complete WAL prefix"));
         }
@@ -61,6 +62,7 @@ pub(crate) fn verify_session(
         }
         if hydrated.projection_digest()? != digest
             || hydrated.inspection_index.export() != full.projection.inspection_index.export()
+            || !hydrated.same_operational_order(&full.projection)
         {
             return Err(invalid("checkpoint plus tail differs from complete WAL replay"));
         }
@@ -78,6 +80,7 @@ pub(crate) fn verify_checkpoint_prefix(session: &StoreSession) -> Result<(), Sto
     let Some(c) = load_checkpoint(session).map_err(invalid)? else {
         return Ok(());
     };
+    let restored = ReplayReducer::from_projection_image(ProjectionImageV8(c.snapshot.clone()))?;
     let mut reader = WalFsReader::for_session(session).map_err(invalid)?;
     let mut prefix = ReplayReducer::new();
     while prefix.latest_sequence() < c.binding.cursor.sequence {
@@ -90,6 +93,7 @@ pub(crate) fn verify_checkpoint_prefix(session: &StoreSession) -> Result<(), Sto
     if reader.cursor() != c.binding.cursor
         || prefix.projection_digest()? != snapshot_digest(&c.snapshot)?
         || prefix.inspection_index.export() != c.inspection
+        || !prefix.same_operational_order(&restored)
     {
         return Err(invalid("checkpoint differs from complete WAL prefix"));
     }

@@ -66,6 +66,7 @@ pub fn upgrade_store(source: &Path, output: &Path) -> Result<StoreVerification, 
     let mut authority = open_store(&staging.0, OpenOptions::ReadWrite)?.into_authority()?;
     if authority.projection().projection_digest()? != digest
         || authority.projection().inspection_index.export() != inspection
+        || !authority.projection().same_operational_order(&recovered.projection)
     {
         return Err(invalid("upgrade projection or inspection parity failed"));
     }

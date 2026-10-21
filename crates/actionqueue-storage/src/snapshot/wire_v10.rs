@@ -399,7 +399,7 @@ pub(crate) fn encode_measured(c: &Checkpoint) -> Result<EncodedCheckpoint, Strin
     for v in &s.ledger_entries {
         record(&mut out, &serde_json::to_vec(v).map_err(err)?)?;
     }
-    sections.push(("extensions".into(), (out.len() - cut) as u64));
+    sections.push(("projection_sections".into(), (out.len() - cut) as u64));
     cut = out.len();
     count(&mut out, c.inspection.controls.len())?;
     for v in &c.inspection.controls {

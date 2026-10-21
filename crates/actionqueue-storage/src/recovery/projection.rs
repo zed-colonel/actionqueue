@@ -236,6 +236,15 @@ pub(crate) fn snapshot_digest(s: &Snapshot) -> Result<ProjectionDigest, StoreErr
     })
 }
 impl ReplayReducer {
+    /// Canonical hashing sorts runs by identity; operational per-task order is
+    /// validated separately so an equal digest cannot hide a reordered checkpoint.
+    pub(crate) fn same_operational_order(&self, other: &Self) -> bool {
+        self.runs_by_task.len() == other.runs_by_task.len()
+            && self
+                .runs_by_task
+                .iter()
+                .all(|(task, runs)| other.runs_by_task.get(task) == Some(runs))
+    }
     pub(crate) fn projection_image(&self) -> Result<ProjectionImageV8, StoreError> {
         let snapshot =
             crate::snapshot::build::build_snapshot_from_projection(self, 0).map_err(invalid)?;

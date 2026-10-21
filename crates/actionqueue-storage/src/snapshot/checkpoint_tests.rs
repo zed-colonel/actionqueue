@@ -554,3 +554,71 @@ fn arbitrary_snapshot_writers_cannot_replace_a_newer_unrecovered_checkpoint() {
     assert!(writer.close().is_err());
     assert_eq!(fs::read(session.snapshot_path()).unwrap(), before);
 }
+
+#[test]
+fn full_verification_and_arbitrary_writes_reject_run_reordering_with_an_equal_digest() {
+    use super::writer::{SnapshotFsWriter, SnapshotWriter};
+    use actionqueue_core::{
+        admission::{AdmissionPlan, EnsureTaskRequest},
+        causal::CausalContext,
+        ids::*,
+        run::RunInstance,
+        task::{
+            run_policy::RunPolicy,
+            task_spec::{TaskPayload, TaskSpec},
+        },
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = authority(dir.path());
+    let task = TaskId::new();
+    let q = EnsureTaskRequest::new(
+        AdmissionKey::new("ordering").unwrap(),
+        TaskSpec::new(
+            task,
+            TaskPayload::new(vec![]),
+            RunPolicy::repeat(2, 1).unwrap(),
+            Default::default(),
+            Default::default(),
+        )
+        .unwrap(),
+        vec![],
+        CausalContext::new(
+            TraceId::new("ordering").unwrap(),
+            CorrelationId::new("ordering").unwrap(),
+        ),
+        None,
+    )
+    .unwrap();
+    let plan = AdmissionPlan::new(
+        q.clone(),
+        vec![
+            RunInstance::new_scheduled(task, 10, 10).unwrap(),
+            RunInstance::new_scheduled(task, 11, 10).unwrap(),
+        ],
+        q.digest().unwrap(),
+    )
+    .unwrap();
+    let host = HostControlContext {
+        scope: ControlScope::SingleTenant,
+        ..a.control_context().unwrap().clone()
+    };
+    let _ = a
+        .with_control_context(&host, |a| {
+            a.submit_command(
+                MutationCommand::AdmissionCommit(AdmissionCommitCommand::new(2, plan, None, 10)),
+                DurabilityPolicy::Immediate,
+            )
+        })
+        .unwrap();
+    publish(&mut a);
+    let session = a.store_session().unwrap();
+    let mut c = load_checkpoint(session).unwrap().unwrap();
+    let digest = crate::recovery::projection::snapshot_digest(&c.snapshot).unwrap();
+    c.snapshot.runs.reverse();
+    assert_eq!(crate::recovery::projection::snapshot_digest(&c.snapshot).unwrap(), digest);
+    let mut writer = SnapshotFsWriter::new(session).unwrap();
+    assert!(writer.write(&c.snapshot).is_err());
+    drop(writer);
+    rewrite(session, &c);
+    assert!(crate::store::verify::verify_session(session, false).is_err());
+}
