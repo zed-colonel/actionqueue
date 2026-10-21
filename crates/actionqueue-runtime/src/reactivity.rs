@@ -9,14 +9,7 @@ pub fn reconcile<W: WalWriter>(
     now: u64,
 ) -> Result<(), MutationAuthorityError<actionqueue_storage::recovery::reducer::ReplayReducerError>>
 {
-    let mut ready: Vec<_> = a
-        .projection()
-        .subscriptions()
-        .filter(|(_, s)| {
-            s.canceled_at.is_none() && s.triggered_at.is_none() && s.matched_sequence.is_some()
-        })
-        .map(|(id, _)| *id)
-        .collect();
+    let mut ready: Vec<_> = a.projection().matched_subscriptions().collect();
     ready.sort_by_key(|id| *id.as_uuid());
     for id in ready {
         let _ = a.submit_command(

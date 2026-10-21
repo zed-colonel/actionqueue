@@ -2096,7 +2096,10 @@ fn dependency_declared_survives_wal_replay() {
 
     // Collect dependency declarations into a map for assertion.
     let declarations: std::collections::HashMap<TaskId, std::collections::HashSet<TaskId>> =
-        reducer.dependency_declarations().map(|(tid, prereqs)| (tid, prereqs.clone())).collect();
+        reducer
+            .dependency_declarations()
+            .map(|(tid, prereqs)| (tid, prereqs.iter().copied().collect()))
+            .collect();
 
     // B depends on A.
     let b_prereqs = declarations.get(&task_b_id).expect("B should have dependency declarations");

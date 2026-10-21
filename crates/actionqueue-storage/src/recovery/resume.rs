@@ -41,9 +41,7 @@ impl ReplayReducer {
         self.next_resume_assignment(run).map(|a| self.resume_context(run, a.context_id))
     }
     pub fn attempt_resume(&self, run: RunId, attempt: AttemptId) -> Option<ResumeContext> {
-        self.get_attempt_history(&run)?
-            .iter()
-            .find(|a| a.attempt_id() == attempt)?
+        self.attempt_entry_for_run(run, attempt)?
             .accepted_start
             .as_ref()?
             .assignment
@@ -252,7 +250,7 @@ impl ReplayReducer {
         let mut ids = std::collections::HashSet::new();
         let mut sequences = std::collections::HashSet::new();
         let mut initial = std::collections::HashSet::new();
-        for (run, history) in &self.attempt_history {
+        for (run, history) in self.attempt_history.iter() {
             let mut previous: Option<&super::reducer::AttemptHistoryEntry> = None;
             for a in history {
                 if a.attempt_id().as_uuid().is_nil() || !ids.insert(a.attempt_id()) {
@@ -345,7 +343,7 @@ impl ReplayReducer {
                 previous = Some(a);
             }
         }
-        for (run, id) in &self.waits.pending {
+        for (run, id) in self.waits.pending.iter() {
             let w = self.waits.get(*id).ok_or_else(|| bad.clone())?;
             if initial.contains(&ResumeContextId(
                 w.resolution.as_ref().ok_or_else(|| bad.clone())?.sequence,
@@ -354,7 +352,7 @@ impl ReplayReducer {
                 return Err(bad);
             }
         }
-        for (run, id) in &self.administrative_pending {
+        for (run, id) in self.administrative_pending.iter() {
             if initial.contains(id)
                 || self.get_run_instance(run).is_none_or(|r| r.current_attempt_id().is_some())
             {

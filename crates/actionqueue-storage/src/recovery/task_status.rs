@@ -17,23 +17,22 @@ impl ReplayReducer {
     }
     fn task_runs_terminal_status(&self, id: TaskId) -> Option<TaskTerminalStatus> {
         let task = self.get_task(&id)?;
-        let runs: Vec<_> = self.runs_for_task(id).collect();
-        if runs.iter().any(|r| !r.state().is_terminal()) {
+        let empty = super::changes::RunSummary::default();
+        let summary = self.derived.summaries.get(&id).unwrap_or(&empty);
+        if summary.active > 0 {
             return None;
         }
         match task.run_policy() {
-            RunPolicy::Once if runs.is_empty() => return None,
-            RunPolicy::Repeat(p) if runs.len() < p.count() as usize => return None,
+            RunPolicy::Once if summary.total == 0 => return None,
+            RunPolicy::Repeat(p) if summary.total < p.count() as usize => return None,
             #[cfg(feature = "workflow")]
             RunPolicy::Cron(p) => {
-                let last = runs.iter().map(|r| r.scheduled_at()).max().unwrap_or_else(|| {
-                    self.task_records()
-                        .find(|r| r.task_spec().id() == id)
-                        .expect("task")
-                        .created_at()
-                        .saturating_sub(1)
-                });
-                if p.max_occurrences().is_none_or(|cap| runs.len() < cap as usize)
+                let last = if summary.total > 0 {
+                    summary.last_scheduled
+                } else {
+                    self.get_task_record(&id).expect("task").created_at().saturating_sub(1)
+                };
+                if p.max_occurrences().is_none_or(|cap| summary.total < cap as usize)
                     && !p.next_occurrences_after(last, 1).is_empty()
                 {
                     return None;
@@ -41,7 +40,7 @@ impl ReplayReducer {
             }
             _ => {}
         }
-        Some(if runs.iter().any(|r| r.state() == RunState::Completed) {
+        Some(if summary.completed > 0 {
             TaskTerminalStatus::Succeeded
         } else {
             TaskTerminalStatus::Failed
@@ -49,12 +48,12 @@ impl ReplayReducer {
     }
     /// Required direct children must terminate before any parent run completes.
     pub fn required_children_terminal(&self, parent: TaskId) -> bool {
-        self.task_records()
-            .filter(|r| {
-                r.task_spec().parent_task_id() == Some(parent)
-                    && r.task_spec().child_lifecycle_policy() == ChildLifecyclePolicy::Required
+        self.children_of(parent)
+            .filter(|id| {
+                self.get_task(id)
+                    .is_some_and(|t| t.child_lifecycle_policy() == ChildLifecyclePolicy::Required)
             })
-            .all(|r| self.task_terminal_status(r.task_spec().id()).is_some())
+            .all(|id| self.task_terminal_status(id).is_some())
     }
     /// Follow eligibility edges and required-child completion gates to detect deadlocks.
     pub(crate) fn completion_requires(&self, start: TaskId, target: TaskId) -> bool {
@@ -70,19 +69,18 @@ impl ReplayReducer {
             if let Some(deps) = self.dependency_declarations.get(&id) {
                 pending.extend(deps);
             }
-            pending.extend(
-                self.task_records()
-                    .filter(|t| {
-                        t.task_spec().parent_task_id() == Some(id)
-                            && t.task_spec().child_lifecycle_policy()
-                                == ChildLifecyclePolicy::Required
-                    })
-                    .map(|t| t.task_spec().id()),
-            );
-            for w in self.waits.records().filter(|w| {
-                w.resolution.is_none()
-                    && self.get_run_instance(&w.run_id).is_some_and(|r| r.task_id() == id)
-            }) {
+            pending.extend(self.children_of(id).filter(|child| {
+                self.get_task(child)
+                    .is_some_and(|t| t.child_lifecycle_policy() == ChildLifecyclePolicy::Required)
+            }));
+            for w in self
+                .waits
+                .active_by_task
+                .get(&id)
+                .into_iter()
+                .flat_map(|runs| runs.iter())
+                .filter_map(|run| self.waits.active(*run))
+            {
                 if let WaitTarget::Children { task_ids, .. } = w.spec.target() {
                     pending.extend(task_ids);
                 }

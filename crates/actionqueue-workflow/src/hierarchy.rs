@@ -153,6 +153,21 @@ impl HierarchyTracker {
         Ok(())
     }
 
+    /// Install a relationship already validated by durable mutation/replay. Unlike
+    /// new declarations this can restore a GC'd relationship to a terminal parent.
+    pub fn restore_child_with_policy(
+        &mut self,
+        parent: TaskId,
+        child: TaskId,
+        policy: actionqueue_core::task::task_spec::ChildLifecyclePolicy,
+    ) {
+        self.parents.insert(child, parent);
+        self.children.entry(parent).or_default().insert(child);
+        if policy == actionqueue_core::task::task_spec::ChildLifecyclePolicy::Detached {
+            self.detached.insert(child);
+        }
+    }
+
     /// Returns the parent of `child`, if any.
     pub fn parent_of(&self, child: TaskId) -> Option<TaskId> {
         self.parents.get(&child).copied()

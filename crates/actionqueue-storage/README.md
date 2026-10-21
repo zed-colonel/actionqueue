@@ -12,8 +12,10 @@ A broader binary cannot upgrade the store profile.
 
 The mutation authority prepares a projection, appends and syncs the authoritative
 WAL frame, then publishes state. Uncertain writes fence subsequent mutation until
-recovery. Preparation currently clones the full projection. Production filesystem
-writers require a store session; raw fault-injection hooks require `testing`.
+recovery. Preparation shares persistent projection roots and copies only changed
+paths and records; see [ADR-019](../../docs/adrs/AQ-ADR-019-structurally-shared-projections.md).
+Production filesystem writers require a store session; raw fault-injection hooks
+require `testing`.
 
 WAL frames have a 52-byte header with explicit kind/schema, store identity,
 sequence, length, payload CRC and header CRC. Snapshots include durable waits,

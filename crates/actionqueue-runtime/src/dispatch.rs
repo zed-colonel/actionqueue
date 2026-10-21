@@ -54,7 +54,7 @@ use crate::worker::{InFlightRun, WorkerResult};
 
 /// Builds a [`DependencyGate`] from the recovery reducer's dependency state.
 ///
-/// Called at bootstrap and after each created admission to reconstruct the gate
+/// Called at bootstrap to reconstruct the gate
 /// from the committed projection. Satisfaction is derived from the
 /// projection's run states (which tasks have at least one Completed run with all
 /// runs terminal). Failure is derived similarly (all runs terminal, none Completed).
@@ -311,6 +311,8 @@ pub struct DispatchLoop<
     /// InternalSubscriptionRegistry, CronScheduleCache). Populated when all runs for a
     /// task are terminal; drained each tick after cascades are complete.
     pending_gc_tasks: std::collections::HashSet<TaskId>,
+    coordination_sequence: u64,
+    key_sequence: u64,
 }
 
 /// Configuration parameters for the dispatch loop that group backoff,
@@ -396,6 +398,15 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         let dependency_gate = build_dependency_gate(authority.projection());
         // Rebuild the hierarchy tracker from task parent_task_id fields.
         let hierarchy_tracker = build_hierarchy_tracker(authority.projection());
+        // Recovery restores terminal tasks' caches too. Queue their cleanup once
+        // here: incremental updates begin at the recovered sequence and will not
+        // revisit unchanged terminal tasks on later admissions or controls.
+        let pending_gc_tasks = authority
+            .projection()
+            .task_records()
+            .map(|record| record.task_spec().id())
+            .filter(|id| hierarchy_tracker.is_terminal(*id))
+            .collect();
 
         // Rebuild budget tracker from WAL-sourced projection records.
         #[cfg(feature = "budget")]
@@ -553,6 +564,8 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         };
 
         let mut dispatch = Self {
+            key_sequence: authority.projection().latest_sequence(),
+            coordination_sequence: authority.projection().latest_sequence(),
             authority,
             runner: Arc::new(AttemptRunner::new(handler)),
             clock,
@@ -591,7 +604,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
             rbac_enforcer,
             #[cfg(feature = "platform")]
             ledger,
-            pending_gc_tasks: std::collections::HashSet::new(),
+            pending_gc_tasks,
         };
         dispatch.rebuild_key_gate()?;
         Ok(dispatch)
@@ -621,9 +634,53 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
                 )));
             }
         }
+        self.key_sequence = self.projection().latest_sequence();
         self.key_gate = gate;
         Ok(())
     }
+    fn refresh_key_gate(&mut self, returned_run: Option<RunId>) -> Result<(), DispatchError> {
+        let mut runs: std::collections::BTreeSet<_> =
+            self.projection().changed_runs_since(self.key_sequence).collect();
+        runs.extend(returned_run);
+        // A service can transfer a key through multiple frames: release stale
+        // claims before installing current claims, retaining executing owners.
+        for run in &runs {
+            if self.in_flight.contains_key(run) {
+                continue;
+            }
+            if let Some(key) = self
+                .projection()
+                .get_run_instance(run)
+                .and_then(|r| self.projection().get_task(&r.task_id()))
+                .and_then(|t| t.constraints().concurrency_key())
+                .map(str::to_owned)
+            {
+                let _ = self.key_gate.release(key.into(), *run);
+            }
+        }
+        for run in runs {
+            let key = self.projection().key_reservation(run).map(str::to_owned).or_else(|| {
+                self.in_flight
+                    .get(&run)
+                    .and_then(|inf| self.projection().get_task(&inf.task_id))
+                    .and_then(|t| t.constraints().concurrency_key())
+                    .map(str::to_owned)
+            });
+            if let Some(key) = key {
+                if matches!(
+                    self.key_gate.acquire(key.clone().into(), run),
+                    actionqueue_engine::concurrency::key_gate::AcquireResult::Occupied { .. }
+                ) {
+                    return Err(DispatchError::Authority(MutationAuthorityError::Wait(
+                        actionqueue_core::mutation::WaitRejection::ConflictingKeyOwnership,
+                    )));
+                }
+            }
+        }
+        self.key_sequence = self.projection().latest_sequence();
+        Ok(())
+    }
+
     /// Next durable timer, even when paused or draining.
     pub fn next_wait_deadline(&self) -> Option<u64> {
         self.projection().waits().next_deadline()
@@ -642,7 +699,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         crate::waits::recover_cancellations(&mut self.authority, self.clock.now())
             .map_err(DispatchError::Authority)?;
         self.refresh_coordination();
-        self.rebuild_key_gate()
+        self.refresh_key_gate(None)
     }
     /// Handler-independent establishment; returned outcome remains committed on scan failure.
     pub fn establish_wait(
@@ -660,21 +717,55 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         result
     }
 
-    /// Continuations and controls can terminate runs without a worker result.
-    /// Reconstruct coordination from the settled durable state, just as on
-    /// bootstrap, including cascades committed by the handler-independent service.
+    /// Apply the tasks changed since the last coordination update. Storage retains
+    /// one latest-modification entry per task, so multi-frame services cannot lose
+    /// intermediate changes and no notification queue accumulates with history.
     fn refresh_coordination(&mut self) {
-        self.dependency_gate = build_dependency_gate(self.projection());
-        self.hierarchy_tracker = build_hierarchy_tracker(self.projection());
-        for task in self.authority.projection().task_records() {
-            let id = task.task_spec().id();
-            if task.canceled_at().is_some() {
-                self.pending_hierarchy_cascade.insert(id);
+        let tasks: Vec<_> =
+            self.projection().changed_tasks_since(self.coordination_sequence).collect();
+        // Restore relationships before terminal facts, including disposition-created children.
+        for id in &tasks {
+            let task = self.authority.projection().get_task(id).expect("changed task");
+            if let Some(parent) = task.parent_task_id() {
+                self.hierarchy_tracker.restore_child_with_policy(
+                    parent,
+                    *id,
+                    task.child_lifecycle_policy(),
+                );
             }
-            if self.hierarchy_tracker.is_terminal(id) {
-                self.pending_gc_tasks.insert(id);
+            let deps: Vec<_> = self.authority.projection().prerequisites_of(*id).collect();
+            if !deps.is_empty() {
+                let _ = self.dependency_gate.declare(*id, deps.clone());
+                for dep in deps {
+                    match self.authority.projection().task_terminal_status(dep) {
+                        Some(actionqueue_core::continuation::TaskTerminalStatus::Succeeded) => {
+                            self.dependency_gate.force_satisfy(dep)
+                        }
+                        Some(_) => {
+                            self.dependency_gate.force_fail(dep);
+                            let _ = self.dependency_gate.notify_failed(*id);
+                        }
+                        None => {}
+                    }
+                }
+                self.dependency_gate.recompute_satisfaction_pub(*id);
             }
         }
+        for id in tasks {
+            if let Some(status) = self.authority.projection().task_terminal_status(id) {
+                if status == actionqueue_core::continuation::TaskTerminalStatus::Succeeded {
+                    let _ = self.dependency_gate.notify_completed(id);
+                } else {
+                    let _ = self.dependency_gate.notify_failed(id);
+                }
+                self.hierarchy_tracker.mark_terminal(id);
+                self.pending_gc_tasks.insert(id);
+            }
+            if self.authority.projection().is_task_canceled(id) {
+                self.pending_hierarchy_cascade.insert(id);
+            }
+        }
+        self.coordination_sequence = self.projection().latest_sequence();
     }
     /// Returns a reference to the projection (current state view).
     pub fn projection(&self) -> &ReplayReducer {
@@ -729,7 +820,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
             && self.in_flight.get(&run_id).is_some_and(|inf| inf.attempt_id == attempt_id)
         {
             self.in_flight.remove(&run_id);
-            self.rebuild_key_gate()?;
+            self.refresh_key_gate(Some(run_id))?;
             return Ok(());
         }
 
@@ -779,8 +870,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         // Refresh before any fallible post-commit notifications. Never replay consumption.
         #[cfg(feature = "budget")]
         self.restore_task_budgets(self.projection().get_run_instance(&run_id).unwrap().task_id());
-        self.dependency_gate = build_dependency_gate(self.authority.projection());
-        self.hierarchy_tracker = build_hierarchy_tracker(self.authority.projection());
+        self.refresh_coordination();
         {
             let task_id = finished.as_ref().map(|inf| inf.task_id);
 
@@ -837,7 +927,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         }
         crate::waits::reconcile(&mut self.authority, current_time)
             .map_err(DispatchError::Authority)?;
-        self.rebuild_key_gate()
+        self.refresh_key_gate(None)
     }
 
     /// Notifies the dependency gate when a task's run reaches a terminal state.
@@ -904,7 +994,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
     /// unfinished dependents of a prerequisite that did not succeed.
     /// Completed work is never touched. When the cascade appended anything, or a
     /// dependency failure was noted this tick, the hierarchy tracker, dependency gate
-    /// and key gate are rebuilt from the projection so released keys and settled
+    /// and key gate consume affected tasks/runs so released keys and settled
     /// dependents are visible to the same tick's dispatch.
     ///
     /// Self-quenching: once every reachable task is terminal, repeated calls append
@@ -916,9 +1006,8 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         if self.authority.projection().latest_sequence() != before
             || !self.pending_hierarchy_cascade.is_empty()
         {
-            self.hierarchy_tracker = build_hierarchy_tracker(self.authority.projection());
-            self.dependency_gate = build_dependency_gate(self.authority.projection());
-            self.rebuild_key_gate()?;
+            self.refresh_coordination();
+            self.refresh_key_gate(None)?;
         }
         self.pending_hierarchy_cascade.clear();
         Ok(())
@@ -985,8 +1074,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         if expired.is_empty() {
             return Ok(());
         }
-        self.dependency_gate = build_dependency_gate(self.projection());
-        self.hierarchy_tracker = build_hierarchy_tracker(self.projection());
+        self.refresh_coordination();
         for (run_id, attempt_id) in expired {
             // Only retire the slot associated with the recovered attempt. A newer
             // local execution, if present, keeps its ownership and reservation.
@@ -1003,7 +1091,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
             #[cfg(feature = "budget")]
             self.fire_events_for_transition(task_id, target)?;
         }
-        self.rebuild_key_gate()?;
+        self.refresh_key_gate(None)?;
         Ok(())
     }
 
@@ -1172,7 +1260,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
                 self.subscription_registry.trigger(*id);
             }
         }
-        self.rebuild_key_gate()?;
+        self.refresh_key_gate(None)?;
         // Step 2: Check engine paused state or draining mode — skip promotion and dispatch.
         if self.authority.projection().is_engine_paused() {
             result.engine_paused = true;
@@ -1776,8 +1864,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
     ) -> Result<EnsureTaskOutcome, AdmissionError> {
         let outcome = crate::admission::ensure_task(&mut self.authority, request, &self.clock)?;
         if outcome.is_created() {
-            self.dependency_gate = build_dependency_gate(self.authority.projection());
-            self.hierarchy_tracker = build_hierarchy_tracker(self.authority.projection());
+            self.refresh_coordination();
         }
         Ok(outcome)
     }
@@ -1831,7 +1918,10 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
                 Some(actionqueue_core::continuation::TaskTerminalStatus::Succeeded) => {
                     self.dependency_gate.force_satisfy(*prereq_id)
                 }
-                Some(_) => self.dependency_gate.force_fail(*prereq_id),
+                Some(_) => {
+                    self.dependency_gate.force_fail(*prereq_id);
+                    let _ = self.dependency_gate.notify_failed(task_id);
+                }
                 None => {}
             }
         }
@@ -2679,6 +2769,59 @@ mod tests {
         .unwrap()
     }
 
+    #[test]
+    fn incremental_coordination_matches_reconstruction_across_cascades_and_late_dependencies() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut d = new_dispatch(dir.path(), DependencyHandler);
+        let parent = task(b"parent", None);
+        let parent_id = parent.id();
+        d.submit_task(parent).unwrap();
+        let child = task(b"child", None).with_parent(parent_id);
+        let child_id = child.id();
+        d.submit_task(child).unwrap();
+        let detached = task(b"detached", None).with_parent_policy(
+            parent_id,
+            actionqueue_core::task::task_spec::ChildLifecyclePolicy::Detached,
+        );
+        let detached_id = detached.id();
+        d.submit_task(detached).unwrap();
+        let dependent = task(b"dependent", None);
+        let dependent_id = dependent.id();
+        d.ensure_task(EnsureTaskRequest::for_task(dependent, vec![child_id]).unwrap()).unwrap();
+        let compare = |d: &DispatchLoop<_, _, _>| {
+            let gate = build_dependency_gate(d.projection());
+            let hierarchy = build_hierarchy_tracker(d.projection());
+            for record in d.projection().task_records() {
+                let id = record.task_spec().id();
+                if d.projection().task_terminal_status(id).is_none() {
+                    assert_eq!(d.dependency_gate.is_eligible(id), gate.is_eligible(id));
+                    assert_eq!(
+                        d.dependency_gate.is_dependency_failed(id),
+                        gate.is_dependency_failed(id)
+                    );
+                }
+                assert_eq!(d.hierarchy_tracker.parent_of(id), hierarchy.parent_of(id));
+                assert_eq!(d.hierarchy_tracker.is_terminal(id), hierarchy.is_terminal(id));
+            }
+        };
+        compare(&d);
+        d.cancel(actionqueue_core::mutation::CancelCommand {
+            expected_sequence: d.projection().latest_sequence() + 1,
+            target: actionqueue_core::mutation::CancelTarget::Task(parent_id),
+            tenant_id: None,
+            control_context: None,
+            timestamp: 1000,
+        })
+        .unwrap();
+        assert!(d.projection().is_task_canceled(child_id));
+        assert!(d.projection().is_task_canceled(dependent_id));
+        assert!(!d.projection().is_task_canceled(detached_id));
+        compare(&d);
+        let late = task(b"late dependent", None);
+        d.ensure_task(EnsureTaskRequest::for_task(late, vec![child_id]).unwrap()).unwrap();
+        compare(&d);
+    }
+
     type TestDispatch = DispatchLoop<
         actionqueue_storage::wal::writer::InstrumentedWalWriter<
             actionqueue_storage::wal::fs_writer::WalFsWriter,
@@ -2735,6 +2878,33 @@ mod tests {
                     .map(|v| actionqueue_core::data_ref::DataRef::from_bytes(v).unwrap()),
             ),
         }
+    }
+
+    #[cfg(feature = "budget")]
+    #[tokio::test]
+    async fn bootstrap_cleans_terminal_caches_without_waiting_for_another_task_change() {
+        use actionqueue_core::budget::BudgetDimension;
+        let dir = tempfile::tempdir().unwrap();
+        let mut dispatch = new_dispatch(dir.path(), DependencyHandler);
+        let worker = accepted_worker(&mut dispatch);
+        let completed = dispatch.projection().get_run_instance(&worker.run_id).unwrap().task_id();
+        dispatch.allocate_budget(completed, BudgetDimension::Token, 10).unwrap();
+        dispatch.process_worker_result(worker, &mut TickResult::default(), 1000).unwrap();
+        let active = task(b"active", None);
+        let active_id = active.id();
+        dispatch.submit_task(active).unwrap();
+        dispatch.allocate_budget(active_id, BudgetDimension::Token, 11).unwrap();
+        let digest = dispatch.projection().projection_digest().unwrap();
+        drop(dispatch);
+
+        let mut recovered = new_dispatch(dir.path(), DependencyHandler);
+        recovered.draining = true;
+        assert_eq!(recovered.budget_remaining(completed, BudgetDimension::Token), Some(10));
+        let _ = recovered.tick().await.unwrap();
+        assert_eq!(recovered.budget_remaining(completed, BudgetDimension::Token), None);
+        assert_eq!(recovered.budget_remaining(active_id, BudgetDimension::Token), Some(11));
+        assert!(recovered.projection().get_budget(&completed, BudgetDimension::Token).is_some());
+        assert_eq!(recovered.projection().projection_digest().unwrap(), digest);
     }
 
     #[test]
@@ -3078,8 +3248,7 @@ mod tests {
                     timestamp: 1000,
                 })
                 .unwrap();
-            let canceled_history =
-                dispatch.projection().get_attempt_history(&blocked_run).map(<[_]>::to_vec);
+            let canceled_history = dispatch.projection().get_attempt_history(&blocked_run).cloned();
             assert!(!dispatch.projection().key_reservations().any(|(id, _)| id == blocked_run));
             for _ in 0..3 {
                 assert_eq!(dispatch.tick().await.unwrap().dispatched, 0);
@@ -3108,7 +3277,7 @@ mod tests {
             );
             assert_eq!(
                 dispatch.projection().get_attempt_history(&blocked_run),
-                canceled_history.as_deref()
+                canceled_history.as_ref()
             );
         }
     }

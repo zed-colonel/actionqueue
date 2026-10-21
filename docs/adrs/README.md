@@ -29,6 +29,7 @@ matching rule, or digest algorithm must reference the governing ADR and include 
 | [`AQ-ADR-016`](AQ-ADR-016-control-authentication-hook.md) | Control authentication hook | `AQ-11` | Accepted |
 | [`AQ-ADR-017`](AQ-ADR-017-remote-actor-result-envelope.md) | Remote actor result envelope | `AQ-11` | Accepted |
 | [`AQ-ADR-018`](AQ-ADR-018-crate-extraction.md) | Crate extraction | `post-release` | Proposed |
+| [`AQ-ADR-019`](AQ-ADR-019-structurally-shared-projections.md) | Structurally shared projections | `AQ-P2` | Accepted |
 
 ## Lifecycle
 

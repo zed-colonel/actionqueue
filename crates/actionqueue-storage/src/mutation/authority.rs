@@ -35,6 +35,10 @@ use crate::wal::writer::{WalWriter, WalWriterError};
 
 /// Projection behavior required by the mutation authority.
 pub trait MutationProjection: Clone {
+    /// Waits resolved by the last frame, when the projection has an incremental change view.
+    fn resolved_wait_ids(&self) -> Option<Vec<actionqueue_core::ids::WaitId>> {
+        None
+    }
     /// Typed projection apply error.
     type Error;
 
@@ -203,6 +207,10 @@ pub trait MutationProjection: Clone {
 }
 
 impl MutationProjection for ReplayReducer {
+    fn resolved_wait_ids(&self) -> Option<Vec<actionqueue_core::ids::WaitId>> {
+        Some(self.latest_change().resolved_waits.iter().copied().collect())
+    }
+
     fn validate_wait_capacity(
         &self,
         run: RunId,
@@ -220,15 +228,16 @@ impl MutationProjection for ReplayReducer {
             if let actionqueue_core::task::run_policy::RunPolicy::Cron(policy) =
                 admission.request().task_spec().run_policy()
             {
-                let runs: Vec<_> = self.runs_for_task(run.task_id()).collect();
-                let after = runs
-                    .iter()
-                    .map(|r| r.scheduled_at())
-                    .max()
-                    .unwrap_or_else(|| run.created_at().saturating_sub(1));
+                let empty = Default::default();
+                let summary = self.derived.summaries.get(&run.task_id()).unwrap_or(&empty);
+                let after = if summary.total == 0 {
+                    run.created_at().saturating_sub(1)
+                } else {
+                    summary.last_scheduled
+                };
                 if !self.is_task_canceled(run.task_id())
-                    && policy.max_occurrences().is_none_or(|max| runs.len() < max as usize)
-                    && runs.iter().filter(|r| !r.state().is_terminal()).count()
+                    && policy.max_occurrences().is_none_or(|max| summary.total < max as usize)
+                    && summary.active
                         < actionqueue_core::task::run_policy::CRON_WINDOW_SIZE as usize
                     && run.created_at() >= admission.timestamp()
                     && policy.next_occurrences_after(after, 1).first() == Some(&run.scheduled_at())
@@ -1931,10 +1940,9 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
         })?;
 
         // Publish the already validated state only after durability succeeds.
-        self.projection = prepared;
-        self.telemetry.committed(&event, frame_bytes, &self.projection);
-
+        let original = std::mem::replace(&mut self.projection, prepared);
         crate::store::fault::checkpoint("authority_after_publish").map_err(|error| {
+            self.projection = original;
             self.recovery_required = true;
             self.wal_writer.fence();
             MutationAuthorityError::Publication {
@@ -1943,6 +1951,7 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
                 error: error.to_string(),
             }
         })?;
+        self.telemetry.committed(&event, frame_bytes, &self.projection);
         tracing::debug!(sequence = event.sequence(), "command submitted");
         Ok(MutationOutcome::new(event.sequence(), applied))
     }

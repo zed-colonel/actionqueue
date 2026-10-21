@@ -1,5 +1,5 @@
 //! Derived exact-reference lookup. Rebuilt by admission insertion on replay and hydration.
-use std::collections::{BTreeSet, HashMap};
+use super::collections::{BTreeSet, HashMap};
 
 use actionqueue_core::ids::{TaskId, TenantId};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -131,9 +131,8 @@ impl super::reducer::ReplayReducer {
             }
             E::AttemptDispositionCommitted { record } => vec![T::Run(record.run_id)],
             E::SubscriptionCanceled { subscription_id, .. } => self
-                .subscriptions()
-                .find(|(id, _)| **id == *subscription_id)
-                .map(|(_, s)| vec![T::Task(s.task_id)])
+                .get_subscription(subscription_id)
+                .map(|s| vec![T::Task(s.task_id)])
                 .unwrap_or_default(),
             _ => Vec::new(),
         };
@@ -157,7 +156,7 @@ impl super::reducer::ReplayReducer {
     }
     pub(crate) fn hydrate_inspection_ownership(&mut self) {
         self.inspection_index.history_unavailable = true;
-        for (run, history) in &self.attempt_history {
+        for (run, history) in self.attempt_history.iter() {
             for attempt in history {
                 self.inspection_index.attempts.insert(attempt.attempt_id(), *run);
             }

@@ -1,5 +1,5 @@
 //! Derived active-filter/deadline/match indexes and atomic continuation projection.
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use super::collections::{BTreeMap, BTreeSet, HashMap};
 
 use actionqueue_core::{
     bounded::OpaqueRef, continuation::*, ids::*, mutation::*, run::RunState,
@@ -33,6 +33,7 @@ fn after(w: &WaitSpec) -> SignalSequence {
 pub struct WaitIndex {
     pub(crate) records: BTreeMap<WaitId, WaitRecord>,
     active: HashMap<RunId, (WaitId, Option<TenantId>)>,
+    pub(crate) active_by_task: HashMap<TaskId, BTreeSet<RunId>>,
     active_by_tenant: HashMap<Option<TenantId>, usize>,
     matching: HashMap<Key, BTreeSet<WaitId>>,
     deadlines: BTreeSet<(u64, WaitId)>,
@@ -88,7 +89,7 @@ impl WaitIndex {
         Ok(())
     }
     pub fn next_deadline(&self) -> Option<u64> {
-        self.deadlines.first().map(|v| v.0)
+        self.deadlines.iter().next().map(|v| v.0)
     }
     pub fn pending_wait(&self, run: RunId) -> Option<WaitId> {
         self.pending.get(&run).copied()
@@ -125,17 +126,18 @@ impl WaitIndex {
                     correlation.clone(),
                     source,
                 )) {
-                    ids.extend(bucket.iter().inspect(|_| visit(Visit::Waiter)));
+                    ids.extend(bucket.iter().inspect(|_| visit(Visit::Waiter)).copied());
                 }
             }
         }
         ids
     }
-    pub(crate) fn insert(&mut self, r: WaitRecord, tenant: Option<TenantId>) {
+    pub(crate) fn insert(&mut self, r: WaitRecord, tenant: Option<TenantId>, task: TaskId) {
         let id = r.spec.wait_id();
         if let Some(resolution) = &r.resolution {
             self.resolved.insert((r.run_id, resolution.sequence), id);
         } else {
+            self.active_by_task.entry(task).or_default().insert(r.run_id);
             self.active.insert(r.run_id, (id, tenant));
             *self.active_by_tenant.entry(tenant).or_default() += 1;
             self.broad_active += usize::from(is_broad(&r.spec));
@@ -156,7 +158,10 @@ impl WaitIndex {
         }
         self.records.insert(id, r);
     }
-    fn close(&mut self, r: WaitResolution) {
+    fn close(&mut self, r: WaitResolution, task: TaskId) {
+        if let Some(bucket) = self.active_by_task.get_mut(&task) {
+            bucket.remove(&r.run_id);
+        }
         let w = self.records.get_mut(&r.wait_id).expect("validated wait");
         let (_, tenant) = self.active.remove(&w.run_id).expect("active wait namespace");
         let count = self.active_by_tenant.get_mut(&tenant).expect("active wait count");
@@ -661,10 +666,10 @@ impl ReplayReducer {
         if task.constraints().concurrency_key_wait_policy()
             == ConcurrencyKeyWaitPolicy::ReleaseWhileAwaiting
         {
-            p.key_reservations.remove(&r.run_id);
+            p.release_key(r.run_id);
         }
         p.index_checkpoint(r)?;
-        p.waits.insert(r.clone(), tenant);
+        p.waits.insert(r.clone(), tenant, p.get_run_instance(&r.run_id).unwrap().task_id());
         p.refresh_wait_candidate(r.spec.wait_id());
         *self = p;
         Ok(())
@@ -676,7 +681,8 @@ impl ReplayReducer {
         let w = self.waits.get(r.wait_id).ok_or(ReplayReducerError::CorruptedData)?;
         let state = self.resolution_state(w, r).map_err(ReplayReducerError::Wait)?;
         let mut p = self.clone();
-        p.waits.close(r.clone());
+        p.waits.close(r.clone(), p.get_run_instance(&r.run_id).unwrap().task_id());
+        p.change.resolved_waits.insert(r.wait_id);
         if state == RunState::Ready {
             p.waits.pending.insert(r.run_id, r.wait_id);
         }
@@ -696,10 +702,12 @@ impl ReplayReducer {
                 if !p.is_task_canceled(id) {
                     p.apply_task_canceled(&id, r.timestamp)?;
                 }
-                p.runs_for_task(id).map(|r| r.id()).collect()
+                p.active_run_ids_for_task(id).collect()
             }
         };
         for id in runs {
+            #[cfg(feature = "testing")]
+            super::work::cancellation_candidate();
             if p.get_run_state(&id).is_some_and(|s| s.is_terminal()) {
                 continue;
             }
@@ -743,7 +751,12 @@ impl ReplayReducer {
         // Historical evidence can refer to another wait's terminal resolution or to
         // its own committed cancellation. Load the read-only history before
         // independently validating every record.
-        self.waits.records = records.iter().map(|r| (r.spec.wait_id(), r.clone())).collect();
+        let mut facts = WaitIndex::default();
+        for r in records {
+            let task = self.get_run_instance(&r.run_id).ok_or(E::NotFound)?.task_id();
+            facts.insert(r.clone(), self.tenant_for_run(r.run_id)?, task);
+        }
+        self.waits = facts;
         self.cancellations.clear();
         for c in cancels {
             self.cancellations.entry(c.target).or_insert_with(|| c.clone());
@@ -827,7 +840,11 @@ impl ReplayReducer {
                     return Err(E::InvalidSignal);
                 }
             }
-            index.insert(r.clone(), self.tenant_for_run(r.run_id)?);
+            index.insert(
+                r.clone(),
+                self.tenant_for_run(r.run_id)?,
+                self.get_run_instance(&r.run_id).ok_or(E::NotFound)?.task_id(),
+            );
         }
         for run in self.run_instances() {
             if run.state() == RunState::Awaiting && index.active(run.id()).is_none() {
@@ -880,7 +897,7 @@ impl ReplayReducer {
             let ri = self.get_run_instance(run).ok_or(E::NotFound)?;
             if ri.state().is_terminal()
                 || claims.insert(*run, key.clone()).is_some()
-                || !used.insert(key.clone())
+                || used.insert(key.clone()).is_some()
                 || self.get_task(&ri.task_id()).ok_or(E::NotFound)?.constraints().concurrency_key()
                     != Some(key.as_str())
             {
@@ -908,6 +925,7 @@ impl ReplayReducer {
             self.index_checkpoint(w).map_err(|_| E::InvalidCheckpoint)?;
         }
         self.waits = index;
+        self.derived.key_owners = claims.iter().map(|(run, key)| (key.clone(), *run)).collect();
         self.key_reservations = claims;
         let ids: Vec<_> = self.waits.active.values().map(|(id, _)| *id).collect();
         for id in ids {

@@ -145,8 +145,8 @@ impl ReplayReducer {
             }
             r.runs.insert(id, run.run_instance.state());
             r.runs_by_task.entry(run.run_instance.task_id()).or_default().push(id);
-            r.run_history.insert(id, map_snapshot_run_history(run.state_history));
-            r.attempt_history.insert(id, map_snapshot_attempt_history(run.attempts));
+            r.run_history.insert(id, map_snapshot_run_history(run.state_history).into());
+            r.attempt_history.insert(id, map_snapshot_attempt_history(run.attempts).into());
             if let Some(l) = map_snapshot_lease_metadata(run.lease) {
                 r.leases.insert(id, (l.owner.clone(), l.expiry));
                 r.lease_metadata.insert(id, l);
@@ -204,6 +204,7 @@ impl ReplayReducer {
         for record in r.signals.records() {
             r.validate_signal_references(record.envelope()).map_err(invalid)?;
         }
+        r.rebuild_derived();
         r.hydrate_waits(&s.waits, &s.pending_resumes, &s.key_reservations, &s.cancellations)
             .map_err(invalid)?;
         for (run, seq) in s.dispatch_sequences {

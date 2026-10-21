@@ -63,16 +63,19 @@ fn request(n: usize) -> EnsureTaskRequest {
     .unwrap()
 }
 
+fn host() -> HostControlContext {
+    HostControlContext {
+        actor_id: None,
+        scope: ControlScope::SingleTenant,
+        attribution: ControlMutationContext::new(OpaqueRef::new("retained-history").unwrap()),
+    }
+}
 fn open(path: &std::path::Path) -> Authority {
     open_store(path, OpenOptions::Initialize { features: vec![] })
         .unwrap()
         .into_authority()
         .unwrap()
-        .with_host(HostControlContext {
-            actor_id: None,
-            scope: ControlScope::SingleTenant,
-            attribution: ControlMutationContext::new(OpaqueRef::new("retained-history").unwrap()),
-        })
+        .with_host(host())
 }
 
 fn admit(a: &mut Authority, q: EnsureTaskRequest) -> EnsureTaskOutcome {
@@ -104,8 +107,10 @@ impl Measurement {
             "elapsed_ns": self.elapsed_ns,
             "operations": operations,
             "mean_ns_per_operation": self.elapsed_ns as f64 / operations as f64,
-            "full_projection_clones": self.work.full_projection_clones,
-            "cloned_run_entries": self.work.cloned_run_entries,
+            "shallow_projection_clones": self.work.shallow_projection_clones,
+            "record_copies": self.work.record_copies,
+            "subscription_candidates": self.work.subscription_candidates,
+            "cancellation_run_candidates": self.work.cancellation_run_candidates,
             "reducer_event_visits": self.work.reducer_event_visits,
         })
     }
@@ -120,42 +125,29 @@ fn measure<T>(operation: impl FnOnce() -> T) -> (T, Measurement) {
     (result, Measurement { elapsed_ns: elapsed.as_nanos().try_into().unwrap(), work })
 }
 
-/// Explicit 0.2.0 expectations, intentionally replaced by AQ-P2/AQ-P3.
-/// No elapsed-time threshold is an assertion.
-fn assert_0_2_0(
+/// AQ-P2 structural expectations. The recorded 0.2.0 baseline remains in docs/performance.
+/// Timing is informational; no elapsed-time assertion runs in CI.
+fn assert_shared(
     n: usize,
     admission: &Measurement,
     cancel: &Measurement,
     wal: &Measurement,
     snapshot: &Measurement,
 ) {
-    assert_eq!(
-        admission.work,
-        ProjectionWork {
-            full_projection_clones: 2 * BATCH,
-            cloned_run_entries: 2 * BATCH * n + BATCH * (BATCH - 1),
-            reducer_event_visits: BATCH,
-        },
-        "0.2.0 admission work"
-    );
-    assert_eq!(
-        cancel.work,
-        ProjectionWork {
-            full_projection_clones: 2 * BATCH,
-            cloned_run_entries: 2 * BATCH * (n + BATCH),
-            reducer_event_visits: BATCH,
-        },
-        "0.2.0 cancellation work"
-    );
+    for m in [admission, cancel, wal, snapshot] {
+        assert_eq!(m.work.subscription_candidates, 0);
+    }
+    assert_eq!(admission.work.shallow_projection_clones, 2 * BATCH);
+    assert_eq!(cancel.work.shallow_projection_clones, 2 * BATCH);
+    assert_eq!(cancel.work.cancellation_run_candidates, BATCH);
+    assert_eq!(admission.work.reducer_event_visits, BATCH);
+    assert_eq!(cancel.work.reducer_event_visits, BATCH);
+    // Path copying only edits the addressed task/run/bucket, independent of N.
+    assert!(admission.work.record_copies <= 10 * BATCH);
+    assert!(cancel.work.record_copies <= 20 * BATCH);
     let events = 1 + 2 * (n + BATCH);
-    assert_eq!(wal.work.full_projection_clones, events - 1, "0.2.0 WAL clones");
-    assert_eq!(wal.work.reducer_event_visits, events, "0.2.0 WAL visits");
-    assert_eq!(
-        snapshot.work.full_projection_clones,
-        events - 1 + 2 * BATCH,
-        "0.2.0 snapshot clones"
-    );
-    assert_eq!(snapshot.work.reducer_event_visits, events + 2 * BATCH, "0.2.0 snapshot visits");
+    assert_eq!(wal.work.reducer_event_visits, events);
+    assert_eq!(snapshot.work.reducer_event_visits, events + 2 * BATCH);
 }
 
 fn check_projection(p: &ReplayReducer, tasks: usize, sequence: u64) {
@@ -174,7 +166,7 @@ fn wal_digest(path: &std::path::Path) -> String {
     format!("{:x}", Sha256::digest(std::fs::read(path).unwrap()))
 }
 
-pub fn run(n: usize) -> Value {
+fn seed(n: usize) -> (tempfile::TempDir, Authority) {
     eprintln!("retained_history: N={n}, building canceled history");
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("store");
@@ -187,6 +179,55 @@ pub fn run(n: usize) -> Value {
             eprintln!("retained_history: N={n}, prepared {id} canceled runs");
         }
     }
+    (dir, a)
+}
+pub fn run(n: usize) -> Value {
+    let (dir, a) = seed(n);
+    measure_state(n, dir, a)
+}
+/// Reuse only the closed, durable, unmeasured prefix. Each sample receives fresh
+/// files, its own writer/session and exactly N retained runs. Timed phases and
+/// their durability/recovery assertions are identical to the single-sample path.
+pub fn run_repeated(n: usize, repetitions: usize) -> Vec<Value> {
+    assert!(repetitions > 0);
+    if repetitions == 1 {
+        return vec![run(n)];
+    }
+    let (seed_dir, a) = seed(n);
+    let seed_root = seed_dir.path().join("store");
+    let seed_wal = a.store_session().unwrap().wal_path();
+    let (writer, projection) = a.into_parts();
+    writer.close().unwrap();
+    let prefix_hash = wal_digest(&seed_wal);
+    let mut results = Vec::new();
+    for repetition in 1..=repetitions {
+        eprintln!("retained_history: N={n}, repetition {repetition}/{repetitions}");
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("store");
+        std::fs::create_dir_all(root.join("wal")).unwrap();
+        std::fs::create_dir_all(root.join("snapshots")).unwrap();
+        for name in ["manifest.json", "store.lock", "wal/actionqueue.wal"] {
+            std::fs::copy(seed_root.join(name), root.join(name)).unwrap();
+            std::fs::File::open(root.join(name)).unwrap().sync_all().unwrap();
+        }
+        for path in [root.join("wal"), root.join("snapshots"), root.clone(), dir.path().to_owned()]
+        {
+            std::fs::File::open(path).unwrap().sync_all().unwrap();
+        }
+        assert_eq!(wal_digest(&root.join("wal/actionqueue.wal")), prefix_hash);
+        let session = open_store(&root, OpenOptions::ReadWrite).unwrap();
+        let writer = WalFsWriter::new(session).unwrap();
+        let a = StorageMutationAuthority::new(writer, projection.clone()).with_host(host());
+        let mut result = measure_state(n, dir, a);
+        result["repetition"] = repetition.into();
+        result["prefix_wal_sha256"] = prefix_hash.clone().into();
+        results.push(result);
+    }
+    assert_eq!(wal_digest(&seed_wal), prefix_hash);
+    results
+}
+fn measure_state(n: usize, dir: tempfile::TempDir, mut a: Authority) -> Value {
+    let root = dir.path().join("store");
     let prefix_sequence = 1 + 2 * n as u64;
     check_projection(a.projection(), n, prefix_sequence);
     let prefix = build_snapshot_from_projection(a.projection(), 1002).unwrap();
@@ -259,7 +300,7 @@ pub fn run(n: usize) -> Value {
         "both recoveries must use identical WAL contents"
     );
     snapshot.wal_writer.close().unwrap();
-    assert_0_2_0(n, &admission, &cancellation, &wal_measurement, &snapshot_measurement);
+    assert_shared(n, &admission, &cancellation, &wal_measurement, &snapshot_measurement);
 
     json!({
         "retained_terminal_runs": n,
@@ -297,11 +338,7 @@ fn populated_clone_is_equivalent_and_mutates_independently() {
     let mut cloned = p.clone();
     assert_eq!(
         work::projection_work(),
-        ProjectionWork {
-            full_projection_clones: 1,
-            cloned_run_entries: 2,
-            reducer_event_visits: 0,
-        }
+        ProjectionWork { shallow_projection_clones: 1, ..ProjectionWork::default() }
     );
     // Debug includes derived indexes that the canonical digest omits.
     assert_eq!(format!("{p:?}"), format!("{cloned:?}"));
