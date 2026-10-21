@@ -936,6 +936,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         }
         crate::waits::reconcile(&mut self.authority, current_time)
             .map_err(DispatchError::Authority)?;
+        self.refresh_coordination();
         self.refresh_key_gate(None)
     }
 
@@ -1903,35 +1904,16 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
                 MutationCommand::DependencyDeclare(DependencyDeclareCommand::new(
                     seq,
                     task_id,
-                    prereqs.clone(),
+                    prereqs,
                     current_time,
                 )),
                 DurabilityPolicy::Immediate,
             )
             .map_err(DispatchError::Authority)?;
 
-        // Update in-memory gate (safe since cycle was already checked).
-        let _ = self.dependency_gate.declare(task_id, prereqs.clone());
-
-        // Catch up prerequisites that already completed (e.g., when declaring
-        // a dependency AFTER the prerequisite ran). GC may have removed the
-        // completed task from `satisfied`; re-check the projection to restore it.
-        for prereq_id in &prereqs {
-            match self.authority.projection().task_terminal_status(*prereq_id) {
-                Some(actionqueue_core::continuation::TaskTerminalStatus::Succeeded) => {
-                    self.dependency_gate.force_satisfy(*prereq_id);
-                    self.pending_gc_tasks.insert(*prereq_id);
-                }
-                Some(_) => {
-                    self.dependency_gate.force_fail(*prereq_id);
-                    self.pending_gc_tasks.insert(*prereq_id);
-                    let _ = self.dependency_gate.notify_failed(task_id);
-                }
-                None => {}
-            }
-        }
-        // Re-evaluate satisfaction for task_id after prereq state is restored.
-        self.dependency_gate.recompute_satisfaction_pub(task_id);
+        // Consume pending prerequisite changes as well as this declaration, so
+        // existing dependents are notified before a terminal prerequisite is GC'd.
+        self.refresh_coordination();
 
         Ok(())
     }
@@ -2904,6 +2886,99 @@ mod tests {
         DependencyHandler,
         MockClock,
     >;
+
+    #[test]
+    fn late_dependency_notifies_existing_dependents_before_collecting_prerequisite() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut d = new_dispatch(dir.path(), DependencyHandler);
+        let worker = accepted_worker(&mut d);
+        let prerequisite = d.projection().get_run_instance(&worker.run_id).unwrap().task_id();
+        let dependent = task(b"dependent", None);
+        let dependent_id = dependent.id();
+        d.ensure_task(EnsureTaskRequest::for_task(dependent, vec![prerequisite]).unwrap()).unwrap();
+        let late = task(b"late dependent", None);
+        let late_id = late.id();
+        d.submit_task(late).unwrap();
+        assert!(!d.dependency_gate.is_eligible(dependent_id));
+
+        // Commit success without consuming the coordination changes, as a service
+        // can do between dispatch updates. Keep the gate and cursor untouched.
+        let expected = actionqueue_core::mutation::AttemptCommitExpectation::new(
+            d.next_sequence().unwrap(),
+            worker.run_id,
+            worker.attempt_id,
+            RunState::Running,
+            worker.lease_fence,
+        );
+        crate::disposition::commit(&mut d.authority, expected, worker.disposition, 1000).unwrap();
+        d.in_flight.remove(&worker.run_id);
+        assert_eq!(
+            d.projection().task_terminal_status(prerequisite),
+            Some(actionqueue_core::continuation::TaskTerminalStatus::Succeeded)
+        );
+        assert!(d.coordination_sequence < d.projection().latest_sequence());
+
+        d.declare_dependency(late_id, vec![prerequisite]).unwrap();
+        d.gc_terminal_tasks();
+        d.refresh_coordination();
+        let rebuilt = build_dependency_gate(d.projection());
+        for id in [dependent_id, late_id] {
+            assert!(rebuilt.is_eligible(id));
+            assert!(d.dependency_gate.is_eligible(id), "incremental gate strands dependent {id}");
+            assert_eq!(
+                d.dependency_gate.is_dependency_failed(id),
+                rebuilt.is_dependency_failed(id)
+            );
+        }
+    }
+
+    #[test]
+    fn worker_result_refreshes_terminal_changes_from_wait_reconciliation() {
+        use actionqueue_core::{bounded::BoundedCode, continuation::*, ids::*};
+
+        for policy in [
+            WaitTimeoutPolicy::CancelRun,
+            WaitTimeoutPolicy::FailRun { code: BoundedCode::new("expired").unwrap() },
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut d = new_dispatch(dir.path(), DependencyHandler);
+            let mut waiting = accepted_worker(&mut d);
+            let run_id = waiting.run_id;
+            let prerequisite = d.projection().get_run_instance(&run_id).unwrap().task_id();
+            let wait = WaitSpec::new(
+                WaitId::new(),
+                SignalFilter {
+                    tenant_id: None,
+                    namespace: SignalNamespace::new("test").unwrap(),
+                    kind: SignalKind::new("wake").unwrap(),
+                    correlation_id: None,
+                    source_ref: None,
+                },
+                WaitMatchPolicy::FirstMatch,
+                SignalEligibility::After(SignalSequence::new(0)),
+                Some(WaitDeadline { at: 1001, policy }),
+            )
+            .unwrap();
+            waiting.disposition = AttemptDisposition::awaiting(wait, None);
+            d.process_worker_result(waiting, &mut TickResult::default(), 1000).unwrap();
+            assert_eq!(d.projection().get_run_state(&run_id), Some(&RunState::Awaiting));
+            let dependent = task(b"dependent", None);
+            let dependent_id = dependent.id();
+            d.ensure_task(EnsureTaskRequest::for_task(dependent, vec![prerequisite]).unwrap())
+                .unwrap();
+            let worker = accepted_worker(&mut d);
+
+            // Another worker's result reconciles the now-due wait and commits
+            // the prerequisite's terminal outcome and dependent cancellation.
+            d.process_worker_result(worker, &mut TickResult::default(), 1001).unwrap();
+            assert!(d.projection().get_run_state(&run_id).unwrap().is_terminal());
+            assert!(d.projection().is_task_canceled(dependent_id));
+            assert_eq!(d.coordination_sequence, d.projection().latest_sequence());
+            assert!(d.hierarchy_tracker.is_terminal(prerequisite));
+            assert!(d.pending_gc_tasks.contains(&prerequisite));
+            assert!(d.dependency_gate.is_dependency_failed(dependent_id));
+        }
+    }
 
     #[test]
     fn restored_terminal_prerequisites_are_collected_again() {
