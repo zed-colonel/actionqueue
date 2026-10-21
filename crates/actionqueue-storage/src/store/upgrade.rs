@@ -30,7 +30,20 @@ pub fn upgrade_store(source: &Path, output: &Path) -> Result<StoreVerification, 
     let recovered = recover(&source_session, RepairPolicy::Strict, false)?;
     // Every present source snapshot must pass full prefix equivalence. Operation
     // associations missing from schema 9 are reconstructed from the complete WAL.
-    if let Some((_, payload)) = read_frame(&source_session.snapshot_path(), 1).map_err(invalid)? {
+    let snapshot_path = source_session.snapshot_path();
+    let frame = read_frame(&snapshot_path, 1).map_err(|e| {
+        if e.physical_damage() {
+            invalid(format!(
+                "damaged schema-9 snapshot at {}: {e}; preserve a copy of the source store, \
+                 remove snapshots/snapshot.bin from the offline upgrade source, and retry \
+                 actionqueue store upgrade to reconstruct from the complete WAL",
+                snapshot_path.display()
+            ))
+        } else {
+            invalid(e)
+        }
+    })?;
+    if let Some((_, payload)) = frame {
         let snapshot = envelope::decode(&payload, Some(source_session.manifest().store_id))
             .map_err(invalid)?;
         validate_snapshot_for_session(&source_session, &snapshot)?;

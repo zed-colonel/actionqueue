@@ -733,6 +733,12 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
                     *id,
                     task.child_lifecycle_policy(),
                 );
+                // A later child mutation can restore an already collected parent.
+                // Restore its terminal fact too, so the subtree can be collected again.
+                if self.authority.projection().task_terminal_status(parent).is_some() {
+                    self.hierarchy_tracker.mark_terminal(parent);
+                    self.pending_gc_tasks.insert(parent);
+                }
             }
             let deps: Vec<_> = self.authority.projection().prerequisites_of(*id).collect();
             if !deps.is_empty() {
@@ -740,10 +746,12 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
                 for dep in deps {
                     match self.authority.projection().task_terminal_status(dep) {
                         Some(actionqueue_core::continuation::TaskTerminalStatus::Succeeded) => {
-                            self.dependency_gate.force_satisfy(dep)
+                            self.dependency_gate.force_satisfy(dep);
+                            self.pending_gc_tasks.insert(dep);
                         }
                         Some(_) => {
                             self.dependency_gate.force_fail(dep);
+                            self.pending_gc_tasks.insert(dep);
                             let _ = self.dependency_gate.notify_failed(*id);
                         }
                         None => {}
@@ -1911,10 +1919,12 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         for prereq_id in &prereqs {
             match self.authority.projection().task_terminal_status(*prereq_id) {
                 Some(actionqueue_core::continuation::TaskTerminalStatus::Succeeded) => {
-                    self.dependency_gate.force_satisfy(*prereq_id)
+                    self.dependency_gate.force_satisfy(*prereq_id);
+                    self.pending_gc_tasks.insert(*prereq_id);
                 }
                 Some(_) => {
                     self.dependency_gate.force_fail(*prereq_id);
+                    self.pending_gc_tasks.insert(*prereq_id);
                     let _ = self.dependency_gate.notify_failed(task_id);
                 }
                 None => {}
@@ -2894,6 +2904,89 @@ mod tests {
         DependencyHandler,
         MockClock,
     >;
+
+    #[test]
+    fn restored_terminal_prerequisites_are_collected_again() {
+        for failed in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut d = new_dispatch(dir.path(), DependencyHandler);
+            let mut worker = accepted_worker(&mut d);
+            let prerequisite = d.projection().get_run_instance(&worker.run_id).unwrap().task_id();
+            if failed {
+                worker.disposition =
+                    actionqueue_core::disposition::AttemptDisposition::terminal_failure(
+                        actionqueue_core::bounded::BoundedError::new("failed").unwrap(),
+                    );
+            }
+            d.process_worker_result(worker, &mut TickResult::default(), 1000).unwrap();
+            d.refresh_coordination();
+            d.gc_terminal_tasks();
+            assert!(!d.pending_gc_tasks.contains(&prerequisite));
+
+            let dependent = task(b"dependent", None);
+            let dependent_id = dependent.id();
+            d.ensure_task(EnsureTaskRequest::for_task(dependent, vec![prerequisite]).unwrap())
+                .unwrap();
+            assert_eq!(d.dependency_gate.is_eligible(dependent_id), !failed);
+            assert_eq!(d.dependency_gate.is_dependency_failed(dependent_id), failed);
+            assert!(d.pending_gc_tasks.contains(&prerequisite));
+            let mut expected = d.dependency_gate.clone();
+            expected.gc_task(prerequisite);
+            d.gc_terminal_tasks();
+            assert_eq!(d.dependency_gate, expected);
+
+            #[cfg(feature = "budget")]
+            {
+                // A later change to the same dependent restores the relationship.
+                d.allocate_budget(
+                    dependent_id,
+                    actionqueue_core::budget::BudgetDimension::Token,
+                    10,
+                )
+                .unwrap();
+                d.refresh_coordination();
+                assert!(d.pending_gc_tasks.contains(&prerequisite));
+                let mut expected = d.dependency_gate.clone();
+                expected.gc_task(prerequisite);
+                d.gc_terminal_tasks();
+                assert_eq!(d.dependency_gate, expected);
+                assert_eq!(d.dependency_gate.is_eligible(dependent_id), !failed);
+            }
+        }
+    }
+
+    #[cfg(feature = "budget")]
+    #[test]
+    fn changed_terminal_child_does_not_retain_a_collected_parent() {
+        use actionqueue_core::budget::BudgetDimension;
+        let dir = tempfile::tempdir().unwrap();
+        let mut d = new_dispatch(dir.path(), DependencyHandler);
+        let parent = task(b"parent", None);
+        let parent_id = parent.id();
+        d.submit_task(parent).unwrap();
+        let child = task(b"child", None).with_parent(parent_id);
+        let child_id = child.id();
+        d.submit_task(child).unwrap();
+        d.cancel(actionqueue_core::mutation::CancelCommand {
+            expected_sequence: d.projection().latest_sequence() + 1,
+            target: actionqueue_core::mutation::CancelTarget::Task(parent_id),
+            tenant_id: None,
+            control_context: None,
+            timestamp: 1000,
+        })
+        .unwrap();
+        d.gc_terminal_tasks();
+        assert!(!d.hierarchy_tracker.has_children(parent_id));
+        for dimension in
+            [BudgetDimension::Token, BudgetDimension::CostCents, BudgetDimension::TimeSecs]
+        {
+            d.allocate_budget(child_id, dimension, 10).unwrap();
+            d.refresh_coordination();
+            d.gc_terminal_tasks();
+            assert!(!d.hierarchy_tracker.has_children(parent_id));
+            assert_eq!(d.hierarchy_tracker.parent_of(child_id), None);
+        }
+    }
 
     fn accepted_worker(dispatch: &mut TestDispatch) -> WorkerResult {
         let spec = task(b"success", None);

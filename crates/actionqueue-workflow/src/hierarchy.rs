@@ -238,7 +238,14 @@ impl HierarchyTracker {
         }
         for id in to_remove {
             self.children.remove(&id);
-            self.parents.remove(&id);
+            if let Some(parent) = self.parents.remove(&id) {
+                if let Some(children) = self.children.get_mut(&parent) {
+                    children.remove(&id);
+                    if children.is_empty() {
+                        self.children.remove(&parent);
+                    }
+                }
+            }
             self.detached.remove(&id);
             self.terminal_tasks.remove(&id);
         }
@@ -454,6 +461,18 @@ mod tests {
 
         tracker.gc_subtree(tid(1));
         tracker.gc_subtree(tid(1)); // second call must not panic
+    }
+
+    #[test]
+    fn gc_child_before_parent_removes_both_sides_of_the_relationship() {
+        let mut tracker = HierarchyTracker::new();
+        tracker.register_child(tid(1), tid(2)).unwrap();
+        tracker.mark_terminal(tid(1));
+        tracker.mark_terminal(tid(2));
+        tracker.gc_subtree(tid(2));
+        assert!(!tracker.has_children(tid(1)));
+        tracker.gc_subtree(tid(1));
+        assert_eq!(tracker, HierarchyTracker::new());
     }
 
     #[test]

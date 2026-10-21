@@ -332,9 +332,7 @@ impl ReplayReducer {
                     runs.push((id, run.run_instance.state()));
                     by_task.entry(run.run_instance.task_id()).or_default().push(id);
                     histories.push((id, map_snapshot_run_history(run.state_history).into()));
-                    if !run.attempts.is_empty() {
-                        attempts.push((id, map_snapshot_attempt_history(run.attempts).into()));
-                    }
+                    attempts.push((id, map_snapshot_attempt_history(run.attempts).into()));
                     if let Some(l) = map_snapshot_lease_metadata(run.lease) {
                         leases.push((id, (l.owner.clone(), l.expiry)));
                         metadata.push((id, l));

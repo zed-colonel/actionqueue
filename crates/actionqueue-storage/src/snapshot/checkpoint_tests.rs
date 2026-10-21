@@ -127,6 +127,104 @@ fn assert_no_staging(root: &std::path::Path) {
 }
 
 #[test]
+fn oversized_state_history_cannot_replace_a_published_checkpoint() {
+    use super::model::SnapshotRunStateHistoryEntry;
+    use actionqueue_core::run::RunState;
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = authority(dir.path());
+    admit(&mut a);
+    publish(&mut a);
+    let session = a.store_session().unwrap();
+    let before = fs::read(session.snapshot_path()).unwrap();
+    let mut c = load_checkpoint(session).unwrap().unwrap();
+    let run = &mut c.snapshot.runs[0];
+    run.run_instance.transition_to(RunState::Ready).unwrap();
+    let timestamp = run.run_instance.created_at();
+    run.state_history.push(SnapshotRunStateHistoryEntry {
+        from: Some(RunState::Scheduled),
+        to: RunState::Ready,
+        timestamp,
+    });
+    // Repeated lease expiry is a valid history without attempt records.
+    for _ in 0..500_000 {
+        for (from, to) in [(RunState::Ready, RunState::Leased), (RunState::Leased, RunState::Ready)]
+        {
+            run.state_history.push(SnapshotRunStateHistoryEntry {
+                from: Some(from),
+                to,
+                timestamp,
+            });
+        }
+    }
+    let projection = ReplayReducer::from_projection_image(ProjectionImageV8(c.snapshot)).unwrap();
+    let candidate = CheckpointCandidate::new(session.clone(), projection, c.binding.cursor, 20);
+    let error = publish_checkpoint(candidate).unwrap_err();
+    assert!(error.to_string().contains("checkpoint collection bound exceeded"), "{error}");
+    assert_eq!(fs::read(session.snapshot_path()).unwrap(), before);
+    assert_eq!(session.published_sequence(), c.binding.cursor.sequence);
+    assert_eq!(fs::read_dir(session.snapshot_path().parent().unwrap()).unwrap().count(), 1);
+    recover_read_only(session, RepairPolicy::Strict).unwrap();
+}
+
+#[test]
+fn nested_checkpoint_collections_share_encode_and_decode_bounds() {
+    let mut c = frozen_checkpoint();
+    let history = c.snapshot.runs[0].state_history[0].clone();
+    c.snapshot.runs[0].state_history.resize(1_000_000, history.clone());
+    c.inspection.controls[0].3.resize(1_000_000, 2);
+    let bytes = envelope::encode_checkpoint(&c).unwrap();
+    let decoded = envelope::decode_checkpoint(&bytes[20..], None).unwrap();
+    assert_eq!(decoded.snapshot.runs[0].state_history.len(), 1_000_000);
+    assert_eq!(decoded.inspection.controls[0].3.len(), 1_000_000);
+    c.snapshot.runs[0].state_history.push(history);
+    assert!(envelope::encode_checkpoint(&c).unwrap_err().contains("collection bound exceeded"));
+    c.snapshot.runs[0].state_history.pop();
+    c.inspection.controls[0].3.push(2);
+    assert!(envelope::encode_checkpoint(&c).unwrap_err().contains("collection bound exceeded"));
+}
+
+#[test]
+fn hydration_preserves_empty_attempt_histories() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = authority(dir.path());
+    let task = admit(&mut a);
+    let run = a.projection().run_ids_for_task(task)[0];
+    assert!(a.projection().get_attempt_history(&run).unwrap().is_empty());
+    publish(&mut a);
+    let recovered = recover_read_only(a.store_session().unwrap(), RepairPolicy::Strict).unwrap();
+    assert!(recovered.projection.get_attempt_history(&run).unwrap().is_empty());
+}
+
+#[test]
+fn corrupted_oversized_length_falls_back_but_complete_oversized_frame_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = authority(dir.path());
+    admit(&mut a);
+    publish(&mut a);
+    let session = a.store_session().unwrap();
+    let expected = a.projection().projection_digest().unwrap();
+    let mut bytes = fs::read(session.snapshot_path()).unwrap();
+    bytes[15] ^= 0x80;
+    fs::write(session.snapshot_path(), &bytes).unwrap();
+    let recovered = recover_read_only(session, RepairPolicy::Strict).unwrap();
+    assert!(!recovered.snapshot_loaded);
+    assert_eq!(recovered.projection.projection_digest().unwrap(), expected);
+    assert!(super::loader::load_checkpoint(session).err().unwrap().physical_damage());
+
+    let path = dir.path().join("oversized.bin");
+    let len = envelope::MAX_SNAPSHOT_BYTES as u32;
+    let mut header = envelope::MAGIC.to_vec();
+    header.extend(2u32.to_le_bytes());
+    header.extend(len.to_le_bytes());
+    header.extend(0u32.to_le_bytes());
+    fs::write(&path, header).unwrap();
+    fs::OpenOptions::new().write(true).open(&path).unwrap().set_len(u64::from(len) + 20).unwrap();
+    let error = super::loader::read_frame(&path, 2).unwrap_err();
+    assert!(!error.physical_damage());
+    assert!(error.to_string().contains("size bound exceeded"));
+}
+
+#[test]
 fn interleaved_recoveries_claim_before_checking_and_release_on_stale_cursor() {
     use crate::wal::fs_writer::WalFsWriterInitError;
     let dir = tempfile::tempdir().unwrap();
@@ -561,13 +659,30 @@ fn schema9_upgrade_preserves_source_identity_history_and_requires_explicit_desti
         upgrade_store(&source, &dir.path().join("wal-only")).unwrap().projection_digest,
         expected
     );
-    // A damaged source snapshot is never silently omitted by the upgrade reader.
-    fs::write(source.join("snapshots/snapshot.bin"), &snapshot[..21]).unwrap();
-    let before = tree(&source);
-    assert!(upgrade_store(&source, &dir.path().join("bad")).is_err());
-    assert!(!dir.path().join("bad").exists());
-    assert_eq!(tree(&source), before);
-    assert_no_staging(dir.path());
+    // Damaged snapshots need actionable diagnostics; the source stays unchanged.
+    for damage in ["truncated", "crc"] {
+        let snapshot_path = source.join("snapshots/snapshot.bin");
+        let mut damaged = snapshot.clone();
+        if damage == "truncated" {
+            damaged.truncate(21);
+        } else {
+            damaged[16] ^= 1;
+        }
+        fs::write(&snapshot_path, damaged).unwrap();
+        let before = tree(&source);
+        let error = upgrade_store(&source, &dir.path().join("bad")).unwrap_err().to_string();
+        assert!(error.contains(snapshot_path.to_str().unwrap()), "{error}");
+        assert!(error.contains("remove snapshots/snapshot.bin"), "{error}");
+        assert!(error.contains("retry actionqueue store upgrade"), "{error}");
+        assert!(!dir.path().join("bad").exists());
+        assert_eq!(tree(&source), before);
+        assert_no_staging(dir.path());
+    }
+    fs::remove_file(source.join("snapshots/snapshot.bin")).unwrap();
+    assert_eq!(
+        upgrade_store(&source, &dir.path().join("repaired-upgrade")).unwrap().projection_digest,
+        expected
+    );
 }
 
 #[test]

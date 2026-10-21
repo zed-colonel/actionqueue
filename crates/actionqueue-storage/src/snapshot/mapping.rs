@@ -484,7 +484,11 @@ pub(crate) fn validate_snapshot_with_signals(
                 task_id: decl.task_id,
             });
         }
+        let mut prereq_ids = HashSet::new();
         for &prereq_id in &decl.depends_on {
+            if prereq_id == decl.task_id || !prereq_ids.insert(prereq_id) {
+                return Err(SnapshotMappingError::InvalidExtendedSection);
+            }
             if !tasks.contains_key(&prereq_id) {
                 return Err(SnapshotMappingError::DependencyReferencesUnknownTask {
                     task_id: decl.task_id,

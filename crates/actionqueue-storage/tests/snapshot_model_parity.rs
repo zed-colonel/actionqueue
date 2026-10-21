@@ -781,6 +781,15 @@ fn dependency_declarations_survive_snapshot_roundtrip() {
     assert_eq!(loaded.dependency_declarations[1].depends_on, vec![task_a, task_b]);
     assert_eq!(loaded.dependency_declarations[1].declared_at, 20);
 
+    for prerequisites in [vec![task_a, task_a], vec![task_b]] {
+        let mut malformed = snapshot.clone();
+        malformed.dependency_declarations[0].depends_on = prerequisites;
+        assert_eq!(
+            validate_snapshot(&malformed),
+            Err(SnapshotMappingError::InvalidExtendedSection)
+        );
+    }
+
     let _ = fs::remove_file(path);
 }
 

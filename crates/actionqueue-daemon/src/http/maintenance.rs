@@ -5,6 +5,27 @@ use actionqueue_storage::{
 };
 
 use super::{ControlMutationAuthority, RouterState};
+use std::time::{Duration, Instant};
+
+const INITIAL_RETRY: Duration = Duration::from_secs(1);
+const MAX_RETRY: Duration = Duration::from_secs(60);
+
+#[derive(Default)]
+pub(crate) struct SnapshotRetry {
+    next_attempt: Option<Instant>,
+    delay: Option<Duration>,
+}
+impl SnapshotRetry {
+    fn ready(&self, now: Instant) -> bool {
+        self.next_attempt.is_none_or(|deadline| now >= deadline)
+    }
+    fn failed(&mut self, now: Instant) -> Duration {
+        let delay = self.delay.map_or(INITIAL_RETRY, |d| (d * 2).min(MAX_RETRY));
+        self.delay = Some(delay);
+        self.next_attempt = Some(now + delay);
+        delay
+    }
+}
 
 pub(crate) fn maintain_locked<W: WalWriter>(
     state: &RouterState,
@@ -58,7 +79,10 @@ pub fn tick(state: &RouterState) -> Result<(), ControlError> {
                 >= threshold
         })
     });
-    if !due || state.snapshot_inflight.swap(true, std::sync::atomic::Ordering::AcqRel) {
+    if !due
+        || !state.snapshot_retry.lock().unwrap_or_else(|e| e.into_inner()).ready(Instant::now())
+        || state.snapshot_inflight.swap(true, std::sync::atomic::Ordering::AcqRel)
+    {
         return Ok(());
     }
     struct PublicationGuard<'a>(&'a RouterState);
@@ -78,9 +102,19 @@ pub fn tick(state: &RouterState) -> Result<(), ControlError> {
     drop(authority);
     drop(_permit);
     match candidate.and_then(actionqueue_storage::snapshot::checkpoint::publish_checkpoint) {
-        Ok(c) => tracing::debug!(sequence = c.sequence, "checkpoint published"),
+        Ok(c) => {
+            *state.snapshot_retry.lock().unwrap_or_else(|e| e.into_inner()) =
+                SnapshotRetry::default();
+            tracing::debug!(sequence = c.sequence, "checkpoint published");
+        }
         Err(e) => {
-            tracing::error!(error=%e,"checkpoint publication failed; durable progress remains pending")
+            let delay = state
+                .snapshot_retry
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .failed(Instant::now());
+            // Only attempted publications log failures; cooldown ticks are silent.
+            tracing::error!(error=%e, retry_after_seconds=delay.as_secs(), "checkpoint publication failed; durable progress remains pending");
         }
     }
     Ok(())
@@ -152,6 +186,25 @@ pub async fn shutdown(state: &RouterState) {
 
 #[cfg(test)]
 mod checkpoint_tests {
+    use super::*;
+
+    #[test]
+    fn snapshot_retry_is_exponential_bounded_and_reset_after_success() {
+        let mut retry = SnapshotRetry::default();
+        let mut now = Instant::now();
+        assert!(retry.ready(now));
+        for seconds in [1, 2, 4, 8, 16, 32, 60, 60] {
+            let delay = retry.failed(now);
+            assert_eq!(delay, Duration::from_secs(seconds));
+            assert!(!retry.ready(now + delay - Duration::from_nanos(1)));
+            now += delay;
+            assert!(retry.ready(now));
+        }
+        retry = SnapshotRetry::default();
+        assert!(retry.ready(now));
+        assert_eq!(retry.failed(now), INITIAL_RETRY);
+    }
+
     #[test]
     fn daemon_retries_snapshot_failures_and_serializes_publication() {
         use crate::{bootstrap::bootstrap, config::DaemonConfig};
@@ -192,13 +245,40 @@ mod checkpoint_tests {
         super::tick(state).unwrap();
         assert!(!state.operational_failed.load(std::sync::atomic::Ordering::Acquire));
         assert_eq!(state.store_session.as_ref().unwrap().published_sequence(), 0);
+        let deadline = state.snapshot_retry.lock().unwrap().next_attempt;
+        assert_eq!(state.snapshot_retry.lock().unwrap().delay, Some(INITIAL_RETRY));
+        {
+            let mut a = state.control_authority.as_ref().unwrap().lock().unwrap();
+            let sequence = a.projection().latest_sequence() + 1;
+            let _ = a
+                .submit_command(
+                    MutationCommand::EngineResume(EngineResumeCommand::new(sequence, 2)),
+                    DurabilityPolicy::Immediate,
+                )
+                .unwrap();
+        }
+        // A second fault stays armed during cooldown: these ticks do no encoding
+        // or publication and leave the first retry deadline untouched.
+        actionqueue_storage::store::fault::fail_once("snapshot_before_rename");
+        for _ in 0..10 {
+            super::tick(state).unwrap();
+            assert_eq!(state.snapshot_retry.lock().unwrap().next_attempt, deadline);
+            assert_eq!(state.store_session.as_ref().unwrap().published_sequence(), 0);
+            assert_eq!(state.shared_projection.read().unwrap().latest_sequence(), 3);
+        }
+        state.snapshot_retry.lock().unwrap().next_attempt = Some(Instant::now());
         super::tick(state).unwrap();
-        assert_eq!(state.store_session.as_ref().unwrap().published_sequence(), 2);
+        assert_eq!(state.snapshot_retry.lock().unwrap().delay, Some(INITIAL_RETRY * 2));
+        assert_eq!(state.store_session.as_ref().unwrap().published_sequence(), 0);
+        state.snapshot_retry.lock().unwrap().next_attempt = Some(Instant::now());
+        super::tick(state).unwrap();
+        assert_eq!(state.store_session.as_ref().unwrap().published_sequence(), 3);
+        assert_eq!(state.snapshot_retry.lock().unwrap().delay, None);
         assert!(!state.snapshot_inflight.load(std::sync::atomic::Ordering::Acquire));
         drop(owner);
         assert_eq!(
             actionqueue_storage::store::verify_store(dir.path()).unwrap().snapshot_sequence,
-            2
+            3
         );
     }
 }

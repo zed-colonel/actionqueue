@@ -18,6 +18,12 @@ inside that prefix can remain undetected when the boundary is unchanged. Full
 inspection associations and final projection. It never initializes, repairs or
 reconciles execution. The commitment is not authentication.
 
+A snapshot whose declared payload length differs from its actual file size is
+physically damaged, even if the declared length exceeds the size ceiling; ordinary
+startup falls back to the complete WAL. A complete frame above the size ceiling,
+unsupported magic or an unsupported frame version halts startup as a compatibility
+or bounds error. These cases do not permit automatic fallback.
+
 `Strict` is the default repair policy. `TruncatePartial` permits only an incomplete
 final target frame after complete candidate-prefix validation, including checkpoint
 equivalence when present. A complete header must pass
@@ -62,9 +68,18 @@ then produce a new schema-10 backup descriptor. There is no downgrade. Pre-contr
 and earlier development schemas remain unsupported. See
 [ADR-020](adrs/AQ-ADR-020-bounded-snapshot-bootstrap.md).
 
+If upgrade reports a physically damaged schema-9 snapshot, preserve a copy of the
+source store first. With the source offline, remove `snapshots/snapshot.bin` from
+the upgrade source and retry `actionqueue store upgrade` to reconstruct from the
+complete WAL. Upgrade still fully verifies that WAL and the staged destination;
+it does not change the source on failure. Use this procedure only for physical
+damage (for example, truncation or CRC failure), not semantic or compatibility errors.
+
 Runtime and daemon publication count all durable progress since the last successful
 checkpoint, including admissions between ticks and recovered tails. The daemon
 uses 10,000 events by default; set `snapshot_event_threshold`, or use
 `--snapshot-event-threshold N` / `--no-snapshots` on the CLI. One publication runs at
-a time and shutdown awaits it. Snapshot-only failure leaves the threshold pending;
-WAL uncertainty fences the authority.
+a time and shutdown awaits it. Snapshot-only failure leaves the threshold pending.
+Daemon retries wait 1 second after the first failure, double up to 60 seconds, and
+reset after successful publication. Only failed attempts log errors; maintenance
+continues during the cooldown. WAL uncertainty fences the authority.

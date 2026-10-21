@@ -1772,7 +1772,12 @@ impl ReplayReducer {
                 continue;
             }
             self.run_history.remove(run_id);
-            self.attempt_history.remove(run_id);
+            if let Some(attempts) = self.attempt_history.remove(run_id) {
+                for attempt in attempts.iter() {
+                    self.derived.attempt_positions.remove(&(*run_id, attempt.attempt_id()));
+                    self.inspection_index.remove_attempt(attempt.attempt_id());
+                }
+            }
             self.lease_metadata.remove(run_id);
         }
     }
@@ -2540,8 +2545,20 @@ mod tests {
         assert!(reducer.get_run_history(&run_id).is_some());
         assert!(reducer.get_attempt_history(&run_id).is_some());
 
+        let attempts: Vec<_> =
+            reducer.get_attempt_history(&run_id).unwrap().iter().map(|a| a.attempt_id()).collect();
+        for attempt in &attempts {
+            assert!(reducer.derived.attempt_positions.contains_key(&(run_id, *attempt)));
+            assert_eq!(reducer.attempt_owner(*attempt), Some(run_id));
+        }
+
         // Trim.
         reducer.trim_terminal_history();
+
+        for attempt in attempts {
+            assert!(!reducer.derived.attempt_positions.contains_key(&(run_id, attempt)));
+            assert_eq!(reducer.attempt_owner(attempt), None);
+        }
 
         // History should be removed for the terminal run.
         assert!(reducer.get_run_history(&run_id).is_none());

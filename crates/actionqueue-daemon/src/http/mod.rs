@@ -40,6 +40,7 @@ pub type ControlMutationAuthority =
 pub struct RouterStateInner {
     pub(crate) snapshot_event_threshold: Option<u64>,
     pub(crate) snapshot_inflight: AtomicBool,
+    pub(crate) snapshot_retry: Mutex<maintenance::SnapshotRetry>,
     pub(crate) snapshot_completed: tokio::sync::Notify,
     pub(crate) admission_throttle: Mutex<admission_throttle::AdmissionThrottle>,
     pub(crate) background_maintenance: bool,
@@ -164,6 +165,7 @@ impl RouterStateInner {
             background_maintenance: true,
             snapshot_event_threshold: Some(10_000),
             snapshot_inflight: AtomicBool::new(false),
+            snapshot_retry: Mutex::new(Default::default()),
             snapshot_completed: tokio::sync::Notify::new(),
             disclosure_policy: Default::default(),
             admission_throttle: Mutex::new(Default::default()),

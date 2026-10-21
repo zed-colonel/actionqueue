@@ -127,14 +127,15 @@ pub(crate) fn read_frame(
     }
     file.read_exact(&mut header[4..]).map_err(io)?;
     let len = u32::from_le_bytes(header[4..8].try_into().unwrap()) as usize;
+    // The length itself is outside the CRC. A mismatch is physical damage,
+    // including a corrupted high byte declaring a payload above the size limit.
+    if file.metadata().map_err(io)?.len() != len as u64 + 20 {
+        return Err(SnapshotLoaderError::PhysicalDamage);
+    }
     if len > envelope::MAX_SNAPSHOT_BYTES
         || (version == 2 && len + 20 > envelope::MAX_SNAPSHOT_BYTES)
     {
         return Err(SnapshotLoaderError::DecodeError("snapshot size bound exceeded".into()));
-    }
-    // File bounds are checked before allocation, including deliberately forged lengths.
-    if file.metadata().map_err(io)?.len() != len as u64 + 20 {
-        return Err(SnapshotLoaderError::PhysicalDamage);
     }
     let mut payload = vec![0; len];
     file.read_exact(&mut payload).map_err(io)?;

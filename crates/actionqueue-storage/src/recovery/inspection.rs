@@ -16,6 +16,10 @@ pub struct InspectionIndex {
     tasks: HashMap<(Option<TenantId>, ReferenceField, String), BTreeSet<TaskId>>,
 }
 impl InspectionIndex {
+    pub(crate) fn remove_attempt(&mut self, attempt: actionqueue_core::ids::AttemptId) {
+        self.attempts.remove(&attempt);
+    }
+
     pub(crate) fn hydrate_references<'a>(
         &mut self,
         records: impl Iterator<Item = &'a crate::mutation::admission::AdmissionRecord>,

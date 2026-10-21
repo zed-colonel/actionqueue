@@ -16,6 +16,15 @@ use actionqueue_core::{
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
+const MAX_RECORDS: usize = 1_000_000;
+
+fn check_count(n: usize) -> Result<(), String> {
+    if n > MAX_RECORDS {
+        return Err("checkpoint collection bound exceeded".into());
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Binding {
     pub store: [u8; 16],
@@ -120,12 +129,12 @@ fn bounded_records<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
             f.write_str("bounded checkpoint records")
         }
         fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut a: A) -> Result<Vec<T>, A::Error> {
-            if a.size_hint().is_some_and(|n| n > 1_000_000) {
+            if a.size_hint().is_some_and(|n| n > MAX_RECORDS) {
                 return Err(serde::de::Error::custom("checkpoint collection bound exceeded"));
             }
             let mut out = Vec::with_capacity(a.size_hint().unwrap_or(0).min(4096));
             while let Some(v) = a.next_element()? {
-                if out.len() == 1_000_000 {
+                if out.len() == MAX_RECORDS {
                     return Err(serde::de::Error::custom("checkpoint collection bound exceeded"));
                 }
                 out.push(v);
@@ -163,9 +172,7 @@ fn record<T: Serialize>(out: &mut Vec<u8>, value: &T) -> Result<(), String> {
     Ok(())
 }
 fn count(out: &mut Vec<u8>, n: usize) -> Result<(), String> {
-    if n > 1_000_000 {
-        return Err("checkpoint collection bound exceeded".into());
-    }
+    check_count(n)?;
     if out.len() > super::envelope::MAX_SNAPSHOT_BYTES - 56 {
         return Err("complete checkpoint exceeds maximum size".into());
     }
@@ -182,7 +189,7 @@ impl<'a> Input<'a> {
     }
     fn count(&mut self) -> Result<usize, String> {
         let n = self.number()?;
-        if n > 1_000_000 || n > self.0.len() / 4 {
+        if n > MAX_RECORDS || n > self.0.len() / 4 {
             return Err("checkpoint collection bound exceeded".into());
         }
         Ok(n)
@@ -276,6 +283,7 @@ pub(crate) fn encode_measured(c: &Checkpoint) -> Result<EncodedCheckpoint, Strin
     cut = out.len();
     count(&mut out, s.runs.len())?;
     for r in &s.runs {
+        check_count(r.state_history.len())?;
         let v = &r.run_instance;
         record(
             &mut out,
@@ -403,6 +411,7 @@ pub(crate) fn encode_measured(c: &Checkpoint) -> Result<EncodedCheckpoint, Strin
     cut = out.len();
     count(&mut out, c.inspection.controls.len())?;
     for v in &c.inspection.controls {
+        check_count(v.3.len())?;
         record(&mut out, v)?;
     }
     sections.push(("control_targets".into(), (out.len() - cut) as u64));
