@@ -76,8 +76,7 @@ impl std::error::Error for SnapshotWriterError {}
 /// A file system backed snapshot writer using atomic write-to-temp-then-rename.
 ///
 /// The writer opens a temporary sibling file (target path + `.tmp` suffix) and
-/// writes encoded snapshot data to it using the same framing format as the WAL
-/// (version + length + crc32 + payload). On [`close()`](SnapshotWriter::close), the
+/// writes an explicitly versioned checkpoint with bounded payload and integrity. On [`close()`](SnapshotWriter::close), the
 /// temp file is flushed, renamed atomically over the target path, and the
 /// parent directory is fsynced. If the writer is dropped without calling
 /// `close()`, the temp file is removed and the original snapshot (if any)
@@ -88,12 +87,23 @@ pub struct SnapshotFsWriter {
     temp_path: PathBuf,
     is_closed: bool,
     ready_to_publish: bool,
+    sequence: u64,
     session: Option<crate::store::StoreSession>,
 }
 
 impl SnapshotFsWriter {
     pub fn new(session: &crate::store::StoreSession) -> Result<Self, SnapshotFsWriterInitError> {
         session.require_write().map_err(|e| SnapshotFsWriterInitError::IoError(e.to_string()))?;
+        // Independent snapshot writers may be opened before recovery. Seed their
+        // stale-replacement guard from the existing checkpoint as well.
+        if session.published_sequence() == 0 {
+            match super::loader::load_checkpoint(session) {
+                Ok(Some(c)) => session.observe_snapshot(c.binding.cursor.sequence),
+                Ok(None) => (),
+                Err(e) if e.physical_damage() => (),
+                Err(e) => return Err(SnapshotFsWriterInitError::IoError(e.to_string())),
+            }
+        }
         let mut writer = Self::at_path(session.snapshot_path())?;
         writer.session = Some(session.clone());
         Ok(writer)
@@ -139,10 +149,23 @@ impl SnapshotFsWriter {
             temp_path,
             is_closed: false,
             ready_to_publish: false,
+            sequence: 0,
             session: None,
         })
     }
 
+    pub(crate) fn write_checkpoint(
+        &mut self,
+        c: &super::wire_v10::Checkpoint,
+    ) -> Result<Vec<(String, u64)>, SnapshotWriterError> {
+        self.ready_to_publish = false;
+        let (bytes, sections) = super::envelope::encode_checkpoint_measured(c)
+            .map_err(SnapshotWriterError::EncodeError)?;
+        self.file.write_all(&bytes).map_err(|e| SnapshotWriterError::IoError(e.to_string()))?;
+        self.sequence = c.binding.cursor.sequence;
+        self.ready_to_publish = true;
+        Ok(sections)
+    }
     /// Seeks to the beginning of the file for writing.
     fn seek_to_beginning(&mut self) -> Result<(), SnapshotWriterError> {
         self.file
@@ -155,11 +178,10 @@ impl SnapshotFsWriter {
 impl SnapshotWriter for SnapshotFsWriter {
     /// Write a snapshot to storage.
     ///
-    /// The snapshot is encoded using the same framing format as the WAL:
-    /// - 4 bytes version (currently 4)
-    /// - 4 bytes length of payload
-    /// - 4 bytes CRC-32 of payload
-    /// - JSON-serialized Snapshot
+    /// Session-backed writes fully validate this arbitrary logical-v9 image
+    /// against its WAL prefix, then encode a bound schema-10 checkpoint.
+    /// Proven live roots use `capture_checkpoint` / `publish_checkpoint` to avoid
+    /// that replay. Raw test writers retain the schema-9 fixture codec.
     ///
     /// # Arguments
     ///
@@ -177,19 +199,16 @@ impl SnapshotWriter for SnapshotFsWriter {
 
         self.ready_to_publish = false;
         validate_snapshot(snapshot).map_err(SnapshotWriterError::MappingError)?;
-        if let Some(session) = &self.session {
-            crate::recovery::bootstrap::validate_snapshot_for_session(session, snapshot)
+        let bytes = if let Some(session) = &self.session {
+            let c = crate::recovery::bootstrap::validate_snapshot_for_session(session, snapshot)
                 .map_err(|e| SnapshotWriterError::EncodeError(e.to_string()))?;
+            super::envelope::encode_checkpoint(&c)
+        } else {
+            super::envelope::encode(snapshot, uuid::Uuid::nil())
         }
-
-        // Seek to beginning to overwrite
-        self.seek_to_beginning()?;
-
-        let bytes = super::envelope::encode(
-            snapshot,
-            self.session.as_ref().map(|s| s.manifest().store_id).unwrap_or_default(),
-        )
         .map_err(SnapshotWriterError::EncodeError)?;
+        self.sequence = snapshot.metadata.wal_sequence;
+        self.seek_to_beginning()?;
         self.file.set_len(0).map_err(|e| SnapshotWriterError::IoError(e.to_string()))?;
         self.file.write_all(&bytes).map_err(|e| SnapshotWriterError::IoError(e.to_string()))?;
         self.ready_to_publish = true;
@@ -238,6 +257,13 @@ impl SnapshotWriter for SnapshotFsWriter {
                 "no complete validated snapshot to publish".into(),
             ));
         }
+        // Encoding happens outside this lane. Publication is serialized, with stale
+        // replacement rejected even when captures finish encoding out of order.
+        let session = self.session.clone();
+        let mut published = session.as_ref().map(|s| s.publication());
+        if published.as_ref().is_some_and(|s| self.sequence < **s) {
+            return Err(SnapshotWriterError::EncodeError("stale checkpoint candidate".into()));
+        }
         // Snapshot publication must never outrun durability of its covered WAL prefix.
         if let Some(session) = &self.session {
             File::open(session.wal_path())
@@ -271,6 +297,9 @@ impl SnapshotWriter for SnapshotFsWriter {
         }
 
         // Mark as closed so Drop does not attempt temp cleanup
+        if let Some(s) = &mut published {
+            **s = self.sequence;
+        }
         self.is_closed = true;
 
         tracing::info!("snapshot written and persisted");

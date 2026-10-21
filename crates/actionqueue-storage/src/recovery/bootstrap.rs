@@ -1,12 +1,9 @@
-//! Target-only recovery. Validate complete history and snapshot equivalence before writing.
+//! Bounded checkpoint recovery. Explicit verification validates complete retained history.
 use std::{path::PathBuf, time::Instant};
 
 use super::{projection::ProjectionImageV8, reducer::ReplayReducer};
 use crate::{
-    snapshot::{
-        loader::{SnapshotFsLoader, SnapshotLoader},
-        model::Snapshot,
-    },
+    snapshot::model::Snapshot,
     store::{open_store, OpenOptions, StoreError, StoreSession},
     wal::{
         event::WalEventType,
@@ -44,6 +41,7 @@ pub struct RecoveryBootstrap {
     pub snapshot_loaded: bool,
     pub snapshot_sequence: u64,
     pub recovery_observations: RecoveryObservations,
+    pub phases: RecoveryPhases,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecoveryBootstrapError {
@@ -63,6 +61,23 @@ pub struct RecoveredProjection {
     pub snapshot_loaded: bool,
     pub snapshot_sequence: u64,
     pub incomplete_tail: Option<WalCorruption>,
+    pub(crate) cursor: crate::wal::checkpoint::WalCursor,
+    pub(crate) session_id: uuid::Uuid,
+    pub(crate) origin: uuid::Uuid,
+    pub(crate) observed_wal_len: u64,
+    pub phases: RecoveryPhases,
+}
+#[derive(Debug, Clone, Copy, Default, serde::Serialize)]
+pub struct RecoveryPhases {
+    pub snapshot_load_seconds: f64,
+    pub hydration_seconds: f64,
+    pub tail_replay_seconds: f64,
+    pub snapshot: super::work::SnapshotWork,
+}
+impl RecoveredProjection {
+    pub(crate) fn matches_session(&self, session: &StoreSession) -> bool {
+        self.session_id == session.id()
+    }
 }
 fn invalid(e: impl std::fmt::Display) -> StoreError {
     StoreError::InvalidStore(e.to_string())
@@ -79,89 +94,100 @@ pub(crate) fn recover(
     policy: RepairPolicy,
     use_snapshot: bool,
 ) -> Result<RecoveredProjection, StoreError> {
-    let snapshot = if use_snapshot {
-        match SnapshotFsLoader::for_session(session).load() {
-            Ok(snapshot) => snapshot,
+    super::work::reset_snapshot_phases();
+    let mut phases = RecoveryPhases::default();
+    let start = Instant::now();
+    let checkpoint = if use_snapshot {
+        match crate::snapshot::loader::load_checkpoint(session) {
+            Ok(c) => c,
             Err(e) if e.physical_damage() => None,
             Err(e) => return Err(invalid(e)),
         }
     } else {
         None
     };
-    let mut hydrated = snapshot
-        .as_ref()
-        .map(|s| bootstrap_reducer_from_snapshot(s).map_err(invalid))
-        .transpose()?
-        .map(|(r, _)| r);
-    let snapshot_sequence = snapshot.as_ref().map_or(0, |s| s.metadata.wal_sequence);
-    let mut reader = WalFsReader::for_session(session).map_err(invalid)?;
-    let mut full = ReplayReducer::new();
+    phases.snapshot_load_seconds = start.elapsed().as_secs_f64();
+    let snapshot_sequence = checkpoint.as_ref().map_or(0, |c| c.binding.cursor.sequence);
+    let snapshot_loaded = checkpoint.is_some();
+    let start = Instant::now();
+    let (mut projection, mut reader) = if let Some(c) = checkpoint {
+        let reader = WalFsReader::from_checkpoint(session, c.binding.cursor).map_err(invalid)?;
+        let mut p = ReplayReducer::from_projection_image(ProjectionImageV8(c.snapshot))?;
+        let index_started = Instant::now();
+        p.restore_inspection(c.inspection)?;
+        super::work::snapshot_phase(|w| {
+            w.inspection_index_seconds += index_started.elapsed().as_secs_f64()
+        });
+        (p, reader)
+    } else {
+        (ReplayReducer::new(), WalFsReader::for_session(session).map_err(invalid)?)
+    };
+    phases.hydration_seconds = start.elapsed().as_secs_f64();
+    let start = Instant::now();
     let mut tail = None;
-    let mut matched_snapshot = snapshot.is_none();
     loop {
         let event = match reader.read_next() {
-            Ok(Some(event)) => event,
+            Ok(Some(e)) => e,
             Ok(None) => break,
             Err(WalReaderError::Corruption(c))
                 if policy == RepairPolicy::TruncatePartial
                     && c.repairable()
-                    && full.latest_sequence() >= 1 =>
+                    && projection.latest_sequence() >= 1 =>
             {
+                // Destructive repair must validate the entire candidate prefix first.
+                if snapshot_loaded {
+                    crate::store::verify::verify_checkpoint_prefix(session)?;
+                    return recover(session, policy, false);
+                }
                 tail = Some(c);
                 break;
             }
             Err(e) => return Err(invalid(e)),
         };
-        if full.latest_sequence() == 0 {
-            if !matches!(event.event(), WalEventType::StoreInitialized { manifest_digest } if *manifest_digest == session.manifest().digest())
-            {
-                return Err(invalid("first record must bind StoreInitialized to manifest"));
-            }
-        } else if matches!(event.event(), WalEventType::StoreInitialized { .. }) {
-            return Err(invalid("repeated StoreInitialized"));
-        }
-        crate::store::check_event_profile(event.event(), &session.manifest().features)?;
-        full.validate_target_event(event.event()).map_err(invalid)?;
-        full.apply(&event).map_err(invalid)?;
-        if let Some(h) = &mut hydrated {
-            if event.sequence() == snapshot_sequence {
-                if full.projection_digest()? != h.projection_digest()? {
-                    return Err(invalid("snapshot projection differs from WAL prefix"));
-                }
-                matched_snapshot = true;
-            } else if event.sequence() > snapshot_sequence {
-                h.apply(&event).map_err(invalid)?;
-            }
-        }
+        validate_replay_event(session, &mut projection, &event)?;
     }
-    if full.latest_sequence() == 0 {
+    if projection.latest_sequence() == 0 {
         return Err(invalid(
             "complete WAL with StoreInitialized required; snapshot-only stores are unsupported",
         ));
     }
-    if !matched_snapshot {
-        return Err(invalid("snapshot sequence is outside complete WAL history"));
+    if !snapshot_loaded {
+        projection.projection_image()?;
     }
-    // Enforce the same projection invariants as append, inspection and snapshot
-    // publication, including WAL-only recovery. Repair may only use this result
-    // after the complete candidate prefix has passed validation.
-    full.projection_image()?;
-    if let Some(h) = &hydrated {
-        if h.projection_digest()? != full.projection_digest()? {
-            return Err(invalid("snapshot plus tail differs from WAL replay"));
-        }
-    }
-    if let Some(h) = &mut hydrated {
-        // The target format retains the complete WAL. Restore derived operation
-        // associations without extending the snapshot schema or its digest.
-        h.inspection_index = full.inspection_index.clone();
-    }
+    phases.tail_replay_seconds = start.elapsed().as_secs_f64();
+    phases.snapshot = super::work::snapshot_phases();
+    let cursor = reader.cursor();
+    let origin = uuid::Uuid::new_v4();
+    projection.checkpoint_origin = Some(origin);
+    session.observe_snapshot(snapshot_sequence);
     Ok(RecoveredProjection {
-        projection: hydrated.unwrap_or(full),
-        snapshot_loaded: snapshot.is_some(),
+        projection,
+        snapshot_loaded,
         snapshot_sequence,
         incomplete_tail: tail,
+        cursor,
+        session_id: session.id(),
+        origin,
+        observed_wal_len: std::fs::metadata(session.wal_path())?.len(),
+        phases,
     })
+}
+pub(crate) fn validate_replay_event(
+    session: &StoreSession,
+    p: &mut ReplayReducer,
+    event: &crate::wal::event::WalEvent,
+) -> Result<(), StoreError> {
+    if p.latest_sequence() == 0 {
+        if !matches!(event.event(),WalEventType::StoreInitialized { manifest_digest } if *manifest_digest==session.manifest().digest())
+        {
+            return Err(invalid("first record must bind StoreInitialized to manifest"));
+        }
+    } else if matches!(event.event(), WalEventType::StoreInitialized { .. }) {
+        return Err(invalid("repeated StoreInitialized"));
+    }
+    crate::store::check_event_profile(event.event(), &session.manifest().features)?;
+    p.validate_target_event(event.event()).map_err(invalid)?;
+    p.apply(event).map_err(invalid)
 }
 pub fn load_projection_from_storage(
     data_root: &std::path::Path,
@@ -201,6 +227,7 @@ fn load_projection_with_options(
         .map_err(|e| RecoveryBootstrapError::WalInit(e.to_string()))?;
     let wal_append_telemetry = WalAppendTelemetry::new();
     let latest = recovered.projection.latest_sequence();
+    let replayed = latest - recovered.snapshot_sequence;
     Ok(RecoveryBootstrap {
         projection: recovered.projection,
         wal_writer: InstrumentedWalWriter::new(writer, wal_append_telemetry.clone()),
@@ -209,39 +236,42 @@ fn load_projection_with_options(
         snapshot_path,
         snapshot_loaded: recovered.snapshot_loaded,
         snapshot_sequence: recovered.snapshot_sequence,
+        phases: recovered.phases,
         recovery_observations: RecoveryObservations {
             recovery_duration_seconds: started.elapsed().as_secs_f64(),
-            events_applied_total: latest,
+            events_applied_total: replayed,
             snapshot_events_applied: 0,
-            wal_replay_events_applied: latest,
+            wal_replay_events_applied: replayed,
         },
     })
 }
-fn bootstrap_reducer_from_snapshot(
-    snapshot: &Snapshot,
-) -> Result<(ReplayReducer, u64), StoreError> {
-    ReplayReducer::from_projection_image(ProjectionImageV8(snapshot.clone())).map(|r| (r, 0))
-}
-
-/// A snapshot can publish only an exact image of an existing WAL prefix.
+/// Arbitrary images take the full-validation path. Fast capture requires authority provenance.
 pub(crate) fn validate_snapshot_for_session(
     session: &StoreSession,
     snapshot: &Snapshot,
-) -> Result<(), StoreError> {
+) -> Result<crate::snapshot::wire_v10::Checkpoint, StoreError> {
     let restored = ReplayReducer::from_projection_image(ProjectionImageV8(snapshot.clone()))?;
     let mut reader = WalFsReader::for_session(session).map_err(invalid)?;
     let mut prefix = ReplayReducer::new();
     while prefix.latest_sequence() < snapshot.metadata.wal_sequence {
         let event =
             reader.read_next().map_err(invalid)?.ok_or_else(|| invalid("snapshot exceeds WAL"))?;
-        crate::store::check_event_profile(event.event(), &session.manifest().features)?;
-        prefix.validate_target_event(event.event()).map_err(invalid)?;
-        prefix.apply(&event).map_err(invalid)?;
+        validate_replay_event(session, &mut prefix, &event)?;
     }
     if prefix.latest_sequence() == 0
         || prefix.projection_digest()? != restored.projection_digest()?
     {
         return Err(invalid("snapshot differs from WAL prefix"));
     }
-    Ok(())
+    crate::snapshot::mapping::validate_profile(snapshot, &session.manifest().features)?;
+    Ok(crate::snapshot::wire_v10::Checkpoint {
+        binding: crate::snapshot::wire_v10::Binding {
+            store: *session.manifest().store_id.as_bytes(),
+            manifest: session.manifest().digest(),
+            commitment_version: 1,
+            cursor: reader.cursor(),
+        },
+        snapshot: snapshot.clone(),
+        inspection: prefix.inspection_index.export(),
+    })
 }

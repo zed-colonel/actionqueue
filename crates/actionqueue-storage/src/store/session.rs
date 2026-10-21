@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, Mutex,
     },
 };
 
@@ -27,6 +27,8 @@ struct SessionInner {
     _lock: File,
     writable: bool,
     writer_claimed: AtomicBool,
+    published: Mutex<u64>,
+    id: uuid::Uuid,
 }
 // Closing the descriptor alone leaves an OFD lock held by a descriptor inherited
 // by a concurrently forked child until exec. Release at the last session owner.
@@ -38,6 +40,19 @@ impl Drop for SessionInner {
 #[derive(Debug, Clone)]
 pub struct StoreSession(Arc<SessionInner>);
 impl StoreSession {
+    pub(crate) fn id(&self) -> uuid::Uuid {
+        self.0.id
+    }
+    pub fn published_sequence(&self) -> u64 {
+        *self.0.published.lock().unwrap_or_else(|e| e.into_inner())
+    }
+    pub(crate) fn observe_snapshot(&self, sequence: u64) {
+        let mut s = self.0.published.lock().unwrap_or_else(|e| e.into_inner());
+        *s = (*s).max(sequence);
+    }
+    pub(crate) fn publication(&self) -> std::sync::MutexGuard<'_, u64> {
+        self.0.published.lock().unwrap_or_else(|e| e.into_inner())
+    }
     pub fn root(&self) -> &Path {
         &self.0.root
     }
@@ -187,6 +202,13 @@ fn initialize(root: &Path, features: Vec<String>) -> Result<(), StoreError> {
     }
 }
 pub fn open_store(root: &Path, options: OpenOptions) -> Result<StoreSession, StoreError> {
+    open_schema(root, options, 10)
+}
+/// Offline upgrade only; never used by writable startup.
+pub(crate) fn open_legacy(root: &Path) -> Result<StoreSession, StoreError> {
+    open_schema(root, OpenOptions::ReadOnly, 9)
+}
+fn open_schema(root: &Path, options: OpenOptions, schema: u32) -> Result<StoreSession, StoreError> {
     reject_symlinks(root)?;
     if let OpenOptions::Initialize { features } = &options {
         if is_empty_or_absent(root)? {
@@ -194,7 +216,7 @@ pub fn open_store(root: &Path, options: OpenOptions) -> Result<StoreSession, Sto
         }
     }
     // No lock file or writable descriptor is opened before compatibility validation.
-    let manifest = StoreManifest::read(root)?;
+    let manifest = StoreManifest::read_schema(root, schema)?;
     for relative in
         ["store.lock", "wal", "wal/actionqueue.wal", "snapshots", "snapshots/snapshot.bin"]
     {
@@ -212,7 +234,7 @@ pub fn open_store(root: &Path, options: OpenOptions) -> Result<StoreSession, Sto
         std::fs::TryLockError::WouldBlock => StoreError::StoreInUse,
         std::fs::TryLockError::Error(e) => e.into(),
     })?;
-    if StoreManifest::read(root)? != manifest {
+    if StoreManifest::read_schema(root, schema)? != manifest {
         return Err(StoreError::InvalidManifest("identity changed during opening".into()));
     }
     Ok(StoreSession(Arc::new(SessionInner {
@@ -221,6 +243,8 @@ pub fn open_store(root: &Path, options: OpenOptions) -> Result<StoreSession, Sto
         _lock: lock,
         writable,
         writer_claimed: AtomicBool::new(false),
+        published: Mutex::new(0),
+        id: uuid::Uuid::new_v4(),
     })))
 }
 

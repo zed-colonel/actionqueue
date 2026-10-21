@@ -420,6 +420,8 @@ fn cancellation_preserves_unfinished_attempt_through_snapshot_tail_and_restore()
         let recovered = recover_read_only(&session, RepairPolicy::Strict).unwrap();
         assert!(recovered.snapshot_loaded);
         assert_eq!(recovered.snapshot_sequence, cut);
+        assert!(recovered.projection.control_targets_available());
+        assert_eq!(recovered.projection.attempt_owner(a), Some(r));
         assert_eq!(recovered.projection.projection_digest().unwrap(), expected);
         let run = recovered.projection.get_run_instance(&r).unwrap();
         assert_eq!(run.state(), RunState::Canceled);
@@ -797,24 +799,31 @@ fn incomplete_and_corrupt_snapshots_fall_back_but_future_schema_and_legacy_keys_
     *corrupt.last_mut().unwrap() ^= 1;
     fs::write(session.snapshot_path(), corrupt).unwrap();
     assert!(!recover_read_only(&session, RepairPolicy::Strict).unwrap().snapshot_loaded);
-    for field in ["snapshot_schema", "projection_version", "legacy_routing", "waits"] {
-        let mut value: serde_json::Value = serde_json::from_slice(&original[20..]).unwrap();
-        match field {
-            "snapshot_schema" | "projection_version" => value[field] = 99.into(),
-            "legacy_routing" => {
-                value["projection"]["tasks"][0]["task_spec"]["constraints"]
-                    [&["required", "capabilities"].join("_")] = serde_json::json!(["legacy"])
+    // Schema 10 has no free-form field map. Exercise incompatibility, identity,
+    // unknown numeric tags, and invalid domain identifiers in its binary layout.
+    for case in ["frame", "store", "commitment", "task"] {
+        use sha2::{Digest, Sha256};
+        let mut framed = original.clone();
+        match case {
+            "frame" => framed[8..12].copy_from_slice(&99u32.to_le_bytes()),
+            "store" => framed[24..40].fill(0),
+            "commitment" => framed[72] = 99,
+            _ => {
+                let header_len = u32::from_le_bytes(framed[20..24].try_into().unwrap()) as usize;
+                let task_id_start = 20 + 4 + header_len + 4 + 4 + 1;
+                framed[task_id_start..task_id_start + 16].fill(0);
             }
-            _ => value["reserved"]["waits"] = serde_json::json!([[1]]),
         }
-        let payload = serde_json::to_vec(&value).unwrap();
-        let mut framed = original[..20].to_vec();
-        framed[12..16].copy_from_slice(&(payload.len() as u32).to_le_bytes());
-        framed[16..20].copy_from_slice(&crc32(&payload).to_le_bytes());
-        framed.extend_from_slice(&payload);
+        let hash_start = framed.len() - 32;
+        let mut hash = Sha256::new();
+        hash.update(b"AQ-CONT-1\0checkpoint\0v10\0");
+        hash.update(&framed[20..hash_start]);
+        framed[hash_start..].copy_from_slice(&hash.finalize());
+        let crc = crc32(&framed[20..]);
+        framed[16..20].copy_from_slice(&crc.to_le_bytes());
         fs::write(session.snapshot_path(), framed).unwrap();
         let before = tree(dir.path());
-        assert!(recover_read_only(&session, RepairPolicy::TruncatePartial).is_err());
+        assert!(recover_read_only(&session, RepairPolicy::TruncatePartial).is_err(), "{case}");
         assert_eq!(tree(dir.path()), before);
     }
 }
@@ -831,7 +840,7 @@ fn future_frame_versions_report_components_and_never_become_repairable() {
         fs::write(session.snapshot_path(), &future_snapshot[..length]).unwrap();
         let before = tree(dir.path());
         let error = recover_read_only(&session, RepairPolicy::TruncatePartial).unwrap_err();
-        assert!(error.to_string().contains("snapshot_frame: supported 1, found 99"), "{error}");
+        assert!(error.to_string().contains("snapshot_frame: supported 2, found 99"), "{error}");
         assert_eq!(tree(dir.path()), before);
     }
     fs::write(session.snapshot_path(), original_snapshot).unwrap();

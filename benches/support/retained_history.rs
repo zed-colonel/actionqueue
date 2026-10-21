@@ -25,10 +25,7 @@ use actionqueue_storage::{
         reducer::ReplayReducer,
         work::{self, ProjectionWork},
     },
-    snapshot::{
-        build::build_snapshot_from_projection,
-        writer::{SnapshotFsWriter, SnapshotWriter},
-    },
+    snapshot::checkpoint::publish_checkpoint,
     store::{open_store, OpenOptions},
     wal::{fs_writer::WalFsWriter, writer::WalWriter},
 };
@@ -99,12 +96,15 @@ fn cancel(a: &mut Authority, task: TaskId) -> MutationOutcome {
 struct Measurement {
     elapsed_ns: u64,
     work: ProjectionWork,
+    wal_frames: u64,
+    wal_bytes: u64,
 }
 
 impl Measurement {
     fn json(&self, operations: usize) -> Value {
         json!({
             "elapsed_ns": self.elapsed_ns,
+            "wal_frames_read":self.wal_frames,"wal_bytes_read":self.wal_bytes,
             "operations": operations,
             "mean_ns_per_operation": self.elapsed_ns as f64 / operations as f64,
             "shallow_projection_clones": self.work.shallow_projection_clones,
@@ -118,15 +118,25 @@ impl Measurement {
 
 fn measure<T>(operation: impl FnOnce() -> T) -> (T, Measurement) {
     work::reset_projection_work();
+    work::reset_wal_io();
     let started = Instant::now();
     let result = operation();
     let elapsed = started.elapsed();
     let work = work::projection_work();
-    (result, Measurement { elapsed_ns: elapsed.as_nanos().try_into().unwrap(), work })
+    let (wal_frames, wal_bytes) = work::wal_io();
+    (
+        result,
+        Measurement {
+            elapsed_ns: elapsed.as_nanos().try_into().unwrap(),
+            work,
+            wal_frames,
+            wal_bytes,
+        },
+    )
 }
 
-/// AQ-P2 structural expectations. The recorded 0.2.0 baseline remains in docs/performance.
-/// Timing is informational; no elapsed-time assertion runs in CI.
+/// AQ-P2 mutation and AQ-P3 recovery work bounds. Historical evidence stays in docs/performance.
+/// Hardware timing gates run in the bench driver; ordinary CI asserts structural work.
 fn assert_shared(
     n: usize,
     admission: &Measurement,
@@ -147,7 +157,9 @@ fn assert_shared(
     assert!(cancel.work.record_copies <= 20 * BATCH);
     let events = 1 + 2 * (n + BATCH);
     assert_eq!(wal.work.reducer_event_visits, events);
-    assert_eq!(snapshot.work.reducer_event_visits, events + 2 * BATCH);
+    assert_eq!(snapshot.work.reducer_event_visits, 2 * BATCH);
+    assert_eq!(wal.wal_frames, events as u64);
+    assert_eq!(snapshot.wal_frames, (2 * BATCH + 2) as u64);
 }
 
 fn check_projection(p: &ReplayReducer, tasks: usize, sequence: u64) {
@@ -166,10 +178,31 @@ fn wal_digest(path: &std::path::Path) -> String {
     format!("{:x}", Sha256::digest(std::fs::read(path).unwrap()))
 }
 
+thread_local! { static FIXTURE_CACHE:std::cell::RefCell<Option<std::path::PathBuf>>=const { std::cell::RefCell::new(None) }; }
+#[allow(dead_code)]
+pub fn set_fixture_cache(path: std::path::PathBuf) {
+    FIXTURE_CACHE.with(|p| *p.borrow_mut() = Some(path));
+}
+fn copy_store(source: &std::path::Path, dest: &std::path::Path) {
+    std::fs::create_dir_all(dest.join("wal")).unwrap();
+    std::fs::create_dir_all(dest.join("snapshots")).unwrap();
+    for name in ["manifest.json", "store.lock", "wal/actionqueue.wal"] {
+        std::fs::copy(source.join(name), dest.join(name)).unwrap();
+    }
+}
 fn seed(n: usize) -> (tempfile::TempDir, Authority) {
     eprintln!("retained_history: N={n}, building canceled history");
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("store");
+    let cache = FIXTURE_CACHE.with(|p| p.borrow().as_ref().map(|p| p.join(n.to_string())));
+    if let Some(cache) = &cache {
+        if cache.exists() {
+            copy_store(cache, &root);
+            let a = open(&root);
+            check_projection(a.projection(), n, 1 + 2 * n as u64);
+            return (dir, a);
+        }
+    }
     let mut a = open(&root);
     for id in 1..=n {
         assert!(admit(&mut a, request(id)).is_created());
@@ -179,11 +212,14 @@ fn seed(n: usize) -> (tempfile::TempDir, Authority) {
             eprintln!("retained_history: N={n}, prepared {id} canceled runs");
         }
     }
+    if let Some(cache) = cache {
+        copy_store(&root, &cache);
+    }
     (dir, a)
 }
 pub fn run(n: usize) -> Value {
     let (dir, a) = seed(n);
-    measure_state(n, dir, a)
+    measure_state(n, dir, a, false)
 }
 /// Reuse only the closed, durable, unmeasured prefix. Each sample receives fresh
 /// files, its own writer/session and exactly N retained runs. Timed phases and
@@ -198,6 +234,7 @@ pub fn run_repeated(n: usize, repetitions: usize) -> Vec<Value> {
     let seed_wal = a.store_session().unwrap().wal_path();
     let (writer, projection) = a.into_parts();
     writer.close().unwrap();
+    drop(projection);
     let prefix_hash = wal_digest(&seed_wal);
     let mut results = Vec::new();
     for repetition in 1..=repetitions {
@@ -215,22 +252,31 @@ pub fn run_repeated(n: usize, repetitions: usize) -> Vec<Value> {
             std::fs::File::open(path).unwrap().sync_all().unwrap();
         }
         assert_eq!(wal_digest(&root.join("wal/actionqueue.wal")), prefix_hash);
-        let session = open_store(&root, OpenOptions::ReadWrite).unwrap();
-        let writer = WalFsWriter::new(session).unwrap();
-        let a = StorageMutationAuthority::new(writer, projection.clone()).with_host(host());
-        let mut result = measure_state(n, dir, a);
+        let a = open_store(&root, OpenOptions::ReadWrite)
+            .unwrap()
+            .into_authority()
+            .unwrap()
+            .with_host(host());
+        let mut result = measure_state(n, dir, a, repetition % 2 == 0);
         result["repetition"] = repetition.into();
         result["prefix_wal_sha256"] = prefix_hash.clone().into();
+        eprintln!("retained_history sample: {}", serde_json::to_string(&result).unwrap());
         results.push(result);
     }
     assert_eq!(wal_digest(&seed_wal), prefix_hash);
     results
 }
-fn measure_state(n: usize, dir: tempfile::TempDir, mut a: Authority) -> Value {
+fn measure_state(
+    n: usize,
+    dir: tempfile::TempDir,
+    mut a: Authority,
+    snapshot_first: bool,
+) -> Value {
     let root = dir.path().join("store");
     let prefix_sequence = 1 + 2 * n as u64;
     check_projection(a.projection(), n, prefix_sequence);
-    let prefix = build_snapshot_from_projection(a.projection(), 1002).unwrap();
+    let prefix_wal_bytes = std::fs::metadata(a.store_session().unwrap().wal_path()).unwrap().len();
+    let candidate = a.capture_checkpoint(1002).unwrap();
     let wal_path = a.store_session().unwrap().wal_path();
     let snapshot_path = a.store_session().unwrap().snapshot_path();
     assert!(!snapshot_path.exists());
@@ -263,44 +309,107 @@ fn measure_state(n: usize, dir: tempfile::TempDir, mut a: Authority) -> Value {
     let final_sequence = prefix_sequence + 2 * BATCH as u64;
     check_projection(a.projection(), n + BATCH, final_sequence);
     let expected_digest = a.projection().projection_digest().unwrap();
+    let expected_controls: Vec<_> = a
+        .projection()
+        .task_records()
+        .map(|t| {
+            let id = t.task_spec().id();
+            (
+                id,
+                a.projection()
+                    .control_sequences(
+                        actionqueue_storage::recovery::inspection::ControlTarget::Task(id),
+                    )
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect();
+    let (publication, publication_measurement) = measure(|| publish_checkpoint(candidate).unwrap());
+    assert_eq!(publication_measurement.work.reducer_event_visits, 0);
+    assert_eq!(publication_measurement.wal_frames, 0);
     let (writer, projection) = a.into_parts();
     writer.close().unwrap();
     drop(projection);
     let wal_bytes = std::fs::metadata(&wal_path).unwrap().len();
     let wal_sha256 = wal_digest(&wal_path);
-
-    eprintln!("retained_history: N={n}, measuring WAL-only bootstrap");
-    let (wal, wal_measurement) = measure(|| load_existing_projection(&root).unwrap());
-    assert!(!wal.snapshot_loaded);
-    assert_eq!(wal.snapshot_sequence, 0);
-    check_projection(&wal.projection, n + BATCH, final_sequence);
-    assert_eq!(wal.projection.projection_digest().unwrap(), expected_digest);
-    assert_eq!(wal_digest(&wal_path), wal_sha256);
-
-    eprintln!("retained_history: N={n}, publishing saved prefix (unmeasured)");
-    let mut snapshot_writer =
-        SnapshotFsWriter::new(wal.wal_writer.store_session().unwrap()).unwrap();
-    snapshot_writer.write(&prefix).unwrap();
-    snapshot_writer.close().unwrap();
-    wal.wal_writer.close().unwrap();
-    drop(wal.projection);
-    drop(prefix);
     let snapshot_bytes = std::fs::metadata(&snapshot_path).unwrap().len();
-
-    eprintln!("retained_history: N={n}, measuring snapshot-plus-tail bootstrap");
-    let (snapshot, snapshot_measurement) = measure(|| load_existing_projection(&root).unwrap());
-    assert!(snapshot.snapshot_loaded);
-    assert_eq!(snapshot.snapshot_sequence, prefix_sequence);
-    check_projection(&snapshot.projection, n + BATCH, final_sequence);
-    assert_eq!(snapshot.projection.projection_digest().unwrap(), expected_digest);
+    assert!(snapshot_bytes < 256 * 1024 * 1024);
+    let saved = dir.path().join("saved-checkpoint.bin");
+    let do_wal = || {
+        std::fs::rename(&snapshot_path, &saved).unwrap();
+        let (wal, m) = measure(|| load_existing_projection(&root).unwrap());
+        assert!(!wal.snapshot_loaded);
+        check_projection(&wal.projection, n + BATCH, final_sequence);
+        assert_eq!(wal.projection.projection_digest().unwrap(), expected_digest);
+        wal.wal_writer.close().unwrap();
+        drop(wal.projection);
+        std::fs::rename(&saved, &snapshot_path).unwrap();
+        m
+    };
+    let do_snapshot = || {
+        let (snapshot, m) = measure(|| load_existing_projection(&root).unwrap());
+        assert!(snapshot.snapshot_loaded);
+        assert_eq!(snapshot.snapshot_sequence, prefix_sequence);
+        check_projection(&snapshot.projection, n + BATCH, final_sequence);
+        assert!(snapshot.projection.control_targets_available());
+        for (id, sequences) in &expected_controls {
+            assert_eq!(
+                snapshot
+                    .projection
+                    .control_sequences(
+                        actionqueue_storage::recovery::inspection::ControlTarget::Task(*id)
+                    )
+                    .collect::<Vec<_>>(),
+                *sequences
+            );
+        }
+        assert_eq!(snapshot.projection.projection_digest().unwrap(), expected_digest);
+        let phases = snapshot.phases;
+        snapshot.wal_writer.close().unwrap();
+        drop(snapshot.projection);
+        (m, phases)
+    };
+    let (wal_measurement, snapshot_measurement, phases) = if snapshot_first {
+        let (sm, p) = do_snapshot();
+        (do_wal(), sm, p)
+    } else {
+        let wm = do_wal();
+        let (sm, p) = do_snapshot();
+        (wm, sm, p)
+    };
     assert_eq!(std::fs::metadata(&wal_path).unwrap().len(), wal_bytes);
-    assert_eq!(
-        wal_digest(&wal_path),
-        wal_sha256,
-        "both recoveries must use identical WAL contents"
-    );
-    snapshot.wal_writer.close().unwrap();
+    assert_eq!(wal_digest(&wal_path), wal_sha256, "paired recoveries use identical WAL contents");
     assert_shared(n, &admission, &cancellation, &wal_measurement, &snapshot_measurement);
+    // Same checkpoint, variable tails, including no tail. Prepare variants and
+    // parity expectations outside complete writable startup timers.
+    let bytes = std::fs::read(&wal_path).unwrap();
+    let mut tail_variants = Vec::new();
+    for tail in [0usize, 20] {
+        let variant = tempfile::tempdir().unwrap();
+        let variant_root = variant.path().join("store");
+        copy_store(&root, &variant_root);
+        std::fs::copy(&snapshot_path, variant_root.join("snapshots/snapshot.bin")).unwrap();
+        let mut end = prefix_wal_bytes as usize;
+        for _ in 0..tail {
+            end += actionqueue_storage::wal::tail_validation::parse_record_at(&bytes, end)
+                .unwrap()
+                .unwrap()
+                .record_len;
+        }
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(variant_root.join("wal/actionqueue.wal"))
+            .unwrap()
+            .set_len(end as u64)
+            .unwrap();
+        let (boot, m) = measure(|| load_existing_projection(&variant_root).unwrap());
+        assert_eq!(m.work.reducer_event_visits, tail);
+        assert_eq!(m.wal_frames, tail as u64 + 2);
+        assert_eq!(boot.projection.latest_sequence(), prefix_sequence + tail as u64);
+        tail_variants.push(json!({"tail_events":tail,"startup":m.json(1),"phases":boot.phases}));
+        boot.wal_writer.close().unwrap();
+        drop(boot.projection);
+    }
 
     json!({
         "retained_terminal_runs": n,
@@ -313,7 +422,14 @@ fn measure_state(n: usize, dir: tempfile::TempDir, mut a: Authority) -> Value {
         "final_sequence": final_sequence,
         "wal_bytes": wal_bytes,
         "wal_sha256": wal_sha256,
+        "tail_variants":tail_variants,
         "snapshot_bytes": snapshot_bytes,
+        "publication": publication,
+        "snapshot_phases":phases,
+        "hydration_seconds":phases.snapshot_load_seconds+phases.hydration_seconds,
+        "paired_startup_ratio":snapshot_measurement.elapsed_ns as f64 / wal_measurement.elapsed_ns as f64,
+        "path_order":if snapshot_first { "snapshot,wal" } else { "wal,snapshot" },
+        "cache_conditions":"warm OS cache; no cache eviction; alternating order; independent copied files per repetition",
         "projection_digest": expected_digest,
         "admission": admission.json(BATCH),
         "cancellation": cancellation.json(BATCH),
@@ -333,7 +449,7 @@ fn populated_clone_is_equivalent_and_mutates_independently() {
     let p = a.projection();
     work::reset_projection_work();
     let before = p.projection_digest().unwrap();
-    let _ = build_snapshot_from_projection(p, 1002).unwrap();
+    let _ = actionqueue_storage::snapshot::build::build_snapshot_from_projection(p, 1002).unwrap();
     assert_eq!(work::projection_work(), ProjectionWork::default());
     let mut cloned = p.clone();
     assert_eq!(

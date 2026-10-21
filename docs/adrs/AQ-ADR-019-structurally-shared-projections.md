@@ -2,6 +2,12 @@
 
 Status: Accepted for AQ-P2; performance acceptance requires the measurements below.
 
+AQ-P3 refines hydration with immutable bulk tables and persistent mutation deltas,
+while preserving shallow roots and bounded record copying. See
+[ADR-020](AQ-ADR-020-bounded-snapshot-bootstrap.md) for that representation and the
+schema-10 checkpoint/startup changes; the AQ-P2 format statements below describe
+its historical baseline.
+
 Use `imbl` persistent hash maps for unordered lookup, ordered maps and sets for
 ordered indexes, and a storage-owned `History<T>` backed by a persistent vector
 for chronological histories. Map and history nodes hold `Arc` records: copying a

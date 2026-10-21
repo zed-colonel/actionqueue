@@ -338,6 +338,7 @@ pub fn bootstrap_with_authenticator(
     {
         router_state_inner.remote_policy = config.remote_policy;
     }
+    router_state_inner.snapshot_event_threshold = config.snapshot_event_threshold;
     router_state_inner.store_session = store_session;
     router_state_inner.host_authenticator = hook;
     let router_state = std::sync::Arc::new(router_state_inner);

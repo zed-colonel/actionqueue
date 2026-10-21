@@ -105,6 +105,9 @@ impl<W: WalWriter> InstrumentedWalWriter<W> {
 }
 
 impl<W: WalWriter> WalWriter for InstrumentedWalWriter<W> {
+    fn checkpoint_provenance(&self) -> Option<&super::checkpoint::WalProvenance> {
+        self.inner.checkpoint_provenance()
+    }
     fn fence(&mut self) {
         self.inner.fence();
     }
@@ -139,6 +142,11 @@ impl<W: WalWriter> WalWriter for InstrumentedWalWriter<W> {
 
 /// A writer that can append events to the WAL.
 pub trait WalWriter {
+    /// Opaque recovery evidence; ordinary independently supplied writers return None.
+    #[doc(hidden)]
+    fn checkpoint_provenance(&self) -> Option<&super::checkpoint::WalProvenance> {
+        None
+    }
     /// Permanently fences a session-backed writer after an uncertain authority operation.
     /// Stateless test writers may use the default; durable implementations must retain it.
     fn fence(&mut self) {}

@@ -20,6 +20,7 @@ pub fn run(args: DaemonArgs) -> Result<CommandOutput, CliError> {
         config.metrics_bind = Some(parse_socket_addr(metrics_bind, "metrics_bind")?);
     }
     config.enable_control = args.enable_control;
+    config.snapshot_event_threshold = args.snapshot_event_threshold;
     for label in &args.signal_metric_labels {
         let Some((namespace, kind)) = label.split_once(':') else {
             return Err(CliError::validation(
@@ -152,6 +153,7 @@ mod tests {
             .join(format!("aq-cli-auth-{}", actionqueue_core::ids::TaskId::new()));
         std::fs::create_dir_all(&root).unwrap();
         let mut args = DaemonArgs {
+            snapshot_event_threshold: Some(10_000),
             auth_file: None,
             data_dir: Some(root.join("store")),
             bind: None,
@@ -183,6 +185,7 @@ mod tests {
         let root = std::env::temp_dir()
             .join(format!("aq-cli-labels-{}", actionqueue_core::ids::TaskId::new()));
         let args = |labels: &[&str]| DaemonArgs {
+            snapshot_event_threshold: Some(10_000),
             auth_file: None,
             data_dir: Some(root.join("store")),
             bind: None,

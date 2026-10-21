@@ -190,3 +190,51 @@ pub(crate) fn cancellation_candidate() {
         c.set(w);
     });
 }
+
+// Actual complete frames consumed by all startup readers, including probes.
+#[cfg(feature = "testing")]
+thread_local! { static WAL_IO: std::cell::Cell<(u64,u64)> = const { std::cell::Cell::new((0,0)) }; }
+#[cfg(feature = "testing")]
+pub(crate) fn wal_read(bytes: usize) {
+    WAL_IO.with(|v| {
+        let (f, b) = v.get();
+        v.set((f + 1, b + bytes as u64));
+    });
+}
+#[cfg(feature = "testing")]
+pub fn reset_wal_io() {
+    WAL_IO.with(|v| v.set((0, 0)));
+}
+#[cfg(feature = "testing")]
+pub fn wal_io() -> (u64, u64) {
+    WAL_IO.with(std::cell::Cell::get)
+}
+
+/// Constituent snapshot preparation phases; the aggregate startup timer also
+/// includes boundary probes and all allocation/ownership plumbing.
+#[derive(Debug, Clone, Copy, Default, serde::Serialize)]
+pub struct SnapshotWork {
+    pub io_seconds: f64,
+    pub integrity_seconds: f64,
+    pub decode_seconds: f64,
+    pub profile_validation_seconds: f64,
+    pub mapping_validation_seconds: f64,
+    pub object_hydration_seconds: f64,
+    pub index_construction_seconds: f64,
+    pub canonical_digest_seconds: f64,
+    pub inspection_index_seconds: f64,
+}
+thread_local! { static SNAPSHOT_PHASES:std::cell::Cell<SnapshotWork>=const { std::cell::Cell::new(SnapshotWork { io_seconds:0.0,integrity_seconds:0.0,decode_seconds:0.0,profile_validation_seconds:0.0,mapping_validation_seconds:0.0,object_hydration_seconds:0.0,index_construction_seconds:0.0,canonical_digest_seconds:0.0,inspection_index_seconds:0.0 }) }; }
+pub(crate) fn reset_snapshot_phases() {
+    SNAPSHOT_PHASES.with(|p| p.set(SnapshotWork::default()));
+}
+pub(crate) fn snapshot_phase(f: impl FnOnce(&mut SnapshotWork)) {
+    SNAPSHOT_PHASES.with(|p| {
+        let mut v = p.get();
+        f(&mut v);
+        p.set(v);
+    });
+}
+pub(crate) fn snapshot_phases() -> SnapshotWork {
+    SNAPSHOT_PHASES.with(std::cell::Cell::get)
+}

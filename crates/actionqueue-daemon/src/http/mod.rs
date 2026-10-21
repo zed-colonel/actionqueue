@@ -38,6 +38,9 @@ pub type ControlMutationAuthority =
 /// Mutations use the serialized authority lane. Inspection snapshots and current
 /// grant checks share a single authoritative projection revision.
 pub struct RouterStateInner {
+    pub(crate) snapshot_event_threshold: Option<u64>,
+    pub(crate) snapshot_inflight: AtomicBool,
+    pub(crate) snapshot_completed: tokio::sync::Notify,
     pub(crate) admission_throttle: Mutex<admission_throttle::AdmissionThrottle>,
     pub(crate) background_maintenance: bool,
     pub(crate) disclosure_policy: actionqueue_runtime::inspection::DisclosurePolicy,
@@ -159,6 +162,9 @@ impl RouterStateInner {
             maintenance_stopping: AtomicBool::new(false),
             maintenance_task: Mutex::new(None),
             background_maintenance: true,
+            snapshot_event_threshold: Some(10_000),
+            snapshot_inflight: AtomicBool::new(false),
+            snapshot_completed: tokio::sync::Notify::new(),
             disclosure_policy: Default::default(),
             admission_throttle: Mutex::new(Default::default()),
             authority_lane: Arc::new(tokio::sync::Semaphore::new(32)),

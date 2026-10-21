@@ -66,6 +66,9 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DaemonConfig {
+    /// Durable WAL events since the last successful checkpoint; None disables publication.
+    #[cfg_attr(feature = "serde", serde(default = "default_snapshot_threshold"))]
+    pub snapshot_event_threshold: Option<u64>,
     /// Finite namespace/kind metric label allowlist (maximum 64 pairs).
     #[cfg_attr(feature = "serde", serde(default))]
     pub signal_metric_allowlist: std::collections::BTreeSet<(String, String)>,
@@ -127,6 +130,7 @@ pub struct DaemonConfig {
 impl Default for DaemonConfig {
     fn default() -> Self {
         Self {
+            snapshot_event_threshold: default_snapshot_threshold(),
             signal_metric_allowlist: Default::default(),
             #[cfg(feature = "actor")]
             remote_policy: Default::default(),
@@ -168,6 +172,8 @@ pub enum ConfigErrorCode {
     InvalidMetricsBind,
     /// The signal metric namespace/kind allowlist is invalid.
     InvalidSignalMetricAllowlist,
+    /// Automatic publication requires a positive durable-event threshold.
+    InvalidSnapshotThreshold,
     /// The metrics bind address conflicts with the main bind address.
     PortConflict,
 }
@@ -181,6 +187,7 @@ impl std::fmt::Display for ConfigErrorCode {
             ConfigErrorCode::InvalidSignalMetricAllowlist => {
                 write!(f, "invalid_signal_metric_allowlist")
             }
+            ConfigErrorCode::InvalidSnapshotThreshold => write!(f, "invalid_snapshot_threshold"),
             ConfigErrorCode::PortConflict => write!(f, "port_conflict"),
         }
     }
@@ -196,6 +203,12 @@ impl DaemonConfig {
     ///
     /// Returns a `ConfigError` if any field contains an invalid value.
     pub fn validate(&self) -> Result<(), ConfigError> {
+        if self.snapshot_event_threshold == Some(0) {
+            return Err(ConfigError {
+                code: ConfigErrorCode::InvalidSnapshotThreshold,
+                message: "snapshot threshold must be positive".into(),
+            });
+        }
         if actionqueue_storage::mutation::telemetry::validate_signal_allowlist(
             &self.signal_metric_allowlist,
         )
@@ -248,6 +261,10 @@ impl DaemonConfig {
 
         Ok(())
     }
+}
+
+fn default_snapshot_threshold() -> Option<u64> {
+    Some(10_000)
 }
 
 #[cfg(test)]
