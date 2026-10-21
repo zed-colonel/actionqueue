@@ -1,4 +1,4 @@
-# ActionQueue 0.2.0 — AQ-CONT-1
+# ActionQueue 0.3.0 — AQ-CONT-1
 
 ActionQueue is a durable execution substrate for opaque tasks. It provides
 idempotent admission, scheduling, leases, retry, durable waits and signals,
@@ -6,11 +6,11 @@ checkpoint delivery, transactional child admission, and structural inspection.
 Queue completion describes execution. Application verification and acceptance
 remain the caller's responsibility; opaque references grant no authority.
 
-The breaking release targets contract `AQ-CONT-1`, revision
+This release implements contract `AQ-CONT-1`, revision
 `STACK-2026-07-20-CLEAN-1`, and conformance package revision **16**. The additive
 developmental profile changes only bounded attribution; it introduces no protocol
 primitive, persistence authority, scheduler semantics, or authorization path.
-See [release notes and cutover](docs/releases/0.2.0.md).
+See [release notes and cutover](docs/releases/0.3.0.md).
 
 ## Start here
 
@@ -45,11 +45,15 @@ The `testing` feature is for proof drivers and fault injection only.
 
 ## Durability and operations
 
-Target stores use manifest schema 1, WAL framing 1, and snapshot/projection
-version 9. They reject pre-contract and earlier development stores without
-migration. The complete WAL is retained and replayed during recovery; a snapshot is
-cross-checked against its WAL prefix and never replaces history. Mutation preparation currently
-clones the full projection; no general throughput claim is made.
+Target stores use manifest schema 1, WAL framing 1, snapshot schema 10 and logical
+projection version 9. Schema-9 stores require an explicit offline upgrade;
+pre-contract and earlier development stores remain unsupported. Ordinary startup
+hydrates a WAL-bound checkpoint and replays its tail. It checks boundary frames
+but does not rehash the skipped prefix; `actionqueue store verify` validates
+complete history offline. Snapshot hydration still scales with snapshot size.
+Mutation preparation shares projection roots and copies changed records. Complete
+WAL and terminal history remain retained; archival is a design only. See the
+[measured budgets and upgrade procedure](docs/releases/0.3.0.md).
 
 Embedded callers configure `HostControlContext` explicitly. HTTP object inspection
 requires host authentication; mutations also require control enablement. CLI
@@ -74,6 +78,6 @@ python3 -B scripts/check-consumer.py
 ```
 
 Release preparation executes the complete feature and evidence matrix on one clean
-commit. See [release procedure](docs/releases/0.2.0.md); preparation does not publish.
+commit. See [release procedure](docs/releases/0.3.0.md); preparation does not publish.
 
 Licensed under [Apache-2.0](LICENSE).

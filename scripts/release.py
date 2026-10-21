@@ -17,15 +17,18 @@ import tarfile
 import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
+RELEASE_VERSION = '0.3.0'
+RELEASE_NOTES = Path(f'docs/releases/{RELEASE_VERSION}.md')
 PACKAGE = Path('conformance/aq-cont-1')
 PROFILE = Path('docs/contracts/aq-cont-1-developmental-campaign-execution-profile.md')
 PROFILES = ['', 'workflow', 'budget', 'workflow,budget', 'actor', 'platform', 'actor,platform', 'workflow,budget,actor,platform']
 LIMITATIONS = [
-    'Fresh AQ-CONT-1 stores only; no pre-contract migration or development-schema upgrade.',
+    'Schema-9 AQ-CONT-1 stores require explicit offline upgrade; pre-contract and earlier development schemas remain unsupported.',
     'Store feature profiles are immutable; compiled capabilities do not upgrade stores.',
     'Backup and restore require offline ownership; external artifact bytes are application-owned.',
     'Inspection is bounded, paginated, and redacted; references grant no authority.',
-    'Mutation preparation clones the full projection; recovery verifies the full retained WAL.',
+    'Ordinary snapshot startup trusts the skipped WAL prefix; store verify validates complete history offline.',
+    'Snapshot hydration scales with snapshot size; complete WAL and terminal history remain retained without compaction.',
     'ActionQueue-owned reference certification only; WorldInterface and Exoskeleton are not certified.',
 ]
 
@@ -66,10 +69,24 @@ def safe(base, name):
     return path
 
 
+def dependencies(data, expected, source):
+    names = set()
+    for scope in [data, *data.get('target', {}).values()]:
+        for table in ['dependencies', 'dev-dependencies', 'build-dependencies']:
+            for name, dep in scope.get(table, {}).items():
+                if name.startswith('actionqueue-'):
+                    version = dep if isinstance(dep, str) else dep.get('version')
+                    require(version == expected, f'inconsistent internal dependency in {source}: {name}')
+                    names.add(name)
+    return names
+
+
 def metadata():
     manifest = read(ROOT / PACKAGE / 'manifest.yaml')
     require(manifest['package_revision'] == 16 and manifest['status'] == 'executable', 'unexpected conformance revision/status')
-    for name, label in [('README.md', 'conformance package revision'), ('docs/releases/0.2.0.md', 'Conformance package:')]:
+    notes = (ROOT / RELEASE_NOTES).read_text()
+    require(f'Release identity: **{RELEASE_VERSION} / v{RELEASE_VERSION}**.' in notes, 'wrong release notes identity')
+    for name, label in [('README.md', 'conformance package revision'), (str(RELEASE_NOTES), 'Conformance package:')]:
         revisions = re.findall(re.escape(label) + r'\s+\*\*(\d+)\*\*', (ROOT / name).read_text())
         require(revisions == [str(manifest['package_revision'])], f'missing or inconsistent conformance revision in {name}')
     require(manifest['contract_revision'] == 'STACK-2026-07-20-CLEAN-1', 'wrong contract revision')
@@ -82,22 +99,27 @@ def metadata():
     crates = []
     for p in sorted((ROOT / 'crates').glob('*/Cargo.toml')):
         data = tomllib.loads(p.read_text())
-        require(data['package']['version'] == '0.2.0', 'inconsistent crate version')
-        for table in ['dependencies', 'dev-dependencies', 'build-dependencies']:
-            for name, dep in data.get(table, {}).items():
-                if name.startswith('actionqueue-'):
-                    require((dep if isinstance(dep, str) else dep['version']) == '0.2.0', 'inconsistent internal dependency')
+        require(data['package']['version'] == RELEASE_VERSION, 'inconsistent crate version')
+        dependencies(data, RELEASE_VERSION, str(p.relative_to(ROOT)))
         crates.append({'name': data['package']['name'], 'version': data['package']['version']})
     require(len(crates) == 11, 'incomplete crate inventory')
+    root_dependencies = dependencies(tomllib.loads((ROOT / 'Cargo.toml').read_text()), RELEASE_VERSION, 'Cargo.toml')
+    require(root_dependencies == {c['name'] for c in crates}, 'incomplete root dependency inventory')
+    consumer_dependencies = dependencies(tomllib.loads((ROOT / 'examples/downstream-handoff/Cargo.toml').read_text()), '=' + RELEASE_VERSION, 'standalone consumer')
+    require(consumer_dependencies == {'actionqueue-core', 'actionqueue-runtime', 'actionqueue-executor-local'}, 'incomplete consumer dependency inventory')
     locked = tomllib.loads((ROOT / 'Cargo.lock').read_text())['package']
     require(sorted((x['name'], x['version']) for x in locked if x['name'].startswith('actionqueue-') and x['name'] != 'actionqueue-acceptance-harness') == sorted((x['name'], x['version']) for x in crates), 'inconsistent lockfile inventory')
     store_source = (ROOT / 'crates/actionqueue-storage/src/store/manifest.rs').read_text()
     versions = {key: int(re.search(r'\b' + key + r': (\d+),', store_source)[1]) for key in ['manifest_schema', 'wal_format', 'snapshot_schema', 'projection_version']}
-    require(versions == dict(manifest_schema=1, wal_format=1, snapshot_schema=9, projection_version=9), 'unexpected store versions')
+    require(versions == dict(manifest_schema=1, wal_format=1, snapshot_schema=10, projection_version=9), 'unexpected store versions')
+    schema = read(ROOT / 'docs/releases/release-manifest.schema.json')['properties']
+    require(schema['version']['const'] == RELEASE_VERSION and schema['tag']['const'] == 'v' + RELEASE_VERSION
+            and schema['crates']['items']['properties']['version']['const'] == RELEASE_VERSION
+            and {k: v['const'] for k, v in schema['store_versions']['properties'].items()} == versions, 'inconsistent release schema')
     matrix = manifest['acceptance_matrices'][0]
     require(matrix['profile_revision'] == 'STACK-DEVELOPMENTAL-DIAGNOSTICS-1' and matrix['case_count'] == 18 and matrix['normative_protocol_change'] is False, 'wrong developmental profile')
     return {
-        'schema_version': 1, 'version': '0.2.0', 'tag': 'v0.2.0', 'crates': crates,
+        'schema_version': 1, 'version': RELEASE_VERSION, 'tag': 'v' + RELEASE_VERSION, 'crates': crates,
         'contract': manifest['contract'], 'contract_revision': manifest['contract_revision'],
         'conformance': {'revision': manifest['package_revision'], 'manifest_sha256': sha(ROOT / PACKAGE / 'manifest.yaml'), 'fixtures': manifest['fixtures'], 'assets': manifest['assets']},
         'developmental': {'revision': matrix['profile_revision'], 'profile_sha256': sha(ROOT / PROFILE), 'matrix_sha256': sha(ROOT / PACKAGE / matrix['path']), 'case_count': 18, 'protocol_or_authority_change': False},
@@ -204,18 +226,18 @@ def verify(path):
     for name in paths:
         if name.startswith(str(PACKAGE) + '/') or name == str(PROFILE):
             require(sha(output / name) == sha(ROOT / name), 'published contract/conformance bytes differ')
-    require(sha(output / 'release-notes.md') == sha(ROOT / 'docs/releases/0.2.0.md'), 'wrong release notes')
+    require(sha(output / 'release-notes.md') == sha(ROOT / RELEASE_NOTES), 'wrong release notes')
     require(sha(output / 'release-manifest.schema.json') == sha(ROOT / 'docs/releases/release-manifest.schema.json'), 'wrong release schema')
     heads = subprocess.check_output(['git', 'bundle', 'list-heads', str(output / 'source.bundle')]).decode().splitlines()
     require(heads == [manifest['source_commit'] + ' HEAD'], 'source bundle has wrong commit')
     validate_evidence(manifest, output)
     sums = ''.join(f'{sha(output / name)}  {name}\n' for name in sorted(paths | {'release-manifest.json'}))
     require((output / 'SHA256SUMS').read_text() == sums, 'inconsistent checksums')
-    print(f'Verified v0.2.0 at {manifest["source_commit"]}; publication remains operator-owned.')
+    print(f'Verified v{RELEASE_VERSION} at {manifest["source_commit"]}; publication remains operator-owned.')
 
 
 def prepare(version, commit, output):
-    require(version == '0.2.0', 'only release 0.2.0 is defined')
+    require(version == RELEASE_VERSION, f'only release {RELEASE_VERSION} is defined')
     clean(commit)
     manifest = metadata()
     output = Path(output).resolve()
@@ -244,7 +266,7 @@ def prepare(version, commit, output):
     shutil.copytree(ROOT / PACKAGE, output / PACKAGE)
     (output / PROFILE).parent.mkdir(parents=True)
     shutil.copy2(ROOT / PROFILE, output / PROFILE)
-    shutil.copy2(ROOT / 'docs/releases/0.2.0.md', output / 'release-notes.md')
+    shutil.copy2(ROOT / RELEASE_NOTES, output / 'release-notes.md')
     shutil.copy2(ROOT / 'docs/releases/release-manifest.schema.json', output / 'release-manifest.schema.json')
     subprocess.run(['git', 'bundle', 'create', str(output / 'source.bundle'), 'HEAD'], cwd=ROOT, check=True)
     with tarfile.open(output / 'api-docs.tar', 'w') as tar:

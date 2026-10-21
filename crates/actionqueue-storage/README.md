@@ -1,5 +1,7 @@
 # actionqueue-storage
 
+Release 0.3.0 implements AQ-CONT-1. See the [release and compatibility notes](../../docs/releases/0.3.0.md).
+
 Durable persistence and mutation authority for ActionQueue / AQ-CONT-1.
 Store manifest schema 1, WAL framing 1, snapshot schema 10, projection version 9.
 Released schema-9 stores have an explicit source-preserving offline upgrade;
