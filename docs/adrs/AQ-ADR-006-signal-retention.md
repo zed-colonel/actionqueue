@@ -1,5 +1,9 @@
 # AQ-ADR-006 — Signal retention
 
+AQ-P3 supersedes the full-history startup behavior below through
+[ADR-020](AQ-ADR-020-bounded-snapshot-bootstrap.md). Complete history is still retained
+and explicitly verified; ordinary checkpoint recovery reads only the tail.
+
 - **Status:** Accepted.
 - **Decide before:** `AQ-05`
 - **Contract:** `AQ-CONT-1`

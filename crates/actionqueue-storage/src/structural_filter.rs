@@ -174,15 +174,29 @@ mod recovery_tests {
             }
             drop(a);
             if snapshot_case {
+                use sha2::{Digest, Sha256};
+                let session = open_store(dir.path(), OpenOptions::ReadOnly).unwrap();
+                let c = crate::snapshot::loader::load_checkpoint(&session).unwrap().unwrap();
+                let old = serde_json::to_vec(&c.snapshot.subscriptions[0]).unwrap();
+                let mut value = serde_json::to_value(&c.snapshot.subscriptions[0]).unwrap();
+                value["filter"] = serde_json::json!({"Custom":{"key":"x"}});
+                let replacement = serde_json::to_vec(&value).unwrap();
+                let old_record = postcard::to_allocvec(&old).unwrap();
+                let new_record = postcard::to_allocvec(&replacement).unwrap();
                 let bytes = std::fs::read(&snapshot_path).unwrap();
-                let mut envelope: serde_json::Value = serde_json::from_slice(&bytes[20..]).unwrap();
-                envelope["projection"]["subscriptions"][0]["filter"] =
-                    serde_json::json!({"Custom": {"key": "x"}});
-                let payload = serde_json::to_vec(&envelope).unwrap();
-                let mut changed = bytes[..12].to_vec();
-                changed.extend((payload.len() as u32).to_le_bytes());
-                changed.extend(crc32fast::hash(&payload).to_le_bytes());
-                changed.extend(payload);
+                let offset = bytes.windows(old_record.len()).position(|b| b == old_record).unwrap();
+                let mut changed = bytes[..offset - 4].to_vec();
+                changed.extend((new_record.len() as u32).to_le_bytes());
+                changed.extend(new_record);
+                changed.extend_from_slice(&bytes[offset + old_record.len()..]);
+                let len = changed.len();
+                let mut hash = Sha256::new();
+                hash.update(b"AQ-CONT-1\0checkpoint\0v10\0");
+                hash.update(&changed[20..len - 32]);
+                changed[len - 32..].copy_from_slice(&hash.finalize());
+                changed[12..16].copy_from_slice(&((len - 20) as u32).to_le_bytes());
+                let crc = crc32fast::hash(&changed[20..]);
+                changed[16..20].copy_from_slice(&crc.to_le_bytes());
                 std::fs::write(&snapshot_path, changed).unwrap();
             } else {
                 let mut bytes = std::fs::read(&wal_path).unwrap();

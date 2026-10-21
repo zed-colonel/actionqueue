@@ -47,7 +47,7 @@ impl StoreManifest {
             manifest_schema: 1,
             contract: "AQ-CONT-1".into(),
             wal_format: 1,
-            snapshot_schema: 9,
+            snapshot_schema: 10,
             projection_version: 9,
             store_id: uuid::Uuid::new_v4(),
             created_at: std::time::SystemTime::now()
@@ -77,7 +77,7 @@ impl StoreManifest {
         for (component, found, supported) in [
             ("manifest_schema", self.manifest_schema, 1),
             ("wal_format", self.wal_format, 1),
-            ("snapshot_schema", self.snapshot_schema, 9),
+            ("snapshot_schema", self.snapshot_schema, 10),
             ("projection_version", self.projection_version, 9),
         ] {
             if found != supported {
@@ -110,6 +110,9 @@ impl StoreManifest {
         Ok(())
     }
     pub fn read(root: &Path) -> Result<Self, StoreError> {
+        Self::read_schema(root, 10)
+    }
+    pub(crate) fn read_schema(root: &Path, schema: u32) -> Result<Self, StoreError> {
         let path = root.join("manifest.json");
         let meta = std::fs::symlink_metadata(&path).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
@@ -130,7 +133,20 @@ impl StoreManifest {
         }
         let manifest: Self = serde_json::from_slice(&bytes)
             .map_err(|e| StoreError::InvalidManifest(e.to_string()))?;
-        manifest.validate()?;
+        if schema == 9 && manifest.snapshot_schema == 9 {
+            let mut current = manifest.clone();
+            current.snapshot_schema = 10;
+            current.validate()?;
+        } else {
+            manifest.validate()?;
+            if schema != manifest.snapshot_schema {
+                return Err(StoreError::UnsupportedStoreFormat {
+                    component: "snapshot_schema".into(),
+                    supported: schema,
+                    found: manifest.snapshot_schema,
+                });
+            }
+        }
         Ok(manifest)
     }
     pub fn digest(&self) -> [u8; 32] {

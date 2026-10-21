@@ -81,6 +81,7 @@ fn reason(e: DecodeError) -> WalCorruptionReasonCode {
 pub struct ParsedWalRecord {
     pub event: WalEvent,
     pub record_len: usize,
+    pub frame_hash: [u8; 32],
 }
 /// Reads at most one bounded frame. Identity and sequence are checked before allocation.
 pub(crate) fn read_record<R: Read + Seek>(
@@ -150,7 +151,14 @@ pub(crate) fn read_record<R: Read + Seek>(
         }
     })?;
     let event = codec::decode(&frame).map_err(|e| fail(reason(e)))?;
-    Ok(Some(ParsedWalRecord { event, record_len: frame.len() }))
+    use sha2::Digest;
+    #[cfg(feature = "testing")]
+    crate::recovery::work::wal_read(frame.len());
+    Ok(Some(ParsedWalRecord {
+        event,
+        record_len: frame.len(),
+        frame_hash: sha2::Sha256::digest(&frame).into(),
+    }))
 }
 pub fn parse_record_at(
     buffer: &[u8],

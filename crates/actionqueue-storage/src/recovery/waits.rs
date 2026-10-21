@@ -757,10 +757,13 @@ impl ReplayReducer {
             facts.insert(r.clone(), self.tenant_for_run(r.run_id)?, task);
         }
         self.waits = facts;
-        self.cancellations.clear();
+        let mut cancellations = std::collections::HashMap::new();
         for c in cancels {
-            self.cancellations.entry(c.target).or_insert_with(|| c.clone());
+            if cancellations.insert(c.target, c.clone()).is_some() {
+                return Err(E::InvalidIdentity);
+            }
         }
+        self.cancellations = cancellations.into_iter().collect();
         for r in records {
             if r.sequence == 0
                 || r.sequence > self.latest_sequence
@@ -905,6 +908,9 @@ impl ReplayReducer {
             }
         }
         for run in self.run_instances() {
+            if run.state().is_terminal() {
+                continue;
+            }
             let c = self.get_task(&run.task_id()).ok_or(E::NotFound)?.constraints();
             let must_hold = run.state() == RunState::Running
                 || (run.state() == RunState::Awaiting || index.pending_wait(run.id()).is_some())

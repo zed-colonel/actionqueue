@@ -13,3 +13,8 @@ wait resolution. `store` exports verified offline inspect, backup and restore.
 
 See [AQ-12 APIs](../../docs/aq-12-apis.md) for schemas, authorization, disclosure,
 query bounds, metric semantics and operating modes.
+
+Automatic snapshots use bounded live capture when the authority owns the writer
+and projection from one recovery. Independently paired session writers and
+projections use full WAL-prefix validation for automatic snapshots. Use
+`StoreSession::into_authority` or the runtime bootstrap APIs for bounded publication.

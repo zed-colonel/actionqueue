@@ -19,6 +19,7 @@ pub enum Command {
 /// Arguments for the `daemon` command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DaemonArgs {
+    pub snapshot_event_threshold: Option<u64>,
     /// Trusted host bearer identity configuration file.
     pub auth_file: Option<PathBuf>,
     /// Optional data directory override.
@@ -64,8 +65,8 @@ pub struct StorageArgs {
 fn parse_storage(args: &[String]) -> Result<Command, String> {
     let operation = args
         .first()
-        .filter(|s| ["inspect", "backup", "restore"].contains(&s.as_str()))
-        .ok_or("storage requires inspect, backup, or restore")?
+        .filter(|s| ["inspect", "verify", "upgrade", "backup", "restore"].contains(&s.as_str()))
+        .ok_or("storage requires inspect, verify, upgrade, backup, or restore")?
         .clone();
     let (mut data_dir, mut input, mut output) = (None, None, None);
     let mut json = false;
@@ -78,15 +79,17 @@ fn parse_storage(args: &[String]) -> Result<Command, String> {
             "--input" if input.is_none() && operation == "restore" => {
                 input = Some(PathBuf::from(require_value(&mut iter, flag)?))
             }
-            "--output" if output.is_none() && operation == "backup" => {
+            "--output"
+                if output.is_none() && ["backup", "upgrade"].contains(&operation.as_str()) =>
+            {
                 output = Some(PathBuf::from(require_value(&mut iter, flag)?))
             }
             "--json" if !json => json = true,
             _ => return Err(format!("unexpected storage argument: {flag}")),
         }
     }
-    if operation == "backup" && output.is_none() {
-        return Err("backup requires --output".into());
+    if ["backup", "upgrade"].contains(&operation.as_str()) && output.is_none() {
+        return Err(format!("{operation} requires --output"));
     }
     if operation == "restore" && input.is_none() {
         return Err("restore requires --input".into());
@@ -110,6 +113,7 @@ fn parse_daemon(args: &[String]) -> Result<Command, String> {
     let mut metrics_bind: Option<String> = None;
     let mut auth_file = None;
     let mut enable_control = false;
+    let mut snapshot_event_threshold = Some(10_000);
     let mut signal_metric_labels = Vec::new();
     let mut json = false;
 
@@ -126,6 +130,14 @@ fn parse_daemon(args: &[String]) -> Result<Command, String> {
                 auth_file = Some(PathBuf::from(require_value(&mut iter, "--auth-file")?))
             }
             "--enable-control" => enable_control = true,
+            "--snapshot-event-threshold" => {
+                snapshot_event_threshold = Some(
+                    require_value(&mut iter, "--snapshot-event-threshold")?
+                        .parse()
+                        .map_err(|_| "snapshot threshold must be a positive integer")?,
+                )
+            }
+            "--no-snapshots" => snapshot_event_threshold = None,
             "--json" => json = true,
             "--help" | "-h" => return Err(USAGE_DAEMON.to_string()),
             unknown if unknown.starts_with('-') => {
@@ -135,7 +147,11 @@ fn parse_daemon(args: &[String]) -> Result<Command, String> {
         }
     }
 
+    if snapshot_event_threshold == Some(0) {
+        return Err("snapshot threshold must be positive".into());
+    }
     Ok(Command::Daemon(DaemonArgs {
+        snapshot_event_threshold,
         auth_file,
         data_dir,
         bind,
@@ -148,6 +164,8 @@ fn parse_daemon(args: &[String]) -> Result<Command, String> {
 
 /// Usage string for the daemon command.
 const USAGE_DAEMON: &str = r#"actionqueue daemon [OPTIONS]
+  --snapshot-event-threshold N   Durable events between checkpoints (default 10000)
+  --no-snapshots                 Disable automatic checkpoints
 
 Start the ActionQueue daemon bootstrap path.
 
@@ -176,5 +194,40 @@ mod tests {
         for command in ["ensure-task", "trace", "inspect"] {
             assert!(matches!(parse_args(&[command.into()]), Ok(Command::Api(_))));
         }
+    }
+}
+
+#[cfg(test)]
+mod checkpoint_args_tests {
+    use super::*;
+    fn args(s: &str) -> Vec<String> {
+        s.split_whitespace().map(str::to_owned).collect()
+    }
+    #[test]
+    fn explicit_verification_upgrade_and_publication_configuration_parse() {
+        let Command::Storage(v) =
+            parse_args(&args("store verify --data-dir source --json")).unwrap()
+        else {
+            panic!("storage command")
+        };
+        assert_eq!(v.operation, "verify");
+        assert!(v.json);
+        let Command::Storage(v) =
+            parse_args(&args("store upgrade --data-dir source --output dest")).unwrap()
+        else {
+            panic!("storage command")
+        };
+        assert_eq!(v.output, Some("dest".into()));
+        assert!(parse_args(&args("store upgrade --data-dir source")).is_err());
+        let Command::Daemon(d) = parse_args(&args("daemon --snapshot-event-threshold 42")).unwrap()
+        else {
+            panic!("daemon command")
+        };
+        assert_eq!(d.snapshot_event_threshold, Some(42));
+        let Command::Daemon(d) = parse_args(&args("daemon --no-snapshots")).unwrap() else {
+            panic!("daemon command")
+        };
+        assert_eq!(d.snapshot_event_threshold, None);
+        assert!(parse_args(&args("daemon --snapshot-event-threshold 0")).is_err());
     }
 }

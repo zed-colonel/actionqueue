@@ -37,6 +37,8 @@ pub enum SnapshotMappingError {
     InvalidAdmission,
     /// Invalid signal projection image.
     InvalidSignal,
+    /// An extension section has duplicate identities or broken relationships.
+    InvalidExtendedSection,
     /// Snapshot metadata schema version is unknown to this mapping boundary.
     UnsupportedSchemaVersion {
         /// Schema version expected by the current implementation.
@@ -211,6 +213,7 @@ pub enum SnapshotMappingError {
 impl std::fmt::Display for SnapshotMappingError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::InvalidExtendedSection => write!(f, "invalid extension snapshot section"),
             Self::InvalidSignal => write!(f, "invalid signal snapshot"),
             Self::InvalidAdmission => write!(f, "invalid admission snapshot"),
             Self::UnsupportedSchemaVersion { expected, found } => {
@@ -334,6 +337,17 @@ pub fn map_snapshot_run_to_core(
 
 /// Validates full snapshot parity and mapping invariants before bootstrap.
 pub fn validate_snapshot(snapshot: &Snapshot) -> Result<(), SnapshotMappingError> {
+    validate_snapshot_with_signals(snapshot).map(|_| ())
+}
+pub(crate) fn validate_snapshot_with_signals(
+    snapshot: &Snapshot,
+) -> Result<crate::recovery::signals::SignalIndex, SnapshotMappingError> {
+    if snapshot.version != 9 {
+        return Err(SnapshotMappingError::UnsupportedSchemaVersion {
+            expected: 9,
+            found: snapshot.version,
+        });
+    }
     if snapshot.metadata.schema_version != SNAPSHOT_SCHEMA_VERSION {
         return Err(SnapshotMappingError::UnsupportedSchemaVersion {
             expected: SNAPSHOT_SCHEMA_VERSION,
@@ -341,7 +355,7 @@ pub fn validate_snapshot(snapshot: &Snapshot) -> Result<(), SnapshotMappingError
         });
     }
 
-    crate::recovery::signals::SignalIndex::hydrate(
+    let signals = crate::recovery::signals::SignalIndex::hydrate(
         &snapshot.signals,
         snapshot.last_signal_sequence,
         snapshot.metadata.wal_sequence,
@@ -363,10 +377,10 @@ pub fn validate_snapshot(snapshot: &Snapshot) -> Result<(), SnapshotMappingError
         });
     }
 
-    let mut task_ids = HashSet::new();
+    let mut tasks = std::collections::HashMap::with_capacity(snapshot.tasks.len());
     for task in &snapshot.tasks {
         let task_id = task.task_spec.id();
-        if !task_ids.insert(task_id) {
+        if tasks.insert(task_id, task).is_some() {
             return Err(SnapshotMappingError::DuplicateTaskId { task_id });
         }
 
@@ -381,32 +395,33 @@ pub fn validate_snapshot(snapshot: &Snapshot) -> Result<(), SnapshotMappingError
         }
     }
 
-    let tasks: std::collections::HashMap<_, _> =
-        snapshot.tasks.iter().map(|t| (t.task_spec.id(), t)).collect();
-    let mut keys = HashSet::new();
-    let mut admitted_tasks = HashSet::new();
-    let mut sequences = HashSet::new();
+    let mut keys = HashSet::with_capacity(snapshot.admissions.len());
+    let mut admitted_tasks = HashSet::with_capacity(snapshot.admissions.len());
+    let mut sequences = HashSet::with_capacity(snapshot.admissions.len());
+    let tenant_ids: HashSet<_> = snapshot.tenants.iter().map(|t| t.tenant_id).collect();
+    let child_admissions: std::collections::HashMap<_, _> = snapshot
+        .runs
+        .iter()
+        .flat_map(|r| &r.attempts)
+        .filter_map(|a| a.disposition.as_ref())
+        .flat_map(|d| {
+            d.children.iter().map(move |c| ((d.sequence, c.admission.task_id()), &c.admission))
+        })
+        .collect();
+    let mut compound_sequences: std::collections::HashMap<u64, bool> =
+        std::collections::HashMap::new();
+    for a in snapshot.admissions.iter().filter(|_| !child_admissions.is_empty()) {
+        let valid = child_admissions.get(&(a.sequence(), a.task_id())).is_some_and(|c| **c == *a);
+        compound_sequences.entry(a.sequence()).and_modify(|v| *v &= valid).or_insert(valid);
+    }
     for r in &snapshot.admissions {
         let invalid = SnapshotMappingError::InvalidAdmission;
-        if !keys.insert((r.tenant_id(), r.key().clone()))
+        if !keys.insert((r.tenant_id(), r.key().as_str()))
             || !admitted_tasks.insert(r.task_id())
             || (!sequences.insert(r.sequence())
-                && !snapshot
-                    .runs
-                    .iter()
-                    .flat_map(|run| &run.attempts)
-                    .filter_map(|a| a.disposition.as_ref())
-                    .any(|d| {
-                        d.sequence == r.sequence()
-                            && snapshot
-                                .admissions
-                                .iter()
-                                .filter(|a| a.sequence() == r.sequence())
-                                .all(|a| d.children.iter().any(|c| &c.admission == a))
-                    }))
+                && !compound_sequences.get(&r.sequence()).copied().unwrap_or(false))
             || r.sequence() == 0
             || r.sequence() > snapshot.metadata.wal_sequence
-            || r.request().digest().map_err(|_| invalid.clone())? != *r.digest()
         {
             return Err(invalid);
         }
@@ -427,11 +442,11 @@ pub fn validate_snapshot(snapshot: &Snapshot) -> Result<(), SnapshotMappingError
                 return Err(invalid);
             }
         }
-        if r.tenant_id().is_some_and(|id| !snapshot.tenants.iter().any(|t| t.tenant_id == id)) {
+        if r.tenant_id().is_some_and(|id| !tenant_ids.contains(&id)) {
             return Err(invalid);
         }
     }
-    let mut run_ids = HashSet::new();
+    let mut run_ids = HashSet::with_capacity(snapshot.runs.len());
     for run in &snapshot.runs {
         if run.lease.as_ref().is_some_and(|l| {
             l.granted_at_sequence == 0 || l.granted_at_sequence > snapshot.metadata.wal_sequence
@@ -449,7 +464,7 @@ pub fn validate_snapshot(snapshot: &Snapshot) -> Result<(), SnapshotMappingError
             return Err(SnapshotMappingError::DuplicateRunId { run_id });
         }
 
-        if !task_ids.contains(&task_id) {
+        if !tasks.contains_key(&task_id) {
             return Err(SnapshotMappingError::RunReferencesUnknownTask { run_id, task_id });
         }
     }
@@ -464,13 +479,13 @@ pub fn validate_snapshot(snapshot: &Snapshot) -> Result<(), SnapshotMappingError
                 task_id: decl.task_id,
             });
         }
-        if !task_ids.contains(&decl.task_id) {
+        if !tasks.contains_key(&decl.task_id) {
             return Err(SnapshotMappingError::DependencyDeclarationUnknownTask {
                 task_id: decl.task_id,
             });
         }
         for &prereq_id in &decl.depends_on {
-            if !task_ids.contains(&prereq_id) {
+            if !tasks.contains_key(&prereq_id) {
                 return Err(SnapshotMappingError::DependencyReferencesUnknownTask {
                     task_id: decl.task_id,
                     prereq_id,
@@ -488,7 +503,7 @@ pub fn validate_snapshot(snapshot: &Snapshot) -> Result<(), SnapshotMappingError
                 dimension: budget.dimension,
             });
         }
-        if !task_ids.contains(&budget.task_id) {
+        if !tasks.contains_key(&budget.task_id) {
             return Err(SnapshotMappingError::BudgetReferencesUnknownTask {
                 task_id: budget.task_id,
             });
@@ -503,7 +518,7 @@ pub fn validate_snapshot(snapshot: &Snapshot) -> Result<(), SnapshotMappingError
                 subscription_id: sub.subscription_id,
             });
         }
-        if !task_ids.contains(&sub.task_id) {
+        if !tasks.contains_key(&sub.task_id) {
             return Err(SnapshotMappingError::SubscriptionReferencesUnknownTask {
                 subscription_id: sub.subscription_id,
                 task_id: sub.task_id,
@@ -511,11 +526,60 @@ pub fn validate_snapshot(snapshot: &Snapshot) -> Result<(), SnapshotMappingError
         }
     }
 
-    // Actor, tenant, role, capability, and ledger records are validated at the
-    // platform layer. Basic structural integrity is ensured by WAL ordering;
-    // no cross-referencing validation is required here.
+    // Validate lossless typed hydration: maps must never silently overwrite rows.
+    let invalid = SnapshotMappingError::InvalidExtendedSection;
+    let mut tenants = HashSet::new();
+    for t in &snapshot.tenants {
+        if t.tenant_id.as_uuid().is_nil() || !tenants.insert(t.tenant_id) {
+            return Err(invalid);
+        }
+    }
+    let mut actors = std::collections::HashMap::new();
+    for a in &snapshot.actors {
+        if a.actor_id.as_uuid().is_nil()
+            || a.identity.is_empty()
+            || a.executor_traits.is_empty()
+            || a.heartbeat_interval_secs == 0
+            || a.tenant_id.is_some_and(|t| !tenants.contains(&t))
+            || actors.insert(a.actor_id, a.tenant_id).is_some()
+        {
+            return Err(invalid);
+        }
+    }
+    let mut roles = HashSet::new();
+    for r in &snapshot.role_assignments {
+        if !tenants.contains(&r.tenant_id)
+            || !actors.contains_key(&r.actor_id)
+            || !roles.insert((r.actor_id, r.tenant_id))
+        {
+            return Err(invalid);
+        }
+    }
+    let mut capabilities = HashSet::new();
+    for c in &snapshot.capability_grants {
+        if !tenants.contains(&c.tenant_id)
+            || !actors.contains_key(&c.actor_id)
+            || !capabilities.insert((
+                c.actor_id,
+                crate::recovery::reducer::capability_key(&c.capability),
+                c.tenant_id,
+            ))
+        {
+            return Err(invalid);
+        }
+    }
+    let mut entries = HashSet::new();
+    for e in &snapshot.ledger_entries {
+        if e.entry_id.as_uuid().is_nil()
+            || !tenants.contains(&e.tenant_id)
+            || e.actor_id.is_some_and(|a| !actors.contains_key(&a))
+            || !entries.insert(e.entry_id)
+        {
+            return Err(invalid);
+        }
+    }
 
-    Ok(())
+    Ok(signals)
 }
 
 fn validate_engine_control(engine: &SnapshotEngineControl) -> Result<(), SnapshotMappingError> {
@@ -709,4 +773,46 @@ pub fn map_snapshot_lease_metadata(
         acquired_at: metadata.acquired_at,
         updated_at: metadata.updated_at,
     })
+}
+
+/// Feature compatibility is checked even when ordinary startup skips the WAL prefix.
+pub(crate) fn validate_profile(
+    s: &Snapshot,
+    profile: &[String],
+) -> Result<(), crate::store::StoreError> {
+    use crate::wal::event::WalEventType as E;
+    for t in &s.tasks {
+        crate::store::check_event_profile(
+            &E::TaskCreated { task_spec: t.task_spec.clone(), timestamp: t.created_at },
+            profile,
+        )?;
+    }
+    for (present, feature) in [
+        (!s.budgets.is_empty() || !s.subscriptions.is_empty(), "budget"),
+        (!s.actors.is_empty(), "actor"),
+        (
+            !s.tenants.is_empty()
+                || !s.role_assignments.is_empty()
+                || !s.capability_grants.is_empty()
+                || !s.ledger_entries.is_empty(),
+            "platform",
+        ),
+    ] {
+        if present && !profile.iter().any(|f| f == feature) {
+            return Err(crate::store::StoreError::UnsupportedFeatures(vec![feature.into()]));
+        }
+    }
+    for signal in &s.signals {
+        crate::store::check_event_profile(&E::SignalAdmitted { record: signal.clone() }, profile)?;
+    }
+    for wait in &s.waits {
+        crate::store::check_event_profile(&E::WaitEstablished { record: wait.clone() }, profile)?;
+    }
+    for cancel in &s.cancellations {
+        crate::store::check_event_profile(
+            &E::TaskCancellationCommitted { record: cancel.clone() },
+            profile,
+        )?;
+    }
+    Ok(())
 }

@@ -26,6 +26,7 @@ impl From<std::io::Error> for WalFsReaderError {
 }
 pub struct WalFsReader {
     file: File,
+    cursor: super::checkpoint::WalCursor,
     current_sequence: u64,
     is_end: bool,
     pending_event: Option<WalEvent>,
@@ -36,6 +37,7 @@ impl WalFsReader {
     pub fn new(path: std::path::PathBuf) -> Result<Self, WalFsReaderError> {
         Ok(Self {
             file: File::open(path)?,
+            cursor: Default::default(),
             current_sequence: 0,
             is_end: false,
             pending_event: None,
@@ -46,6 +48,53 @@ impl WalFsReader {
         let mut r = Self::new(session.wal_path())?;
         r.store_id = Some(session.manifest().store_id);
         Ok(r)
+    }
+    pub fn cursor(&self) -> super::checkpoint::WalCursor {
+        self.cursor
+    }
+    /// Validates the two bounded probes, then starts at the checkpoint end.
+    pub(crate) fn from_checkpoint(
+        session: &crate::store::StoreSession,
+        cursor: super::checkpoint::WalCursor,
+    ) -> Result<Self, WalReaderError> {
+        let bad = || WalReaderError::IoError("checkpoint WAL boundary mismatch".into());
+        let mut reader =
+            Self::for_session(session).map_err(|e| WalReaderError::IoError(e.to_string()))?;
+        let first = reader.read_next()?.ok_or_else(bad)?;
+        if !matches!(first.event(), super::event::WalEventType::StoreInitialized { manifest_digest } if *manifest_digest == session.manifest().digest())
+        {
+            return Err(bad());
+        }
+        if cursor.sequence == 0
+            || cursor.end
+                > reader.file.metadata().map_err(|e| WalReaderError::IoError(e.to_string()))?.len()
+            || cursor.last_start >= cursor.end
+            || cursor.last_start < if cursor.sequence == 1 { 0 } else { reader.cursor.end }
+        {
+            return Err(bad());
+        }
+        reader
+            .file
+            .seek(SeekFrom::Start(cursor.last_start))
+            .map_err(|e| WalReaderError::IoError(e.to_string()))?;
+        let last = read_record(
+            &mut reader.file,
+            Some(session.manifest().store_id),
+            Some(cursor.sequence),
+        )?
+        .ok_or_else(bad)?;
+        if cursor.last_start + last.record_len as u64 != cursor.end
+            || last.frame_hash != cursor.last_hash
+        {
+            return Err(bad());
+        }
+        if cursor.sequence == 1 && (cursor.last_start != 0 || reader.cursor != cursor) {
+            return Err(bad());
+        }
+        reader.cursor = cursor;
+        reader.current_sequence = cursor.sequence;
+        reader.is_end = false;
+        Ok(reader)
     }
     pub fn current_sequence(&self) -> u64 {
         self.current_sequence
@@ -76,6 +125,12 @@ impl WalReader for WalFsReader {
         };
         match read_record(&mut self.file, self.store_id, expected) {
             Ok(Some(r)) => {
+                self.cursor.advance_hash(
+                    r.event.sequence(),
+                    self.cursor.end,
+                    r.record_len as u64,
+                    r.frame_hash,
+                );
                 self.current_sequence = r.event.sequence();
                 Ok(Some(r.event))
             }
@@ -92,19 +147,21 @@ impl WalReader for WalFsReader {
     fn seek_to_sequence(&mut self, sequence: u64) -> Result<(), WalReaderError> {
         self.file.seek(SeekFrom::Start(0)).map_err(|e| WalReaderError::IoError(e.to_string()))?;
         self.current_sequence = 0;
+        self.cursor = Default::default();
         self.is_end = false;
         self.pending_event = None;
         // Validate the entire file before exposing a seek result, including the suffix.
         let mut found = None;
         while let Some(event) = self.read_next()? {
             if event.sequence() == sequence {
-                found = Some((event, self.position()?));
+                found = Some((event, self.position()?, self.cursor));
             }
         }
-        let (event, position) = found.ok_or(WalReaderError::EndOfWal)?;
+        let (event, position, cursor) = found.ok_or(WalReaderError::EndOfWal)?;
         self.file
             .seek(SeekFrom::Start(position))
             .map_err(|e| WalReaderError::IoError(e.to_string()))?;
+        self.cursor = cursor;
         self.current_sequence = event.sequence();
         self.pending_event = Some(event);
         self.is_end = false;

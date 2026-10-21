@@ -27,7 +27,7 @@ fn write_valid_snapshot(data_dir: &std::path::Path) {
     let snapshot_path = data_dir.join("snapshots").join("snapshot.bin");
     std::fs::create_dir_all(snapshot_path.parent().expect("snapshot dir parent should exist"))
         .expect("snapshot directory should be creatable");
-    let mut writer = SnapshotFsWriter::new_raw_for_test(snapshot_path)
+    let mut writer = SnapshotFsWriter::new(recovery.wal_writer.inner().session().unwrap())
         .expect("snapshot writer creation should succeed");
     writer.write(&snapshot).expect("snapshot write should succeed");
     writer.flush().expect("snapshot flush should succeed");

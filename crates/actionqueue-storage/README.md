@@ -1,8 +1,9 @@
 # actionqueue-storage
 
-Durable persistence and mutation authority for ActionQueue 0.2.0 / AQ-CONT-1.
-Store manifest schema 1, WAL framing 1, snapshot schema 9, projection version 9.
-Pre-contract and older development stores are rejected without migration.
+Durable persistence and mutation authority for ActionQueue / AQ-CONT-1.
+Store manifest schema 1, WAL framing 1, snapshot schema 10, projection version 9.
+Released schema-9 stores have an explicit source-preserving offline upgrade;
+pre-contract and older development stores remain unsupported.
 
 Use `store::open_store` with an explicit `OpenOptions` mode. A writable session
 owns the exclusive OS lock for its lifetime. Initialization only accepts an
@@ -20,8 +21,11 @@ require `testing`.
 WAL frames have a 52-byte header with explicit kind/schema, store identity,
 sequence, length, payload CRC and header CRC. Snapshots include durable waits,
 checkpoints, resume assignments, child admissions and causal/control history.
-Recovery verifies snapshot hydration against the complete retained WAL. It pays
-full-history replay costs; compaction is not implemented.
+Recovery checks checkpoint integrity and WAL boundary frames, hydrates projection
+and operation-history indexes, and reads only the tail. The skipped prefix is
+trusted until explicit full verification; see [ADR-020](../../docs/adrs/AQ-ADR-020-bounded-snapshot-bootstrap.md).
+Capture from a proven live authority flushes its WAL and shares immutable roots;
+publication performs no prefix replay. Compaction is not implemented.
 
 `Strict` is the default repair policy. `TruncatePartial` only repairs an incomplete
 final frame after a validated semantic prefix. CRC, identity, compatibility,
@@ -31,11 +35,15 @@ checksums and projection digests before atomic publication.
 
 ```sh
 actionqueue store inspect --data-dir DIR
+actionqueue store verify --data-dir DIR --json
+actionqueue store upgrade --data-dir SCHEMA9_SOURCE --output SCHEMA10_DEST
 actionqueue backup --data-dir DIR --output BACKUP
 actionqueue restore --input BACKUP --data-dir DEST
 ```
 
-These are offline operations; stop the store owner first. External artifact bytes
+These are offline operations; stop the store owner first. Inspect, verify, backup
+and upgrade hold a shared source lock and return `StoreInUse` against a live writer.
+External artifact bytes
 remain application-owned. Signal retirement removes matching eligibility, while
 immutable identity/content/history remain resident and count against quotas.
 Wait/resume/history references protect retained signals from retirement.

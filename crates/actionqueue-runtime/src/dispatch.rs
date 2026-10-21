@@ -37,11 +37,8 @@ use actionqueue_executor_local::types::ExecutorRequest;
 use actionqueue_executor_local::{AttemptRunner, SystemAttemptTimer};
 use actionqueue_storage::mutation::authority::{MutationAuthorityError, StorageMutationAuthority};
 use actionqueue_storage::recovery::reducer::{ReplayReducer, ReplayReducerError};
-use actionqueue_storage::snapshot::build::build_snapshot_from_projection;
 use actionqueue_storage::snapshot::mapping::SnapshotMappingError;
-use actionqueue_storage::snapshot::writer::{
-    SnapshotFsWriter, SnapshotWriter, SnapshotWriterError,
-};
+use actionqueue_storage::snapshot::writer::SnapshotWriterError;
 use actionqueue_storage::wal::writer::WalWriter;
 use actionqueue_workflow::children::build_children_snapshot;
 use actionqueue_workflow::dag::DependencyGate;
@@ -191,6 +188,10 @@ pub enum DispatchError {
     SnapshotWrite(SnapshotWriterError),
     /// Snapshot writer initialization failed.
     SnapshotInit(String),
+    /// Live checkpoint capture failed, possibly fencing the WAL authority.
+    SnapshotCapture(String),
+    /// Live checkpoint encoding or publication failed.
+    SnapshotPublish(String),
     /// Continuation limits cannot guarantee durable attempt closure.
     InvalidContinuationLimits(crate::config::ConfigError),
     /// Backoff strategy configuration is invalid (e.g., base exceeds max).
@@ -222,6 +223,8 @@ impl std::fmt::Display for DispatchError {
             DispatchError::SnapshotBuild(e) => write!(f, "snapshot build error: {e}"),
             DispatchError::SnapshotWrite(e) => write!(f, "snapshot write error: {e}"),
             DispatchError::SnapshotInit(e) => write!(f, "snapshot init error: {e}"),
+            DispatchError::SnapshotCapture(e) => write!(f, "snapshot capture error: {e}"),
+            DispatchError::SnapshotPublish(e) => write!(f, "snapshot publication error: {e}"),
             DispatchError::InvalidBackoffConfig => {
                 write!(f, "invalid backoff configuration")
             }
@@ -263,7 +266,6 @@ pub struct DispatchLoop<
     draining: bool,
     snapshot_path: Option<PathBuf>,
     snapshot_event_threshold: Option<u64>,
-    events_since_last_snapshot: u64,
 
     /// DAG dependency gate — gates Scheduled → Ready promotion.
     /// Built from the projection at bootstrap and kept in sync as runs complete.
@@ -581,7 +583,6 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
             draining: false,
             snapshot_path: config.snapshot_path,
             snapshot_event_threshold: config.snapshot_event_threshold,
-            events_since_last_snapshot: 0,
 
             dependency_gate,
             hierarchy_tracker,
@@ -1222,7 +1223,6 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         tracing::trace!("dispatch tick starting");
         let mut result = TickResult::default();
         let current_time = self.clock.now();
-        let seq_before_tick = self.authority.projection().latest_sequence();
 
         self.recover_expired_executions(&mut result, current_time)?;
 
@@ -1264,17 +1264,11 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         // Step 2: Check engine paused state or draining mode — skip promotion and dispatch.
         if self.authority.projection().is_engine_paused() {
             result.engine_paused = true;
-            let events_this_tick =
-                self.authority.projection().latest_sequence().saturating_sub(seq_before_tick);
-            self.events_since_last_snapshot += events_this_tick;
             self.maybe_write_snapshot(current_time)?;
             return Ok(result);
         }
 
         if self.draining {
-            let events_this_tick =
-                self.authority.projection().latest_sequence().saturating_sub(seq_before_tick);
-            self.events_since_last_snapshot += events_this_tick;
             self.maybe_write_snapshot(current_time)?;
             return Ok(result);
         }
@@ -1356,9 +1350,6 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
             .collect();
 
         if ready_runs.is_empty() {
-            let events_this_tick =
-                self.authority.projection().latest_sequence().saturating_sub(seq_before_tick);
-            self.events_since_last_snapshot += events_this_tick;
             self.maybe_write_snapshot(current_time)?;
             return Ok(result);
         }
@@ -1557,11 +1548,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
 
         result.dispatched = dispatched;
 
-        // Snapshot check: count events appended during this tick and write
-        // a snapshot when the cumulative count exceeds the threshold.
-        let events_this_tick =
-            self.authority.projection().latest_sequence().saturating_sub(seq_before_tick);
-        self.events_since_last_snapshot += events_this_tick;
+        // Durable progress includes admissions between ticks and the recovered tail.
         self.maybe_write_snapshot(current_time)?;
 
         Ok(result)
@@ -1605,28 +1592,36 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
             Some(p) => p.clone(),
             None => return Ok(()),
         };
-        if self.events_since_last_snapshot < threshold {
+        let published = self.authority.store_session().map_or(0, |s| s.published_sequence());
+        if self.authority.projection().latest_sequence().saturating_sub(published) < threshold {
             return Ok(());
         }
 
-        let snapshot = build_snapshot_from_projection(self.authority.projection(), current_time)
-            .map_err(DispatchError::SnapshotBuild)?;
-
-        let mut writer =
-            SnapshotFsWriter::new(self.authority.store_session().ok_or_else(|| {
+        if self.authority.supports_live_checkpoints() {
+            let candidate = self
+                .authority
+                .capture_checkpoint(current_time)
+                .map_err(|e| DispatchError::SnapshotCapture(e.to_string()))?;
+            actionqueue_storage::snapshot::checkpoint::publish_checkpoint(candidate)
+                .map_err(|e| DispatchError::SnapshotPublish(e.to_string()))?;
+        } else {
+            // Public constructors may pair a session writer and projection
+            // independently. Preserve that path with full WAL-prefix validation.
+            use actionqueue_storage::snapshot::{
+                build::build_snapshot_from_projection,
+                writer::{SnapshotFsWriter, SnapshotWriter},
+            };
+            let snapshot =
+                build_snapshot_from_projection(self.authority.projection(), current_time)
+                    .map_err(DispatchError::SnapshotBuild)?;
+            let session = self.authority.store_session().ok_or_else(|| {
                 DispatchError::SnapshotInit("snapshot requires a store session".into())
-            })?)
-            .map_err(|e| DispatchError::SnapshotInit(format!("{e}")))?;
-        writer.write(&snapshot).map_err(DispatchError::SnapshotWrite)?;
-        writer.close().map_err(DispatchError::SnapshotWrite)?;
-
-        self.events_since_last_snapshot = 0;
-        tracing::info!(
-            wal_sequence = snapshot.metadata.wal_sequence,
-            task_count = snapshot.metadata.task_count,
-            run_count = snapshot.metadata.run_count,
-            "automatic snapshot written"
-        );
+            })?;
+            let mut writer = SnapshotFsWriter::new(session)
+                .map_err(|e| DispatchError::SnapshotInit(e.to_string()))?;
+            writer.write(&snapshot).map_err(DispatchError::SnapshotWrite)?;
+            writer.close().map_err(DispatchError::SnapshotWrite)?;
+        }
 
         Ok(())
     }
@@ -2767,6 +2762,76 @@ mod tests {
             ),
         )
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn independently_paired_authority_publishes_validated_snapshot_and_finishes() {
+        use actionqueue_storage::{
+            recovery::bootstrap::recover_read_only,
+            store::{open_store, verify_store, OpenOptions},
+            wal::{fs_writer::WalFsWriter, repair::RepairPolicy},
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let session = open_store(dir.path(), OpenOptions::Initialize { features: vec![] }).unwrap();
+        let projection = recover_read_only(&session, RepairPolicy::Strict).unwrap().projection;
+        // This writer performs its own recovery, with a different origin.
+        let writer = WalFsWriter::new(session.clone()).unwrap();
+        let authority = StorageMutationAuthority::new(writer, projection).with_host(host());
+        assert!(!authority.supports_live_checkpoints());
+        let mut dispatch = DispatchLoop::new(
+            authority,
+            DependencyHandler,
+            MockClock::new(1000),
+            DispatchConfig::new(
+                BackoffStrategyConfig::Fixed { interval: Duration::ZERO },
+                1,
+                30,
+                Some(session.snapshot_path()),
+                Some(1),
+            ),
+        )
+        .unwrap();
+        let task = task(b"success", None);
+        let task_id = task.id();
+        dispatch.submit_task(task).unwrap();
+        let summary = dispatch.run_until_idle().await.unwrap();
+        assert_eq!(summary.total_completed, 1);
+        assert_eq!(
+            dispatch
+                .projection()
+                .get_run_state(&dispatch.projection().run_ids_for_task(task_id)[0]),
+            Some(&RunState::Completed)
+        );
+        let sequence = dispatch.projection().latest_sequence();
+        assert_eq!(session.published_sequence(), sequence);
+        let digest = dispatch.projection().projection_digest().unwrap();
+        drop(dispatch);
+        drop(session);
+        let verified = verify_store(dir.path()).unwrap();
+        assert_eq!(verified.sequence, sequence);
+        assert_eq!(verified.snapshot_sequence, sequence);
+        assert_eq!(verified.projection_digest, digest);
+    }
+
+    #[test]
+    fn live_checkpoint_errors_identify_capture_and_publication_phases() {
+        use actionqueue_storage::store::fault;
+        let dir = tempfile::tempdir().unwrap();
+        let mut dispatch = new_dispatch(dir.path(), DependencyHandler);
+        dispatch.snapshot_path = Some(dir.path().join("snapshots/snapshot.bin"));
+        dispatch.snapshot_event_threshold = Some(1);
+        fault::fail_once("snapshot_before_rename");
+        assert!(matches!(
+            dispatch.maybe_write_snapshot(1000),
+            Err(DispatchError::SnapshotPublish(_))
+        ));
+        assert!(!dispatch.authority.recovery_required());
+        fault::fail_once("wal_before_sync");
+        assert!(matches!(
+            dispatch.maybe_write_snapshot(1000),
+            Err(DispatchError::SnapshotCapture(_))
+        ));
+        assert!(dispatch.authority.recovery_required());
     }
 
     #[test]

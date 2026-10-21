@@ -1,5 +1,9 @@
 # AQ-ADR-001 — Store identity and format lineage
 
+AQ-P3 supersedes the full-history startup behavior below through
+[ADR-020](AQ-ADR-020-bounded-snapshot-bootstrap.md). Complete history is still retained
+and explicitly verified; ordinary checkpoint recovery reads only the tail.
+
 - **Status:** Accepted for AQ-03 implementation.
 - **Decide before:** `AQ-03`
 - **Contract:** `AQ-CONT-1`

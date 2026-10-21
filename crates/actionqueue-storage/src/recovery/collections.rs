@@ -70,7 +70,130 @@ macro_rules! map {
         }
     }
 }
-map!(HashMap, HashEntry, HashMap, Eq + Hash);
+/// Hydration builds an immutable native hash table in linear time. A persistent
+/// delta records subsequent changes without ever copying that retained table.
+/// Delta keys shadow base keys, including removals; space is bounded by identities.
+#[derive(Debug, Clone)]
+pub struct HashMap<K: Clone + Eq + Hash, V: Clone> {
+    base: Arc<std::collections::HashMap<K, Arc<V>>>,
+    delta: imbl::HashMap<K, Option<Arc<V>>>,
+    len: usize,
+}
+impl<K: Clone + Eq + Hash, V: Clone> Default for HashMap<K, V> {
+    fn default() -> Self {
+        Self {
+            base: Arc::new(std::collections::HashMap::new()),
+            delta: imbl::HashMap::new(),
+            len: 0,
+        }
+    }
+}
+impl<K: Clone + Eq + Hash, V: Clone> HashMap<K, V> {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn len(&self) -> usize {
+        self.len
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+    pub fn clear(&mut self) {
+        *self = Self::new();
+    }
+    pub fn get(&self, key: &K) -> Option<&V> {
+        match self.delta.get(key) {
+            Some(v) => v.as_deref(),
+            None => self.base.get(key).map(Arc::as_ref),
+        }
+    }
+    pub fn contains_key(&self, key: &K) -> bool {
+        self.get(key).is_some()
+    }
+    fn get_arc(&self, key: &K) -> Option<Arc<V>> {
+        match self.delta.get(key) {
+            Some(v) => v.clone(),
+            None => self.base.get(key).cloned(),
+        }
+    }
+    pub fn get_mut(&mut self, key: &K) -> Option<&mut V> {
+        if !self.delta.contains_key(key) {
+            self.delta.insert(key.clone(), Some(self.base.get(key)?.clone()));
+        }
+        self.delta.get_mut(key).and_then(Option::as_mut).map(writable)
+    }
+    pub fn insert(&mut self, key: K, value: V) -> Option<V> {
+        let previous = self.get_arc(&key);
+        if previous.is_none() {
+            self.len += 1;
+        }
+        self.delta.insert(key, Some(Arc::new(value)));
+        previous.map(owned)
+    }
+    pub fn remove(&mut self, key: &K) -> Option<V> {
+        let previous = self.get_arc(key)?;
+        if self.base.contains_key(key) {
+            self.delta.insert(key.clone(), None);
+        } else {
+            self.delta.remove(key);
+        }
+        self.len -= 1;
+        Some(owned(previous))
+    }
+    pub fn iter(&self) -> impl Iterator<Item = (&K, &V)> {
+        self.base
+            .iter()
+            .filter(|(k, _)| !self.delta.contains_key(*k))
+            .map(|(k, v)| (k, v.as_ref()))
+            .chain(self.delta.iter().filter_map(|(k, v)| v.as_deref().map(|v| (k, v))))
+    }
+    pub fn keys(&self) -> impl Iterator<Item = &K> {
+        self.iter().map(|(k, _)| k)
+    }
+    pub fn values(&self) -> impl Iterator<Item = &V> {
+        self.iter().map(|(_, v)| v)
+    }
+    pub fn entry(&mut self, key: K) -> HashEntry<'_, K, V> {
+        HashEntry { map: self, key }
+    }
+}
+impl<K: Clone + Eq + Hash, V: Clone> FromIterator<(K, V)> for HashMap<K, V> {
+    fn from_iter<I: IntoIterator<Item = (K, V)>>(iter: I) -> Self {
+        let iter = iter.into_iter();
+        let (lower, upper) = iter.size_hint();
+        let mut base = std::collections::HashMap::with_capacity(upper.unwrap_or(lower));
+        base.extend(iter.map(|(k, v)| (k, Arc::new(v))));
+        let len = base.len();
+        Self { base: Arc::new(base), delta: imbl::HashMap::new(), len }
+    }
+}
+impl<K: Clone + Eq + Hash, V: Clone> Index<&K> for HashMap<K, V> {
+    type Output = V;
+    fn index(&self, k: &K) -> &V {
+        self.get(k).expect("projection key")
+    }
+}
+pub struct HashEntry<'a, K: Clone + Eq + Hash, V: Clone> {
+    map: &'a mut HashMap<K, V>,
+    key: K,
+}
+impl<'a, K: Clone + Eq + Hash, V: Clone> HashEntry<'a, K, V> {
+    pub fn or_insert_with(self, create: impl FnOnce() -> V) -> &'a mut V {
+        if !self.map.contains_key(&self.key) {
+            self.map.insert(self.key.clone(), create());
+        }
+        self.map.get_mut(&self.key).expect("inserted key")
+    }
+    pub fn or_insert(self, value: V) -> &'a mut V {
+        self.or_insert_with(|| value)
+    }
+    pub fn or_default(self) -> &'a mut V
+    where
+        V: Default,
+    {
+        self.or_insert_with(V::default)
+    }
+}
 map!(BTreeMap, OrdEntry, OrdMap, Ord);
 
 /// Chronological, structurally shared history with borrowed records. No contiguous
@@ -195,6 +318,64 @@ mod tests {
             buckets.get_mut(&1).unwrap().remove(&(n - 1));
             assert!(original[&1].contains(&(n - 1)));
             assert_eq!(buckets[&1].len(), n - 1);
+        }
+    }
+}
+
+#[cfg(test)]
+mod hydration_tests {
+    use super::*;
+    #[test]
+    fn bulk_roots_and_persistent_deltas_preserve_map_semantics_across_clones() {
+        for bulk in [false, true] {
+            let initial = (0..1000u32).map(|k| (k, vec![k]));
+            let mut map: HashMap<_, _> = if bulk {
+                initial.collect()
+            } else {
+                let mut m = HashMap::new();
+                for (k, v) in initial {
+                    m.insert(k, v);
+                }
+                m
+            };
+            let original = map.clone();
+            crate::recovery::work::reset_projection_work();
+            let mut expected: std::collections::BTreeMap<_, _> =
+                map.iter().map(|(k, v)| (*k, v.clone())).collect();
+            for n in 0..200u32 {
+                let key = (n * 37) % 1100;
+                match n % 4 {
+                    0 => assert_eq!(map.remove(&key), expected.remove(&key)),
+                    1 => assert_eq!(map.insert(key, vec![n]), expected.insert(key, vec![n])),
+                    2 => {
+                        if let Some(v) = map.get_mut(&key) {
+                            v.push(n);
+                        }
+                        if let Some(v) = expected.get_mut(&key) {
+                            v.push(n);
+                        }
+                    }
+                    _ => {
+                        let v = map.entry(key).or_default();
+                        v.push(n);
+                        expected.entry(key).or_default().push(n);
+                    }
+                }
+                assert_eq!(map.len(), expected.len());
+                assert_eq!(
+                    map.iter()
+                        .map(|(k, v)| (*k, v.clone()))
+                        .collect::<std::collections::BTreeMap<_, _>>(),
+                    expected
+                );
+            }
+            assert!(crate::recovery::work::projection_work().record_copies <= 400);
+            assert_eq!(original.len(), 1000);
+            assert_eq!(original[&37], vec![37]);
+            let cloned = map.clone();
+            map.clear();
+            assert!(map.is_empty());
+            assert_eq!(cloned.len(), expected.len());
         }
     }
 }

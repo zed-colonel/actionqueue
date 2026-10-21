@@ -100,3 +100,73 @@ pub(crate) fn decode(
     }
     Ok(snapshot)
 }
+
+/// Frame 2 contains a compact schema-10 checkpoint and an independent SHA-256.
+pub(crate) fn encode_checkpoint(c: &super::wire_v10::Checkpoint) -> Result<Vec<u8>, String> {
+    encode_checkpoint_measured(c).map(|(b, _)| b)
+}
+pub(crate) fn encode_checkpoint_measured(
+    c: &super::wire_v10::Checkpoint,
+) -> Result<super::wire_v10::EncodedCheckpoint, String> {
+    use sha2::{Digest, Sha256};
+    let (mut payload, mut sections) = super::wire_v10::encode_measured(c)?;
+    if payload.len().checked_add(32).is_none_or(|n| n > MAX_SNAPSHOT_BYTES) {
+        return Err("snapshot exceeds maximum size".into());
+    }
+    let mut hash = Sha256::new();
+    hash.update(b"AQ-CONT-1\0checkpoint\0v10\0");
+    hash.update(&payload);
+    payload.extend_from_slice(&hash.finalize());
+    let mut bytes = MAGIC.to_vec();
+    bytes.extend(2u32.to_le_bytes());
+    bytes.extend((payload.len() as u32).to_le_bytes());
+    bytes.extend(crc32fast::hash(&payload).to_le_bytes());
+    bytes.extend(payload);
+    if bytes.len() > MAX_SNAPSHOT_BYTES {
+        return Err("complete checkpoint exceeds maximum size".into());
+    }
+    sections.push(("framing_integrity".into(), 52));
+    Ok((bytes, sections))
+}
+pub(crate) fn decode_checkpoint(
+    payload: &[u8],
+    session: Option<&crate::store::StoreSession>,
+) -> Result<super::wire_v10::Checkpoint, SnapshotLoaderError> {
+    use sha2::{Digest, Sha256};
+    let started = std::time::Instant::now();
+    let n = payload.len().checked_sub(32).ok_or(SnapshotLoaderError::PhysicalDamage)?;
+    let mut hash = Sha256::new();
+    hash.update(b"AQ-CONT-1\0checkpoint\0v10\0");
+    hash.update(&payload[..n]);
+    if hash.finalize().as_slice() != &payload[n..] {
+        return Err(SnapshotLoaderError::PhysicalDamage);
+    }
+    crate::recovery::work::snapshot_phase(|p| {
+        p.integrity_seconds += started.elapsed().as_secs_f64()
+    });
+    let started = std::time::Instant::now();
+    let checkpoint =
+        super::wire_v10::decode(&payload[..n]).map_err(SnapshotLoaderError::DecodeError)?;
+    crate::recovery::work::snapshot_phase(|p| p.decode_seconds += started.elapsed().as_secs_f64());
+    let started = std::time::Instant::now();
+    if checkpoint.binding.cursor.sequence == 0
+        || checkpoint.binding.cursor.last_start >= checkpoint.binding.cursor.end
+    {
+        return Err(SnapshotLoaderError::DecodeError("invalid checkpoint cursor".into()));
+    }
+    if let Some(s) = session {
+        if checkpoint.binding.store != *s.manifest().store_id.as_bytes()
+            || checkpoint.binding.manifest != s.manifest().digest()
+        {
+            return Err(SnapshotLoaderError::DecodeError(
+                "checkpoint store/manifest identity mismatch".into(),
+            ));
+        }
+        super::mapping::validate_profile(&checkpoint.snapshot, &s.manifest().features)
+            .map_err(|e| SnapshotLoaderError::DecodeError(e.to_string()))?;
+    }
+    crate::recovery::work::snapshot_phase(|p| {
+        p.profile_validation_seconds += started.elapsed().as_secs_f64()
+    });
+    Ok(checkpoint)
+}

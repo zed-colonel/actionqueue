@@ -290,6 +290,7 @@ impl TaskRecord {
 /// A reducer that applies WAL events to reconstruct state.
 #[derive(Debug)]
 pub struct ReplayReducer {
+    pub(crate) checkpoint_origin: Option<uuid::Uuid>,
     pub(crate) derived: super::changes::DerivedIndexes,
     pub(crate) revision: std::sync::Arc<()>,
     pub(crate) change: super::changes::ProjectionChange,
@@ -373,6 +374,7 @@ impl Clone for ReplayReducer {
         #[cfg(feature = "testing")]
         super::work::projection_clone();
         Self {
+            checkpoint_origin: self.checkpoint_origin,
             derived: self.derived.clone(),
             revision: self.revision.clone(),
             change: self.change.clone(),
@@ -418,6 +420,7 @@ impl ReplayReducer {
     /// Creates a new replay reducer.
     pub fn new() -> Self {
         ReplayReducer {
+            checkpoint_origin: None,
             derived: Default::default(),
             revision: Default::default(),
             change: Default::default(),
@@ -678,6 +681,7 @@ impl ReplayReducer {
             return Err(ReplayReducerError::InvalidTransition);
         }
 
+        self.checkpoint_origin = None;
         self.revision = std::sync::Arc::new(());
         self.change = Default::default();
         let observations = self.subscription_observations(event);
@@ -1754,6 +1758,7 @@ impl ReplayReducer {
     /// since the snapshot will contain the full history for these terminal runs.
     /// Active (non-terminal) run histories are preserved intact.
     pub fn trim_terminal_history(&mut self) {
+        self.checkpoint_origin = None;
         self.revision = std::sync::Arc::new(());
         let terminal_run_ids: Vec<RunId> =
             self.runs.iter().filter(|(_, state)| state.is_terminal()).map(|(id, _)| *id).collect();

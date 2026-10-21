@@ -35,6 +35,11 @@ use crate::wal::writer::{WalWriter, WalWriterError};
 
 /// Projection behavior required by the mutation authority.
 pub trait MutationProjection: Clone {
+    #[doc(hidden)]
+    fn checkpoint_origin(&self) -> Option<uuid::Uuid> {
+        None
+    }
+
     /// Waits resolved by the last frame, when the projection has an incremental change view.
     fn resolved_wait_ids(&self) -> Option<Vec<actionqueue_core::ids::WaitId>> {
         None
@@ -207,6 +212,10 @@ pub trait MutationProjection: Clone {
 }
 
 impl MutationProjection for ReplayReducer {
+    fn checkpoint_origin(&self) -> Option<uuid::Uuid> {
+        self.checkpoint_origin
+    }
+
     fn resolved_wait_ids(&self) -> Option<Vec<actionqueue_core::ids::WaitId>> {
         Some(self.latest_change().resolved_waits.iter().copied().collect())
     }
@@ -400,6 +409,7 @@ impl MutationProjection for ReplayReducer {
 #[derive(Debug)]
 pub struct StorageMutationAuthority<W: WalWriter, P: MutationProjection> {
     wal_writer: W,
+    checkpoint_proven: bool,
     telemetry: super::telemetry::QueueTelemetry,
     projection: P,
     host_context: Option<actionqueue_core::control::HostControlContext>,
@@ -465,8 +475,14 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
     /// Creates a new storage authority with an owned WAL writer and projection.
     pub fn new(wal_writer: W, projection: P) -> Self {
         let recovery_required = wal_writer.recovery_required();
+        let checkpoint_proven = wal_writer.checkpoint_provenance().is_some_and(|proof| {
+            projection.checkpoint_origin() == Some(proof.origin)
+                && proof.cursor.sequence == projection.latest_sequence()
+                && wal_writer.store_session().is_some_and(|s| s.id() == proof.session)
+        });
         Self {
             wal_writer,
+            checkpoint_proven,
             telemetry: Default::default(),
             projection,
             host_context: None,
@@ -489,7 +505,7 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
     }
     /// Returns whether an uncertain write requires reopening and recovery.
     pub fn recovery_required(&self) -> bool {
-        self.recovery_required
+        self.recovery_required || self.wal_writer.recovery_required()
     }
     /// Checks a bound host before any duplicate lookup or mutation planning.
     pub fn authorize_control(
@@ -510,7 +526,7 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
         &self,
         request: &EnsureTaskRequest,
     ) -> Result<Option<EnsureTaskOutcome>, MutationAuthorityError<P::Error>> {
-        if self.recovery_required {
+        if self.recovery_required() {
             return Err(MutationAuthorityError::RecoveryRequired);
         }
         self.authorize_control(
@@ -542,6 +558,12 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
         self.wal_writer.store_session()
     }
 
+    /// Whether this authority owns the matching writer and projection from recovery.
+    /// Independently paired authorities must use the fully validating snapshot writer.
+    pub fn supports_live_checkpoints(&self) -> bool {
+        self.checkpoint_proven
+    }
+
     /// Returns the authoritative projection.
     pub fn projection(&self) -> &P {
         &self.projection
@@ -550,6 +572,7 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
     /// Returns the mutable projection used by this authority.
     #[cfg(any(test, feature = "testing"))]
     pub fn projection_mut(&mut self) -> &mut P {
+        self.checkpoint_proven = false;
         &mut self.projection
     }
 
@@ -1625,7 +1648,7 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
         command: MutationCommand,
         durability: DurabilityPolicy,
     ) -> Result<MutationOutcome, MutationAuthorityError<P::Error>> {
-        if self.recovery_required {
+        if self.recovery_required() {
             return Err(MutationAuthorityError::RecoveryRequired);
         }
         let platform = self.platform_profile();
@@ -2543,6 +2566,45 @@ impl<W: WalWriter, P: MutationProjection> MutationAuthority for StorageMutationA
             self.telemetry.disposition_rejected();
         }
         result
+    }
+}
+
+impl<W: WalWriter> StorageMutationAuthority<W, ReplayReducer> {
+    /// Captures immutable roots and a matching durable cursor under exclusive ownership.
+    pub fn capture_checkpoint(
+        &mut self,
+        timestamp: u64,
+    ) -> Result<crate::snapshot::checkpoint::CheckpointCandidate, crate::store::StoreError> {
+        let invalid = |s: &str| crate::store::StoreError::InvalidStore(s.into());
+        if self.recovery_required() {
+            return Err(invalid("recovery required"));
+        }
+        if !self.checkpoint_proven {
+            return Err(invalid("checkpoint requires a proven recovery projection"));
+        }
+        let cursor = self
+            .wal_writer
+            .checkpoint_provenance()
+            .map(|p| p.cursor)
+            .ok_or_else(|| invalid("checkpoint requires a store cursor"))?;
+        if cursor.sequence != self.projection.latest_sequence() {
+            return Err(invalid("checkpoint cursor differs from projection revision"));
+        }
+        self.wal_writer.flush().map_err(|e| {
+            self.recovery_required = true;
+            self.wal_writer.fence();
+            crate::store::StoreError::InvalidStore(e.to_string())
+        })?;
+        let session = self
+            .store_session()
+            .ok_or_else(|| invalid("checkpoint requires a store session"))?
+            .clone();
+        Ok(crate::snapshot::checkpoint::CheckpointCandidate::new(
+            session,
+            self.projection.clone(),
+            cursor,
+            timestamp,
+        ))
     }
 }
 

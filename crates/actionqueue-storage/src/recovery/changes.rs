@@ -182,16 +182,22 @@ impl ReplayReducer {
                 self.derived.children.entry(parent).or_default().insert(*id);
             }
         }
+        let mut summaries: std::collections::HashMap<_, RunSummary> =
+            std::collections::HashMap::new();
+        let mut active: std::collections::HashMap<_, Vec<_>> = std::collections::HashMap::new();
         for run in self.run_instances.values() {
-            let s = self.derived.summaries.entry(run.task_id()).or_default();
+            let s = summaries.entry(run.task_id()).or_default();
             s.total += 1;
             if !run.state().is_terminal() {
-                self.derived.active_runs.entry(run.task_id()).or_default().insert(run.id());
+                active.entry(run.task_id()).or_default().push(run.id());
             }
             s.active += usize::from(!run.state().is_terminal());
             s.completed += usize::from(run.state() == RunState::Completed);
             s.last_scheduled = s.last_scheduled.max(run.scheduled_at());
         }
+        self.derived.summaries = summaries.into_iter().collect();
+        self.derived.active_runs =
+            active.into_iter().map(|(id, runs)| (id, runs.into_iter().collect())).collect();
         for (id, deps) in self.dependency_declarations.iter() {
             for dep in deps {
                 self.derived.dependents.entry(*dep).or_default().insert(*id);
@@ -227,12 +233,28 @@ impl ReplayReducer {
             })
             .map(|(id, _)| *id)
             .collect();
-        self.change = ProjectionChange {
-            tasks: self.tasks.keys().copied().collect(),
-            runs: self.run_instances.keys().copied().collect(),
-            ..Default::default()
-        };
-        self.finish_change(self.latest_sequence);
+        // All hydrated objects begin at one known revision. Build these buckets
+        // once instead of repeatedly editing the same persistent bucket per object.
+        self.derived.task_sequence =
+            self.tasks.keys().map(|id| (*id, self.latest_sequence)).collect();
+        self.derived.run_sequence =
+            self.run_instances.keys().map(|id| (*id, self.latest_sequence)).collect();
+        let mut tasks: Vec<_> = self.tasks.keys().copied().collect();
+        tasks.sort_unstable();
+        let mut runs: Vec<_> = self.run_instances.keys().copied().collect();
+        runs.sort_unstable();
+        self.derived.tasks_changed.insert(self.latest_sequence, tasks.into_iter().collect());
+        self.derived.runs_changed.insert(self.latest_sequence, runs.into_iter().collect());
+        let tasks: Vec<_> = self.tasks.keys().copied().collect();
+        for id in tasks {
+            if self.dependency_declarations.is_empty()
+                && self.tasks.get(&id).is_some_and(|t| t.task_spec.parent_task_id().is_none())
+                && self.derived.summaries.get(&id).is_none_or(|s| s.active == 0)
+            {
+                continue;
+            }
+            self.refresh_cancellation_target(id);
+        }
         self.change = Default::default();
     }
 }

@@ -15,10 +15,18 @@ impl std::fmt::Display for StoreError {
             Self::MissingTargetManifest => {
                 write!(f, "MissingTargetManifest: nonempty store has no AQ-CONT-1 manifest")
             }
-            Self::UnsupportedStoreFormat { component, supported, found } => write!(
-                f,
-                "UnsupportedStoreFormat: {component}: supported {supported}, found {found}"
-            ),
+            Self::UnsupportedStoreFormat { component, supported, found } => {
+                write!(
+                    f,
+                    "UnsupportedStoreFormat: {component}: supported {supported}, found {found}"
+                )?;
+                if component == "snapshot_schema" && *supported == 10 && *found == 9 {
+                    write!(f, "; run actionqueue store upgrade --data-dir SOURCE --output DEST")?;
+                } else if component == "snapshot_schema" && *supported == 9 && *found == 10 {
+                    write!(f, "; source is already schema 10; no upgrade is needed")?;
+                }
+                Ok(())
+            }
             Self::InvalidManifest(s) => write!(f, "InvalidManifest: {s}"),
             Self::UnsupportedFeatures(s) => write!(f, "UnsupportedFeatures: {}", s.join(", ")),
             Self::StoreInUse => write!(f, "StoreInUse: store is locked"),
