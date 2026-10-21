@@ -35,7 +35,7 @@ dependencies = [
 
 [[package]]
 name = "actionqueue-actor"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "actionqueue-core",
  "serde",
@@ -44,7 +44,7 @@ dependencies = [
 
 [[package]]
 name = "actionqueue-budget"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "actionqueue-core",
  "tracing",
@@ -52,7 +52,7 @@ dependencies = [
 
 [[package]]
 name = "actionqueue-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "actionqueue-core",
  "actionqueue-daemon",
@@ -72,7 +72,7 @@ dependencies = [
 
 [[package]]
 name = "actionqueue-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "cron",
@@ -87,7 +87,7 @@ dependencies = [
 
 [[package]]
 name = "actionqueue-daemon"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "actionqueue-actor",
  "actionqueue-core",
@@ -108,7 +108,7 @@ dependencies = [
 
 [[package]]
 name = "actionqueue-engine"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "actionqueue-core",
  "actionqueue-executor-local",
@@ -120,7 +120,7 @@ dependencies = [
 
 [[package]]
 name = "actionqueue-executor-local"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "actionqueue-core",
  "proptest",
@@ -129,7 +129,7 @@ dependencies = [
 
 [[package]]
 name = "actionqueue-platform"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "actionqueue-actor",
  "actionqueue-core",
@@ -138,7 +138,7 @@ dependencies = [
 
 [[package]]
 name = "actionqueue-runtime"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "actionqueue-actor",
  "actionqueue-budget",
@@ -159,7 +159,7 @@ dependencies = [
 
 [[package]]
 name = "actionqueue-storage"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "actionqueue-core",
  "actionqueue-engine",
@@ -179,7 +179,7 @@ dependencies = [
 
 [[package]]
 name = "actionqueue-workflow"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "actionqueue-core",
  "actionqueue-executor-local",

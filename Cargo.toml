@@ -47,17 +47,17 @@ platform = [
 ]
 
 [dev-dependencies]
-actionqueue-core = "0.2.0"
-actionqueue-storage = { version = "0.2.0", features = ["testing"] }
-actionqueue-engine = "0.2.0"
-actionqueue-executor-local = "0.2.0"
-actionqueue-runtime = "0.2.0"
-actionqueue-workflow = "0.2.0"
-actionqueue-budget = "0.2.0"
-actionqueue-actor = "0.2.0"
-actionqueue-platform = "0.2.0"
-actionqueue-daemon = "0.2.0"
-actionqueue-cli = "0.2.0"
+actionqueue-core = "0.3.0"
+actionqueue-storage = { version = "0.3.0", features = ["testing"] }
+actionqueue-engine = "0.3.0"
+actionqueue-executor-local = "0.3.0"
+actionqueue-runtime = "0.3.0"
+actionqueue-workflow = "0.3.0"
+actionqueue-budget = "0.3.0"
+actionqueue-actor = "0.3.0"
+actionqueue-platform = "0.3.0"
+actionqueue-daemon = "0.3.0"
+actionqueue-cli = "0.3.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 axum = "0.7"
 tower = { version = "0.4", features = ["util"] }

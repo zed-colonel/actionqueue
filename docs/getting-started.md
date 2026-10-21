@@ -1,7 +1,8 @@
-# Getting started with 0.2.0
+# Getting started with 0.3.0
 
 Use Rust 1.89.0 and a fresh target store. Existing 0.1.x stores cannot be migrated
-by this release. Build the operational binary from the repository root:
+by this release. Schema-9 AQ-CONT-1 stores require the explicit offline upgrade
+below. Build the operational binary from the repository root:
 
 ```sh
 cargo build --locked --workspace
@@ -19,7 +20,7 @@ merely because an acknowledgement was lost.
 The [standalone consumer](examples/downstream-handoff.md) is executable source for
 this full flow, including ordinary/developmental attribution, early/late signals,
 checkpoint resume, restart, and queue completion with application rejection.
-It uses published interfaces and exact `0.2.0` dependencies.
+It uses published interfaces and exact `0.3.0` dependencies.
 
 A handler can return `AttemptDisposition::awaiting` with a `WaitSpec` and checkpoint.
 A matching durably admitted signal resumes it through
@@ -37,11 +38,17 @@ for exact flags. Use `--help` on a subcommand before constructing its request.
 
 ```sh
 actionqueue store inspect --data-dir /srv/actionqueue
+actionqueue store verify --data-dir /srv/actionqueue --json
+actionqueue store upgrade --data-dir /srv/schema9-queue --output /srv/schema10-queue
 actionqueue backup --data-dir /srv/actionqueue --output /srv/backups/queue-001
 actionqueue restore --input /srv/backups/queue-001 --data-dir /srv/restored-queue
 ```
 
-Stop the store owner before backup/restore. Destinations must be absent or empty
+Stop the store owner before inspect, verify, upgrade or backup/restore. Upgrade
+fully verifies both stores, preserves the source and publishes a separate schema-10
+destination; writable opening never silently migrates schema 9. Downgrade and
+automatic restore-time migration are unsupported. See the
+[release and recovery notes](releases/0.3.0.md). Destinations must be absent or empty
 as required by the operation. External artifact bytes are backed up separately
 by the application.
 

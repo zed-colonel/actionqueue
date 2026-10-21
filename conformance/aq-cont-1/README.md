@@ -91,9 +91,9 @@ that an unavailable WorldInterface checkout was tested. See
 
 ## Release handoff
 
-Release 0.2.0 pins package revision 16 and publishes this package, the unchanged
+Release 0.3.0 pins package revision 16 and publishes this package, the unchanged
 developmental profile and matrix, and exact source/evidence hashes in a separate
-release manifest. See [release procedure](../../docs/releases/0.2.0.md).
+release manifest. See [release procedure](../../docs/releases/0.3.0.md).
 Download the complete `source.bundle` and check out the manifest SHA before running
 the drivers: they import `tests/conformance/harness`, and boundary checks require
 Git-tracked files. A directory-only copy cannot run the complete suite.
