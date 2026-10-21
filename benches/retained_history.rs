@@ -30,10 +30,7 @@ fn main() {
             _ => panic!("unknown argument {arg}; use --retained-runs N"),
         }
     }
-    assert!(
-        !sizes.is_empty(),
-        "supply --retained-runs N (including 100000)"
-    );
+    assert!(!sizes.is_empty(), "supply --retained-runs N (including 100000)");
     let results: Vec<_> =
         sizes.into_iter().flat_map(|n| retained_history::run_repeated(n, repetitions)).collect();
     fn median(mut values: Vec<f64>) -> f64 {
