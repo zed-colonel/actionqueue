@@ -268,7 +268,6 @@ pub(crate) fn validate_snapshot_for_session(
     session: &StoreSession,
     snapshot: &Snapshot,
 ) -> Result<crate::snapshot::wire_v10::Checkpoint, StoreError> {
-    let restored = ReplayReducer::from_projection_image(ProjectionImageV8(snapshot.clone()))?;
     let mut reader = WalFsReader::for_session(session).map_err(invalid)?;
     let mut prefix = ReplayReducer::new();
     while prefix.latest_sequence() < snapshot.metadata.wal_sequence {
@@ -276,13 +275,23 @@ pub(crate) fn validate_snapshot_for_session(
             reader.read_next().map_err(invalid)?.ok_or_else(|| invalid("snapshot exceeds WAL"))?;
         validate_replay_event(session, &mut prefix, &event)?;
     }
+    let mut snapshot = snapshot.clone();
+    // Logical-v9 JSON images cannot carry this schema-10 evidence. Reconstruct
+    // it from the covered WAL prefix before hydrating historical child facts.
+    // If a caller supplied evidence, keep it so full equivalence checks reject
+    // forged or incomplete records instead of silently replacing them.
+    if snapshot.terminal_sequences.is_empty() {
+        snapshot.terminal_sequences =
+            prefix.terminal_sequences.iter().map(|(run, sequence)| (*run, *sequence)).collect();
+    }
+    let restored = ReplayReducer::from_projection_image(ProjectionImageV8(snapshot.clone()))?;
     if prefix.latest_sequence() == 0
         || prefix.projection_digest()? != restored.projection_digest()?
         || !prefix.same_operational_order(&restored)
     {
         return Err(invalid("snapshot differs from WAL prefix"));
     }
-    crate::snapshot::mapping::validate_profile(snapshot, &session.manifest().features)?;
+    crate::snapshot::mapping::validate_profile(&snapshot, &session.manifest().features)?;
     Ok(crate::snapshot::wire_v10::Checkpoint {
         binding: crate::snapshot::wire_v10::Binding {
             store: *session.manifest().store_id.as_bytes(),
@@ -290,7 +299,7 @@ pub(crate) fn validate_snapshot_for_session(
             commitment_version: 1,
             cursor: reader.cursor(),
         },
-        snapshot: snapshot.clone(),
+        snapshot,
         inspection: prefix.inspection_index.export(),
     })
 }

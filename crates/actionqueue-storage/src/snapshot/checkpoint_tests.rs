@@ -42,6 +42,9 @@ fn toggle(a: &mut Authority) {
     let _ = a.submit_command(command, DurabilityPolicy::Immediate).unwrap();
 }
 fn admit(a: &mut Authority) -> actionqueue_core::ids::TaskId {
+    admit_runs(a, 1)
+}
+fn admit_runs(a: &mut Authority, count: u32) -> actionqueue_core::ids::TaskId {
     use actionqueue_core::{
         admission::{AdmissionPlan, EnsureTaskRequest},
         causal::CausalContext,
@@ -58,7 +61,7 @@ fn admit(a: &mut Authority) -> actionqueue_core::ids::TaskId {
         TaskSpec::new(
             task,
             TaskPayload::new(vec![0, 255]),
-            RunPolicy::Once,
+            if count == 1 { RunPolicy::Once } else { RunPolicy::repeat(count, 1).unwrap() },
             Default::default(),
             Default::default(),
         )
@@ -73,7 +76,9 @@ fn admit(a: &mut Authority) -> actionqueue_core::ids::TaskId {
     .unwrap();
     let plan = AdmissionPlan::new(
         q.clone(),
-        vec![RunInstance::new_scheduled(task, 10, 10).unwrap()],
+        (0..count)
+            .map(|n| RunInstance::new_scheduled(task, 10 + u64::from(n), 10).unwrap())
+            .collect(),
         q.digest().unwrap(),
     )
     .unwrap();
@@ -1053,6 +1058,138 @@ fn into_schema9(root: &std::path::Path, a: Authority) -> (StoreManifest, std::pa
     wal.extend_from_slice(&old[first_len..]);
     fs::write(&wal_path, &wal).unwrap();
     (manifest, wal_path)
+}
+
+/// A legacy-compatible image with all three terminal states, followed by a tail
+/// that ends another run. Evidence for the image must come from its prefix only.
+fn terminal_history_with_tail(a: &mut Authority) -> super::model::Snapshot {
+    use actionqueue_core::run::RunState;
+    let host = HostControlContext {
+        scope: ControlScope::SingleTenant,
+        ..a.control_context().unwrap().clone()
+    };
+    a.with_control_context(&host, |a| {
+        let task = admit_runs(a, 4);
+        let runs = a.projection().run_ids_for_task(task).to_vec();
+        for (run, terminal) in
+            runs.iter().zip([RunState::Completed, RunState::Failed, RunState::Canceled])
+        {
+            let mut previous = RunState::Scheduled;
+            let path = if terminal == RunState::Canceled {
+                vec![terminal]
+            } else {
+                vec![RunState::Ready, RunState::Leased, RunState::Running, terminal]
+            };
+            for state in path {
+                let sequence = a.projection().latest_sequence() + 1;
+                let _ = a
+                    .submit_command(
+                        MutationCommand::RunStateTransition(RunStateTransitionCommand::new(
+                            sequence,
+                            *run,
+                            previous,
+                            state,
+                            20 + sequence,
+                        )),
+                        DurabilityPolicy::Immediate,
+                    )
+                    .unwrap();
+                previous = state;
+            }
+        }
+        let image = build_snapshot_from_projection(a.projection(), 100).unwrap();
+        assert_eq!(image.terminal_sequences.len(), 3);
+        let sequence = a.projection().latest_sequence() + 1;
+        let _ = a
+            .submit_command(
+                MutationCommand::RunStateTransition(RunStateTransitionCommand::new(
+                    sequence,
+                    runs[3],
+                    RunState::Scheduled,
+                    RunState::Canceled,
+                    101,
+                )),
+                DurabilityPolicy::Immediate,
+            )
+            .unwrap();
+        image
+    })
+}
+
+#[test]
+fn schema9_upgrade_reconstructs_terminal_sequences_for_completed_failed_and_canceled_runs() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source");
+    let dest = dir.path().join("upgraded");
+    let mut a = authority(&source);
+    let image = terminal_history_with_tail(&mut a);
+    let expected = a.projection().projection_digest().unwrap();
+    let expected_sequences =
+        build_snapshot_from_projection(a.projection(), 102).unwrap().terminal_sequences;
+    assert_eq!(expected_sequences.len(), 4);
+    let (manifest, _) = into_schema9(&source, a);
+    let bytes = envelope::encode(&image, manifest.store_id).unwrap();
+    let decoded = envelope::decode(&bytes[20..], Some(manifest.store_id)).unwrap();
+    assert!(decoded.terminal_sequences.is_empty());
+    fs::write(source.join("snapshots/snapshot.bin"), &bytes).unwrap();
+    let before = tree(&source);
+    let result = upgrade_store(&source, &dest).unwrap();
+    assert_eq!(result.verification.projection_digest, expected);
+    assert_eq!(result.checkpoint_omitted, None);
+    assert_eq!(result.dropped_tail_bytes, 0);
+    assert_eq!(tree(&source), before);
+    assert_no_staging(dir.path());
+    let session = open_store(&dest, OpenOptions::ReadOnly).unwrap();
+    let checkpoint = load_checkpoint(&session).unwrap().unwrap();
+    assert_eq!(checkpoint.snapshot.terminal_sequences, expected_sequences);
+    let hydrated = recover_read_only(&session, RepairPolicy::Strict).unwrap();
+    assert!(hydrated.snapshot_loaded);
+    let replayed = recover(&session, RepairPolicy::Strict, false).unwrap();
+    assert!(hydrated.projection.same_operational_order(&replayed.projection));
+    assert_eq!(
+        build_snapshot_from_projection(&replayed.projection, 102).unwrap().terminal_sequences,
+        expected_sequences
+    );
+    drop(session);
+    assert_eq!(verify_store(&dest).unwrap().projection_digest, expected);
+}
+
+#[test]
+fn logical_v9_writes_reconstruct_missing_terminal_sequences_and_reject_forged_evidence() {
+    use super::writer::{SnapshotFsWriter, SnapshotWriter};
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = authority(dir.path());
+    let image = terminal_history_with_tail(&mut a);
+    let logical: super::model::Snapshot =
+        serde_json::from_slice(&serde_json::to_vec(&image).unwrap()).unwrap();
+    assert!(logical.terminal_sequences.is_empty());
+    let expected = a.projection().projection_digest().unwrap();
+    let session = a.store_session().unwrap();
+    let mut writer = SnapshotFsWriter::new(session).unwrap();
+    // Supplied schema-10 evidence must still be checked, never silently replaced.
+    let mut forged = image.clone();
+    forged.terminal_sequences.iter_mut().min_by_key(|(_, sequence)| *sequence).unwrap().1 += 1;
+    ReplayReducer::from_projection_image(ProjectionImageV8(forged.clone())).unwrap();
+    assert!(writer
+        .write(&forged)
+        .unwrap_err()
+        .to_string()
+        .contains("snapshot differs from WAL prefix"));
+    let mut divergent = logical.clone();
+    divergent.engine.paused = true;
+    assert!(writer.write(&divergent).is_err());
+    writer.write(&logical).unwrap();
+    writer.close().unwrap();
+    let checkpoint = load_checkpoint(session).unwrap().unwrap();
+    assert_eq!(checkpoint.snapshot.terminal_sequences, image.terminal_sequences);
+    assert_eq!(checkpoint.binding.cursor.sequence, image.metadata.wal_sequence);
+    let hydrated = recover_read_only(session, RepairPolicy::Strict).unwrap();
+    assert!(hydrated.snapshot_loaded);
+    assert_eq!(hydrated.projection.projection_digest().unwrap(), expected);
+    let replayed = recover(session, RepairPolicy::Strict, false).unwrap();
+    assert!(hydrated.projection.same_operational_order(&replayed.projection));
+    drop(a);
+    assert_eq!(verify_store(dir.path()).unwrap().projection_digest, expected);
 }
 fn after_first_frame(wal: &[u8]) -> &[u8] {
     &wal[crate::wal::tail_validation::parse_record_at(wal, 0).unwrap().unwrap().record_len..]

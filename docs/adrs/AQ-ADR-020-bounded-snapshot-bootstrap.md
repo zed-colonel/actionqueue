@@ -59,6 +59,10 @@ recovery and legacy controls. Historical child-wait evidence uses these sequence
 instead of wall-clock timestamps. This auxiliary evidence is encoded in the binary
 checkpoint and covered by its integrity checks, outside the unchanged logical-v9
 JSON image and digest. Full verification compares it with complete WAL replay.
+Schema-9 upgrade and arbitrary logical-v9 snapshot writes reconstruct missing
+terminal sequences from the image's covered WAL prefix before hydration. Supplied
+evidence must agree with that prefix; schema-10 checkpoint loading still requires
+the complete evidence without replaying the prefix.
 Hydration checks each Required child at the first parent completion after its
 admission; later completions reuse that proof because task terminality is monotonic.
 The encoder reports the actual byte count of each section, including indexes and
