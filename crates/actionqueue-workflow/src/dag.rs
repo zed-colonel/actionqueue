@@ -58,6 +58,38 @@ impl std::fmt::Display for CycleError {
 
 impl std::error::Error for CycleError {}
 
+/// Checks whether declaring `task_id`'s dependency on `depends_on` would close a
+/// cycle in the graph whose edges `prerequisites` returns, without a gate.
+///
+/// A gate forgets collected terminal tasks, so a declaration that must stay
+/// acyclic in the durable history checks the complete declaration graph.
+///
+/// # Errors
+///
+/// Returns [`CycleError`] if `task_id` is reachable from any prerequisite.
+pub fn check_cycle_in<I>(
+    task_id: TaskId,
+    depends_on: &[TaskId],
+    prerequisites: impl Fn(TaskId) -> I,
+) -> Result<(), CycleError>
+where
+    I: IntoIterator<Item = TaskId>,
+{
+    let mut visited = HashSet::new();
+    for &prereq in depends_on {
+        let mut queue = VecDeque::from([prereq]);
+        while let Some(current) = queue.pop_front() {
+            if current == task_id {
+                return Err(CycleError::new(task_id, prereq));
+            }
+            if visited.insert(current) {
+                queue.extend(prerequisites(current));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Gates task promotion based on declared inter-task dependencies.
 ///
 /// Tasks with unsatisfied prerequisites are blocked from Scheduled → Ready
@@ -498,6 +530,22 @@ mod tests {
 
         gate.force_satisfy(tid(2));
         assert!(gate.is_eligible(tid(2)));
+    }
+
+    #[test]
+    fn check_cycle_in_sees_edges_a_gate_has_collected() {
+        let mut gate = DependencyGate::new();
+        gate.declare(tid(1), vec![tid(2), tid(3)]).unwrap();
+        let _ = gate.notify_completed(tid(2));
+        gate.gc_task(tid(2));
+        let durable: HashMap<TaskId, Vec<TaskId>> = HashMap::from([(tid(1), vec![tid(2), tid(3)])]);
+        let edges = |id| durable.get(&id).cloned().unwrap_or_default();
+        // The collected prerequisite's edge is gone from the gate, not from history.
+        assert!(gate.check_cycle(tid(2), &[tid(1)]).is_ok());
+        let err = check_cycle_in(tid(2), &[tid(1)], edges).unwrap_err();
+        assert_eq!((err.task_id(), err.cycle_through()), (tid(2), tid(1)));
+        assert!(check_cycle_in(tid(4), &[tid(1)], edges).is_ok());
+        assert!(check_cycle_in(tid(1), &[tid(1)], edges).is_err());
     }
 
     #[test]

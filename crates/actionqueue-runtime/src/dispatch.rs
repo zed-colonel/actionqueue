@@ -49,6 +49,27 @@ use crate::admission::AdmissionError;
 use crate::config::BackoffStrategyConfig;
 use crate::worker::{InFlightRun, WorkerResult};
 
+/// Bounded retry for failed checkpoint publications: 1 second, doubling to at most
+/// 60 seconds, the daemon's schedule.
+#[derive(Debug, Default)]
+struct SnapshotRetry {
+    next_attempt: Option<std::time::Instant>,
+    delay: Option<std::time::Duration>,
+}
+impl SnapshotRetry {
+    const INITIAL: std::time::Duration = std::time::Duration::from_secs(1);
+    const MAX: std::time::Duration = std::time::Duration::from_secs(60);
+    fn ready(&self, now: std::time::Instant) -> bool {
+        self.next_attempt.is_none_or(|deadline| now >= deadline)
+    }
+    fn failed(&mut self, now: std::time::Instant) -> std::time::Duration {
+        let delay = self.delay.map_or(Self::INITIAL, |d| (d * 2).min(Self::MAX));
+        self.delay = Some(delay);
+        self.next_attempt = Some(now + delay);
+        delay
+    }
+}
+
 /// Builds a [`DependencyGate`] from the recovery reducer's dependency state.
 ///
 /// Called at bootstrap to reconstruct the gate
@@ -266,6 +287,7 @@ pub struct DispatchLoop<
     draining: bool,
     snapshot_path: Option<PathBuf>,
     snapshot_event_threshold: Option<u64>,
+    snapshot_retry: SnapshotRetry,
 
     /// DAG dependency gate — gates Scheduled → Ready promotion.
     /// Built from the projection at bootstrap. Afterwards only
@@ -583,6 +605,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
             draining: false,
             snapshot_path: config.snapshot_path,
             snapshot_event_threshold: config.snapshot_event_threshold,
+            snapshot_retry: SnapshotRetry::default(),
 
             dependency_gate,
             hierarchy_tracker,
@@ -1517,48 +1540,74 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         Ok((attempt_id, lease_expiry, attempt_number, max_attempts))
     }
 
-    /// Writes a snapshot if the cumulative event count exceeds the configured threshold.
+    /// Publishes a checkpoint once the durable progress since the last published one,
+    /// including admissions between ticks and the recovered tail, reaches the
+    /// configured threshold.
+    ///
+    /// A failed publication is logged, not returned: durable progress stays pending
+    /// and later ticks retry after a backoff of 1 second, doubling to at most 60
+    /// seconds, as the daemon does. Only a failure that fences the WAL, such as a
+    /// failed WAL flush during capture, is returned.
     fn maybe_write_snapshot(&mut self, current_time: u64) -> Result<(), DispatchError> {
         let threshold = match self.snapshot_event_threshold {
             Some(t) => t,
             None => return Ok(()),
         };
-        let _path = match &self.snapshot_path {
-            Some(p) => p.clone(),
-            None => return Ok(()),
-        };
-        let published = self.authority.store_session().map_or(0, |s| s.published_sequence());
-        if self.authority.projection().latest_sequence().saturating_sub(published) < threshold {
+        if self.snapshot_path.is_none() {
             return Ok(());
         }
-
-        if self.authority.supports_live_checkpoints() {
-            let candidate = self
-                .authority
-                .capture_checkpoint(current_time)
-                .map_err(|e| DispatchError::SnapshotCapture(e.to_string()))?;
-            actionqueue_storage::snapshot::checkpoint::publish_checkpoint(candidate)
-                .map_err(|e| DispatchError::SnapshotPublish(e.to_string()))?;
-        } else {
-            // Public constructors may pair a session writer and projection
-            // independently. Preserve that path with full WAL-prefix validation.
-            use actionqueue_storage::snapshot::{
-                build::build_snapshot_from_projection,
-                writer::{SnapshotFsWriter, SnapshotWriter},
-            };
-            let snapshot =
-                build_snapshot_from_projection(self.authority.projection(), current_time)
-                    .map_err(DispatchError::SnapshotBuild)?;
-            let session = self.authority.store_session().ok_or_else(|| {
-                DispatchError::SnapshotInit("snapshot requires a store session".into())
-            })?;
-            let mut writer = SnapshotFsWriter::new(session)
-                .map_err(|e| DispatchError::SnapshotInit(e.to_string()))?;
-            writer.write(&snapshot).map_err(DispatchError::SnapshotWrite)?;
-            writer.close().map_err(DispatchError::SnapshotWrite)?;
+        let published = self.authority.store_session().map_or(0, |s| s.published_sequence());
+        if self.authority.projection().latest_sequence().saturating_sub(published) < threshold
+            || !self.snapshot_retry.ready(std::time::Instant::now())
+        {
+            return Ok(());
         }
+        let result = if self.authority.supports_live_checkpoints() {
+            self.authority
+                .capture_checkpoint(current_time)
+                .map_err(|e| DispatchError::SnapshotCapture(e.to_string()))
+                .and_then(|candidate| {
+                    actionqueue_storage::snapshot::checkpoint::publish_checkpoint(candidate)
+                        .map(drop)
+                        .map_err(|e| DispatchError::SnapshotPublish(e.to_string()))
+                })
+        } else {
+            self.write_validated_snapshot(current_time)
+        };
+        match result {
+            Ok(()) => {
+                self.snapshot_retry = SnapshotRetry::default();
+                Ok(())
+            }
+            Err(e) if self.authority.recovery_required() => Err(e),
+            Err(e) => {
+                let delay = self.snapshot_retry.failed(std::time::Instant::now());
+                tracing::error!(
+                    error = %e,
+                    retry_after_seconds = delay.as_secs(),
+                    "checkpoint publication failed; durable progress remains pending"
+                );
+                Ok(())
+            }
+        }
+    }
 
-        Ok(())
+    /// Public constructors may pair a session writer and projection independently.
+    /// Preserve that path with full WAL-prefix validation.
+    fn write_validated_snapshot(&self, current_time: u64) -> Result<(), DispatchError> {
+        use actionqueue_storage::snapshot::{
+            build::build_snapshot_from_projection,
+            writer::{SnapshotFsWriter, SnapshotWriter},
+        };
+        let snapshot = build_snapshot_from_projection(self.authority.projection(), current_time)
+            .map_err(DispatchError::SnapshotBuild)?;
+        let session = self.authority.store_session().ok_or_else(|| {
+            DispatchError::SnapshotInit("snapshot requires a store session".into())
+        })?;
+        let mut writer = SnapshotFsWriter::new(session)
+            .map_err(|e| DispatchError::SnapshotInit(e.to_string()))?;
+        writer.write(&snapshot).map_err(DispatchError::SnapshotWrite)?;
+        writer.close().map_err(DispatchError::SnapshotWrite)
     }
 
     /// Loops `tick()` until no work remains (no in-flight, no promotions, no dispatches).
@@ -1807,10 +1856,14 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         task_id: TaskId,
         prereqs: Vec<TaskId>,
     ) -> Result<(), DispatchError> {
-        // Cycle check.
-        self.dependency_gate
-            .check_cycle(task_id, &prereqs)
-            .map_err(DispatchError::DependencyCycle)?;
+        // Cycle check against every durable declaration, as the authority checks
+        // before appending. The gate has collected terminal tasks, so it misses a
+        // cycle through one.
+        let projection = self.authority.projection();
+        actionqueue_workflow::dag::check_cycle_in(task_id, &prereqs, |id| {
+            projection.prerequisites_of(id)
+        })
+        .map_err(DispatchError::DependencyCycle)?;
 
         // All prerequisites must be known.
         for prereq_id in &prereqs {
@@ -2732,18 +2785,35 @@ mod tests {
     }
 
     #[test]
-    fn live_checkpoint_errors_identify_capture_and_publication_phases() {
+    fn checkpoint_publication_failures_back_off_and_only_capture_fencing_fails_the_tick() {
         use actionqueue_storage::store::fault;
         let dir = tempfile::tempdir().unwrap();
         let mut dispatch = new_dispatch(dir.path(), DependencyHandler);
         dispatch.snapshot_path = Some(dir.path().join("snapshots/snapshot.bin"));
         dispatch.snapshot_event_threshold = Some(1);
+        let session = dispatch.authority.store_session().unwrap().clone();
+        let published = session.published_sequence();
+        // A failed publication is logged, not returned, and leaves progress pending.
         fault::fail_once("snapshot_before_rename");
-        assert!(matches!(
-            dispatch.maybe_write_snapshot(1000),
-            Err(DispatchError::SnapshotPublish(_))
-        ));
+        dispatch.maybe_write_snapshot(1000).unwrap();
         assert!(!dispatch.authority.recovery_required());
+        assert_eq!(session.published_sequence(), published);
+        assert_eq!(dispatch.snapshot_retry.delay, Some(Duration::from_secs(1)));
+        // Within the backoff nothing is attempted, although publication would succeed.
+        dispatch.maybe_write_snapshot(1000).unwrap();
+        assert_eq!(session.published_sequence(), published);
+        // Each further failure doubles the delay.
+        dispatch.snapshot_retry.next_attempt = Some(std::time::Instant::now());
+        fault::fail_once("snapshot_before_rename");
+        dispatch.maybe_write_snapshot(1000).unwrap();
+        assert_eq!(dispatch.snapshot_retry.delay, Some(Duration::from_secs(2)));
+        // Once the backoff elapses, the pending progress publishes and the delay resets.
+        dispatch.snapshot_retry.next_attempt = Some(std::time::Instant::now());
+        dispatch.maybe_write_snapshot(1000).unwrap();
+        assert_eq!(session.published_sequence(), dispatch.projection().latest_sequence());
+        assert_eq!(dispatch.snapshot_retry.delay, None);
+        // A WAL flush failure during capture fences the WAL and is returned.
+        dispatch.submit_task(task(b"success", None)).unwrap();
         fault::fail_once("wal_before_sync");
         assert!(matches!(
             dispatch.maybe_write_snapshot(1000),
@@ -2999,6 +3069,53 @@ mod tests {
         assert!(d.dependency_gate.is_eligible(dependent_id));
         assert!(d.hierarchy_tracker.is_terminal(prerequisite));
         assert!(d.pending_gc_tasks.contains(&prerequisite));
+    }
+
+    #[test]
+    fn dependencies_cannot_close_a_cycle_through_a_collected_terminal_task() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut d = new_dispatch(dir.path(), DependencyHandler);
+        let worker = accepted_worker(&mut d);
+        let terminal = d.projection().get_run_instance(&worker.run_id).unwrap().task_id();
+        let open = task(b"success", None);
+        let open_id = open.id();
+        d.submit_task(open).unwrap();
+        let dependent = task(b"success", None);
+        let dependent_id = dependent.id();
+        d.submit_task(dependent).unwrap();
+        d.declare_dependency(dependent_id, vec![terminal, open_id]).unwrap();
+        d.process_worker_result(worker, &mut TickResult::default(), 1000).unwrap();
+        d.refresh_coordination();
+        d.gc_terminal_tasks();
+        // The gate collected the terminal prerequisite's edge; durable history keeps it.
+        assert!(d.dependency_gate.check_cycle(terminal, &[dependent_id]).is_ok());
+        let before = d.projection().latest_sequence();
+        assert!(matches!(
+            d.declare_dependency(terminal, vec![dependent_id]),
+            Err(DispatchError::DependencyCycle(_))
+        ));
+        assert_eq!(d.projection().latest_sequence(), before);
+
+        // The authority rejects the same cycle in its durable declarations before any
+        // append, so no WAL, and no rebuilt gate, ever holds it.
+        let error = d
+            .authority
+            .submit_command(
+                MutationCommand::DependencyDeclare(DependencyDeclareCommand::new(
+                    d.next_sequence().unwrap(),
+                    terminal,
+                    vec![dependent_id],
+                    1000,
+                )),
+                DurabilityPolicy::Immediate,
+            )
+            .unwrap_err();
+        assert!(matches!(error, MutationAuthorityError::Apply { .. }), "{error:?}");
+        assert!(!d.authority.recovery_required());
+        assert_eq!(d.projection().latest_sequence(), before);
+        let gate = build_dependency_gate(d.projection());
+        assert!(!gate.has_prerequisites(terminal));
+        assert!(!gate.is_eligible(dependent_id));
     }
 
     #[test]
