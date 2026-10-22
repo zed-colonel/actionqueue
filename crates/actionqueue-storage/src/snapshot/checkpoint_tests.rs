@@ -268,7 +268,10 @@ fn installed_checkpoint_rejects_older_candidate_after_failed_acknowledgement() {
     assert!(publish_checkpoint(newer).is_err());
     assert_eq!(session.published_sequence(), 1);
     let installed = fs::read(session.snapshot_path()).unwrap();
-    assert!(publish_checkpoint(older).unwrap_err().to_string().contains("stale checkpoint"));
+    // A lost publication race is reported as staleness, not as store damage.
+    let error = publish_checkpoint(older).unwrap_err();
+    assert_eq!(error, StoreError::StaleCheckpoint { sequence: 2, installed: 3 });
+    assert!(error.to_string().contains("sequence 2 is older than installed checkpoint 3"));
     assert_eq!(fs::read(session.snapshot_path()).unwrap(), installed);
     publish(&mut a);
     assert_eq!(session.published_sequence(), 3);
@@ -286,7 +289,7 @@ fn publication_wal_sync_failure_fences_live_authority_until_recovery() {
     let session = a.store_session().unwrap().clone();
     let before = fs::read(session.snapshot_path()).unwrap();
     fault::fail_once("snapshot_wal_before_sync");
-    assert!(publish_checkpoint(candidate).is_err());
+    assert!(matches!(publish_checkpoint(candidate), Err(StoreError::Io(_))));
     assert!(a.recovery_required());
     assert_eq!(session.published_sequence(), 1);
     assert_eq!(fs::read(session.snapshot_path()).unwrap(), before);
@@ -329,7 +332,7 @@ fn backup_omits_only_physical_snapshot_damage_and_restores_from_wal() {
             "crc" => damaged[16] ^= 1,
             _ => damaged = envelope::encode_checkpoint(&semantic).unwrap(),
         }
-        fs::write(snapshot_path, damaged).unwrap();
+        fs::write(&snapshot_path, damaged).unwrap();
         let before = tree(&source);
         let output = dir.path().join(format!("backup-{damage}"));
         if damage == "semantic" {
@@ -337,6 +340,11 @@ fn backup_omits_only_physical_snapshot_damage_and_restores_from_wal() {
             assert!(error.to_string().contains("identity mismatch"));
             assert!(!output.exists());
         } else {
+            // Full verification rejects the damaged file, naming it and the fallback.
+            let error = verify_store(&source).unwrap_err().to_string();
+            assert!(error.contains(snapshot_path.to_str().unwrap()), "{error}");
+            assert!(error.contains("physically damaged") || error.contains("checksum"), "{error}");
+            assert!(error.contains("recover from the complete WAL"), "{error}");
             let descriptor = backup_store(&source, &output).unwrap();
             assert!(!descriptor.files.iter().any(|f| f.path == "snapshots/snapshot.bin"));
             assert!(!output.join("snapshots/snapshot.bin").exists());
@@ -468,13 +476,14 @@ fn publication_failure_stale_candidates_and_unproven_pairs_do_not_acknowledge() 
     publish(&mut a);
     let session = a.store_session().unwrap().clone();
     let before = fs::read(session.snapshot_path()).unwrap();
-    assert!(publish_checkpoint(stale).is_err());
+    assert!(matches!(publish_checkpoint(stale), Err(StoreError::StaleCheckpoint { .. })));
     assert_eq!(fs::read(session.snapshot_path()).unwrap(), before);
     toggle(&mut a);
     for point in ["snapshot_before_rename", "snapshot_after_rename"] {
         let candidate = a.capture_checkpoint(30).unwrap();
         fault::fail_once(point);
-        assert!(publish_checkpoint(candidate).is_err());
+        let error = publish_checkpoint(candidate).unwrap_err();
+        assert!(matches!(&error, StoreError::Io(m) if m.contains(point)), "{error}");
         assert_eq!(session.published_sequence(), 3);
         assert!(!a.recovery_required());
     }
@@ -532,7 +541,19 @@ fn invalid_bindings_ordinals_indexes_and_feature_sections_fail_without_fallback(
             }),
         }
         rewrite(&session, &c);
-        assert!(recover_read_only(&session, RepairPolicy::Strict).is_err(), "{kind}");
+        let error = recover_read_only(&session, RepairPolicy::Strict).unwrap_err();
+        if matches!(kind, "offset" | "hash") {
+            // A boundary disagreement names the checkpoint, not an I/O failure.
+            let sequence = c.binding.cursor.sequence;
+            assert_eq!(
+                error,
+                StoreError::InvalidStore(format!(
+                    "snapshot checkpoint at sequence {sequence} does not match the WAL \
+                     boundary; run actionqueue store verify"
+                )),
+                "{kind}"
+            );
+        }
     }
     // Lengths/counts are bounded before allocation; unknown tags/trailing bytes are rejected.
     let mut c = load_checkpoint_after_restore(&session, &original);

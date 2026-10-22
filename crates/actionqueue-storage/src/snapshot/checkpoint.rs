@@ -1,5 +1,7 @@
 //! Proven checkpoint capture is cheap; encoding and atomic publication can run off-lane.
-use super::writer::{SnapshotFsWriter, SnapshotWriter};
+use super::writer::{
+    SnapshotFsWriter, SnapshotFsWriterInitError, SnapshotWriter, SnapshotWriterError,
+};
 use crate::{
     recovery::reducer::ReplayReducer,
     store::{StoreError, StoreSession},
@@ -43,6 +45,14 @@ pub fn publish_checkpoint(
     candidate: CheckpointCandidate,
 ) -> Result<PublishedCheckpoint, StoreError> {
     let invalid = |e: &dyn std::fmt::Display| StoreError::InvalidStore(e.to_string());
+    // Disk failures and a lost publication race are not store corruption.
+    let writer_error = |e: SnapshotWriterError| match e {
+        SnapshotWriterError::IoError(e) => StoreError::Io(format!("checkpoint publication: {e}")),
+        SnapshotWriterError::Stale { sequence, installed } => {
+            StoreError::StaleCheckpoint { sequence, installed }
+        }
+        e => invalid(&e),
+    };
     let started = std::time::Instant::now();
     let snapshot =
         super::build::build_snapshot_from_projection(&candidate.projection, candidate.timestamp)
@@ -60,10 +70,14 @@ pub fn publish_checkpoint(
         inspection,
     };
     let started = std::time::Instant::now();
-    let mut writer = SnapshotFsWriter::new(&candidate.session).map_err(|e| invalid(&e))?;
-    let sections = writer.write_checkpoint(&c).map_err(|e| invalid(&e))?;
+    let mut writer = SnapshotFsWriter::new(&candidate.session).map_err(
+        |SnapshotFsWriterInitError::IoError(e)| {
+            StoreError::Io(format!("opening snapshot file: {e}"))
+        },
+    )?;
+    let sections = writer.write_checkpoint(&c).map_err(writer_error)?;
     let bytes = sections.iter().map(|(_, n)| n).sum();
-    writer.close().map_err(|e| invalid(&e))?;
+    writer.close().map_err(writer_error)?;
     Ok(PublishedCheckpoint {
         sequence: candidate.cursor.sequence,
         sections,

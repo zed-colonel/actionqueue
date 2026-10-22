@@ -781,14 +781,30 @@ fn dependency_declarations_survive_snapshot_roundtrip() {
     assert_eq!(loaded.dependency_declarations[1].depends_on, vec![task_a, task_b]);
     assert_eq!(loaded.dependency_declarations[1].declared_at, 20);
 
-    for prerequisites in [vec![task_a, task_a], vec![task_b]] {
+    // Duplicate and self prerequisites name the declaration and the prerequisite.
+    for (prerequisites, prereq_id) in [(vec![task_a, task_a], task_a), (vec![task_b], task_b)] {
         let mut malformed = snapshot.clone();
         malformed.dependency_declarations[0].depends_on = prerequisites;
         assert_eq!(
             validate_snapshot(&malformed),
-            Err(SnapshotMappingError::InvalidExtendedSection)
+            Err(SnapshotMappingError::DependencyReferencesInvalidPrerequisite {
+                task_id: task_b,
+                prereq_id
+            })
         );
     }
+    // Typed sections that would silently overwrite rows name the rejected section.
+    let tenant = actionqueue_storage::snapshot::model::SnapshotTenant {
+        tenant_id: actionqueue_core::ids::TenantId::new(),
+        name: "duplicate".into(),
+        created_at: 1,
+    };
+    let mut malformed = snapshot.clone();
+    malformed.tenants = vec![tenant.clone(), tenant];
+    assert_eq!(
+        validate_snapshot(&malformed),
+        Err(SnapshotMappingError::InvalidSnapshotSection { section: "tenants" })
+    );
 
     let _ = fs::remove_file(path);
 }

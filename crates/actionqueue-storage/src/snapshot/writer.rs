@@ -58,6 +58,14 @@ pub enum SnapshotWriterError {
     MappingError(SnapshotMappingError),
     /// The writer was closed.
     Closed,
+    /// A checkpoint covering a later WAL sequence was installed after this
+    /// candidate was captured.
+    Stale {
+        /// WAL sequence covered by the rejected candidate.
+        sequence: u64,
+        /// WAL sequence covered by the installed checkpoint.
+        installed: u64,
+    },
 }
 
 impl std::fmt::Display for SnapshotWriterError {
@@ -67,6 +75,11 @@ impl std::fmt::Display for SnapshotWriterError {
             Self::EncodeError(e) => write!(f, "Encode error: {e}"),
             Self::MappingError(e) => write!(f, "Mapping error: {e}"),
             Self::Closed => write!(f, "snapshot writer is closed"),
+            Self::Stale { sequence, installed } => write!(
+                f,
+                "checkpoint candidate at sequence {sequence} is older than installed \
+                 checkpoint {installed}"
+            ),
         }
     }
 }
@@ -240,10 +253,17 @@ impl SnapshotWriter for SnapshotFsWriter {
 
     /// Closes the writer, atomically replacing the target snapshot file.
     ///
-    /// This performs:
+    /// For a session-backed writer this first rejects a candidate older than the
+    /// checkpoint already installed for the session, then syncs the session WAL so
+    /// the snapshot never outruns durability of its covered prefix. It then performs:
     /// 1. `sync_all()` on the temp file to ensure data is durable
     /// 2. `rename(temp, target)` for atomic replacement
     /// 3. `fsync` on the parent directory to make the rename durable
+    ///
+    /// The session records the candidate's sequence as installed after the rename
+    /// and as durable (its published sequence) only after the directory sync, so a
+    /// failed directory sync still rejects older candidates without acknowledging
+    /// publication.
     ///
     /// Once closed, the writer cannot be used for further operations.
     /// If `close()` is not called (e.g. due to a crash or error), the
@@ -251,8 +271,11 @@ impl SnapshotWriter for SnapshotFsWriter {
     ///
     /// # Errors
     ///
-    /// Returns `SnapshotWriterError::IoError` if the flush, rename, or
-    /// directory sync operation fails.
+    /// Returns `SnapshotWriterError::EncodeError` if nothing complete was written.
+    /// Returns `SnapshotWriterError::Stale` if a later checkpoint is installed.
+    /// Returns `SnapshotWriterError::IoError` if the WAL sync, flush, rename, or
+    /// directory sync operation fails. A failed WAL sync also marks the session WAL
+    /// uncertain, which fences the session's live WAL writer until recovery.
     fn close(mut self) -> Result<(), SnapshotWriterError> {
         if !self.ready_to_publish {
             return Err(SnapshotWriterError::EncodeError(
@@ -263,8 +286,10 @@ impl SnapshotWriter for SnapshotFsWriter {
         // replacement rejected even when captures finish encoding out of order.
         let session = self.session.clone();
         let mut published = session.as_ref().map(|s| s.publication());
-        if published.as_ref().is_some_and(|s| self.sequence < s.installed) {
-            return Err(SnapshotWriterError::EncodeError("stale checkpoint candidate".into()));
+        if let Some(installed) =
+            published.as_ref().map(|s| s.installed).filter(|&installed| self.sequence < installed)
+        {
+            return Err(SnapshotWriterError::Stale { sequence: self.sequence, installed });
         }
         // Snapshot publication must never outrun durability of its covered WAL prefix.
         if let Some(session) = &self.session {
@@ -307,10 +332,11 @@ impl SnapshotWriter for SnapshotFsWriter {
             })?;
         }
 
-        // Mark as closed so Drop does not attempt temp cleanup
+        // The rename is now durable: acknowledge this sequence as published.
         if let Some(s) = &mut published {
             s.durable = self.sequence;
         }
+        // Mark as closed so Drop does not attempt temp cleanup
         self.is_closed = true;
 
         tracing::info!("snapshot written and persisted");

@@ -495,6 +495,50 @@ fn offline_inspection_never_initializes_an_absent_or_empty_store() {
 }
 
 #[test]
+fn daemon_and_offline_bootstrap_failures_report_the_store_upgrade_remedy() {
+    let base = unique_data_dir("schema9-bootstrap");
+    std::fs::create_dir_all(&base).unwrap();
+    let store = base.join("store");
+    initialize_store(&store);
+    let manifest_path = store.join("manifest.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    manifest["snapshot_schema"] = 9.into();
+    std::fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
+    let remedy = "run actionqueue store upgrade --data-dir SOURCE --output DEST";
+    let free_port = || {
+        let reservation = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        reservation.local_addr().unwrap().to_string()
+    };
+
+    let output = cli()
+        .args(["daemon", "--data-dir"])
+        .arg(&store)
+        .args(["--bind", &free_port(), "--metrics-bind", &free_port(), "--json"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error_code"], "daemon_bootstrap_failed");
+    let message = error["message"].as_str().unwrap();
+    assert!(message.starts_with("daemon bootstrap failed: "), "{message}");
+    assert!(message.contains(remedy), "{message}");
+
+    let output = cli()
+        .args(["task", "inspect", &actionqueue_core::ids::TaskId::new().to_string()])
+        .args(["--offline", "--data-dir"])
+        .arg(&store)
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(5));
+    let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error_code"], "storage_unavailable");
+    assert!(error["message"].as_str().unwrap().contains(remedy), "{error}");
+    std::fs::remove_dir_all(base).unwrap();
+}
+
+#[test]
 fn daemon_admission_throttle_is_retryable_and_preserves_its_code() {
     use std::io::{Read, Write};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

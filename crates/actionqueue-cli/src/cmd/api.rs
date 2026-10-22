@@ -146,7 +146,12 @@ async fn execute(args: Vec<String>) -> Result<CommandOutput, CliError> {
             std::sync::Arc::new(move |_, _| Ok(host.clone()));
         let recovered =
             actionqueue_storage::recovery::bootstrap::load_existing_projection(&config.data_dir)
-                .map_err(|_| unavailable())?;
+                .map_err(|error| {
+                    CliError::connectivity(
+                        "storage_unavailable",
+                        format!("service unavailable: {error}"),
+                    )
+                })?;
         let authority = actionqueue_storage::mutation::StorageMutationAuthority::new(
             recovered.wal_writer,
             recovered.projection.clone(),

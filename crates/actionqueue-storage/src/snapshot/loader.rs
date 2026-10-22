@@ -23,10 +23,20 @@ impl SnapshotLoaderError {
 impl std::fmt::Display for SnapshotLoaderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::IoError(e) => write!(f, "snapshot I/O error: {e}"),
+            Self::DecodeError(e) => write!(f, "snapshot decode error: {e}"),
+            Self::MappingError(e) => write!(f, "snapshot mapping error: {e}"),
             Self::IncompatibleVersion { component, expected, found } => {
                 write!(f, "{component}: supported {expected}, found {found}")
             }
-            _ => write!(f, "snapshot load: {self:?}"),
+            Self::CrcMismatch { expected, actual } => write!(
+                f,
+                "snapshot checksum mismatch: expected {expected:#010x}, found {actual:#010x}"
+            ),
+            Self::NotFound => write!(f, "snapshot not found"),
+            Self::PhysicalDamage => {
+                write!(f, "snapshot is physically damaged: truncated or length mismatch")
+            }
         }
     }
 }
@@ -38,12 +48,20 @@ pub struct SnapshotFsLoader {
     session: Option<crate::store::StoreSession>,
 }
 impl SnapshotFsLoader {
+    /// Reads a legacy snapshot-schema-9 file (frame version 1) at `path`, without
+    /// store binding. Every 0.3.0 store snapshot uses frame version 2, which this
+    /// loader rejects as `IncompatibleVersion`; open those with [`Self::for_session`].
     pub fn new(path: std::path::PathBuf) -> Self {
-        Self { path, version: 1, identity: None, session: None }
+        Self::with_version(path, 1)
     }
+    /// Reads an unbound snapshot at `path` that must use frame `version`: 1 for
+    /// snapshot schema 9 or 2 for schema 10. This is a frame version, not a schema
+    /// number.
     pub fn with_version(path: std::path::PathBuf, version: u32) -> Self {
         Self { path, version, identity: None, session: None }
     }
+    /// Reads the session's current schema-10 checkpoint (frame version 2) and checks
+    /// it against the session's store identity and manifest.
     pub fn for_session(session: &crate::store::StoreSession) -> Self {
         Self {
             path: session.snapshot_path(),

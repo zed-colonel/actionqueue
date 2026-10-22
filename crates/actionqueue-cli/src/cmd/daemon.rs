@@ -60,7 +60,12 @@ pub fn run(args: DaemonArgs) -> Result<CommandOutput, CliError> {
         ));
     }
     let state = actionqueue_daemon::bootstrap::bootstrap_with_authenticator(config, hook).map_err(
-        |_error| CliError::runtime("daemon_bootstrap_failed", "daemon bootstrap failed"),
+        |error| {
+            CliError::runtime(
+                "daemon_bootstrap_failed",
+                format!("daemon bootstrap failed: {error}"),
+            )
+        },
     )?;
 
     let runtime = tokio::runtime::Builder::new_multi_thread()

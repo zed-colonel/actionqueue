@@ -17,7 +17,11 @@ use crate::snapshot::model::{
     SnapshotRun, SnapshotRunStateHistoryEntry,
 };
 
-/// Current snapshot schema version accepted by the explicit mapping boundary.
+/// Logical projection image version accepted by the explicit mapping boundary.
+///
+/// This is the version of the logical image (and of its canonical digest), not the
+/// store's physical snapshot schema: physical snapshot schema 10 carries a logical
+/// v9 image, and physical schema 9 stored the same v9 image directly.
 ///
 /// AQ-CONT-1 version history:
 /// - v2: Compound admission.
@@ -28,6 +32,9 @@ use crate::snapshot::model::{
 /// - v7: Required/detached children, scoped child admission, and terminal child waits.
 /// - v8: Host control attribution in the durable projection.
 /// - v9: Durable subscription match provenance in WAL order.
+///
+/// Physical snapshot schema 10 (0.3.0) binds the logical v9 image to its store,
+/// manifest and covered WAL boundary, without changing the logical version.
 pub const SNAPSHOT_SCHEMA_VERSION: u32 = 9;
 
 /// Typed mapping and validation errors for snapshot/core parity enforcement.
@@ -37,9 +44,20 @@ pub enum SnapshotMappingError {
     InvalidAdmission,
     /// Invalid signal projection image.
     InvalidSignal,
-    /// An extension section has duplicate identities or broken relationships.
-    InvalidExtendedSection,
-    /// Snapshot metadata schema version is unknown to this mapping boundary.
+    /// A tenant, actor, role, capability or ledger section has a nil or duplicate
+    /// identity or a broken relationship.
+    InvalidSnapshotSection {
+        /// Name of the rejected snapshot section.
+        section: &'static str,
+    },
+    /// A dependency declaration lists its own task or the same prerequisite twice.
+    DependencyReferencesInvalidPrerequisite {
+        /// Task whose declaration was rejected.
+        task_id: TaskId,
+        /// Self or duplicate prerequisite.
+        prereq_id: TaskId,
+    },
+    /// Logical snapshot image version is unknown to this mapping boundary.
     UnsupportedSchemaVersion {
         /// Schema version expected by the current implementation.
         expected: u32,
@@ -213,11 +231,24 @@ pub enum SnapshotMappingError {
 impl std::fmt::Display for SnapshotMappingError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::InvalidExtendedSection => write!(f, "invalid extension snapshot section"),
+            Self::InvalidSnapshotSection { section } => write!(
+                f,
+                "invalid snapshot {section} section: nil or duplicate identity, or broken \
+                 relationship"
+            ),
+            Self::DependencyReferencesInvalidPrerequisite { task_id, prereq_id } => write!(
+                f,
+                "snapshot dependency declaration for task {task_id} has self or duplicate \
+                 prerequisite {prereq_id}"
+            ),
             Self::InvalidSignal => write!(f, "invalid signal snapshot"),
             Self::InvalidAdmission => write!(f, "invalid admission snapshot"),
             Self::UnsupportedSchemaVersion { expected, found } => {
-                write!(f, "unsupported snapshot schema version: expected {expected}, found {found}")
+                write!(
+                    f,
+                    "unsupported logical snapshot image version: expected {expected}, found \
+                     {found}"
+                )
             }
             Self::TaskCountMismatch { declared, actual } => {
                 write!(f, "snapshot task_count mismatch: declared {declared}, actual {actual}")
@@ -342,9 +373,9 @@ pub fn validate_snapshot(snapshot: &Snapshot) -> Result<(), SnapshotMappingError
 pub(crate) fn validate_snapshot_with_signals(
     snapshot: &Snapshot,
 ) -> Result<crate::recovery::signals::SignalIndex, SnapshotMappingError> {
-    if snapshot.version != 9 {
+    if snapshot.version != SNAPSHOT_SCHEMA_VERSION {
         return Err(SnapshotMappingError::UnsupportedSchemaVersion {
-            expected: 9,
+            expected: SNAPSHOT_SCHEMA_VERSION,
             found: snapshot.version,
         });
     }
@@ -487,7 +518,10 @@ pub(crate) fn validate_snapshot_with_signals(
         let mut prereq_ids = HashSet::new();
         for &prereq_id in &decl.depends_on {
             if prereq_id == decl.task_id || !prereq_ids.insert(prereq_id) {
-                return Err(SnapshotMappingError::InvalidExtendedSection);
+                return Err(SnapshotMappingError::DependencyReferencesInvalidPrerequisite {
+                    task_id: decl.task_id,
+                    prereq_id,
+                });
             }
             if !tasks.contains_key(&prereq_id) {
                 return Err(SnapshotMappingError::DependencyReferencesUnknownTask {
@@ -531,11 +565,11 @@ pub(crate) fn validate_snapshot_with_signals(
     }
 
     // Validate lossless typed hydration: maps must never silently overwrite rows.
-    let invalid = SnapshotMappingError::InvalidExtendedSection;
+    let invalid = |section| SnapshotMappingError::InvalidSnapshotSection { section };
     let mut tenants = HashSet::new();
     for t in &snapshot.tenants {
         if t.tenant_id.as_uuid().is_nil() || !tenants.insert(t.tenant_id) {
-            return Err(invalid);
+            return Err(invalid("tenants"));
         }
     }
     let mut actors = std::collections::HashMap::new();
@@ -547,7 +581,7 @@ pub(crate) fn validate_snapshot_with_signals(
             || a.tenant_id.is_some_and(|t| !tenants.contains(&t))
             || actors.insert(a.actor_id, a.tenant_id).is_some()
         {
-            return Err(invalid);
+            return Err(invalid("actors"));
         }
     }
     let mut roles = HashSet::new();
@@ -556,7 +590,7 @@ pub(crate) fn validate_snapshot_with_signals(
             || !actors.contains_key(&r.actor_id)
             || !roles.insert((r.actor_id, r.tenant_id))
         {
-            return Err(invalid);
+            return Err(invalid("role_assignments"));
         }
     }
     let mut capabilities = HashSet::new();
@@ -569,7 +603,7 @@ pub(crate) fn validate_snapshot_with_signals(
                 c.tenant_id,
             ))
         {
-            return Err(invalid);
+            return Err(invalid("capability_grants"));
         }
     }
     let mut entries = HashSet::new();
@@ -579,7 +613,7 @@ pub(crate) fn validate_snapshot_with_signals(
             || e.actor_id.is_some_and(|a| !actors.contains_key(&a))
             || !entries.insert(e.entry_id)
         {
-            return Err(invalid);
+            return Err(invalid("ledger_entries"));
         }
     }
 

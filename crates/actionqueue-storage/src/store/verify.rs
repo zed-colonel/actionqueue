@@ -32,6 +32,14 @@ pub(crate) fn verify_session(
     let c = match load_checkpoint(session) {
         Ok(c) => c,
         Err(e) if omit_damaged && e.physical_damage() => None,
+        Err(e) if e.physical_damage() => {
+            return Err(invalid(format!(
+                "damaged snapshot at {}: {e}; ordinary startup would ignore it and recover \
+                 from the complete WAL, but full verification rejects a present damaged \
+                 snapshot",
+                session.snapshot_path().display()
+            )))
+        }
         Err(e) => return Err(invalid(e)),
     };
     let full = recover(session, RepairPolicy::Strict, false)?;

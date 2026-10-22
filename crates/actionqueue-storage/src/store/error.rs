@@ -2,12 +2,22 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StoreError {
     MissingTargetManifest,
-    UnsupportedStoreFormat { component: String, supported: u32, found: u32 },
+    UnsupportedStoreFormat {
+        component: String,
+        supported: u32,
+        found: u32,
+    },
     InvalidManifest(String),
     UnsupportedFeatures(Vec<String>),
     StoreInUse,
     InvalidStore(String),
     Io(String),
+    /// A checkpoint covering a later WAL sequence was installed after this candidate
+    /// was captured. The installed checkpoint is kept; durable progress is unaffected.
+    StaleCheckpoint {
+        sequence: u64,
+        installed: u64,
+    },
 }
 impl std::fmt::Display for StoreError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -32,6 +42,11 @@ impl std::fmt::Display for StoreError {
             Self::StoreInUse => write!(f, "StoreInUse: store is locked"),
             Self::InvalidStore(s) => write!(f, "InvalidStore: {s}"),
             Self::Io(s) => write!(f, "store I/O: {s}"),
+            Self::StaleCheckpoint { sequence, installed } => write!(
+                f,
+                "StaleCheckpoint: checkpoint candidate at sequence {sequence} is older than \
+                 installed checkpoint {installed}"
+            ),
         }
     }
 }

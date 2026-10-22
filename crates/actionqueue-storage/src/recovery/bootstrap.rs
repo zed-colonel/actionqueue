@@ -51,7 +51,13 @@ pub enum RecoveryBootstrapError {
 }
 impl std::fmt::Display for RecoveryBootstrapError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "recovery: {self:?}")
+        match self {
+            Self::WalInit(message) => write!(f, "recovery: WAL initialization failed: {message}"),
+            Self::WalReplay(message) => write!(f, "recovery: WAL replay failed: {message}"),
+            Self::SnapshotBootstrap(message) => {
+                write!(f, "recovery: snapshot bootstrap failed: {message}")
+            }
+        }
     }
 }
 impl std::error::Error for RecoveryBootstrapError {}
@@ -111,7 +117,7 @@ pub(crate) fn recover(
     let snapshot_loaded = checkpoint.is_some();
     let start = Instant::now();
     let (mut projection, mut reader) = if let Some(c) = checkpoint {
-        let reader = WalFsReader::from_checkpoint(session, c.binding.cursor).map_err(invalid)?;
+        let reader = WalFsReader::from_checkpoint(session, c.binding.cursor)?;
         let mut p = ReplayReducer::from_projection_image(ProjectionImageV8(c.snapshot))?;
         let index_started = Instant::now();
         p.restore_inspection(c.inspection)?;

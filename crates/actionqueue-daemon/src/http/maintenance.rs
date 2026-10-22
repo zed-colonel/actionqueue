@@ -1,4 +1,9 @@
 //! Remote scheduler ownership is serialized with every HTTP mutation.
+//!
+//! Each maintenance pass also publishes a snapshot checkpoint once the configured
+//! number of durable WAL events has accumulated since the last published one. The
+//! checkpoint is captured under the mutation lane and encoded and published after
+//! the lane is released; failed publications are retried with bounded backoff.
 use actionqueue_core::control::ControlError;
 use actionqueue_storage::{
     mutation::StorageMutationAuthority, recovery::reducer::ReplayReducer, wal::writer::WalWriter,
@@ -50,6 +55,18 @@ pub(crate) fn maintain_locked<W: WalWriter>(
     result
 }
 /// Executes one pass explicitly, also useful for hosts with their own timer.
+///
+/// Returns `Ok` without doing anything once [`shutdown`] has begun, while another
+/// holder has the mutation lane, or when the router has no control authority. It
+/// returns an error once the daemon requires recovery.
+///
+/// When a snapshot is due, the pass captures a checkpoint under the mutation lane,
+/// then encodes, fsyncs and renames it synchronously on the calling thread after
+/// releasing the lane. Host timers must therefore call this from a blocking
+/// context. A failed publication is logged, not returned: durable progress stays
+/// pending and later passes retry after a backoff of 1 second, doubling to at most
+/// 60 seconds. A WAL flush failure during capture fences the daemon and returns
+/// the error.
 pub fn tick(state: &RouterState) -> Result<(), ControlError> {
     if state.maintenance_stopping.load(std::sync::atomic::Ordering::Acquire) {
         return Ok(());
@@ -93,11 +110,13 @@ pub fn tick(state: &RouterState) -> Result<(), ControlError> {
         }
     }
     let _publication = PublicationGuard(state);
-    let candidate = authority.capture_checkpoint(state.clock.now());
-    if authority.recovery_required() {
-        state.operational_failed.store(true, std::sync::atomic::Ordering::Release);
-        return Err(ControlError::Mutation("checkpoint WAL flush failed".into()));
-    }
+    let candidate = match authority.capture_checkpoint(state.clock.now()) {
+        Err(e) if authority.recovery_required() => {
+            state.operational_failed.store(true, std::sync::atomic::Ordering::Release);
+            return Err(ControlError::Mutation(format!("checkpoint capture failed: {e}")));
+        }
+        candidate => candidate,
+    };
     // Keep the captured roots immutable; release the mutation lane before encoding.
     drop(authority);
     drop(_permit);
@@ -146,9 +165,9 @@ pub(crate) fn start(state: &RouterState) {
                 break;
             }
             let _ = tokio::task::spawn_blocking(move || {
-                if tick(&state).is_err() {
+                if let Err(error) = tick(&state) {
                     state.operational_failed.store(true, std::sync::atomic::Ordering::Release);
-                    tracing::error!("continuation maintenance failed");
+                    tracing::error!(%error, "daemon maintenance failed");
                 }
             })
             .await;
@@ -159,6 +178,10 @@ pub(crate) fn start(state: &RouterState) {
 
 /// Stop scheduling maintenance and await the last blocking pass. Hosts call this
 /// after draining HTTP requests, before expecting the store lock to be released.
+///
+/// Later [`tick`] calls do nothing. Shutdown also waits for any snapshot
+/// publication still running off the mutation lane, including one started by a
+/// host-driven `tick` on another thread.
 pub async fn shutdown(state: &RouterState) {
     state.maintenance_stopping.store(true, std::sync::atomic::Ordering::Release);
     let task = state.maintenance_task.lock().unwrap_or_else(|e| e.into_inner()).take();
@@ -280,6 +303,48 @@ mod checkpoint_tests {
             actionqueue_storage::store::verify_store(dir.path()).unwrap().snapshot_sequence,
             3
         );
+    }
+
+    #[test]
+    fn checkpoint_wal_flush_failure_fences_the_daemon_and_reports_its_cause() {
+        use crate::{bootstrap::bootstrap, config::DaemonConfig};
+        use actionqueue_core::{
+            bounded::OpaqueRef, causal::ControlMutationContext, control::*, mutation::*,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let owner = bootstrap(DaemonConfig {
+            data_dir: dir.path().to_owned(),
+            snapshot_event_threshold: Some(1),
+            metrics_bind: None,
+            ..Default::default()
+        })
+        .unwrap();
+        let state = owner.router_state();
+        {
+            let mut a = state.control_authority.as_ref().unwrap().lock().unwrap();
+            a.set_control_context(Some(HostControlContext {
+                actor_id: None,
+                scope: ControlScope::Store,
+                attribution: ControlMutationContext::new(OpaqueRef::new("daemon-flush").unwrap()),
+            }));
+            let seq = a.projection().latest_sequence() + 1;
+            let _ = a
+                .submit_command(
+                    MutationCommand::EnginePause(EnginePauseCommand::new(seq, 1)),
+                    DurabilityPolicy::Immediate,
+                )
+                .unwrap();
+        }
+        actionqueue_storage::store::fault::fail_once("wal_before_sync");
+        let error = super::tick(state).unwrap_err();
+        assert!(
+            matches!(&error, ControlError::Mutation(m)
+                if m.starts_with("checkpoint capture failed: ") && m.contains("wal_before_sync")),
+            "{error}"
+        );
+        assert!(state.operational_failed.load(std::sync::atomic::Ordering::Acquire));
+        assert!(!state.snapshot_inflight.load(std::sync::atomic::Ordering::Acquire));
+        assert!(!dir.path().join("snapshots/snapshot.bin").exists());
     }
 }
 

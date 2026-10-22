@@ -2587,13 +2587,18 @@ impl<W: WalWriter> StorageMutationAuthority<W, ReplayReducer> {
             .checkpoint_provenance()
             .map(|p| p.cursor)
             .ok_or_else(|| invalid("checkpoint requires a store cursor"))?;
-        if cursor.sequence != self.projection.latest_sequence() {
-            return Err(invalid("checkpoint cursor differs from projection revision"));
+        let projection_sequence = self.projection.latest_sequence();
+        if cursor.sequence != projection_sequence {
+            return Err(crate::store::StoreError::InvalidStore(format!(
+                "checkpoint WAL cursor sequence {} differs from projection sequence \
+                 {projection_sequence}",
+                cursor.sequence
+            )));
         }
         self.wal_writer.flush().map_err(|e| {
             self.recovery_required = true;
             self.wal_writer.fence();
-            crate::store::StoreError::InvalidStore(e.to_string())
+            crate::store::StoreError::Io(format!("checkpoint WAL flush failed: {e}"))
         })?;
         let session = self
             .store_session()

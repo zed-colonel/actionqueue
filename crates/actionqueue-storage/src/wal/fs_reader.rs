@@ -9,6 +9,7 @@ use super::{
     reader::{WalReader, WalReaderError},
     tail_validation::read_record,
 };
+use crate::store::StoreError;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WalFsReaderError {
     IoError(String),
@@ -53,36 +54,41 @@ impl WalFsReader {
         self.cursor
     }
     /// Validates the two bounded probes, then starts at the checkpoint end.
+    ///
+    /// A checkpoint that disagrees with the WAL's manifest binding or covered
+    /// boundary is an invalid store, not an I/O failure, and halts startup.
     pub(crate) fn from_checkpoint(
         session: &crate::store::StoreSession,
         cursor: super::checkpoint::WalCursor,
-    ) -> Result<Self, WalReaderError> {
-        let bad = || WalReaderError::IoError("checkpoint WAL boundary mismatch".into());
-        let mut reader =
-            Self::for_session(session).map_err(|e| WalReaderError::IoError(e.to_string()))?;
-        let first = reader.read_next()?.ok_or_else(bad)?;
+    ) -> Result<Self, StoreError> {
+        let bad = || {
+            StoreError::InvalidStore(format!(
+                "snapshot checkpoint at sequence {} does not match the WAL boundary; run \
+                 actionqueue store verify",
+                cursor.sequence
+            ))
+        };
+        let invalid = |e: WalReaderError| StoreError::InvalidStore(e.to_string());
+        let io = |e: std::io::Error| StoreError::Io(format!("reading WAL boundary: {e}"));
+        let mut reader = Self::for_session(session)
+            .map_err(|WalFsReaderError::IoError(e)| StoreError::Io(format!("opening WAL: {e}")))?;
+        let first = reader.read_next().map_err(invalid)?.ok_or_else(bad)?;
         if !matches!(first.event(), super::event::WalEventType::StoreInitialized { manifest_digest } if *manifest_digest == session.manifest().digest())
         {
             return Err(bad());
         }
         if cursor.sequence == 0
-            || cursor.end
-                > reader.file.metadata().map_err(|e| WalReaderError::IoError(e.to_string()))?.len()
+            || cursor.end > reader.file.metadata().map_err(io)?.len()
             || cursor.last_start >= cursor.end
             || cursor.last_start < if cursor.sequence == 1 { 0 } else { reader.cursor.end }
         {
             return Err(bad());
         }
-        reader
-            .file
-            .seek(SeekFrom::Start(cursor.last_start))
-            .map_err(|e| WalReaderError::IoError(e.to_string()))?;
-        let last = read_record(
-            &mut reader.file,
-            Some(session.manifest().store_id),
-            Some(cursor.sequence),
-        )?
-        .ok_or_else(bad)?;
+        reader.file.seek(SeekFrom::Start(cursor.last_start)).map_err(io)?;
+        let last =
+            read_record(&mut reader.file, Some(session.manifest().store_id), Some(cursor.sequence))
+                .map_err(invalid)?
+                .ok_or_else(bad)?;
         if cursor.last_start + last.record_len as u64 != cursor.end
             || last.frame_hash != cursor.last_hash
         {
