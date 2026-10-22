@@ -35,6 +35,15 @@ use crate::wal::writer::{WalWriter, WalWriterError};
 
 /// Projection behavior required by the mutation authority.
 pub trait MutationProjection: Clone {
+    #[doc(hidden)]
+    fn checkpoint_origin(&self) -> Option<uuid::Uuid> {
+        None
+    }
+
+    /// Waits resolved by the last frame, when the projection has an incremental change view.
+    fn resolved_wait_ids(&self) -> Option<Vec<actionqueue_core::ids::WaitId>> {
+        None
+    }
     /// Typed projection apply error.
     type Error;
 
@@ -203,6 +212,14 @@ pub trait MutationProjection: Clone {
 }
 
 impl MutationProjection for ReplayReducer {
+    fn checkpoint_origin(&self) -> Option<uuid::Uuid> {
+        self.checkpoint_origin
+    }
+
+    fn resolved_wait_ids(&self) -> Option<Vec<actionqueue_core::ids::WaitId>> {
+        Some(self.latest_change().resolved_waits.iter().copied().collect())
+    }
+
     fn validate_wait_capacity(
         &self,
         run: RunId,
@@ -220,15 +237,16 @@ impl MutationProjection for ReplayReducer {
             if let actionqueue_core::task::run_policy::RunPolicy::Cron(policy) =
                 admission.request().task_spec().run_policy()
             {
-                let runs: Vec<_> = self.runs_for_task(run.task_id()).collect();
-                let after = runs
-                    .iter()
-                    .map(|r| r.scheduled_at())
-                    .max()
-                    .unwrap_or_else(|| run.created_at().saturating_sub(1));
+                let empty = Default::default();
+                let summary = self.derived.summaries.get(&run.task_id()).unwrap_or(&empty);
+                let after = if summary.total == 0 {
+                    run.created_at().saturating_sub(1)
+                } else {
+                    summary.last_scheduled
+                };
                 if !self.is_task_canceled(run.task_id())
-                    && policy.max_occurrences().is_none_or(|max| runs.len() < max as usize)
-                    && runs.iter().filter(|r| !r.state().is_terminal()).count()
+                    && policy.max_occurrences().is_none_or(|max| summary.total < max as usize)
+                    && summary.active
                         < actionqueue_core::task::run_policy::CRON_WINDOW_SIZE as usize
                     && run.created_at() >= admission.timestamp()
                     && policy.next_occurrences_after(after, 1).first() == Some(&run.scheduled_at())
@@ -391,6 +409,7 @@ impl MutationProjection for ReplayReducer {
 #[derive(Debug)]
 pub struct StorageMutationAuthority<W: WalWriter, P: MutationProjection> {
     wal_writer: W,
+    checkpoint_proven: bool,
     telemetry: super::telemetry::QueueTelemetry,
     projection: P,
     host_context: Option<actionqueue_core::control::HostControlContext>,
@@ -456,8 +475,14 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
     /// Creates a new storage authority with an owned WAL writer and projection.
     pub fn new(wal_writer: W, projection: P) -> Self {
         let recovery_required = wal_writer.recovery_required();
+        let checkpoint_proven = wal_writer.checkpoint_provenance().is_some_and(|proof| {
+            projection.checkpoint_origin() == Some(proof.origin)
+                && proof.cursor.sequence == projection.latest_sequence()
+                && wal_writer.store_session().is_some_and(|s| s.id() == proof.session)
+        });
         Self {
             wal_writer,
+            checkpoint_proven,
             telemetry: Default::default(),
             projection,
             host_context: None,
@@ -480,7 +505,7 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
     }
     /// Returns whether an uncertain write requires reopening and recovery.
     pub fn recovery_required(&self) -> bool {
-        self.recovery_required
+        self.recovery_required || self.wal_writer.recovery_required()
     }
     /// Checks a bound host before any duplicate lookup or mutation planning.
     pub fn authorize_control(
@@ -501,7 +526,7 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
         &self,
         request: &EnsureTaskRequest,
     ) -> Result<Option<EnsureTaskOutcome>, MutationAuthorityError<P::Error>> {
-        if self.recovery_required {
+        if self.recovery_required() {
             return Err(MutationAuthorityError::RecoveryRequired);
         }
         self.authorize_control(
@@ -533,6 +558,12 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
         self.wal_writer.store_session()
     }
 
+    /// Whether this authority owns the matching writer and projection from recovery.
+    /// Independently paired authorities must use the fully validating snapshot writer.
+    pub fn supports_live_checkpoints(&self) -> bool {
+        self.checkpoint_proven
+    }
+
     /// Returns the authoritative projection.
     pub fn projection(&self) -> &P {
         &self.projection
@@ -541,6 +572,7 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
     /// Returns the mutable projection used by this authority.
     #[cfg(any(test, feature = "testing"))]
     pub fn projection_mut(&mut self) -> &mut P {
+        self.checkpoint_proven = false;
         &mut self.projection
     }
 
@@ -1616,7 +1648,7 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
         command: MutationCommand,
         durability: DurabilityPolicy,
     ) -> Result<MutationOutcome, MutationAuthorityError<P::Error>> {
-        if self.recovery_required {
+        if self.recovery_required() {
             return Err(MutationAuthorityError::RecoveryRequired);
         }
         let platform = self.platform_profile();
@@ -1931,10 +1963,9 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
         })?;
 
         // Publish the already validated state only after durability succeeds.
-        self.projection = prepared;
-        self.telemetry.committed(&event, frame_bytes, &self.projection);
-
+        let original = std::mem::replace(&mut self.projection, prepared);
         crate::store::fault::checkpoint("authority_after_publish").map_err(|error| {
+            self.projection = original;
             self.recovery_required = true;
             self.wal_writer.fence();
             MutationAuthorityError::Publication {
@@ -1943,6 +1974,7 @@ impl<W: WalWriter, P: MutationProjection> StorageMutationAuthority<W, P> {
                 error: error.to_string(),
             }
         })?;
+        self.telemetry.committed(&event, frame_bytes, &self.projection);
         tracing::debug!(sequence = event.sequence(), "command submitted");
         Ok(MutationOutcome::new(event.sequence(), applied))
     }
@@ -2534,6 +2566,50 @@ impl<W: WalWriter, P: MutationProjection> MutationAuthority for StorageMutationA
             self.telemetry.disposition_rejected();
         }
         result
+    }
+}
+
+impl<W: WalWriter> StorageMutationAuthority<W, ReplayReducer> {
+    /// Captures immutable roots and a matching durable cursor under exclusive ownership.
+    pub fn capture_checkpoint(
+        &mut self,
+        timestamp: u64,
+    ) -> Result<crate::snapshot::checkpoint::CheckpointCandidate, crate::store::StoreError> {
+        let invalid = |s: &str| crate::store::StoreError::InvalidStore(s.into());
+        if self.recovery_required() {
+            return Err(invalid("recovery required"));
+        }
+        if !self.checkpoint_proven {
+            return Err(invalid("checkpoint requires a proven recovery projection"));
+        }
+        let cursor = self
+            .wal_writer
+            .checkpoint_provenance()
+            .map(|p| p.cursor)
+            .ok_or_else(|| invalid("checkpoint requires a store cursor"))?;
+        let projection_sequence = self.projection.latest_sequence();
+        if cursor.sequence != projection_sequence {
+            return Err(crate::store::StoreError::InvalidStore(format!(
+                "checkpoint WAL cursor sequence {} differs from projection sequence \
+                 {projection_sequence}",
+                cursor.sequence
+            )));
+        }
+        self.wal_writer.flush().map_err(|e| {
+            self.recovery_required = true;
+            self.wal_writer.fence();
+            crate::store::StoreError::Io(format!("checkpoint WAL flush failed: {e}"))
+        })?;
+        let session = self
+            .store_session()
+            .ok_or_else(|| invalid("checkpoint requires a store session"))?
+            .clone();
+        Ok(crate::snapshot::checkpoint::CheckpointCandidate::new(
+            session,
+            self.projection.clone(),
+            cursor,
+            timestamp,
+        ))
     }
 }
 

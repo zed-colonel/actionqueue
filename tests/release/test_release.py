@@ -3,6 +3,7 @@ import copy
 import importlib.util
 import json
 from pathlib import Path
+import shutil
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -98,14 +99,19 @@ class ManifestTests(unittest.TestCase):
 
     def test_metadata_pins_release(self):
         metadata = release.metadata()
-        self.assertEqual(metadata['version'], '0.2.0')
+        self.assertEqual(metadata['version'], '0.3.0')
+        self.assertEqual(metadata['tag'], 'v0.3.0')
+        self.assertEqual(metadata['store_versions'], dict(manifest_schema=1, wal_format=1, snapshot_schema=10, projection_version=9))
+        self.assertEqual({c['version'] for c in metadata['crates']}, {'0.3.0'})
+        self.assertEqual(metadata['conformance']['revision'], 16)
         self.assertEqual(metadata['developmental']['case_count'], 18)
 
     def test_release_guidance_must_match_conformance_revision(self):
         revision = release.read(ROOT / release.PACKAGE / 'manifest.yaml')['package_revision']
         real_read = Path.read_text
-        for file in ['README.md', 'docs/releases/0.2.0.md']:
+        for file in ['README.md', 'docs/releases/0.3.0.md']:
             for replacement in [f'**{revision - 1}**', '**unknown**']:
+                self.assertIn(f'**{revision}**', real_read(ROOT / file))
                 def changed(path, *args, **kwargs):
                     value = real_read(path, *args, **kwargs)
                     return value.replace(f'**{revision}**', replacement) if path == ROOT / file else value
@@ -119,12 +125,32 @@ class ManifestTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'tampered'):
                 release.metadata()
         real_read = Path.read_text
-        for file, old, new in [('crates/actionqueue-core/Cargo.toml', 'version = "0.2.0"', 'version = "0.1.2"'), ('crates/actionqueue-storage/src/store/manifest.rs', 'snapshot_schema: 9,', 'snapshot_schema: 8,')]:
+        cases = [
+            ('crates/actionqueue-core/Cargo.toml', 'version = "0.3.0"', 'version = "0.2.0"'),
+            ('crates/actionqueue-storage/Cargo.toml', 'actionqueue-core = "0.3.0"', 'actionqueue-core = "0.2.0"'),
+            ('Cargo.toml', 'actionqueue-runtime = "0.3.0"', 'actionqueue-runtime = "0.2.0"'),
+            ('Cargo.lock', 'version = "0.3.0"', 'version = "0.2.0"'),
+            ('examples/downstream-handoff/Cargo.toml', '"=0.3.0"', '"=0.2.0"'),
+            ('examples/downstream-handoff/Cargo.toml', '"=0.3.0"', '"0.3.0"'),
+            ('crates/actionqueue-storage/src/store/manifest.rs', 'snapshot_schema: 10,', 'snapshot_schema: 9,'),
+            ('docs/releases/release-manifest.schema.json', '"const": 10', '"const": 9'),
+            ('docs/releases/release-manifest.schema.json', '"const": "0.3.0"', '"const": "0.2.0"'),
+            ('docs/releases/0.3.0.md', 'Release identity: **0.3.0 / v0.3.0**.', 'Release identity: **0.2.0 / v0.2.0**.'),
+        ]
+        for file, old, new in cases:
+            source = real_read(ROOT / file)
+            self.assertIn(old, source, f'negative test no longer modifies {file}')
+            self.assertNotEqual(source, source.replace(old, new))
             def changed(path, *args, **kwargs):
                 value = real_read(path, *args, **kwargs)
                 return value.replace(old, new) if path == ROOT / file else value
-            with patch.object(Path, 'read_text', changed), self.assertRaises(ValueError):
+            with self.subTest(file=file, replacement=new), patch.object(Path, 'read_text', changed), self.assertRaises(ValueError):
                 release.metadata()
+
+    def test_prepare_rejects_other_releases_before_running_gates(self):
+        for version in ['0.2.0', '0.3.1']:
+            with self.subTest(version=version), self.assertRaisesRegex(ValueError, 'only release 0.3.0'):
+                release.prepare(version, 'a' * 40, 'unused')
 
     def test_evidence_commit_command_log_and_inventory(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -166,8 +192,32 @@ class ManifestTests(unittest.TestCase):
             output = Path(tmp)
             (output / 'conformance-report.json').write_text('{}')
             with self.assertRaisesRegex(ValueError, 'output must be empty'):
-                release.prepare('0.2.0', 'a' * 40, output)
+                release.prepare('0.3.0', 'a' * 40, output)
             self.assertFalse((output / 'release-manifest.json').exists())
+
+    def test_rehashed_historical_notes_are_not_current_release_notes(self):
+        # A self-consistent artifact inventory cannot substitute the old notes.
+        with tempfile.TemporaryDirectory() as tmp, patch.object(release, 'clean'):
+            output = Path(tmp)
+            manifest = release.metadata()
+            files = ['source.bundle', 'release-notes.md', 'api-docs.tar', 'conformance-report.json',
+                     'performance.json', 'consumer-resolution.json', 'crates/resolution.json',
+                     'release-manifest.schema.json', str(release.PROFILE)]
+            files += [f'crates/{c["name"]}-{c["version"]}.crate' for c in manifest['crates']]
+            for name in files:
+                dest = output / name
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                source = ROOT / name
+                dest.write_bytes(source.read_bytes() if source.is_file() else b'synthetic artifact')
+            shutil.copytree(ROOT / release.PACKAGE, output / release.PACKAGE)
+            shutil.copy2(ROOT / 'docs/releases/0.2.0.md', output / 'release-notes.md')
+            manifest.update(source_commit='a' * 40, rustc='rustc 1.89.0 test', evidence=[],
+                            artifacts=[dict(path=str(p.relative_to(output)), sha256=release.sha(p))
+                                       for p in sorted(output.rglob('*')) if p.is_file()])
+            path = output / 'release-manifest.json'
+            release.write(path, manifest)
+            with self.assertRaisesRegex(ValueError, 'wrong release notes'):
+                release.verify(path)
 
     def test_unsafe_artifact_paths(self):
         with tempfile.TemporaryDirectory() as tmp:

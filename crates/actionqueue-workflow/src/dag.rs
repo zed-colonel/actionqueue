@@ -58,6 +58,38 @@ impl std::fmt::Display for CycleError {
 
 impl std::error::Error for CycleError {}
 
+/// Checks whether declaring `task_id`'s dependency on `depends_on` would close a
+/// cycle in the graph whose edges `prerequisites` returns, without a gate.
+///
+/// A gate forgets collected terminal tasks, so a declaration that must stay
+/// acyclic in the durable history checks the complete declaration graph.
+///
+/// # Errors
+///
+/// Returns [`CycleError`] if `task_id` is reachable from any prerequisite.
+pub fn check_cycle_in<I>(
+    task_id: TaskId,
+    depends_on: &[TaskId],
+    prerequisites: impl Fn(TaskId) -> I,
+) -> Result<(), CycleError>
+where
+    I: IntoIterator<Item = TaskId>,
+{
+    let mut visited = HashSet::new();
+    for &prereq in depends_on {
+        let mut queue = VecDeque::from([prereq]);
+        while let Some(current) = queue.pop_front() {
+            if current == task_id {
+                return Err(CycleError::new(task_id, prereq));
+            }
+            if visited.insert(current) {
+                queue.extend(prerequisites(current));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Gates task promotion based on declared inter-task dependencies.
 ///
 /// Tasks with unsatisfied prerequisites are blocked from Scheduled → Ready
@@ -72,6 +104,12 @@ pub struct DependencyGate {
     ///
     /// Only contains tasks with declared dependencies (not all tasks).
     prerequisites: HashMap<TaskId, HashSet<TaskId>>,
+    /// prerequisite task_id → set of task_ids that declare it.
+    ///
+    /// Always the exact inverse of `prerequisites`: every edge appears in both
+    /// maps and empty buckets are removed. `gc_task` and failure/success
+    /// propagation rely on this to find dependents without scanning every task.
+    dependents: HashMap<TaskId, HashSet<TaskId>>,
 
     /// task_ids all of whose prerequisites have reached terminal success.
     satisfied: HashSet<TaskId>,
@@ -109,9 +147,15 @@ impl DependencyGate {
 
         let entry = self.prerequisites.entry(task_id).or_default();
         for prereq in depends_on {
+            self.dependents.entry(prereq).or_default().insert(task_id);
             entry.insert(prereq);
         }
 
+        // A newly declared dependent of an already failed prerequisite must
+        // inherit failure, including when terminal prerequisite state was restored.
+        if self.prerequisites[&task_id].iter().any(|id| self.failed.contains(id)) {
+            let _ = self.notify_failed(task_id);
+        }
         // Re-evaluate satisfaction now that prerequisites have changed.
         self.recompute_satisfaction(task_id);
         Ok(())
@@ -178,10 +222,11 @@ impl DependencyGate {
 
         // Recompute satisfaction for all tasks that declare this task as a prerequisite.
         let dependents: Vec<TaskId> = self
-            .prerequisites
-            .iter()
-            .filter(|(_, prereqs)| prereqs.contains(&completed_task_id))
-            .map(|(task_id, _)| *task_id)
+            .dependents
+            .get(&completed_task_id)
+            .into_iter()
+            .flat_map(|ids| ids.iter())
+            .copied()
             .collect();
 
         let mut newly_eligible = Vec::new();
@@ -220,10 +265,11 @@ impl DependencyGate {
         while let Some(failed_id) = queue.pop_front() {
             // Find all tasks that depend on this failed task.
             let dependents: Vec<TaskId> = self
-                .prerequisites
-                .iter()
-                .filter(|(_, prereqs)| prereqs.contains(&failed_id))
-                .map(|(task_id, _)| *task_id)
+                .dependents
+                .get(&failed_id)
+                .into_iter()
+                .flat_map(|ids| ids.iter())
+                .copied()
                 .filter(|task_id| !self.failed.contains(task_id))
                 .collect();
 
@@ -254,10 +300,11 @@ impl DependencyGate {
         let mut queue: VecDeque<TaskId> = seeds.into_iter().collect();
         while let Some(failed_id) = queue.pop_front() {
             let dependents: Vec<TaskId> = self
-                .prerequisites
-                .iter()
-                .filter(|(_, prereqs)| prereqs.contains(&failed_id))
-                .map(|(task_id, _)| *task_id)
+                .dependents
+                .get(&failed_id)
+                .into_iter()
+                .flat_map(|ids| ids.iter())
+                .copied()
                 .filter(|task_id| !self.failed.contains(task_id))
                 .collect();
             for dep in dependents {
@@ -300,14 +347,27 @@ impl DependencyGate {
     ///   the remaining prerequisites still gate eligibility correctly.
     pub fn gc_task(&mut self, task_id: TaskId) {
         // Remove from direct state sets.
-        self.prerequisites.remove(&task_id);
+        if let Some(prereqs) = self.prerequisites.remove(&task_id) {
+            for prereq in prereqs {
+                if let Some(bucket) = self.dependents.get_mut(&prereq) {
+                    bucket.remove(&task_id);
+                    if bucket.is_empty() {
+                        self.dependents.remove(&prereq);
+                    }
+                }
+            }
+        }
         self.satisfied.remove(&task_id);
         self.completed.remove(&task_id);
         self.failed.remove(&task_id);
 
         // Remove task_id from other tasks' prerequisite sets.
-        for prereqs in self.prerequisites.values_mut() {
-            prereqs.remove(&task_id);
+        if let Some(dependents) = self.dependents.remove(&task_id) {
+            for dependent in dependents {
+                if let Some(prereqs) = self.prerequisites.get_mut(&dependent) {
+                    prereqs.remove(&task_id);
+                }
+            }
         }
     }
 
@@ -470,6 +530,22 @@ mod tests {
 
         gate.force_satisfy(tid(2));
         assert!(gate.is_eligible(tid(2)));
+    }
+
+    #[test]
+    fn check_cycle_in_sees_edges_a_gate_has_collected() {
+        let mut gate = DependencyGate::new();
+        gate.declare(tid(1), vec![tid(2), tid(3)]).unwrap();
+        let _ = gate.notify_completed(tid(2));
+        gate.gc_task(tid(2));
+        let durable: HashMap<TaskId, Vec<TaskId>> = HashMap::from([(tid(1), vec![tid(2), tid(3)])]);
+        let edges = |id| durable.get(&id).cloned().unwrap_or_default();
+        // The collected prerequisite's edge is gone from the gate, not from history.
+        assert!(gate.check_cycle(tid(2), &[tid(1)]).is_ok());
+        let err = check_cycle_in(tid(2), &[tid(1)], edges).unwrap_err();
+        assert_eq!((err.task_id(), err.cycle_through()), (tid(2), tid(1)));
+        assert!(check_cycle_in(tid(4), &[tid(1)], edges).is_ok());
+        assert!(check_cycle_in(tid(1), &[tid(1)], edges).is_err());
     }
 
     #[test]

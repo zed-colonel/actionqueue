@@ -272,6 +272,7 @@ fn d06_t_n1_mapping_boundary_rejects_duplicate_run_ids() {
         .expect("run should build");
 
     let snapshot = Snapshot {
+        terminal_sequences: Vec::new(),
         control_history: vec![],
         dispatch_sequences: Vec::new(),
         administrative_wakes: Vec::new(),
@@ -392,6 +393,7 @@ fn d06_t_n3_schema_migration_guard_rejects_unknown_schema_version() {
     let run = run_with_state(task_id, 0xB300, RunState::Scheduled);
 
     let snapshot = Snapshot {
+        terminal_sequences: Vec::new(),
         control_history: vec![],
         dispatch_sequences: Vec::new(),
         administrative_wakes: Vec::new(),
@@ -529,6 +531,7 @@ fn d06_t_n6_mapping_rejects_attempt_history_count_mismatch() {
 fn p6_011_t_n3_mapping_rejects_task_canceled_at_before_created_at() {
     let task_id = TaskId::from_uuid(uuid::Uuid::from_u128(0xA700));
     let snapshot = Snapshot {
+        terminal_sequences: Vec::new(),
         control_history: vec![],
         dispatch_sequences: Vec::new(),
         administrative_wakes: Vec::new(),
@@ -580,6 +583,7 @@ fn p6_011_t_n3_mapping_rejects_task_canceled_at_before_created_at() {
 fn p6_013_t_n5_mapping_rejects_engine_paused_without_paused_at() {
     let task_id = TaskId::from_uuid(uuid::Uuid::from_u128(0xA800));
     let snapshot = Snapshot {
+        terminal_sequences: Vec::new(),
         control_history: vec![],
         dispatch_sequences: Vec::new(),
         administrative_wakes: Vec::new(),
@@ -620,6 +624,7 @@ fn p6_013_t_n5_mapping_rejects_engine_paused_without_paused_at() {
 fn p6_013_t_n6_mapping_rejects_engine_pause_resume_ordering() {
     let task_id = TaskId::from_uuid(uuid::Uuid::from_u128(0xA801));
     let snapshot = Snapshot {
+        terminal_sequences: Vec::new(),
         control_history: vec![],
         dispatch_sequences: Vec::new(),
         administrative_wakes: Vec::new(),
@@ -718,6 +723,7 @@ fn dependency_declarations_survive_snapshot_roundtrip() {
     let path = temp_snapshot_path();
 
     let snapshot = Snapshot {
+        terminal_sequences: Vec::new(),
         control_history: vec![],
         dispatch_sequences: Vec::new(),
         administrative_wakes: Vec::new(),
@@ -781,6 +787,31 @@ fn dependency_declarations_survive_snapshot_roundtrip() {
     assert_eq!(loaded.dependency_declarations[1].depends_on, vec![task_a, task_b]);
     assert_eq!(loaded.dependency_declarations[1].declared_at, 20);
 
+    // Duplicate and self prerequisites name the declaration and the prerequisite.
+    for (prerequisites, prereq_id) in [(vec![task_a, task_a], task_a), (vec![task_b], task_b)] {
+        let mut malformed = snapshot.clone();
+        malformed.dependency_declarations[0].depends_on = prerequisites;
+        assert_eq!(
+            validate_snapshot(&malformed),
+            Err(SnapshotMappingError::DependencyReferencesInvalidPrerequisite {
+                task_id: task_b,
+                prereq_id
+            })
+        );
+    }
+    // Typed sections that would silently overwrite rows name the rejected section.
+    let tenant = actionqueue_storage::snapshot::model::SnapshotTenant {
+        tenant_id: actionqueue_core::ids::TenantId::new(),
+        name: "duplicate".into(),
+        created_at: 1,
+    };
+    let mut malformed = snapshot.clone();
+    malformed.tenants = vec![tenant.clone(), tenant];
+    assert_eq!(
+        validate_snapshot(&malformed),
+        Err(SnapshotMappingError::InvalidSnapshotSection { section: "tenants" })
+    );
+
     let _ = fs::remove_file(path);
 }
 
@@ -790,6 +821,7 @@ fn budget_entries_roundtrip_through_snapshot() {
     let path = temp_snapshot_path();
 
     let snapshot = Snapshot {
+        terminal_sequences: Vec::new(),
         control_history: vec![],
         dispatch_sequences: Vec::new(),
         administrative_wakes: Vec::new(),
@@ -858,6 +890,7 @@ fn subscription_entries_roundtrip_through_snapshot() {
     let path = temp_snapshot_path();
 
     let snapshot = Snapshot {
+        terminal_sequences: Vec::new(),
         control_history: vec![],
         dispatch_sequences: Vec::new(),
         administrative_wakes: Vec::new(),
@@ -956,6 +989,7 @@ fn suspended_run_state_in_snapshot_history() {
     };
 
     let snapshot = Snapshot {
+        terminal_sequences: Vec::new(),
         control_history: vec![],
         dispatch_sequences: Vec::new(),
         administrative_wakes: Vec::new(),

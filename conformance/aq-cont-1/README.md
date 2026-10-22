@@ -80,9 +80,12 @@ Evidence includes:
   and terminal history after every prefix. Failing seeds are minimized in scratch.
 - Reproducible 8/129/257-task benchmarks. Thread-local test instrumentation rejects
   unrelated history visits and bounds indexed candidate work across the 128-item
-  batch boundary. Candidate removal uses a reverse index. Measurements explicitly
-  include the accepted full-projection preparation and full-WAL validation costs;
-  elapsed timings remain informational. Instrumentation is absent in production.
+  batch boundary. Candidate removal uses a reverse index. In 0.3.0, mutation
+  preparation uses structurally shared projections, and ordinary checkpoint startup
+  validates a WAL-bound snapshot and replays its tail. Full retained-WAL verification
+  runs in `store verify`, backup/restore and upgrade, and before destructive tail
+  repair; see [ADR-020](../../docs/adrs/AQ-ADR-020-bounded-snapshot-bootstrap.md).
+  Elapsed timings remain informational. Instrumentation is absent in production.
 
 This is the ActionQueue-owned reference implementation. An external downstream
 adapter can run the same published workload protocol; this package does not claim
@@ -91,9 +94,9 @@ that an unavailable WorldInterface checkout was tested. See
 
 ## Release handoff
 
-Release 0.2.0 pins package revision 16 and publishes this package, the unchanged
+Release 0.3.0 pins package revision 16 and publishes this package, the unchanged
 developmental profile and matrix, and exact source/evidence hashes in a separate
-release manifest. See [release procedure](../../docs/releases/0.2.0.md).
+release manifest. See [release procedure](../../docs/releases/0.3.0.md).
 Download the complete `source.bundle` and check out the manifest SHA before running
 the drivers: they import `tests/conformance/harness`, and boundary checks require
 Git-tracked files. A directory-only copy cannot run the complete suite.

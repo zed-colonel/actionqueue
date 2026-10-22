@@ -11,10 +11,7 @@ use sha2::{Digest, Sha256};
 
 use super::{open_store, session::*, OpenOptions, StoreError, StoreManifest, StoreSession};
 use crate::{
-    recovery::{
-        bootstrap::{recover, recover_read_only},
-        projection::ProjectionDigest,
-    },
+    recovery::{bootstrap::recover_read_only, projection::ProjectionDigest},
     wal::repair::RepairPolicy,
 };
 #[derive(Debug, Serialize)]
@@ -119,7 +116,7 @@ fn normalized(path: &Path) -> Result<PathBuf, StoreError> {
     }
     Ok(normalized)
 }
-fn check_destination(source: &Path, dest: &Path) -> Result<(), StoreError> {
+pub(crate) fn check_destination(source: &Path, dest: &Path) -> Result<(), StoreError> {
     let source = normalized(source)?;
     let destination = normalized(dest)?;
     if source.starts_with(&destination) || destination.starts_with(&source) {
@@ -130,12 +127,12 @@ fn check_destination(source: &Path, dest: &Path) -> Result<(), StoreError> {
     }
     Ok(())
 }
-fn make_dirs(root: &Path) -> Result<(), StoreError> {
+pub(crate) fn make_dirs(root: &Path) -> Result<(), StoreError> {
     fs::create_dir(root.join("wal"))?;
     fs::create_dir(root.join("snapshots"))?;
     Ok(())
 }
-fn sync_store(root: &Path) -> Result<(), StoreError> {
+pub(crate) fn sync_store(root: &Path) -> Result<(), StoreError> {
     sync_dir(&root.join("wal"))?;
     sync_dir(&root.join("snapshots"))?;
     sync_dir(root)
@@ -145,16 +142,9 @@ fn verify_projection(root: &Path, descriptor: &BackupDescriptor) -> Result<(), S
     if session.manifest().store_id != descriptor.store_id {
         return Err(invalid("backup identity mismatch"));
     }
-    let recovered = recover_read_only(&session, RepairPolicy::Strict)?;
-    // A staged snapshot must be valid, not merely eligible for WAL fallback.
-    if root.join("snapshots/snapshot.bin").exists() && !recovered.snapshot_loaded {
-        return Err(invalid("backup snapshot is damaged"));
-    }
-    let wal_only = recover(&session, RepairPolicy::Strict, false)?;
-    let digest = recovered.projection.projection_digest()?;
-    if recovered.projection.latest_sequence() != descriptor.sequence
-        || digest != descriptor.projection_digest
-        || wal_only.projection.projection_digest()? != digest
+    let (_, verified) = super::verify::verify_session(&session, false)?;
+    if verified.sequence != descriptor.sequence
+        || verified.projection_digest != descriptor.projection_digest
     {
         return Err(invalid("backup projection or sequence mismatch"));
     }
@@ -163,11 +153,11 @@ fn verify_projection(root: &Path, descriptor: &BackupDescriptor) -> Result<(), S
 pub fn backup_store(source: &Path, output: &Path) -> Result<BackupDescriptor, StoreError> {
     check_destination(source, output)?;
     let session = open_store(source, OpenOptions::ReadOnly)?;
-    let recovered = recover_read_only(&session, RepairPolicy::Strict)?;
+    let (recovered, verified) = super::verify::verify_session(&session, true)?;
     let staging = Staging::new(output)?;
     make_dirs(&staging.0)?;
     let mut names = vec!["manifest.json", "store.lock", "wal/actionqueue.wal"];
-    if recovered.snapshot_loaded {
+    if verified.snapshot_sequence > 0 {
         names.push("snapshots/snapshot.bin");
     }
     names.sort();

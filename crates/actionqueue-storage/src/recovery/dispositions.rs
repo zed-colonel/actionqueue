@@ -124,6 +124,7 @@ impl ReplayReducer {
     }
     /// Validate persisted accounting and links independently during snapshot hydration.
     pub(crate) fn validate_disposition_history(&self) -> Result<(), ReplayReducerError> {
+        let mut completions = std::collections::HashMap::<_, Vec<_>>::new();
         for run in self.run_instances() {
             let mut failures = 0u32;
             for a in self.get_attempt_history(&run.id()).into_iter().flatten() {
@@ -154,14 +155,11 @@ impl ReplayReducer {
                         DispositionOutcome::Timeout { .. } => AttemptResultKind::Timeout,
                         _ => AttemptResultKind::Failure,
                     };
-                    if matches!(r.disposition.outcome(), DispositionOutcome::Complete)
-                        && !self.validate_historical_completion(
-                            run.task_id(),
-                            r.sequence,
-                            r.timestamp,
-                        )
-                    {
-                        return Err(ReplayReducerError::CorruptedData);
+                    if matches!(r.disposition.outcome(), DispositionOutcome::Complete) {
+                        completions
+                            .entry(run.task_id())
+                            .or_default()
+                            .push((r.sequence, r.timestamp));
                     }
                     if accounting.target_state != r.target_state
                         || accounting.failure_attempt_count != r.failure_attempt_count
@@ -238,6 +236,9 @@ impl ReplayReducer {
             if failures != run.failure_attempt_count() {
                 return Err(ReplayReducerError::CorruptedData);
             }
+        }
+        if !self.validate_historical_completions(&mut completions) {
+            return Err(ReplayReducerError::CorruptedData);
         }
         Ok(())
     }

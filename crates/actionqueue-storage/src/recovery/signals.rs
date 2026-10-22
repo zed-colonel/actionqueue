@@ -1,5 +1,5 @@
 //! Derived signal indexes. Durable records remain resident after logical retirement.
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use super::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ops::Bound::{Excluded, Unbounded};
 
 use actionqueue_core::{bounded::OpaqueRef, continuation::*, ids::*, limits::*};

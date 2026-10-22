@@ -99,3 +99,9 @@ pub use backup::{backup_store, inspect_store, restore_store, BackupDescriptor, S
 
 #[doc(hidden)]
 pub mod fault;
+
+pub mod verify;
+pub use verify::{verify_store, StoreVerification};
+
+pub mod upgrade;
+pub use upgrade::{upgrade_store, StoreUpgrade};

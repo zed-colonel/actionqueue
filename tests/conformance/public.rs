@@ -34,7 +34,7 @@ fn adapter() -> PathBuf {
     if let Some(path) = std::env::var_os("AQ_ADAPTER") {
         return path.into();
     }
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/debug/examples/aq_adapter");
+    let path = process::cargo_binary("examples/aq_adapter");
     assert!(
         path.is_file(),
         "build the published reference adapter: cargo build --example aq_adapter --features \

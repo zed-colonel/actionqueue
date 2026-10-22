@@ -32,4 +32,6 @@ mod disposition_v1;
 
 pub(crate) mod admission_v3;
 mod disposition_v2;
-mod task_v3;
+pub(crate) mod task_v3;
+
+pub mod checkpoint;

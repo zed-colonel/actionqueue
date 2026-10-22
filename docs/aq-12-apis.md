@@ -67,7 +67,10 @@ signal links. Waits expose structural filters/child targets, eligibility cursor,
 deadline policy and recorded resolution. Checkpoints and signals expose data
 summaries. Pending and consumed resume views include typed wake reasons and recursively redacted data summaries. Signal-linked waits and checkpoint consumers have separate pages at `/signals/{id}/waits` and `/checkpoints/{id}/consumers`. Trace nodes and typed edges connect these facts. Control attribution
 is joined by recorded WAL sequences; task cancellation targets come from the
-retained WAL records, never matching timestamps. Task/run control histories are paginated at `/tasks/{id}/controls` and `/runs/{id}/controls`. Snapshot hydration restores operation-target and attempt-owner indexes from the retained complete WAL. Standalone snapshot history explicitly reports `available: false`. Missing control history
+retained WAL records, never matching timestamps. Task/run control histories are paginated at `/tasks/{id}/controls` and `/runs/{id}/controls`. Schema-10 checkpoint hydration restores recorded operation-target and attempt-owner
+indexes directly, without prefix replay; exact-reference lookup rebuilds from
+admissions. Standalone logical-v9 images, which omit these associations, explicitly
+report history `available: false`. Missing control history
 is represented by null, not fabricated events or durable retry counters.
 
 A data summary contains representation, content hash, content type and size.

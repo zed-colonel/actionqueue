@@ -5,8 +5,15 @@ use crate::{
 };
 pub fn run(args: StorageArgs) -> Result<CommandOutput, CliError> {
     use actionqueue_storage::store::*;
-    let encode = |v| serde_json::to_value(v).map_err(|e| StoreError::InvalidStore(e.to_string()));
+    fn encode<T: serde::Serialize>(v: T) -> Result<serde_json::Value, StoreError> {
+        serde_json::to_value(v).map_err(|e| StoreError::InvalidStore(e.to_string()))
+    }
     let result = match args.operation.as_str() {
+        "verify" => verify_store(&args.data_dir).and_then(encode),
+        "upgrade" => {
+            upgrade_store(&args.data_dir, args.output.as_deref().expect("validated output"))
+                .and_then(encode)
+        }
         "inspect" => inspect_store(&args.data_dir).and_then(|v| {
             serde_json::to_value(v).map_err(|e| StoreError::InvalidStore(e.to_string()))
         }),

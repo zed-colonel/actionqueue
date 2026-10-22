@@ -310,11 +310,7 @@ pub(crate) fn prepare_control(
             task_scope(c.task_id())?
         }
         M::SubscriptionCancel(c) => task_scope(
-            p.subscriptions()
-                .find(|(id, _)| **id == c.subscription_id())
-                .ok_or(ControlError::NotFound)?
-                .1
-                .task_id,
+            p.get_subscription(&c.subscription_id()).ok_or(ControlError::NotFound)?.task_id,
         )?,
         M::LedgerAppend(c) => {
             if c.entry().actor_id().is_some() && c.entry().actor_id() != host.actor_id {

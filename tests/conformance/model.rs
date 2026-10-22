@@ -265,7 +265,8 @@ impl Model {
                     check_wake(&context, t.winner.unwrap(), w);
                 }
             }
-            let h = p.get_attempt_history(&run).unwrap_or(&[]);
+            let empty = Default::default();
+            let h = p.get_attempt_history(&run).unwrap_or(&empty);
             for (j, a) in h.iter().enumerate() {
                 let assignment = a.accepted_start().and_then(|a| a.assignment);
                 assert_eq!(assignment.map(|a| a.delivery), t.deliveries[j]);

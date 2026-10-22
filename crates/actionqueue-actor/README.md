@@ -1,6 +1,6 @@
 # actionqueue-actor
 
-Release 0.2.0 implements AQ-CONT-1. See the [release and compatibility notes](../../docs/releases/0.2.0.md).
+Release 0.3.0 implements AQ-CONT-1. See the [release and compatibility notes](../../docs/releases/0.3.0.md).
 
 Remote actor registration, heartbeat monitoring, and executor trait routing for the ActionQueue task queue engine.
 

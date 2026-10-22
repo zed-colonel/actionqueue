@@ -9,10 +9,11 @@ pub(crate) enum Visit {
     WaitBucket,
     Waiter,
     CandidateRemoval,
+    TaskHistory,
 }
 #[cfg(feature = "testing")]
 thread_local! {
-    static COUNTS: std::cell::Cell<[usize; 7]> = const { std::cell::Cell::new([0; 7]) };
+    static COUNTS: std::cell::Cell<[usize; 8]> = const { std::cell::Cell::new([0; 8]) };
 }
 #[inline]
 pub(crate) fn visit(kind: Visit) {
@@ -38,13 +39,127 @@ pub(crate) fn visit(kind: Visit) {
 /// Reset the calling thread's measured work, excluding fixture setup/replay costs.
 #[cfg(feature = "testing")]
 pub fn reset() {
-    COUNTS.with(|c| c.set([0; 7]));
+    COUNTS.with(|c| c.set([0; 8]));
 }
 /// Wait history, signal history, match candidates, signal candidates, bucket probes,
-/// waiter visits, and candidate removals, in that order.
+/// waiter visits, candidate removals, and task history, in that order.
 #[cfg(feature = "testing")]
-pub fn counts() -> [usize; 7] {
+pub fn counts() -> [usize; 8] {
     COUNTS.with(std::cell::Cell::get)
+}
+
+/// Reducer root clones, copy-on-write record materializations, subscription candidates,
+/// and apply entries on the calling thread, including replay. Snapshot materialization
+/// and digest traversal are excluded. All growing reducer fields use persistent roots:
+/// a root clone copies no complete projection or wholesale run entries.
+/// The former `full_projection_clones` and `cloned_run_entries` counters belonged to
+/// the 0.2.0 deep-clone implementation. They have no increment site after AQ-P2 and
+/// are removed; bounds on actual `record_copies` guard mutation work instead.
+#[cfg(feature = "testing")]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ProjectionWork {
+    pub shallow_projection_clones: usize,
+    /// Actual shared records materialized by collection writes/removals.
+    pub record_copies: usize,
+    pub subscription_candidates: usize,
+    pub cancellation_run_candidates: usize,
+    pub child_history_visits: usize,
+    /// Entries into `ReplayReducer::apply`, including nested and rejected applications.
+    pub reducer_event_visits: usize,
+}
+#[cfg(feature = "testing")]
+thread_local! {
+    static PROJECTION_WORK: std::cell::Cell<ProjectionWork> = const {
+        std::cell::Cell::new(ProjectionWork {
+            shallow_projection_clones: 0,
+            record_copies: 0,
+            subscription_candidates: 0,
+            cancellation_run_candidates: 0,
+            child_history_visits: 0,
+            reducer_event_visits: 0,
+        })
+    };
+}
+/// Reset only the calling thread's projection work; the eight iterator counters are separate.
+#[cfg(feature = "testing")]
+pub fn reset_projection_work() {
+    PROJECTION_WORK.with(|c| c.set(ProjectionWork::default()));
+}
+/// Read without resetting. Use synchronous regions that remain on the calling thread.
+#[cfg(feature = "testing")]
+pub fn projection_work() -> ProjectionWork {
+    PROJECTION_WORK.with(std::cell::Cell::get)
+}
+#[cfg(feature = "testing")]
+pub(crate) fn projection_clone() {
+    PROJECTION_WORK.with(|c| {
+        let mut w = c.get();
+        w.shallow_projection_clones += 1;
+        c.set(w);
+    });
+}
+#[cfg(feature = "testing")]
+pub(crate) fn record_copy() {
+    PROJECTION_WORK.with(|c| {
+        let mut w = c.get();
+        w.record_copies += 1;
+        c.set(w);
+    });
+}
+#[cfg(feature = "testing")]
+pub(crate) fn subscription_candidate() {
+    PROJECTION_WORK.with(|c| {
+        let mut w = c.get();
+        w.subscription_candidates += 1;
+        c.set(w);
+    });
+}
+#[cfg(feature = "testing")]
+pub(crate) fn reducer_event() {
+    PROJECTION_WORK.with(|c| {
+        let mut work = c.get();
+        work.reducer_event_visits += 1;
+        c.set(work);
+    });
+}
+
+#[cfg(all(test, feature = "testing"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn projection_counters_are_thread_local_and_reset_independently() {
+        reset();
+        reset_projection_work();
+        visit(Visit::WaitHistory);
+        projection_clone();
+        record_copy();
+        reducer_event();
+        let expected = ProjectionWork {
+            shallow_projection_clones: 1,
+            record_copies: 1,
+            reducer_event_visits: 1,
+            ..ProjectionWork::default()
+        };
+        assert_eq!(projection_work(), expected);
+        std::thread::spawn(|| {
+            assert_eq!(projection_work(), ProjectionWork::default());
+            projection_clone();
+            reducer_event();
+            reset_projection_work();
+            assert_eq!(projection_work(), ProjectionWork::default());
+        })
+        .join()
+        .unwrap();
+        assert_eq!(projection_work(), expected);
+        reset();
+        assert_eq!(projection_work(), expected);
+        visit(Visit::WaitHistory);
+        reset_projection_work();
+        assert_eq!(projection_work(), ProjectionWork::default());
+        assert_eq!(counts(), [1, 0, 0, 0, 0, 0, 0, 0]);
+        reset();
+    }
 }
 
 /// Actual candidate visits while preparing a live mutation, including nested reducer work.
@@ -68,4 +183,70 @@ pub(crate) fn measure<T>(operation: impl FnOnce() -> T) -> (T, MatchingWork) {
     let result = operation();
     let work = MATCHING.with(|c| c.get().unwrap_or_default());
     (result, work)
+}
+
+#[cfg(feature = "testing")]
+pub(crate) fn cancellation_candidate() {
+    PROJECTION_WORK.with(|c| {
+        let mut w = c.get();
+        w.cancellation_run_candidates += 1;
+        c.set(w);
+    });
+}
+
+#[cfg(feature = "testing")]
+pub(crate) fn child_history_visit() {
+    PROJECTION_WORK.with(|c| {
+        let mut w = c.get();
+        w.child_history_visits += 1;
+        c.set(w);
+    });
+}
+
+// Actual complete frames consumed by all startup readers, including probes.
+#[cfg(feature = "testing")]
+thread_local! { static WAL_IO: std::cell::Cell<(u64,u64)> = const { std::cell::Cell::new((0,0)) }; }
+#[cfg(feature = "testing")]
+pub(crate) fn wal_read(bytes: usize) {
+    WAL_IO.with(|v| {
+        let (f, b) = v.get();
+        v.set((f + 1, b + bytes as u64));
+    });
+}
+#[cfg(feature = "testing")]
+pub fn reset_wal_io() {
+    WAL_IO.with(|v| v.set((0, 0)));
+}
+#[cfg(feature = "testing")]
+pub fn wal_io() -> (u64, u64) {
+    WAL_IO.with(std::cell::Cell::get)
+}
+
+/// Constituent snapshot preparation phases; the aggregate startup timer also
+/// includes boundary probes and all allocation/ownership plumbing.
+#[derive(Debug, Clone, Copy, Default, serde::Serialize)]
+pub struct SnapshotWork {
+    pub io_seconds: f64,
+    pub integrity_seconds: f64,
+    pub decode_seconds: f64,
+    pub profile_validation_seconds: f64,
+    pub mapping_validation_seconds: f64,
+    pub object_hydration_seconds: f64,
+    pub index_construction_seconds: f64,
+    pub canonical_digest_seconds: f64,
+    pub inspection_index_seconds: f64,
+}
+thread_local! { static SNAPSHOT_PHASES:std::cell::Cell<SnapshotWork>=const { std::cell::Cell::new(SnapshotWork { io_seconds:0.0,integrity_seconds:0.0,decode_seconds:0.0,profile_validation_seconds:0.0,mapping_validation_seconds:0.0,object_hydration_seconds:0.0,index_construction_seconds:0.0,canonical_digest_seconds:0.0,inspection_index_seconds:0.0 }) }; }
+pub(crate) fn reset_snapshot_phases() {
+    SNAPSHOT_PHASES.with(|p| p.set(SnapshotWork::default()));
+}
+pub(crate) fn snapshot_phase(f: impl FnOnce(&mut SnapshotWork)) {
+    SNAPSHOT_PHASES.with(|p| {
+        let mut v = p.get();
+        f(&mut v);
+        p.set(v);
+    });
+}
+pub(crate) fn snapshot_phases() -> SnapshotWork {
+    SNAPSHOT_PHASES.with(std::cell::Cell::get)
 }

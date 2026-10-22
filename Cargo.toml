@@ -47,17 +47,17 @@ platform = [
 ]
 
 [dev-dependencies]
-actionqueue-core = "0.2.0"
-actionqueue-storage = { version = "0.2.0", features = ["testing"] }
-actionqueue-engine = "0.2.0"
-actionqueue-executor-local = "0.2.0"
-actionqueue-runtime = "0.2.0"
-actionqueue-workflow = "0.2.0"
-actionqueue-budget = "0.2.0"
-actionqueue-actor = "0.2.0"
-actionqueue-platform = "0.2.0"
-actionqueue-daemon = "0.2.0"
-actionqueue-cli = "0.2.0"
+actionqueue-core = "0.3.0"
+actionqueue-storage = { version = "0.3.0", features = ["testing"] }
+actionqueue-engine = "0.3.0"
+actionqueue-executor-local = "0.3.0"
+actionqueue-runtime = "0.3.0"
+actionqueue-workflow = "0.3.0"
+actionqueue-budget = "0.3.0"
+actionqueue-actor = "0.3.0"
+actionqueue-platform = "0.3.0"
+actionqueue-daemon = "0.3.0"
+actionqueue-cli = "0.3.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 axum = "0.7"
 tower = { version = "0.4", features = ["util"] }
@@ -425,6 +425,15 @@ name = "continuation"
 path = "benches/continuation.rs"
 harness = false
 
+[[bench]]
+name = "retained_history"
+path = "benches/retained_history.rs"
+harness = false
+
+[[test]]
+name = "acceptance_retained_history"
+path = "tests/acceptance/retained_history.rs"
+
 [[test]]
 name = "conformance_reference_adapter"
 path = "tests/conformance/reference_adapter.rs"
@@ -444,3 +453,12 @@ required-features = ["workflow", "budget", "actor", "platform"]
 name = "aq_adapter"
 path = "conformance/aq-cont-1/drivers/adapter.rs"
 required-features = ["workflow", "budget", "actor", "platform"]
+
+[[test]]
+name = "acceptance_mutation_sharing"
+path = "tests/acceptance/mutation_sharing.rs"
+
+[[bench]]
+name = "mutation_surfaces"
+path = "benches/mutation_surfaces.rs"
+harness = false

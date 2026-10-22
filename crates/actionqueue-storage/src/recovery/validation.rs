@@ -154,7 +154,7 @@ impl ReplayReducer {
                 if entry_id.as_uuid().is_nil()
                     || ledger_key.is_empty()
                     || !self.tenants.contains_key(tenant_id)
-                    || self.ledger_entries.iter().any(|e| e.entry_id == *entry_id)
+                    || self.derived.ledger_ids.contains(entry_id)
                     || actor_id.is_some_and(|id| !self.actors.contains_key(&id))
                 {
                     return Err(invalid());

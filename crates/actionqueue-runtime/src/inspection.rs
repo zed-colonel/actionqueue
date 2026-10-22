@@ -335,7 +335,7 @@ impl<'a> Inspector<'a> {
         self.page(
             q,
             &format!("history/{run}"),
-            self.p.get_run_history(&run).unwrap_or_default().iter().map(|h| {
+            self.p.get_run_history(&run).into_iter().flatten().map(|h| {
                 Ok(StateTransitionView { from: h.from(), to: h.to(), timestamp: h.timestamp() })
             }),
         )
@@ -352,8 +352,8 @@ impl<'a> Inspector<'a> {
             &format!("attempts/{run}"),
             self.p
                 .get_attempt_history(&run)
-                .unwrap_or_default()
-                .iter()
+                .into_iter()
+                .flatten()
                 .map(|a| self.get_attempt(run, a.attempt_id())),
         )
     }
@@ -393,7 +393,7 @@ impl<'a> Inspector<'a> {
         if admitted_children.len() > 1000 {
             return Err(InspectionError::TooLarge);
         }
-        let history = self.p.get_attempt_history(&run).unwrap_or_default();
+        let history = self.p.get_attempt_history(&run).ok_or(InspectionError::NotFound)?;
         let previous_attempt_id = history
             .iter()
             .position(|a| a.attempt_id() == attempt)
@@ -557,8 +557,8 @@ impl<'a> Inspector<'a> {
             &format!("checkpoint-consumers/{id}"),
             self.p
                 .get_attempt_history(&c.run_id)
-                .unwrap_or_default()
-                .iter()
+                .into_iter()
+                .flatten()
                 .filter(|a| {
                     self.p
                         .attempt_resume(c.run_id, a.attempt_id())
@@ -729,7 +729,7 @@ impl<'a> Inspector<'a> {
             runs.sort();
             for run in runs {
                 nodes.push(TraceNode::Run(self.get_run(run)?));
-                for a in self.p.get_attempt_history(&run).unwrap_or_default() {
+                for a in self.p.get_attempt_history(&run).into_iter().flatten() {
                     let view = self.get_attempt(run, a.attempt_id())?;
                     signals.extend(view.emitted_signals.iter().copied());
                     nodes.push(TraceNode::Attempt(view));

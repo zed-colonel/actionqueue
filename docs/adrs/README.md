@@ -29,6 +29,9 @@ matching rule, or digest algorithm must reference the governing ADR and include 
 | [`AQ-ADR-016`](AQ-ADR-016-control-authentication-hook.md) | Control authentication hook | `AQ-11` | Accepted |
 | [`AQ-ADR-017`](AQ-ADR-017-remote-actor-result-envelope.md) | Remote actor result envelope | `AQ-11` | Accepted |
 | [`AQ-ADR-018`](AQ-ADR-018-crate-extraction.md) | Crate extraction | `post-release` | Proposed |
+| [`AQ-ADR-019`](AQ-ADR-019-structurally-shared-projections.md) | Structurally shared projections | `AQ-P2` | Accepted |
+| [`AQ-ADR-020`](AQ-ADR-020-bounded-snapshot-bootstrap.md) | Bounded snapshot bootstrap | `AQ-P3` | Accepted |
+| [`AQ-ADR-021`](AQ-ADR-021-retained-terminal-history.md) | Retained terminal history | `AQ-P4` (design only) | Accepted for design only |
 
 ## Lifecycle
 
@@ -39,3 +42,7 @@ Accepted  → Superseded (by a later ADR with an explicit contract amendment)
 
 A failed planning assumption (plan Appendix D) creates a new ADR and a contract review; it does
 not justify an undocumented local workaround.
+
+ADR-021 is accepted as AQ-P4's design deliverable under the recorded operator
+guidance. Its archive, checkpoint and backup changes require a separately
+scheduled implementation; design acceptance does not ship those formats.

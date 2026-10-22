@@ -323,9 +323,9 @@ impl Driver {
         let dir = tempfile::tempdir().unwrap();
         let token = dir.path().join("token");
         std::fs::write(&token, TOKEN).unwrap();
-        let executable = std::env::var_os("AQ_CLI").map(PathBuf::from).unwrap_or_else(|| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/debug/actionqueue")
-        });
+        let executable = std::env::var_os("AQ_CLI")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| super::process::cargo_binary("actionqueue"));
         let mut command = std::process::Command::new(executable);
         command.args(args).args([
             "--daemon",

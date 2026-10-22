@@ -1,5 +1,9 @@
 # AQ-ADR-006 — Signal retention
 
+AQ-P3 supersedes the full-history startup behavior below through
+[ADR-020](AQ-ADR-020-bounded-snapshot-bootstrap.md). Complete history is still retained
+and explicitly verified; ordinary checkpoint recovery reads only the tail.
+
 - **Status:** Accepted.
 - **Decide before:** `AQ-05`
 - **Contract:** `AQ-CONT-1`
@@ -81,3 +85,7 @@ Evidence: retention boundaries, pins, stale batches, retirement replay, snapshot
 plus tail, WAL-only and backup/restore parity in `acceptance_signal_retention`;
 uncertain retirement and process-kill boundaries in `acceptance_signal_crash`.
 Wait-resolution and physical compaction evidence remain with their owning work.
+
+AQ-P2 replaces the full preparation copy described above with persistent roots and
+derived indexes; see [ADR-019](AQ-ADR-019-structurally-shared-projections.md).
+Retirement still retains immutable content and the complete WAL.

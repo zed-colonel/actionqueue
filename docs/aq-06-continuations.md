@@ -64,16 +64,21 @@ Ticks resolve waits while paused/draining. Worker-result waits yield at most eve
 WAL framing remains version 1. Kinds 304–307 and 320–321 use explicit storage-owned
 schema 1 DTOs. New task/admission payloads use schema 2 with the wait-key policy;
 schema 1 remains readable for frozen evidence. Snapshot schema and projection
-digest reached version 4 at this milestone and are version 9 at release. Older
-development manifests are rejected before writable access, without migration.
+digest reached version 4 at this milestone. The logical projection/digest remain 9;
+AQ-P3 uses compact snapshot schema 10 with an explicit offline upgrade from released
+schema 9. Earlier development manifests remain unsupported.
 The conformance package retains only the current projection known-answer vector
 (`projection-v9-vector.json`), whose digest
 `conformance/aq-cont-1/generate-control-vectors.py` recomputes independently.
 
 Snapshots include wait history, pending resume identities, cancellation history,
 lease grant fences and key reservations. Hydration validates cross-references and
-rebuilds filter, deadline, candidate and retention indexes. A snapshot must equal
-its existing WAL prefix before publication. Wait and referenced attempt history
+rebuilds filter, deadline, candidate and retention indexes, while preserving operation
+targets and attempt ownership. Proven live capture binds immutable state to its
+durable WAL cursor without prefix replay. Ordinary recovery validates the boundary
+and reads the tail; full prefix equivalence is checked by `store verify`, backup,
+restore, upgrade and before destructive repair. See
+[ADR-020](adrs/AQ-ADR-020-bounded-snapshot-bootstrap.md). Wait and referenced attempt history
 are conservatively retained; physical compaction is deferred.
 
 ## Evidence and milestone boundary

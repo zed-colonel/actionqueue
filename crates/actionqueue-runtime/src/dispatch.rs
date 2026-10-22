@@ -37,11 +37,8 @@ use actionqueue_executor_local::types::ExecutorRequest;
 use actionqueue_executor_local::{AttemptRunner, SystemAttemptTimer};
 use actionqueue_storage::mutation::authority::{MutationAuthorityError, StorageMutationAuthority};
 use actionqueue_storage::recovery::reducer::{ReplayReducer, ReplayReducerError};
-use actionqueue_storage::snapshot::build::build_snapshot_from_projection;
 use actionqueue_storage::snapshot::mapping::SnapshotMappingError;
-use actionqueue_storage::snapshot::writer::{
-    SnapshotFsWriter, SnapshotWriter, SnapshotWriterError,
-};
+use actionqueue_storage::snapshot::writer::SnapshotWriterError;
 use actionqueue_storage::wal::writer::WalWriter;
 use actionqueue_workflow::children::build_children_snapshot;
 use actionqueue_workflow::dag::DependencyGate;
@@ -52,9 +49,30 @@ use crate::admission::AdmissionError;
 use crate::config::BackoffStrategyConfig;
 use crate::worker::{InFlightRun, WorkerResult};
 
+/// Bounded retry for failed checkpoint publications: 1 second, doubling to at most
+/// 60 seconds, the daemon's schedule.
+#[derive(Debug, Default)]
+struct SnapshotRetry {
+    next_attempt: Option<std::time::Instant>,
+    delay: Option<std::time::Duration>,
+}
+impl SnapshotRetry {
+    const INITIAL: std::time::Duration = std::time::Duration::from_secs(1);
+    const MAX: std::time::Duration = std::time::Duration::from_secs(60);
+    fn ready(&self, now: std::time::Instant) -> bool {
+        self.next_attempt.is_none_or(|deadline| now >= deadline)
+    }
+    fn failed(&mut self, now: std::time::Instant) -> std::time::Duration {
+        let delay = self.delay.map_or(Self::INITIAL, |d| (d * 2).min(Self::MAX));
+        self.delay = Some(delay);
+        self.next_attempt = Some(now + delay);
+        delay
+    }
+}
+
 /// Builds a [`DependencyGate`] from the recovery reducer's dependency state.
 ///
-/// Called at bootstrap and after each created admission to reconstruct the gate
+/// Called at bootstrap to reconstruct the gate
 /// from the committed projection. Satisfaction is derived from the
 /// projection's run states (which tasks have at least one Completed run with all
 /// runs terminal). Failure is derived similarly (all runs terminal, none Completed).
@@ -191,6 +209,10 @@ pub enum DispatchError {
     SnapshotWrite(SnapshotWriterError),
     /// Snapshot writer initialization failed.
     SnapshotInit(String),
+    /// Live checkpoint capture failed, possibly fencing the WAL authority.
+    SnapshotCapture(String),
+    /// Live checkpoint encoding or publication failed.
+    SnapshotPublish(String),
     /// Continuation limits cannot guarantee durable attempt closure.
     InvalidContinuationLimits(crate::config::ConfigError),
     /// Backoff strategy configuration is invalid (e.g., base exceeds max).
@@ -222,6 +244,8 @@ impl std::fmt::Display for DispatchError {
             DispatchError::SnapshotBuild(e) => write!(f, "snapshot build error: {e}"),
             DispatchError::SnapshotWrite(e) => write!(f, "snapshot write error: {e}"),
             DispatchError::SnapshotInit(e) => write!(f, "snapshot init error: {e}"),
+            DispatchError::SnapshotCapture(e) => write!(f, "snapshot capture error: {e}"),
+            DispatchError::SnapshotPublish(e) => write!(f, "snapshot publication error: {e}"),
             DispatchError::InvalidBackoffConfig => {
                 write!(f, "invalid backoff configuration")
             }
@@ -263,19 +287,20 @@ pub struct DispatchLoop<
     draining: bool,
     snapshot_path: Option<PathBuf>,
     snapshot_event_threshold: Option<u64>,
-    events_since_last_snapshot: u64,
+    snapshot_retry: SnapshotRetry,
 
     /// DAG dependency gate — gates Scheduled → Ready promotion.
-    /// Built from the projection at bootstrap and kept in sync as runs complete.
+    /// Built from the projection at bootstrap. Afterwards only
+    /// `refresh_coordination` updates it, from the tasks the projection reports
+    /// as changed since `coordination_sequence`: declarations, prerequisite
+    /// outcomes and terminal task status.
     dependency_gate: DependencyGate,
     /// Hierarchy tracker — parent-child task tree for cascade cancellation.
-    /// Built from the projection at bootstrap and kept in sync as tasks are
-    /// created (via handler submissions) and reach terminal state.
+    /// Built from the projection at bootstrap. Afterwards only
+    /// `refresh_coordination` updates it, restoring parent links and terminal
+    /// facts for the tasks changed since `coordination_sequence`, whichever path
+    /// (handler submission, disposition or service) created or finished them.
     hierarchy_tracker: HierarchyTracker,
-    /// TaskIds with pending cascade cancellations. Seeded at bootstrap with
-    /// tasks that have `canceled_at` and at least one non-terminal descendant.
-    /// Entries are removed once the cascade completes (self-quenching).
-    pending_hierarchy_cascade: std::collections::HashSet<TaskId>,
     /// In-memory budget state reconstructed from WAL events at bootstrap.
     /// Updated each tick as worker results arrive with consumption records.
     #[cfg(feature = "budget")]
@@ -311,6 +336,15 @@ pub struct DispatchLoop<
     /// InternalSubscriptionRegistry, CronScheduleCache). Populated when all runs for a
     /// task are terminal; drained each tick after cascades are complete.
     pending_gc_tasks: std::collections::HashSet<TaskId>,
+    /// Projection sequence up to which `dependency_gate`, `hierarchy_tracker` and
+    /// `pending_gc_tasks` have applied every task change. `refresh_coordination`
+    /// consumes `changed_tasks_since` this cursor and then advances it to the
+    /// latest sequence; it must only advance after those changes are applied.
+    coordination_sequence: u64,
+    /// Projection sequence up to which `key_gate` reflects every run's concurrency
+    /// key claim. `refresh_key_gate` consumes `changed_runs_since` this cursor and
+    /// then advances it; a full key-gate rebuild also resets it.
+    key_sequence: u64,
 }
 
 /// Configuration parameters for the dispatch loop that group backoff,
@@ -396,6 +430,15 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         let dependency_gate = build_dependency_gate(authority.projection());
         // Rebuild the hierarchy tracker from task parent_task_id fields.
         let hierarchy_tracker = build_hierarchy_tracker(authority.projection());
+        // Recovery restores terminal tasks' caches too. Queue their cleanup once
+        // here: incremental updates begin at the recovered sequence and will not
+        // revisit unchanged terminal tasks on later admissions or controls.
+        let pending_gc_tasks = authority
+            .projection()
+            .task_records()
+            .map(|record| record.task_spec().id())
+            .filter(|id| hierarchy_tracker.is_terminal(*id))
+            .collect();
 
         // Rebuild budget tracker from WAL-sourced projection records.
         #[cfg(feature = "budget")]
@@ -429,14 +472,6 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
             }
             registry
         };
-
-        // Seed pending cascade with canceled tasks that may have non-terminal descendants.
-        let pending_hierarchy_cascade: std::collections::HashSet<TaskId> = authority
-            .projection()
-            .task_records()
-            .filter(|tr| tr.canceled_at().is_some())
-            .map(|tr| tr.task_spec().id())
-            .collect();
 
         // Rebuild actor registry from WAL-sourced projection records.
         #[cfg(feature = "actor")]
@@ -553,6 +588,8 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         };
 
         let mut dispatch = Self {
+            key_sequence: authority.projection().latest_sequence(),
+            coordination_sequence: authority.projection().latest_sequence(),
             authority,
             runner: Arc::new(AttemptRunner::new(handler)),
             clock,
@@ -568,11 +605,10 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
             draining: false,
             snapshot_path: config.snapshot_path,
             snapshot_event_threshold: config.snapshot_event_threshold,
-            events_since_last_snapshot: 0,
+            snapshot_retry: SnapshotRetry::default(),
 
             dependency_gate,
             hierarchy_tracker,
-            pending_hierarchy_cascade,
             #[cfg(feature = "budget")]
             budget_tracker,
             #[cfg(feature = "budget")]
@@ -591,7 +627,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
             rbac_enforcer,
             #[cfg(feature = "platform")]
             ledger,
-            pending_gc_tasks: std::collections::HashSet::new(),
+            pending_gc_tasks,
         };
         dispatch.rebuild_key_gate()?;
         Ok(dispatch)
@@ -621,9 +657,53 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
                 )));
             }
         }
+        self.key_sequence = self.projection().latest_sequence();
         self.key_gate = gate;
         Ok(())
     }
+    fn refresh_key_gate(&mut self, returned_run: Option<RunId>) -> Result<(), DispatchError> {
+        let mut runs: std::collections::BTreeSet<_> =
+            self.projection().changed_runs_since(self.key_sequence).collect();
+        runs.extend(returned_run);
+        // A service can transfer a key through multiple frames: release stale
+        // claims before installing current claims, retaining executing owners.
+        for run in &runs {
+            if self.in_flight.contains_key(run) {
+                continue;
+            }
+            if let Some(key) = self
+                .projection()
+                .get_run_instance(run)
+                .and_then(|r| self.projection().get_task(&r.task_id()))
+                .and_then(|t| t.constraints().concurrency_key())
+                .map(str::to_owned)
+            {
+                let _ = self.key_gate.release(key.into(), *run);
+            }
+        }
+        for run in runs {
+            let key = self.projection().key_reservation(run).map(str::to_owned).or_else(|| {
+                self.in_flight
+                    .get(&run)
+                    .and_then(|inf| self.projection().get_task(&inf.task_id))
+                    .and_then(|t| t.constraints().concurrency_key())
+                    .map(str::to_owned)
+            });
+            if let Some(key) = key {
+                if matches!(
+                    self.key_gate.acquire(key.clone().into(), run),
+                    actionqueue_engine::concurrency::key_gate::AcquireResult::Occupied { .. }
+                ) {
+                    return Err(DispatchError::Authority(MutationAuthorityError::Wait(
+                        actionqueue_core::mutation::WaitRejection::ConflictingKeyOwnership,
+                    )));
+                }
+            }
+        }
+        self.key_sequence = self.projection().latest_sequence();
+        Ok(())
+    }
+
     /// Next durable timer, even when paused or draining.
     pub fn next_wait_deadline(&self) -> Option<u64> {
         self.projection().waits().next_deadline()
@@ -642,7 +722,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         crate::waits::recover_cancellations(&mut self.authority, self.clock.now())
             .map_err(DispatchError::Authority)?;
         self.refresh_coordination();
-        self.rebuild_key_gate()
+        self.refresh_key_gate(None)
     }
     /// Handler-independent establishment; returned outcome remains committed on scan failure.
     pub fn establish_wait(
@@ -660,21 +740,60 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         result
     }
 
-    /// Continuations and controls can terminate runs without a worker result.
-    /// Reconstruct coordination from the settled durable state, just as on
-    /// bootstrap, including cascades committed by the handler-independent service.
+    /// Apply the tasks changed since the last coordination update. Storage retains
+    /// one latest-modification entry per task, so multi-frame services cannot lose
+    /// intermediate changes and no notification queue accumulates with history.
     fn refresh_coordination(&mut self) {
-        self.dependency_gate = build_dependency_gate(self.projection());
-        self.hierarchy_tracker = build_hierarchy_tracker(self.projection());
-        for task in self.authority.projection().task_records() {
-            let id = task.task_spec().id();
-            if task.canceled_at().is_some() {
-                self.pending_hierarchy_cascade.insert(id);
+        let tasks: Vec<_> =
+            self.projection().changed_tasks_since(self.coordination_sequence).collect();
+        // Restore relationships before terminal facts, including disposition-created children.
+        for id in &tasks {
+            let task = self.authority.projection().get_task(id).expect("changed task");
+            if let Some(parent) = task.parent_task_id() {
+                self.hierarchy_tracker.restore_child_with_policy(
+                    parent,
+                    *id,
+                    task.child_lifecycle_policy(),
+                );
+                // A later child mutation can restore an already collected parent.
+                // Restore its terminal fact too, so the subtree can be collected again.
+                if self.authority.projection().task_terminal_status(parent).is_some() {
+                    self.hierarchy_tracker.mark_terminal(parent);
+                    self.pending_gc_tasks.insert(parent);
+                }
             }
-            if self.hierarchy_tracker.is_terminal(id) {
+            let deps: Vec<_> = self.authority.projection().prerequisites_of(*id).collect();
+            if !deps.is_empty() {
+                let _ = self.dependency_gate.declare(*id, deps.clone());
+                for dep in deps {
+                    match self.authority.projection().task_terminal_status(dep) {
+                        Some(actionqueue_core::continuation::TaskTerminalStatus::Succeeded) => {
+                            self.dependency_gate.force_satisfy(dep);
+                            self.pending_gc_tasks.insert(dep);
+                        }
+                        Some(_) => {
+                            self.dependency_gate.force_fail(dep);
+                            self.pending_gc_tasks.insert(dep);
+                            let _ = self.dependency_gate.notify_failed(*id);
+                        }
+                        None => {}
+                    }
+                }
+                self.dependency_gate.recompute_satisfaction_pub(*id);
+            }
+        }
+        for id in tasks {
+            if let Some(status) = self.authority.projection().task_terminal_status(id) {
+                if status == actionqueue_core::continuation::TaskTerminalStatus::Succeeded {
+                    let _ = self.dependency_gate.notify_completed(id);
+                } else {
+                    let _ = self.dependency_gate.notify_failed(id);
+                }
+                self.hierarchy_tracker.mark_terminal(id);
                 self.pending_gc_tasks.insert(id);
             }
         }
+        self.coordination_sequence = self.projection().latest_sequence();
     }
     /// Returns a reference to the projection (current state view).
     pub fn projection(&self) -> &ReplayReducer {
@@ -729,7 +848,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
             && self.in_flight.get(&run_id).is_some_and(|inf| inf.attempt_id == attempt_id)
         {
             self.in_flight.remove(&run_id);
-            self.rebuild_key_gate()?;
+            self.refresh_key_gate(Some(run_id))?;
             return Ok(());
         }
 
@@ -779,51 +898,41 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         // Refresh before any fallible post-commit notifications. Never replay consumption.
         #[cfg(feature = "budget")]
         self.restore_task_budgets(self.projection().get_run_instance(&run_id).unwrap().task_id());
-        self.dependency_gate = build_dependency_gate(self.authority.projection());
-        self.hierarchy_tracker = build_hierarchy_tracker(self.authority.projection());
-        {
-            let task_id = finished.as_ref().map(|inf| inf.task_id);
+        // The committed run's task is a changed task: this also notifies the
+        // dependency gate and hierarchy tracker of a terminal task outcome.
+        self.refresh_coordination();
 
-            // Release concurrency key for terminal runs, on RetryWait if the hold
-            // policy is ReleaseOnRetry, or on Suspended (same semantics as RetryWait).
-            if let Some(inf) = &finished {
-                tracing::debug!(
-                    %run_id,
-                    attempt_id = %inf.attempt_id,
-                    attempt_number = inf.attempt_number,
-                    max_attempts = inf.max_attempts,
-                    ?target_state,
-                    "processing run completion"
-                );
-                Self::try_release_concurrency_key(
-                    &self.authority,
-                    &mut self.key_gate,
-                    run_id,
-                    inf.task_id,
-                    target_state,
-                );
-            }
+        // Release concurrency key for terminal runs, on RetryWait if the hold
+        // policy is ReleaseOnRetry, or on Suspended (same semantics as RetryWait).
+        if let Some(inf) = &finished {
+            tracing::debug!(
+                %run_id,
+                attempt_id = %inf.attempt_id,
+                attempt_number = inf.attempt_number,
+                max_attempts = inf.max_attempts,
+                ?target_state,
+                "processing run completion"
+            );
+            Self::try_release_concurrency_key(
+                &self.authority,
+                &mut self.key_gate,
+                run_id,
+                inf.task_id,
+                target_state,
+            );
+        }
 
-            // Increment completed counter only for terminal state transitions.
-            // Suspended is not terminal — the run may be resumed later.
-            if target_state.is_terminal() {
-                result.completed += 1;
-                if let Some(tid) = task_id {
-                    // Notify the dependency gate so dependents can be unblocked.
-                    self.notify_dependency_gate_terminal(tid)?;
-                }
-            }
-
-            // Fire events for subscription matching.
-            #[cfg(feature = "budget")]
-            if let Some(tid) = task_id {
-                self.fire_events_for_transition(tid, target_state)?;
-            }
+        // Increment completed counter only for terminal state transitions.
+        // Suspended is not terminal — the run may be resumed later.
+        if target_state.is_terminal() {
+            result.completed += 1;
         }
 
         #[cfg(feature = "budget")]
         if let Some(inf) = &finished {
             let task_id = inf.task_id;
+            // Fire events for subscription matching.
+            self.fire_events_for_transition(task_id, target_state)?;
             let consumption = self
                 .projection()
                 .get_attempt_history(&run_id)
@@ -837,62 +946,8 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         }
         crate::waits::reconcile(&mut self.authority, current_time)
             .map_err(DispatchError::Authority)?;
-        self.rebuild_key_gate()
-    }
-
-    /// Notifies the dependency gate when a task's run reaches a terminal state.
-    ///
-    /// When a task has completed (all runs terminal + at least one Completed),
-    /// marks dependent tasks as eligible. When a task has permanently failed
-    /// (all runs terminal, none Completed), marks dependent tasks as failed in
-    /// memory; the durable task-level cancellation of those dependents is the
-    /// same cascade bootstrap and every tick run (`waits::recover_cancellations`).
-    fn notify_dependency_gate_terminal(
-        &mut self,
-        task_id: actionqueue_core::ids::TaskId,
-    ) -> Result<(), DispatchError> {
-        // Check if all runs for this task are now terminal (O(R_task) via index).
-        let all_runs_terminal = self.authority.projection().task_terminal_status(task_id).is_some();
-
-        if !all_runs_terminal {
-            return Ok(()); // Task still has in-flight or scheduled runs.
-        }
-
-        // All runs are terminal — mark in the hierarchy tracker for orphan prevention.
-        self.hierarchy_tracker.mark_terminal(task_id);
-
-        // Enqueue for GC: clean up in-memory structures once hierarchy cascade is done.
-        self.pending_gc_tasks.insert(task_id);
-
-        // Check if the task has at least one Completed run (O(R_task) via index).
-        let has_completed = self.authority.projection().task_terminal_status(task_id)
-            == Some(actionqueue_core::continuation::TaskTerminalStatus::Succeeded);
-
-        if has_completed {
-            // Task succeeded — notify gate so dependents become eligible.
-            // The gate update is in-memory; satisfaction is reconstructed at
-            // recovery from the projection (which tasks have Completed runs).
-            let newly_eligible = self.dependency_gate.notify_completed(task_id);
-            if !newly_eligible.is_empty() {
-                tracing::debug!(
-                    task_id = %task_id,
-                    newly_eligible = newly_eligible.len(),
-                    "dependency gate: prerequisite satisfied, dependents now eligible"
-                );
-            }
-        } else {
-            // Task permanently failed. Step 0c commits the durable cascade this tick.
-            for blocked_id in self.dependency_gate.notify_failed(task_id) {
-                tracing::debug!(
-                    failed_prerequisite = %task_id,
-                    blocked_task = %blocked_id,
-                    "dependency gate: cascading failure to dependent task"
-                );
-            }
-            self.pending_hierarchy_cascade.insert(task_id);
-        }
-
-        Ok(())
+        self.refresh_coordination();
+        self.refresh_key_gate(None)
     }
 
     /// Commits the durable cancellation cascade and refreshes the derived gates.
@@ -902,26 +957,18 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
     /// record per target and repeats until nothing remains: canceled tasks that still
     /// have unfinished runs, unfinished required children of a canceled parent, and
     /// unfinished dependents of a prerequisite that did not succeed.
-    /// Completed work is never touched. When the cascade appended anything, or a
-    /// dependency failure was noted this tick, the hierarchy tracker, dependency gate
-    /// and key gate are rebuilt from the projection so released keys and settled
-    /// dependents are visible to the same tick's dispatch.
+    /// Completed work is never touched. The hierarchy tracker, dependency gate and
+    /// key gate then consume every task and run changed since their cursors, the
+    /// cascade's records included, so released keys and settled dependents are
+    /// visible to the same tick's GC and dispatch. Both refreshes are incremental.
     ///
     /// Self-quenching: once every reachable task is terminal, repeated calls append
     /// nothing and leave the gates untouched.
     fn cascade_hierarchy_cancellations(&mut self, current_time: u64) -> Result<(), DispatchError> {
-        let before = self.authority.projection().latest_sequence();
         crate::waits::recover_cancellations(&mut self.authority, current_time)
             .map_err(DispatchError::Authority)?;
-        if self.authority.projection().latest_sequence() != before
-            || !self.pending_hierarchy_cascade.is_empty()
-        {
-            self.hierarchy_tracker = build_hierarchy_tracker(self.authority.projection());
-            self.dependency_gate = build_dependency_gate(self.authority.projection());
-            self.rebuild_key_gate()?;
-        }
-        self.pending_hierarchy_cascade.clear();
-        Ok(())
+        self.refresh_coordination();
+        self.refresh_key_gate(None)
     }
 
     /// Garbage-collects fully-terminal tasks from in-memory data structures.
@@ -985,8 +1032,8 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         if expired.is_empty() {
             return Ok(());
         }
-        self.dependency_gate = build_dependency_gate(self.projection());
-        self.hierarchy_tracker = build_hierarchy_tracker(self.projection());
+        // Also notifies the dependency gate and hierarchy tracker of terminal tasks.
+        self.refresh_coordination();
         for (run_id, attempt_id) in expired {
             // Only retire the slot associated with the recovered attempt. A newer
             // local execution, if present, keeps its ownership and reservation.
@@ -994,16 +1041,16 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
                 self.in_flight.remove(&run_id);
             }
             let run = self.projection().get_run_instance(&run_id).expect("recovered run");
+            #[cfg(feature = "budget")]
             let task_id = run.task_id();
             let target = run.state();
             if target.is_terminal() {
                 result.completed += 1;
-                self.notify_dependency_gate_terminal(task_id)?;
             }
             #[cfg(feature = "budget")]
             self.fire_events_for_transition(task_id, target)?;
         }
-        self.rebuild_key_gate()?;
+        self.refresh_key_gate(None)?;
         Ok(())
     }
 
@@ -1134,7 +1181,6 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         tracing::trace!("dispatch tick starting");
         let mut result = TickResult::default();
         let current_time = self.clock.now();
-        let seq_before_tick = self.authority.projection().latest_sequence();
 
         self.recover_expired_executions(&mut result, current_time)?;
 
@@ -1172,21 +1218,15 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
                 self.subscription_registry.trigger(*id);
             }
         }
-        self.rebuild_key_gate()?;
+        self.refresh_key_gate(None)?;
         // Step 2: Check engine paused state or draining mode — skip promotion and dispatch.
         if self.authority.projection().is_engine_paused() {
             result.engine_paused = true;
-            let events_this_tick =
-                self.authority.projection().latest_sequence().saturating_sub(seq_before_tick);
-            self.events_since_last_snapshot += events_this_tick;
             self.maybe_write_snapshot(current_time)?;
             return Ok(result);
         }
 
         if self.draining {
-            let events_this_tick =
-                self.authority.projection().latest_sequence().saturating_sub(seq_before_tick);
-            self.events_since_last_snapshot += events_this_tick;
             self.maybe_write_snapshot(current_time)?;
             return Ok(result);
         }
@@ -1268,9 +1308,6 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
             .collect();
 
         if ready_runs.is_empty() {
-            let events_this_tick =
-                self.authority.projection().latest_sequence().saturating_sub(seq_before_tick);
-            self.events_since_last_snapshot += events_this_tick;
             self.maybe_write_snapshot(current_time)?;
             return Ok(result);
         }
@@ -1469,11 +1506,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
 
         result.dispatched = dispatched;
 
-        // Snapshot check: count events appended during this tick and write
-        // a snapshot when the cumulative count exceeds the threshold.
-        let events_this_tick =
-            self.authority.projection().latest_sequence().saturating_sub(seq_before_tick);
-        self.events_since_last_snapshot += events_this_tick;
+        // Durable progress includes admissions between ticks and the recovered tail.
         self.maybe_write_snapshot(current_time)?;
 
         Ok(result)
@@ -1507,40 +1540,74 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         Ok((attempt_id, lease_expiry, attempt_number, max_attempts))
     }
 
-    /// Writes a snapshot if the cumulative event count exceeds the configured threshold.
+    /// Publishes a checkpoint once the durable progress since the last published one,
+    /// including admissions between ticks and the recovered tail, reaches the
+    /// configured threshold.
+    ///
+    /// A failed publication is logged, not returned: durable progress stays pending
+    /// and later ticks retry after a backoff of 1 second, doubling to at most 60
+    /// seconds, as the daemon does. Only a failure that fences the WAL, such as a
+    /// failed WAL flush during capture, is returned.
     fn maybe_write_snapshot(&mut self, current_time: u64) -> Result<(), DispatchError> {
         let threshold = match self.snapshot_event_threshold {
             Some(t) => t,
             None => return Ok(()),
         };
-        let _path = match &self.snapshot_path {
-            Some(p) => p.clone(),
-            None => return Ok(()),
-        };
-        if self.events_since_last_snapshot < threshold {
+        if self.snapshot_path.is_none() {
             return Ok(());
         }
+        let published = self.authority.store_session().map_or(0, |s| s.published_sequence());
+        if self.authority.projection().latest_sequence().saturating_sub(published) < threshold
+            || !self.snapshot_retry.ready(std::time::Instant::now())
+        {
+            return Ok(());
+        }
+        let result = if self.authority.supports_live_checkpoints() {
+            self.authority
+                .capture_checkpoint(current_time)
+                .map_err(|e| DispatchError::SnapshotCapture(e.to_string()))
+                .and_then(|candidate| {
+                    actionqueue_storage::snapshot::checkpoint::publish_checkpoint(candidate)
+                        .map(drop)
+                        .map_err(|e| DispatchError::SnapshotPublish(e.to_string()))
+                })
+        } else {
+            self.write_validated_snapshot(current_time)
+        };
+        match result {
+            Ok(()) => {
+                self.snapshot_retry = SnapshotRetry::default();
+                Ok(())
+            }
+            Err(e) if self.authority.recovery_required() => Err(e),
+            Err(e) => {
+                let delay = self.snapshot_retry.failed(std::time::Instant::now());
+                tracing::error!(
+                    error = %e,
+                    retry_after_seconds = delay.as_secs(),
+                    "checkpoint publication failed; durable progress remains pending"
+                );
+                Ok(())
+            }
+        }
+    }
 
+    /// Public constructors may pair a session writer and projection independently.
+    /// Preserve that path with full WAL-prefix validation.
+    fn write_validated_snapshot(&self, current_time: u64) -> Result<(), DispatchError> {
+        use actionqueue_storage::snapshot::{
+            build::build_snapshot_from_projection,
+            writer::{SnapshotFsWriter, SnapshotWriter},
+        };
         let snapshot = build_snapshot_from_projection(self.authority.projection(), current_time)
             .map_err(DispatchError::SnapshotBuild)?;
-
-        let mut writer =
-            SnapshotFsWriter::new(self.authority.store_session().ok_or_else(|| {
-                DispatchError::SnapshotInit("snapshot requires a store session".into())
-            })?)
-            .map_err(|e| DispatchError::SnapshotInit(format!("{e}")))?;
+        let session = self.authority.store_session().ok_or_else(|| {
+            DispatchError::SnapshotInit("snapshot requires a store session".into())
+        })?;
+        let mut writer = SnapshotFsWriter::new(session)
+            .map_err(|e| DispatchError::SnapshotInit(e.to_string()))?;
         writer.write(&snapshot).map_err(DispatchError::SnapshotWrite)?;
-        writer.close().map_err(DispatchError::SnapshotWrite)?;
-
-        self.events_since_last_snapshot = 0;
-        tracing::info!(
-            wal_sequence = snapshot.metadata.wal_sequence,
-            task_count = snapshot.metadata.task_count,
-            run_count = snapshot.metadata.run_count,
-            "automatic snapshot written"
-        );
-
-        Ok(())
+        writer.close().map_err(DispatchError::SnapshotWrite)
     }
 
     /// Loops `tick()` until no work remains (no in-flight, no promotions, no dispatches).
@@ -1776,8 +1843,7 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
     ) -> Result<EnsureTaskOutcome, AdmissionError> {
         let outcome = crate::admission::ensure_task(&mut self.authority, request, &self.clock)?;
         if outcome.is_created() {
-            self.dependency_gate = build_dependency_gate(self.authority.projection());
-            self.hierarchy_tracker = build_hierarchy_tracker(self.authority.projection());
+            self.refresh_coordination();
         }
         Ok(outcome)
     }
@@ -1790,10 +1856,14 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
         task_id: TaskId,
         prereqs: Vec<TaskId>,
     ) -> Result<(), DispatchError> {
-        // Cycle check.
-        self.dependency_gate
-            .check_cycle(task_id, &prereqs)
-            .map_err(DispatchError::DependencyCycle)?;
+        // Cycle check against every durable declaration, as the authority checks
+        // before appending. The gate has collected terminal tasks, so it misses a
+        // cycle through one.
+        let projection = self.authority.projection();
+        actionqueue_workflow::dag::check_cycle_in(task_id, &prereqs, |id| {
+            projection.prerequisites_of(id)
+        })
+        .map_err(DispatchError::DependencyCycle)?;
 
         // All prerequisites must be known.
         for prereq_id in &prereqs {
@@ -1813,30 +1883,16 @@ impl<W: WalWriter, H: ExecutorHandler + 'static, C: Clock> DispatchLoop<W, H, C>
                 MutationCommand::DependencyDeclare(DependencyDeclareCommand::new(
                     seq,
                     task_id,
-                    prereqs.clone(),
+                    prereqs,
                     current_time,
                 )),
                 DurabilityPolicy::Immediate,
             )
             .map_err(DispatchError::Authority)?;
 
-        // Update in-memory gate (safe since cycle was already checked).
-        let _ = self.dependency_gate.declare(task_id, prereqs.clone());
-
-        // Catch up prerequisites that already completed (e.g., when declaring
-        // a dependency AFTER the prerequisite ran). GC may have removed the
-        // completed task from `satisfied`; re-check the projection to restore it.
-        for prereq_id in &prereqs {
-            match self.authority.projection().task_terminal_status(*prereq_id) {
-                Some(actionqueue_core::continuation::TaskTerminalStatus::Succeeded) => {
-                    self.dependency_gate.force_satisfy(*prereq_id)
-                }
-                Some(_) => self.dependency_gate.force_fail(*prereq_id),
-                None => {}
-            }
-        }
-        // Re-evaluate satisfaction for task_id after prereq state is restored.
-        self.dependency_gate.recompute_satisfaction_pub(task_id);
+        // Consume pending prerequisite changes as well as this declaration, so
+        // existing dependents are notified before a terminal prerequisite is GC'd.
+        self.refresh_coordination();
 
         Ok(())
     }
@@ -2679,6 +2735,146 @@ mod tests {
         .unwrap()
     }
 
+    #[tokio::test]
+    async fn independently_paired_authority_publishes_validated_snapshot_and_finishes() {
+        use actionqueue_storage::{
+            recovery::bootstrap::recover_read_only,
+            store::{open_store, verify_store, OpenOptions},
+            wal::{fs_writer::WalFsWriter, repair::RepairPolicy},
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let session = open_store(dir.path(), OpenOptions::Initialize { features: vec![] }).unwrap();
+        let projection = recover_read_only(&session, RepairPolicy::Strict).unwrap().projection;
+        // This writer performs its own recovery, with a different origin.
+        let writer = WalFsWriter::new(session.clone()).unwrap();
+        let authority = StorageMutationAuthority::new(writer, projection).with_host(host());
+        assert!(!authority.supports_live_checkpoints());
+        let mut dispatch = DispatchLoop::new(
+            authority,
+            DependencyHandler,
+            MockClock::new(1000),
+            DispatchConfig::new(
+                BackoffStrategyConfig::Fixed { interval: Duration::ZERO },
+                1,
+                30,
+                Some(session.snapshot_path()),
+                Some(1),
+            ),
+        )
+        .unwrap();
+        let task = task(b"success", None);
+        let task_id = task.id();
+        dispatch.submit_task(task).unwrap();
+        let summary = dispatch.run_until_idle().await.unwrap();
+        assert_eq!(summary.total_completed, 1);
+        assert_eq!(
+            dispatch
+                .projection()
+                .get_run_state(&dispatch.projection().run_ids_for_task(task_id)[0]),
+            Some(&RunState::Completed)
+        );
+        let sequence = dispatch.projection().latest_sequence();
+        assert_eq!(session.published_sequence(), sequence);
+        let digest = dispatch.projection().projection_digest().unwrap();
+        drop(dispatch);
+        drop(session);
+        let verified = verify_store(dir.path()).unwrap();
+        assert_eq!(verified.sequence, sequence);
+        assert_eq!(verified.snapshot_sequence, sequence);
+        assert_eq!(verified.projection_digest, digest);
+    }
+
+    #[test]
+    fn checkpoint_publication_failures_back_off_and_only_capture_fencing_fails_the_tick() {
+        use actionqueue_storage::store::fault;
+        let dir = tempfile::tempdir().unwrap();
+        let mut dispatch = new_dispatch(dir.path(), DependencyHandler);
+        dispatch.snapshot_path = Some(dir.path().join("snapshots/snapshot.bin"));
+        dispatch.snapshot_event_threshold = Some(1);
+        let session = dispatch.authority.store_session().unwrap().clone();
+        let published = session.published_sequence();
+        // A failed publication is logged, not returned, and leaves progress pending.
+        fault::fail_once("snapshot_before_rename");
+        dispatch.maybe_write_snapshot(1000).unwrap();
+        assert!(!dispatch.authority.recovery_required());
+        assert_eq!(session.published_sequence(), published);
+        assert_eq!(dispatch.snapshot_retry.delay, Some(Duration::from_secs(1)));
+        // Within the backoff nothing is attempted, although publication would succeed.
+        dispatch.maybe_write_snapshot(1000).unwrap();
+        assert_eq!(session.published_sequence(), published);
+        // Each further failure doubles the delay.
+        dispatch.snapshot_retry.next_attempt = Some(std::time::Instant::now());
+        fault::fail_once("snapshot_before_rename");
+        dispatch.maybe_write_snapshot(1000).unwrap();
+        assert_eq!(dispatch.snapshot_retry.delay, Some(Duration::from_secs(2)));
+        // Once the backoff elapses, the pending progress publishes and the delay resets.
+        dispatch.snapshot_retry.next_attempt = Some(std::time::Instant::now());
+        dispatch.maybe_write_snapshot(1000).unwrap();
+        assert_eq!(session.published_sequence(), dispatch.projection().latest_sequence());
+        assert_eq!(dispatch.snapshot_retry.delay, None);
+        // A WAL flush failure during capture fences the WAL and is returned.
+        dispatch.submit_task(task(b"success", None)).unwrap();
+        fault::fail_once("wal_before_sync");
+        assert!(matches!(
+            dispatch.maybe_write_snapshot(1000),
+            Err(DispatchError::SnapshotCapture(_))
+        ));
+        assert!(dispatch.authority.recovery_required());
+    }
+
+    #[test]
+    fn incremental_coordination_matches_reconstruction_across_cascades_and_late_dependencies() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut d = new_dispatch(dir.path(), DependencyHandler);
+        let parent = task(b"parent", None);
+        let parent_id = parent.id();
+        d.submit_task(parent).unwrap();
+        let child = task(b"child", None).with_parent(parent_id);
+        let child_id = child.id();
+        d.submit_task(child).unwrap();
+        let detached = task(b"detached", None).with_parent_policy(
+            parent_id,
+            actionqueue_core::task::task_spec::ChildLifecyclePolicy::Detached,
+        );
+        let detached_id = detached.id();
+        d.submit_task(detached).unwrap();
+        let dependent = task(b"dependent", None);
+        let dependent_id = dependent.id();
+        d.ensure_task(EnsureTaskRequest::for_task(dependent, vec![child_id]).unwrap()).unwrap();
+        let compare = |d: &DispatchLoop<_, _, _>| {
+            let gate = build_dependency_gate(d.projection());
+            let hierarchy = build_hierarchy_tracker(d.projection());
+            for record in d.projection().task_records() {
+                let id = record.task_spec().id();
+                if d.projection().task_terminal_status(id).is_none() {
+                    assert_eq!(d.dependency_gate.is_eligible(id), gate.is_eligible(id));
+                    assert_eq!(
+                        d.dependency_gate.is_dependency_failed(id),
+                        gate.is_dependency_failed(id)
+                    );
+                }
+                assert_eq!(d.hierarchy_tracker.parent_of(id), hierarchy.parent_of(id));
+                assert_eq!(d.hierarchy_tracker.is_terminal(id), hierarchy.is_terminal(id));
+            }
+        };
+        compare(&d);
+        d.cancel(actionqueue_core::mutation::CancelCommand {
+            expected_sequence: d.projection().latest_sequence() + 1,
+            target: actionqueue_core::mutation::CancelTarget::Task(parent_id),
+            tenant_id: None,
+            control_context: None,
+            timestamp: 1000,
+        })
+        .unwrap();
+        assert!(d.projection().is_task_canceled(child_id));
+        assert!(d.projection().is_task_canceled(dependent_id));
+        assert!(!d.projection().is_task_canceled(detached_id));
+        compare(&d);
+        let late = task(b"late dependent", None);
+        d.ensure_task(EnsureTaskRequest::for_task(late, vec![child_id]).unwrap()).unwrap();
+        compare(&d);
+    }
+
     type TestDispatch = DispatchLoop<
         actionqueue_storage::wal::writer::InstrumentedWalWriter<
             actionqueue_storage::wal::fs_writer::WalFsWriter,
@@ -2687,8 +2883,329 @@ mod tests {
         MockClock,
     >;
 
+    #[test]
+    fn late_dependency_notifies_existing_dependents_before_collecting_prerequisite() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut d = new_dispatch(dir.path(), DependencyHandler);
+        let worker = accepted_worker(&mut d);
+        let prerequisite = d.projection().get_run_instance(&worker.run_id).unwrap().task_id();
+        let dependent = task(b"dependent", None);
+        let dependent_id = dependent.id();
+        d.ensure_task(EnsureTaskRequest::for_task(dependent, vec![prerequisite]).unwrap()).unwrap();
+        let late = task(b"late dependent", None);
+        let late_id = late.id();
+        d.submit_task(late).unwrap();
+        assert!(!d.dependency_gate.is_eligible(dependent_id));
+
+        // Commit success without consuming the coordination changes, as a service
+        // can do between dispatch updates. Keep the gate and cursor untouched.
+        let expected = actionqueue_core::mutation::AttemptCommitExpectation::new(
+            d.next_sequence().unwrap(),
+            worker.run_id,
+            worker.attempt_id,
+            RunState::Running,
+            worker.lease_fence,
+        );
+        crate::disposition::commit(&mut d.authority, expected, worker.disposition, 1000).unwrap();
+        d.in_flight.remove(&worker.run_id);
+        assert_eq!(
+            d.projection().task_terminal_status(prerequisite),
+            Some(actionqueue_core::continuation::TaskTerminalStatus::Succeeded)
+        );
+        assert!(d.coordination_sequence < d.projection().latest_sequence());
+
+        d.declare_dependency(late_id, vec![prerequisite]).unwrap();
+        d.gc_terminal_tasks();
+        d.refresh_coordination();
+        let rebuilt = build_dependency_gate(d.projection());
+        for id in [dependent_id, late_id] {
+            assert!(rebuilt.is_eligible(id));
+            assert!(d.dependency_gate.is_eligible(id), "incremental gate strands dependent {id}");
+            assert_eq!(
+                d.dependency_gate.is_dependency_failed(id),
+                rebuilt.is_dependency_failed(id)
+            );
+        }
+    }
+
+    #[test]
+    fn worker_result_refreshes_terminal_changes_from_wait_reconciliation() {
+        use actionqueue_core::{bounded::BoundedCode, continuation::*, ids::*};
+
+        for policy in [
+            WaitTimeoutPolicy::CancelRun,
+            WaitTimeoutPolicy::FailRun { code: BoundedCode::new("expired").unwrap() },
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut d = new_dispatch(dir.path(), DependencyHandler);
+            let mut waiting = accepted_worker(&mut d);
+            let run_id = waiting.run_id;
+            let prerequisite = d.projection().get_run_instance(&run_id).unwrap().task_id();
+            let wait = WaitSpec::new(
+                WaitId::new(),
+                SignalFilter {
+                    tenant_id: None,
+                    namespace: SignalNamespace::new("test").unwrap(),
+                    kind: SignalKind::new("wake").unwrap(),
+                    correlation_id: None,
+                    source_ref: None,
+                },
+                WaitMatchPolicy::FirstMatch,
+                SignalEligibility::After(SignalSequence::new(0)),
+                Some(WaitDeadline { at: 1001, policy }),
+            )
+            .unwrap();
+            waiting.disposition = AttemptDisposition::awaiting(wait, None);
+            d.process_worker_result(waiting, &mut TickResult::default(), 1000).unwrap();
+            assert_eq!(d.projection().get_run_state(&run_id), Some(&RunState::Awaiting));
+            let dependent = task(b"dependent", None);
+            let dependent_id = dependent.id();
+            d.ensure_task(EnsureTaskRequest::for_task(dependent, vec![prerequisite]).unwrap())
+                .unwrap();
+            let worker = accepted_worker(&mut d);
+
+            // Another worker's result reconciles the now-due wait and commits
+            // the prerequisite's terminal outcome and dependent cancellation.
+            d.process_worker_result(worker, &mut TickResult::default(), 1001).unwrap();
+            assert!(d.projection().get_run_state(&run_id).unwrap().is_terminal());
+            assert!(d.projection().is_task_canceled(dependent_id));
+            assert_eq!(d.coordination_sequence, d.projection().latest_sequence());
+            assert!(d.hierarchy_tracker.is_terminal(prerequisite));
+            assert!(d.pending_gc_tasks.contains(&prerequisite));
+            assert!(d.dependency_gate.is_dependency_failed(dependent_id));
+        }
+    }
+
+    /// Worker results and lease expiry deliver terminal task outcomes to the
+    /// dependency gate, hierarchy tracker and GC queue only through the refresh.
+    #[test]
+    fn terminal_outcomes_reach_coordination_through_refresh() {
+        use actionqueue_core::continuation::TaskTerminalStatus;
+        for case in ["completed", "failed", "expired"] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut d = new_dispatch(dir.path(), DependencyHandler);
+            let mut spec = task(b"success", None);
+            // A single attempt makes lease expiry terminal rather than a retry.
+            spec.set_constraints(TaskConstraints::new(1, None, None).unwrap()).unwrap();
+            let prerequisite = spec.id();
+            let mut worker = accepted_worker_for(&mut d, spec);
+            let dependent = task(b"dependent", None);
+            let dependent_id = dependent.id();
+            d.ensure_task(EnsureTaskRequest::for_task(dependent, vec![prerequisite]).unwrap())
+                .unwrap();
+            assert!(!d.dependency_gate.is_eligible(dependent_id));
+            let mut tick = TickResult::default();
+            match case {
+                "completed" => d.process_worker_result(worker, &mut tick, 1000).unwrap(),
+                "failed" => {
+                    worker.disposition =
+                        actionqueue_core::disposition::AttemptDisposition::terminal_failure(
+                            actionqueue_core::bounded::BoundedError::new("failed").unwrap(),
+                        );
+                    d.process_worker_result(worker, &mut tick, 1000).unwrap()
+                }
+                "expired" => {
+                    let expiry = d.in_flight[&worker.run_id].lease_expiry;
+                    d.recover_expired_executions(&mut tick, expiry).unwrap()
+                }
+                _ => unreachable!(),
+            }
+            let succeeded = case == "completed";
+            assert_eq!(tick.completed, 1, "{case}");
+            assert_eq!(
+                d.projection().task_terminal_status(prerequisite),
+                Some(if succeeded {
+                    TaskTerminalStatus::Succeeded
+                } else {
+                    TaskTerminalStatus::Failed
+                }),
+                "{case}"
+            );
+            assert_eq!(d.coordination_sequence, d.projection().latest_sequence(), "{case}");
+            assert!(d.hierarchy_tracker.is_terminal(prerequisite), "{case}");
+            assert!(d.pending_gc_tasks.contains(&prerequisite), "{case}");
+            assert_eq!(d.dependency_gate.is_eligible(dependent_id), succeeded, "{case}");
+            assert_eq!(d.dependency_gate.is_dependency_failed(dependent_id), !succeeded, "{case}");
+            let rebuilt = build_dependency_gate(d.projection());
+            assert_eq!(
+                d.dependency_gate.is_eligible(dependent_id),
+                rebuilt.is_eligible(dependent_id)
+            );
+            assert_eq!(
+                d.dependency_gate.is_dependency_failed(dependent_id),
+                rebuilt.is_dependency_failed(dependent_id)
+            );
+        }
+    }
+
+    /// The tick's cascade step consumes commits that no coordination refresh has
+    /// seen yet, even when the cascade itself appends nothing.
+    #[test]
+    fn cascade_step_consumes_unrefreshed_commits() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut d = new_dispatch(dir.path(), DependencyHandler);
+        let worker = accepted_worker(&mut d);
+        let prerequisite = d.projection().get_run_instance(&worker.run_id).unwrap().task_id();
+        let dependent = task(b"dependent", None);
+        let dependent_id = dependent.id();
+        d.ensure_task(EnsureTaskRequest::for_task(dependent, vec![prerequisite]).unwrap()).unwrap();
+        let expected = actionqueue_core::mutation::AttemptCommitExpectation::new(
+            d.next_sequence().unwrap(),
+            worker.run_id,
+            worker.attempt_id,
+            RunState::Running,
+            worker.lease_fence,
+        );
+        crate::disposition::commit(&mut d.authority, expected, worker.disposition, 1000).unwrap();
+        d.in_flight.remove(&worker.run_id);
+        let sequence = d.projection().latest_sequence();
+        assert!(d.coordination_sequence < sequence);
+        assert!(!d.dependency_gate.is_eligible(dependent_id));
+
+        d.cascade_hierarchy_cancellations(1000).unwrap();
+        assert_eq!(d.projection().latest_sequence(), sequence, "nothing to cascade");
+        assert_eq!(d.coordination_sequence, sequence);
+        assert_eq!(d.key_sequence, sequence);
+        assert!(d.dependency_gate.is_eligible(dependent_id));
+        assert!(d.hierarchy_tracker.is_terminal(prerequisite));
+        assert!(d.pending_gc_tasks.contains(&prerequisite));
+    }
+
+    #[test]
+    fn dependencies_cannot_close_a_cycle_through_a_collected_terminal_task() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut d = new_dispatch(dir.path(), DependencyHandler);
+        let worker = accepted_worker(&mut d);
+        let terminal = d.projection().get_run_instance(&worker.run_id).unwrap().task_id();
+        let open = task(b"success", None);
+        let open_id = open.id();
+        d.submit_task(open).unwrap();
+        let dependent = task(b"success", None);
+        let dependent_id = dependent.id();
+        d.submit_task(dependent).unwrap();
+        d.declare_dependency(dependent_id, vec![terminal, open_id]).unwrap();
+        d.process_worker_result(worker, &mut TickResult::default(), 1000).unwrap();
+        d.refresh_coordination();
+        d.gc_terminal_tasks();
+        // The gate collected the terminal prerequisite's edge; durable history keeps it.
+        assert!(d.dependency_gate.check_cycle(terminal, &[dependent_id]).is_ok());
+        let before = d.projection().latest_sequence();
+        assert!(matches!(
+            d.declare_dependency(terminal, vec![dependent_id]),
+            Err(DispatchError::DependencyCycle(_))
+        ));
+        assert_eq!(d.projection().latest_sequence(), before);
+
+        // The authority rejects the same cycle in its durable declarations before any
+        // append, so no WAL, and no rebuilt gate, ever holds it.
+        let error = d
+            .authority
+            .submit_command(
+                MutationCommand::DependencyDeclare(DependencyDeclareCommand::new(
+                    d.next_sequence().unwrap(),
+                    terminal,
+                    vec![dependent_id],
+                    1000,
+                )),
+                DurabilityPolicy::Immediate,
+            )
+            .unwrap_err();
+        assert!(matches!(error, MutationAuthorityError::Apply { .. }), "{error:?}");
+        assert!(!d.authority.recovery_required());
+        assert_eq!(d.projection().latest_sequence(), before);
+        let gate = build_dependency_gate(d.projection());
+        assert!(!gate.has_prerequisites(terminal));
+        assert!(!gate.is_eligible(dependent_id));
+    }
+
+    #[test]
+    fn restored_terminal_prerequisites_are_collected_again() {
+        for failed in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut d = new_dispatch(dir.path(), DependencyHandler);
+            let mut worker = accepted_worker(&mut d);
+            let prerequisite = d.projection().get_run_instance(&worker.run_id).unwrap().task_id();
+            if failed {
+                worker.disposition =
+                    actionqueue_core::disposition::AttemptDisposition::terminal_failure(
+                        actionqueue_core::bounded::BoundedError::new("failed").unwrap(),
+                    );
+            }
+            d.process_worker_result(worker, &mut TickResult::default(), 1000).unwrap();
+            d.refresh_coordination();
+            d.gc_terminal_tasks();
+            assert!(!d.pending_gc_tasks.contains(&prerequisite));
+
+            let dependent = task(b"dependent", None);
+            let dependent_id = dependent.id();
+            d.ensure_task(EnsureTaskRequest::for_task(dependent, vec![prerequisite]).unwrap())
+                .unwrap();
+            assert_eq!(d.dependency_gate.is_eligible(dependent_id), !failed);
+            assert_eq!(d.dependency_gate.is_dependency_failed(dependent_id), failed);
+            assert!(d.pending_gc_tasks.contains(&prerequisite));
+            let mut expected = d.dependency_gate.clone();
+            expected.gc_task(prerequisite);
+            d.gc_terminal_tasks();
+            assert_eq!(d.dependency_gate, expected);
+
+            #[cfg(feature = "budget")]
+            {
+                // A later change to the same dependent restores the relationship.
+                d.allocate_budget(
+                    dependent_id,
+                    actionqueue_core::budget::BudgetDimension::Token,
+                    10,
+                )
+                .unwrap();
+                d.refresh_coordination();
+                assert!(d.pending_gc_tasks.contains(&prerequisite));
+                let mut expected = d.dependency_gate.clone();
+                expected.gc_task(prerequisite);
+                d.gc_terminal_tasks();
+                assert_eq!(d.dependency_gate, expected);
+                assert_eq!(d.dependency_gate.is_eligible(dependent_id), !failed);
+            }
+        }
+    }
+
+    #[cfg(feature = "budget")]
+    #[test]
+    fn changed_terminal_child_does_not_retain_a_collected_parent() {
+        use actionqueue_core::budget::BudgetDimension;
+        let dir = tempfile::tempdir().unwrap();
+        let mut d = new_dispatch(dir.path(), DependencyHandler);
+        let parent = task(b"parent", None);
+        let parent_id = parent.id();
+        d.submit_task(parent).unwrap();
+        let child = task(b"child", None).with_parent(parent_id);
+        let child_id = child.id();
+        d.submit_task(child).unwrap();
+        d.cancel(actionqueue_core::mutation::CancelCommand {
+            expected_sequence: d.projection().latest_sequence() + 1,
+            target: actionqueue_core::mutation::CancelTarget::Task(parent_id),
+            tenant_id: None,
+            control_context: None,
+            timestamp: 1000,
+        })
+        .unwrap();
+        d.gc_terminal_tasks();
+        assert!(!d.hierarchy_tracker.has_children(parent_id));
+        for dimension in
+            [BudgetDimension::Token, BudgetDimension::CostCents, BudgetDimension::TimeSecs]
+        {
+            d.allocate_budget(child_id, dimension, 10).unwrap();
+            d.refresh_coordination();
+            d.gc_terminal_tasks();
+            assert!(!d.hierarchy_tracker.has_children(parent_id));
+            assert_eq!(d.hierarchy_tracker.parent_of(child_id), None);
+        }
+    }
+
     fn accepted_worker(dispatch: &mut TestDispatch) -> WorkerResult {
-        let spec = task(b"success", None);
+        accepted_worker_for(dispatch, task(b"success", None))
+    }
+
+    fn accepted_worker_for(dispatch: &mut TestDispatch, spec: TaskSpec) -> WorkerResult {
         let task_id = spec.id();
         let constraints = spec.constraints().clone();
         dispatch.submit_task(spec).unwrap();
@@ -2735,6 +3252,33 @@ mod tests {
                     .map(|v| actionqueue_core::data_ref::DataRef::from_bytes(v).unwrap()),
             ),
         }
+    }
+
+    #[cfg(feature = "budget")]
+    #[tokio::test]
+    async fn bootstrap_cleans_terminal_caches_without_waiting_for_another_task_change() {
+        use actionqueue_core::budget::BudgetDimension;
+        let dir = tempfile::tempdir().unwrap();
+        let mut dispatch = new_dispatch(dir.path(), DependencyHandler);
+        let worker = accepted_worker(&mut dispatch);
+        let completed = dispatch.projection().get_run_instance(&worker.run_id).unwrap().task_id();
+        dispatch.allocate_budget(completed, BudgetDimension::Token, 10).unwrap();
+        dispatch.process_worker_result(worker, &mut TickResult::default(), 1000).unwrap();
+        let active = task(b"active", None);
+        let active_id = active.id();
+        dispatch.submit_task(active).unwrap();
+        dispatch.allocate_budget(active_id, BudgetDimension::Token, 11).unwrap();
+        let digest = dispatch.projection().projection_digest().unwrap();
+        drop(dispatch);
+
+        let mut recovered = new_dispatch(dir.path(), DependencyHandler);
+        recovered.draining = true;
+        assert_eq!(recovered.budget_remaining(completed, BudgetDimension::Token), Some(10));
+        let _ = recovered.tick().await.unwrap();
+        assert_eq!(recovered.budget_remaining(completed, BudgetDimension::Token), None);
+        assert_eq!(recovered.budget_remaining(active_id, BudgetDimension::Token), Some(11));
+        assert!(recovered.projection().get_budget(&completed, BudgetDimension::Token).is_some());
+        assert_eq!(recovered.projection().projection_digest().unwrap(), digest);
     }
 
     #[test]
@@ -3078,8 +3622,7 @@ mod tests {
                     timestamp: 1000,
                 })
                 .unwrap();
-            let canceled_history =
-                dispatch.projection().get_attempt_history(&blocked_run).map(<[_]>::to_vec);
+            let canceled_history = dispatch.projection().get_attempt_history(&blocked_run).cloned();
             assert!(!dispatch.projection().key_reservations().any(|(id, _)| id == blocked_run));
             for _ in 0..3 {
                 assert_eq!(dispatch.tick().await.unwrap().dispatched, 0);
@@ -3108,7 +3651,7 @@ mod tests {
             );
             assert_eq!(
                 dispatch.projection().get_attempt_history(&blocked_run),
-                canceled_history.as_deref()
+                canceled_history.as_ref()
             );
         }
     }
