@@ -984,19 +984,8 @@ impl SignalHistory {
                 }
             }
         }
-        let keys = keys
-            .into_iter()
-            .map(|(k, (mut h, retired))| {
-                h.later_retirement = retired.clone();
-                let mut later = 0;
-                for v in h.later_retirement.iter_mut().rev() {
-                    later = later.max(if *v == u64::MAX { 0 } else { *v });
-                    *v = later;
-                }
-                h.retired = MaxTree::new(retired);
-                (k, h)
-            })
-            .collect();
+        let keys =
+            keys.into_iter().map(|(k, (h, retired))| (k, h.with_retirements(retired))).collect();
         Self { keys }
     }
     /// The key's history and the first position eligible for `w`.
@@ -1018,6 +1007,23 @@ impl SignalHistory {
     fn retired_after(&self, w: &WaitSpec, sequence: u64) -> bool {
         self.eligible(w)
             .is_some_and(|(h, first)| h.later_retirement.get(first).is_some_and(|v| *v > sequence))
+    }
+}
+impl KeyHistory {
+    /// Indexes each position's retirement WAL sequence, `u64::MAX` while retained.
+    fn with_retirements(mut self, retired: Vec<u64>) -> Self {
+        let mut later = 0;
+        self.later_retirement = retired
+            .iter()
+            .rev()
+            .map(|&v| {
+                later = later.max(if v == u64::MAX { 0 } else { v });
+                later
+            })
+            .collect();
+        self.later_retirement.reverse();
+        self.retired = MaxTree::new(retired);
+        self
     }
 }
 /// Bottom-up segment tree of range maxima.
@@ -1065,5 +1071,76 @@ fn resumes(record: &WaitRecord) -> bool {
             record.spec.deadline().is_some_and(|d| d.policy == WaitTimeoutPolicy::ResumeWithTimeout)
         }
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Hydration's indexed signal checks agree with a linear scan of one key's history,
+    /// including retired signals between the eligibility cursor and the selection.
+    #[test]
+    fn signal_history_queries_match_a_linear_scan() {
+        let filter = SignalFilter {
+            tenant_id: None,
+            namespace: SignalNamespace::new("ns").unwrap(),
+            kind: SignalKind::new("kind").unwrap(),
+            correlation_id: None,
+            source_ref: None,
+        };
+        let spec = |after: u64| {
+            WaitSpec::new(
+                WaitId::new(),
+                filter.clone(),
+                WaitMatchPolicy::FirstMatch,
+                SignalEligibility::After(SignalSequence::new(after)),
+                None,
+            )
+            .unwrap()
+        };
+        let mut seed = 7u64;
+        let mut next = |bound: u64| {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 33) % bound
+        };
+        for _ in 0..200 {
+            // (signal sequence, admission WAL sequence, retirement WAL sequence)
+            let mut signals = Vec::new();
+            let (mut sequence, mut wal) = (0, 0);
+            for _ in 0..next(12) {
+                sequence += 1 + next(2);
+                wal += 1 + next(3);
+                let retired = (next(2) == 0).then(|| wal + 1 + next(20));
+                signals.push((sequence, wal, retired));
+            }
+            let h = KeyHistory {
+                sequences: signals.iter().map(|s| SignalSequence::new(s.0)).collect(),
+                admitted: signals.iter().map(|s| s.1).collect(),
+                ..Default::default()
+            }
+            .with_retirements(signals.iter().map(|s| s.2.unwrap_or(u64::MAX)).collect());
+            let history = SignalHistory { keys: [(key(&filter), h)].into_iter().collect() };
+            for _ in 0..20 {
+                let (after, at) = (next(sequence + 2), next(wal + 25));
+                let w = spec(after);
+                let earliest = signals
+                    .iter()
+                    .find(|s| s.0 > after && s.1 < at && s.2.is_none_or(|r| r > at))
+                    .map(|s| s.0);
+                for selected in 0..=sequence + 1 {
+                    assert_eq!(
+                        history.earliest_retained_at(&w, SignalSequence::new(selected), at),
+                        earliest == Some(selected),
+                        "{signals:?} after {after} at {at} selected {selected}"
+                    );
+                }
+                assert_eq!(
+                    history.retired_after(&w, at),
+                    signals.iter().any(|s| s.0 > after && s.2.is_some_and(|r| r > at)),
+                    "{signals:?} after {after} since {at}"
+                );
+            }
+        }
     }
 }

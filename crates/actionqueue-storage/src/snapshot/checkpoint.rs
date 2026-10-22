@@ -45,8 +45,9 @@ pub fn capture_checkpoint<W: crate::wal::writer::WalWriter>(
 ///
 /// The encoded bytes must decode, hydrate and restore their inspection index exactly
 /// as startup will before they replace the installed checkpoint, so a checkpoint that
-/// startup would reject fails its publication instead. Every error leaves the
-/// installed checkpoint and the WAL unchanged, apart from the WAL sync before rename.
+/// startup would reject fails its publication instead. An encoding or proof failure
+/// touches nothing; installation failures behave as `SnapshotFsWriter::close`
+/// describes.
 pub fn publish_checkpoint(
     candidate: CheckpointCandidate,
 ) -> Result<PublishedCheckpoint, StoreError> {

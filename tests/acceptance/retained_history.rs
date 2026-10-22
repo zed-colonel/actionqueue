@@ -122,8 +122,14 @@ async fn durable_progress_counts_between_ticks_recovered_tails_and_failed_public
     }
     assert_eq!(sequence(), 2);
     fault::fail_once("snapshot_before_rename");
-    assert!(engine.tick().await.is_err());
+    // A failed publication is logged, not returned, and leaves progress pending.
+    let tick = engine.tick().await.unwrap();
+    assert!(tick.engine_paused);
     assert_eq!(sequence(), 2);
+    // Ticks during the one-second backoff do not retry.
+    let _ = engine.tick().await.unwrap();
+    assert_eq!(sequence(), 2);
+    std::thread::sleep(std::time::Duration::from_millis(1100));
     let tick = engine.tick().await.unwrap();
     assert!(tick.engine_paused);
     assert_eq!(tick.dispatched, 0);
