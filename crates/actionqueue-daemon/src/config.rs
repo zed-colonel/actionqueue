@@ -46,6 +46,8 @@ use std::path::PathBuf;
 /// - Uses the literal string `~/.actionqueue/data` as the data directory (no expansion)
 /// - Has control endpoints disabled by default
 /// - Has metrics enabled on a separate port
+/// - Publishes a snapshot checkpoint after every 10,000 durable WAL events (new in
+///   0.3.0; earlier daemons published none)
 ///
 /// # Invariants
 ///
@@ -66,7 +68,16 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DaemonConfig {
-    /// Durable WAL events since the last successful checkpoint; None disables publication.
+    /// Snapshot publication threshold.
+    ///
+    /// The daemon publishes a snapshot checkpoint once at least this many durable
+    /// WAL events follow the last published snapshot, counting events recovered at
+    /// startup. `None` disables automatic publication. `Some(0)` is rejected by
+    /// [`DaemonConfig::validate`].
+    ///
+    /// # Default
+    ///
+    /// `Some(10_000)`
     #[cfg_attr(feature = "serde", serde(default = "default_snapshot_threshold"))]
     pub snapshot_event_threshold: Option<u64>,
     /// Finite namespace/kind metric label allowlist (maximum 64 pairs).

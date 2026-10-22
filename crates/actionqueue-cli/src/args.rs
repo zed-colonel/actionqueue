@@ -19,6 +19,9 @@ pub enum Command {
 /// Arguments for the `daemon` command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DaemonArgs {
+    /// Publish a snapshot once at least this many durable WAL events follow the
+    /// last published one (`--snapshot-event-threshold`, default 10,000); `None`
+    /// disables automatic publication (`--no-snapshots`). Parsing rejects zero.
     pub snapshot_event_threshold: Option<u64>,
     /// Trusted host bearer identity configuration file.
     pub auth_file: Option<PathBuf>,
@@ -66,7 +69,7 @@ fn parse_storage(args: &[String]) -> Result<Command, String> {
     let operation = args
         .first()
         .filter(|s| ["inspect", "verify", "upgrade", "backup", "restore"].contains(&s.as_str()))
-        .ok_or("storage requires inspect, verify, upgrade, backup, or restore")?
+        .ok_or("store requires one of: inspect, verify, upgrade, backup, restore")?
         .clone();
     let (mut data_dir, mut input, mut output) = (None, None, None);
     let mut json = false;
@@ -85,7 +88,7 @@ fn parse_storage(args: &[String]) -> Result<Command, String> {
                 output = Some(PathBuf::from(require_value(&mut iter, flag)?))
             }
             "--json" if !json => json = true,
-            _ => return Err(format!("unexpected storage argument: {flag}")),
+            _ => return Err(format!("unexpected store argument: {flag}")),
         }
     }
     if ["backup", "upgrade"].contains(&operation.as_str()) && output.is_none() {
@@ -96,7 +99,7 @@ fn parse_storage(args: &[String]) -> Result<Command, String> {
     }
     Ok(Command::Storage(StorageArgs {
         operation,
-        data_dir: data_dir.ok_or("storage requires --data-dir")?,
+        data_dir: data_dir.ok_or("store requires --data-dir")?,
         input,
         output,
         json,
@@ -131,10 +134,13 @@ fn parse_daemon(args: &[String]) -> Result<Command, String> {
             }
             "--enable-control" => enable_control = true,
             "--snapshot-event-threshold" => {
+                let value = require_value(&mut iter, "--snapshot-event-threshold")?;
                 snapshot_event_threshold = Some(
-                    require_value(&mut iter, "--snapshot-event-threshold")?
+                    value
                         .parse()
-                        .map_err(|_| "snapshot threshold must be a positive integer")?,
+                        .ok()
+                        .filter(|&threshold: &u64| threshold > 0)
+                        .ok_or("--snapshot-event-threshold requires a positive integer")?,
                 )
             }
             "--no-snapshots" => snapshot_event_threshold = None,
@@ -147,9 +153,6 @@ fn parse_daemon(args: &[String]) -> Result<Command, String> {
         }
     }
 
-    if snapshot_event_threshold == Some(0) {
-        return Err("snapshot threshold must be positive".into());
-    }
     Ok(Command::Daemon(DaemonArgs {
         snapshot_event_threshold,
         auth_file,
@@ -164,8 +167,6 @@ fn parse_daemon(args: &[String]) -> Result<Command, String> {
 
 /// Usage string for the daemon command.
 const USAGE_DAEMON: &str = r#"actionqueue daemon [OPTIONS]
-  --snapshot-event-threshold N   Durable events between checkpoints (default 10000)
-  --no-snapshots                 Disable automatic checkpoints
 
 Start the ActionQueue daemon bootstrap path.
 
@@ -179,6 +180,10 @@ Options:
                             Report this signal namespace/kind as its own metric
                             label pair (repeatable, at most 64); all other pairs
                             share the overflow bucket
+    --snapshot-event-threshold <N>
+                            Publish a snapshot after N durable WAL events
+                            (positive; default 10000)
+    --no-snapshots          Disable automatic snapshot publication
     --json                  Emit machine-readable JSON on stdout
     --help, -h              Show this help message
 "#;
@@ -228,6 +233,20 @@ mod checkpoint_args_tests {
             panic!("daemon command")
         };
         assert_eq!(d.snapshot_event_threshold, None);
-        assert!(parse_args(&args("daemon --snapshot-event-threshold 0")).is_err());
+        for invalid in ["0", "-1", "ten"] {
+            assert_eq!(
+                parse_args(&args(&format!("daemon --snapshot-event-threshold {invalid}"))),
+                Err("--snapshot-event-threshold requires a positive integer".into())
+            );
+        }
+        assert_eq!(
+            parse_args(&args("store compact --data-dir source")),
+            Err("store requires one of: inspect, verify, upgrade, backup, restore".into())
+        );
+        let Err(usage) = parse_args(&args("daemon --help")) else { panic!("usage") };
+        let options = usage.split_once("\nOptions:\n").expect("options block").1;
+        for flag in ["    --snapshot-event-threshold <N>\n", "    --no-snapshots    "] {
+            assert!(options.contains(flag), "{flag:?} is not listed under Options");
+        }
     }
 }
