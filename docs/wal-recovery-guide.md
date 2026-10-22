@@ -24,6 +24,12 @@ startup falls back to the complete WAL. A complete frame above the size ceiling,
 unsupported magic or an unsupported frame version halts startup as a compatibility
 or bounds error. These cases do not permit automatic fallback.
 
+A checkpoint that fails to decode or hydrate also halts startup. The error names
+the file and the remedy: the WAL is complete, so stop the process, move the file
+out of the store (keep it for diagnosis) and restart to recover from the WAL alone.
+Runtime and daemon publication run the same load before installing a checkpoint,
+so such a state fails its publication instead and keeps the previous checkpoint.
+
 `Strict` is the default repair policy. `TruncatePartial` permits only an incomplete
 final target frame after complete candidate-prefix validation, including checkpoint
 equivalence when present. A complete header must pass
@@ -68,6 +74,16 @@ then produce a new schema-10 backup descriptor. There is no downgrade. Pre-contr
 and earlier development schemas remain unsupported. See
 [ADR-020](adrs/AQ-ADR-020-bounded-snapshot-bootstrap.md).
 
+An incomplete final source frame, left by a crash during an append, is never
+acknowledged. Upgrade leaves it out of the destination, as `TruncatePartial` repair
+would, keeps it in the source and reports its length as `dropped_tail_bytes`. A CRC
+failure or other damage inside a complete frame still fails the upgrade.
+
+When the store's state exceeds the checkpoint bounds (a 256 MiB frame or 1,000,000
+rows per collection), upgrade completes without a checkpoint: `checkpoint_omitted`
+gives the reason and `snapshot_sequence` is 0. The destination is complete and
+verified; its startup replays the complete WAL until a publication fits.
+
 If upgrade reports a physically damaged schema-9 snapshot, preserve a copy of the
 source store first. With the source offline, remove `snapshots/snapshot.bin` from
 the upgrade source and retry `actionqueue store upgrade` to reconstruct from the
@@ -80,6 +96,7 @@ checkpoint, including admissions between ticks and recovered tails. The daemon
 uses 10,000 events by default; set `snapshot_event_threshold`, or use
 `--snapshot-event-threshold N` / `--no-snapshots` on the CLI. One publication runs at
 a time and shutdown awaits it. Snapshot-only failure leaves the threshold pending.
-Daemon retries wait 1 second after the first failure, double up to 60 seconds, and
-reset after successful publication. Only failed attempts log errors; maintenance
-continues during the cooldown. WAL uncertainty fences the authority.
+Runtime and daemon retries wait 1 second after the first failure, double up to 60
+seconds, and reset after successful publication. Only failed attempts log errors;
+ticks and maintenance continue during the cooldown. WAL uncertainty fences the
+authority.

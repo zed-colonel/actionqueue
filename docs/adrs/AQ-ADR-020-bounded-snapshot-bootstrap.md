@@ -35,7 +35,9 @@ collections and control/state histories are bounded to 1,000,000 rows; record
 lengths are checked against remaining input
 before allocation, numeric tags and references are checked, and trailing bytes
 are rejected. Existing domain payload limits also apply. A publication exceeding
-these limits fails; it does not discard history or raise a ceiling.
+these limits fails; it does not discard history or raise a ceiling. Upgrade still
+completes for such a state: it publishes no checkpoint, reports why, and leaves a
+complete destination that replays its whole WAL at startup.
 
 The binding contains fixed-byte store UUID, manifest SHA-256, commitment version,
 covered sequence/end offset, last frame start offset/hash and prefix commitment.
@@ -70,7 +72,10 @@ sequence 1's manifest binding; subsequent frames remain byte-for-byte identical.
 Fresh offsets and commitments are computed from the destination WAL. Projection
 digest and logical inspection associations must agree before publication, and the
 entire destination is verified. The source is untouched. Populated or overlapping
-destinations fail. Writable opening never silently upgrades schema 9. Earlier
+destinations fail. An incomplete final source frame, left by a crash during an
+append, was never acknowledged: upgrade leaves it out of the destination, as
+`TruncatePartial` repair would, and reports its length. Damage inside a complete
+frame fails the upgrade. Writable opening never silently upgrades schema 9. Earlier
 unreleased schemas and pre-contract stores remain unsupported. There is no
 downgrade or automatic restore-time migration: upgrade the source/backup first,
 then create a schema-10 backup with a fresh descriptor.
@@ -87,7 +92,10 @@ the bounded publication path requires a writer and projection from the same reco
 Writer adapters may forward recovery provenance only when every append passes
 through unchanged. Candidates keep the session lock alive until consumed or dropped.
 
-`publish_checkpoint(candidate)` builds and encodes outside the authority lane.
+`publish_checkpoint(candidate)` builds and encodes outside the authority lane, then
+decodes the encoded bytes, hydrates their image and restores their inspection index
+as startup does. A failure there fails the publication and keeps the installed
+checkpoint, so publication never installs a checkpoint that startup rejects.
 Publication is serialized per session, rejects older candidates, syncs a unique
 temporary file, atomically renames it and syncs the directory. The acknowledged
 published sequence advances only after success. Snapshot-only errors leave durable
