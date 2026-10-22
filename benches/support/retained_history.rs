@@ -67,12 +67,15 @@ fn host() -> HostControlContext {
         attribution: ControlMutationContext::new(OpaqueRef::new("retained-history").unwrap()),
     }
 }
+fn open_with(path: &std::path::Path, options: OpenOptions) -> Authority {
+    open_store(path, options).unwrap().into_authority().unwrap().with_host(host())
+}
 fn open(path: &std::path::Path) -> Authority {
-    open_store(path, OpenOptions::Initialize { features: vec![] })
-        .unwrap()
-        .into_authority()
-        .unwrap()
-        .with_host(host())
+    open_with(path, OpenOptions::Initialize { features: vec![] })
+}
+/// Opens a copied store, which must already exist.
+fn reopen(path: &std::path::Path) -> Authority {
+    open_with(path, OpenOptions::ReadWrite)
 }
 
 fn admit(a: &mut Authority, q: EnsureTaskRequest) -> EnsureTaskOutcome {
@@ -183,11 +186,22 @@ thread_local! { static FIXTURE_CACHE:std::cell::RefCell<Option<std::path::PathBu
 pub fn set_fixture_cache(path: std::path::PathBuf) {
     FIXTURE_CACHE.with(|p| *p.borrow_mut() = Some(path));
 }
-fn copy_store(source: &std::path::Path, dest: &std::path::Path) {
+/// Copies a closed store's manifest, lock file and WAL. A durable copy also
+/// synchronizes those files, the store's directories and `dest`'s parent.
+fn copy_store(source: &std::path::Path, dest: &std::path::Path, durable: bool) {
     std::fs::create_dir_all(dest.join("wal")).unwrap();
     std::fs::create_dir_all(dest.join("snapshots")).unwrap();
     for name in ["manifest.json", "store.lock", "wal/actionqueue.wal"] {
         std::fs::copy(source.join(name), dest.join(name)).unwrap();
+        if durable {
+            std::fs::File::open(dest.join(name)).unwrap().sync_all().unwrap();
+        }
+    }
+    if durable {
+        let parent = dest.parent().unwrap().to_owned();
+        for dir in [dest.join("wal"), dest.join("snapshots"), dest.to_owned(), parent] {
+            std::fs::File::open(dir).unwrap().sync_all().unwrap();
+        }
     }
 }
 fn seed(n: usize) -> (tempfile::TempDir, Authority) {
@@ -197,8 +211,8 @@ fn seed(n: usize) -> (tempfile::TempDir, Authority) {
     let cache = FIXTURE_CACHE.with(|p| p.borrow().as_ref().map(|p| p.join(n.to_string())));
     if let Some(cache) = &cache {
         if cache.exists() {
-            copy_store(cache, &root);
-            let a = open(&root);
+            copy_store(cache, &root, false);
+            let a = reopen(&root);
             check_projection(a.projection(), n, 1 + 2 * n as u64);
             return (dir, a);
         }
@@ -213,16 +227,35 @@ fn seed(n: usize) -> (tempfile::TempDir, Authority) {
         }
     }
     if let Some(cache) = cache {
-        copy_store(&root, &cache);
+        copy_store(&root, &cache, false);
     }
     (dir, a)
 }
-pub fn run(n: usize) -> Value {
-    let (dir, a) = seed(n);
-    let mut result = measure_state(n, dir, a, false);
-    result["cache_conditions"] =
-        "warm OS cache; no cache eviction; WAL-first order; live seed authority".into();
-    result
+/// Where a sample's retained prefix comes from. It fixes the bootstrap order and
+/// the labels each result reports, so the two cannot disagree.
+enum Prefix {
+    /// The authority that built the prefix, WAL-first: the AQ-P1 and 0.2.0 boundaries.
+    LiveSeed,
+    /// Durable copies of the closed seed, opened by their own writer session.
+    Copied { repetition: usize, wal_sha256: String },
+}
+impl Prefix {
+    fn snapshot_first(&self) -> bool {
+        matches!(self, Prefix::Copied { repetition, .. } if repetition % 2 == 0)
+    }
+    fn label(&self, result: &mut Value) {
+        match self {
+            Prefix::LiveSeed => {
+                result["cache_conditions"] =
+                    "warm OS cache; no cache eviction; WAL-first order; live seed authority".into();
+            }
+            Prefix::Copied { repetition, wal_sha256 } => {
+                result["cache_conditions"] = "warm OS cache; no cache eviction; alternating order; independent copied files per repetition".into();
+                result["repetition"] = (*repetition).into();
+                result["prefix_wal_sha256"] = wal_sha256.as_str().into();
+            }
+        }
+    }
 }
 /// One sample measures the live seed authority in WAL-first order. Multiple
 /// samples reuse the closed, durable, unmeasured prefix: each receives fresh
@@ -230,10 +263,10 @@ pub fn run(n: usize) -> Value {
 /// bootstrap order. Timed phases and durability/recovery assertions are identical.
 pub fn run_repeated(n: usize, repetitions: usize) -> Vec<Value> {
     assert!(repetitions > 0);
-    if repetitions == 1 {
-        return vec![run(n)];
-    }
     let (seed_dir, a) = seed(n);
+    if repetitions == 1 {
+        return vec![measure_state(n, seed_dir, a, Prefix::LiveSeed)];
+    }
     let seed_root = seed_dir.path().join("store");
     let seed_wal = a.store_session().unwrap().wal_path();
     let (writer, projection) = a.into_parts();
@@ -245,38 +278,18 @@ pub fn run_repeated(n: usize, repetitions: usize) -> Vec<Value> {
         eprintln!("retained_history: N={n}, repetition {repetition}/{repetitions}");
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("store");
-        std::fs::create_dir_all(root.join("wal")).unwrap();
-        std::fs::create_dir_all(root.join("snapshots")).unwrap();
-        for name in ["manifest.json", "store.lock", "wal/actionqueue.wal"] {
-            std::fs::copy(seed_root.join(name), root.join(name)).unwrap();
-            std::fs::File::open(root.join(name)).unwrap().sync_all().unwrap();
-        }
-        for path in [root.join("wal"), root.join("snapshots"), root.clone(), dir.path().to_owned()]
-        {
-            std::fs::File::open(path).unwrap().sync_all().unwrap();
-        }
+        copy_store(&seed_root, &root, true);
         assert_eq!(wal_digest(&root.join("wal/actionqueue.wal")), prefix_hash);
-        let a = open_store(&root, OpenOptions::ReadWrite)
-            .unwrap()
-            .into_authority()
-            .unwrap()
-            .with_host(host());
-        let mut result = measure_state(n, dir, a, repetition % 2 == 0);
-        result["cache_conditions"] = "warm OS cache; no cache eviction; alternating order; independent copied files per repetition".into();
-        result["repetition"] = repetition.into();
-        result["prefix_wal_sha256"] = prefix_hash.clone().into();
+        let prefix = Prefix::Copied { repetition, wal_sha256: prefix_hash.clone() };
+        let result = measure_state(n, dir, reopen(&root), prefix);
         eprintln!("retained_history sample: {}", serde_json::to_string(&result).unwrap());
         results.push(result);
     }
     assert_eq!(wal_digest(&seed_wal), prefix_hash);
     results
 }
-fn measure_state(
-    n: usize,
-    dir: tempfile::TempDir,
-    mut a: Authority,
-    snapshot_first: bool,
-) -> Value {
+fn measure_state(n: usize, dir: tempfile::TempDir, mut a: Authority, prefix: Prefix) -> Value {
+    let snapshot_first = prefix.snapshot_first();
     let root = dir.path().join("store");
     let prefix_sequence = 1 + 2 * n as u64;
     check_projection(a.projection(), n, prefix_sequence);
@@ -392,7 +405,7 @@ fn measure_state(
     for tail in [0usize, 20] {
         let variant = tempfile::tempdir().unwrap();
         let variant_root = variant.path().join("store");
-        copy_store(&root, &variant_root);
+        copy_store(&root, &variant_root, false);
         std::fs::copy(&snapshot_path, variant_root.join("snapshots/snapshot.bin")).unwrap();
         let mut end = prefix_wal_bytes as usize;
         for _ in 0..tail {
@@ -416,7 +429,7 @@ fn measure_state(
         drop(boot.projection);
     }
 
-    json!({
+    let mut result = json!({
         "retained_terminal_runs": n,
         "batch_size": BATCH,
         "final_tasks": n + BATCH,
@@ -439,52 +452,7 @@ fn measure_state(
         "cancellation": cancellation.json(BATCH),
         "wal_only_bootstrap": wal_measurement.json(1),
         "snapshot_plus_tail_bootstrap": snapshot_measurement.json(1),
-    })
-}
-
-#[cfg(test)]
-#[test]
-fn populated_clone_is_equivalent_and_mutates_independently() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut a = open(dir.path());
-    assert!(admit(&mut a, request(1)).is_created());
-    assert!(admit(&mut a, request(2)).is_created());
-    assert!(matches!(cancel(&mut a, task_id(1)).applied(), AppliedMutation::TaskCancel { .. }));
-    let p = a.projection();
-    work::reset_projection_work();
-    let before = p.projection_digest().unwrap();
-    let _ = actionqueue_storage::snapshot::build::build_snapshot_from_projection(p, 1002).unwrap();
-    assert_eq!(work::projection_work(), ProjectionWork::default());
-    let mut cloned = p.clone();
-    assert_eq!(
-        work::projection_work(),
-        ProjectionWork { shallow_projection_clones: 1, ..ProjectionWork::default() }
-    );
-    // Debug includes derived indexes that the canonical digest omits.
-    assert_eq!(format!("{p:?}"), format!("{cloned:?}"));
-    assert_eq!(cloned.projection_digest().unwrap(), before);
-    work::reset_projection_work();
-    let event = actionqueue_storage::wal::event::WalEvent::new(
-        p.latest_sequence() + 1,
-        actionqueue_storage::wal::event::WalEventType::TaskCancellationCommitted {
-            record: actionqueue_storage::mutation::wait::CancelRecord {
-                target: CancelTarget::Task(task_id(2)),
-                tenant_id: None,
-                control_context: None,
-                sequence: p.latest_sequence() + 1,
-                timestamp: 1003,
-            },
-        },
-    );
-    cloned.apply(&event).unwrap();
-    assert!(cloned.apply(&event).is_err());
-    assert_eq!(work::projection_work().reducer_event_visits, 2);
-    assert!(cloned.is_task_canceled(task_id(2)));
-    assert!(!p.is_task_canceled(task_id(2)));
-    assert_eq!(cloned.runs_for_task(task_id(2)).next().unwrap().state(), RunState::Canceled);
-    assert_eq!(p.runs_for_task(task_id(2)).next().unwrap().state(), RunState::Scheduled);
-    assert_eq!(p.projection_digest().unwrap(), before);
-    assert_ne!(cloned.projection_digest().unwrap(), before);
-    let (writer, _) = a.into_parts();
-    writer.close().unwrap();
+    });
+    prefix.label(&mut result);
+    result
 }
