@@ -614,7 +614,7 @@ impl ReplayReducer {
 
     /// Returns the dependency declarations for gate reconstruction at bootstrap.
     ///
-    /// Provides raw prerequisite data so the dispatch loop can rebuild the
+    /// Borrows storage-owned prerequisite sets so the dispatch loop can rebuild the
     /// `DependencyGate` without a circular storage → workflow dependency.
     pub fn dependency_declarations(&self) -> impl Iterator<Item = (TaskId, &HashSet<TaskId>)> + '_ {
         self.dependency_declarations.iter().map(|(task_id, prereqs)| (*task_id, prereqs))

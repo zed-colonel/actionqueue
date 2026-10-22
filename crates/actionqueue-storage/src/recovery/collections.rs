@@ -6,7 +6,93 @@ use std::{
     sync::Arc,
 };
 
-pub use imbl::{HashSet, OrdSet as BTreeSet};
+macro_rules! set {
+    ($name:ident, $iter:ident, $into_iter:ident, $inner:ident, $module:ident, $($bound:tt)+) => {
+        /// A storage-owned, structurally shared set.
+        #[derive(Debug, Clone, PartialEq, Eq)]
+        pub struct $name<T: Clone + $($bound)+>(imbl::$inner<T>);
+
+        impl<T: Clone + $($bound)+> Default for $name<T> {
+            fn default() -> Self { Self(imbl::$inner::new()) }
+        }
+        impl<T: Clone + $($bound)+> $name<T> {
+            pub fn new() -> Self { Self::default() }
+            pub fn len(&self) -> usize { self.0.len() }
+            pub fn is_empty(&self) -> bool { self.0.is_empty() }
+            pub fn contains(&self, value: &T) -> bool { self.0.contains(value) }
+            pub fn iter(&self) -> $iter<'_, T> { $iter(self.0.iter()) }
+            pub fn insert(&mut self, value: T) -> Option<T> { self.0.insert(value) }
+            pub fn remove(&mut self, value: &T) -> Option<T> { self.0.remove(value) }
+            pub fn clear(&mut self) { self.0.clear(); }
+        }
+        impl<T: Clone + $($bound)+> FromIterator<T> for $name<T> {
+            fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
+                Self(iter.into_iter().collect())
+            }
+        }
+        impl<T: Clone + $($bound)+> Extend<T> for $name<T> {
+            fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
+                self.0.extend(iter);
+            }
+        }
+
+        /// A borrowed iterator over a storage-owned set.
+        #[derive(Clone)]
+        pub struct $iter<'a, T: Clone + $($bound)+>(
+            imbl::$module::Iter<'a, T, imbl::shared_ptr::DefaultSharedPtr>,
+        );
+        impl<'a, T: Clone + $($bound)+> Iterator for $iter<'a, T> {
+            type Item = &'a T;
+            fn next(&mut self) -> Option<Self::Item> { self.0.next() }
+            fn size_hint(&self) -> (usize, Option<usize>) { self.0.size_hint() }
+        }
+        impl<T: Clone + $($bound)+> ExactSizeIterator for $iter<'_, T> {}
+
+        /// A consuming iterator over a storage-owned set.
+        #[derive(Clone)]
+        pub struct $into_iter<T: Clone + $($bound)+>(
+            imbl::$module::ConsumingIter<T, imbl::shared_ptr::DefaultSharedPtr>,
+        );
+        impl<T: Clone + $($bound)+> Iterator for $into_iter<T> {
+            type Item = T;
+            fn next(&mut self) -> Option<Self::Item> { self.0.next() }
+            fn size_hint(&self) -> (usize, Option<usize>) { self.0.size_hint() }
+        }
+        impl<T: Clone + $($bound)+> ExactSizeIterator for $into_iter<T> {}
+
+        impl<'a, T: Clone + $($bound)+> IntoIterator for &'a $name<T> {
+            type Item = &'a T;
+            type IntoIter = $iter<'a, T>;
+            fn into_iter(self) -> Self::IntoIter { self.iter() }
+        }
+        impl<T: Clone + $($bound)+> IntoIterator for $name<T> {
+            type Item = T;
+            type IntoIter = $into_iter<T>;
+            fn into_iter(self) -> Self::IntoIter { $into_iter(self.0.into_iter()) }
+        }
+    }
+}
+set!(HashSet, HashSetIter, HashSetIntoIter, HashSet, hashset, Eq + Hash);
+set!(BTreeSet, BTreeSetIter, BTreeSetIntoIter, OrdSet, ordset, Ord);
+
+impl<T: Clone + Ord> BTreeSet<T> {
+    pub fn range<R: std::ops::RangeBounds<T>>(
+        &self,
+        range: R,
+    ) -> impl DoubleEndedIterator<Item = &T> {
+        self.0.range(range)
+    }
+}
+impl<T: Clone + Ord> DoubleEndedIterator for BTreeSetIter<'_, T> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        self.0.next_back()
+    }
+}
+impl<T: Clone + Ord> DoubleEndedIterator for BTreeSetIntoIter<T> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        self.0.next_back()
+    }
+}
 
 fn writable<T: Clone>(value: &mut Arc<T>) -> &mut T {
     #[cfg(feature = "testing")]
@@ -218,8 +304,8 @@ impl<T: Clone> History<T> {
     pub fn push(&mut self, value: T) {
         self.0.push_back(Arc::new(value));
     }
-    pub fn iter(&self) -> impl DoubleEndedIterator<Item = &T> + ExactSizeIterator {
-        self.0.iter().map(Arc::as_ref)
+    pub fn iter(&self) -> HistoryIter<'_, T> {
+        HistoryIter(self.0.iter())
     }
     pub fn iter_mut(&mut self) -> impl DoubleEndedIterator<Item = &mut T> {
         self.0.iter_mut().map(writable)
@@ -260,14 +346,32 @@ impl<T: Clone> From<Vec<T>> for History<T> {
 }
 impl<'a, T: Clone> IntoIterator for &'a History<T> {
     type Item = &'a T;
-    type IntoIter = std::iter::Map<
-        imbl::vector::Iter<'a, Arc<T>, imbl::shared_ptr::DefaultSharedPtr>,
-        fn(&'a Arc<T>) -> &'a T,
-    >;
+    type IntoIter = HistoryIter<'a, T>;
     fn into_iter(self) -> Self::IntoIter {
-        self.0.iter().map(Arc::as_ref)
+        self.iter()
     }
 }
+
+/// A borrowed, chronological iterator over a structurally shared history.
+#[derive(Clone)]
+pub struct HistoryIter<'a, T: Clone>(
+    imbl::vector::Iter<'a, Arc<T>, imbl::shared_ptr::DefaultSharedPtr>,
+);
+impl<'a, T: Clone> Iterator for HistoryIter<'a, T> {
+    type Item = &'a T;
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.next().map(Arc::as_ref)
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.0.size_hint()
+    }
+}
+impl<T: Clone> DoubleEndedIterator for HistoryIter<'_, T> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        self.0.next_back().map(Arc::as_ref)
+    }
+}
+impl<T: Clone> ExactSizeIterator for HistoryIter<'_, T> {}
 
 impl<K: Clone + Ord, V: Clone> BTreeMap<K, V> {
     pub fn range<R: std::ops::RangeBounds<K>>(
@@ -288,6 +392,78 @@ mod tests {
         fn clone(&self) -> Self {
             self.0.fetch_add(1, Ordering::Relaxed);
             Self(self.0.clone(), self.1)
+        }
+    }
+    impl PartialEq for Record {
+        fn eq(&self, other: &Self) -> bool {
+            self.1 == other.1
+        }
+    }
+    impl Eq for Record {}
+    impl PartialOrd for Record {
+        fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+            Some(self.cmp(other))
+        }
+    }
+    impl Ord for Record {
+        fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+            self.1.cmp(&other.1)
+        }
+    }
+    impl Hash for Record {
+        fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+            self.1.hash(state);
+        }
+    }
+    #[test]
+    fn wrapper_reads_and_structural_clones_do_not_copy_elements() {
+        let copies = Arc::new(AtomicUsize::new(0));
+        let mut hash: HashSet<_> = (0..1000).map(|i| Record(copies.clone(), i)).collect();
+        let mut ordered: BTreeSet<_> = (0..1000).map(|i| Record(copies.clone(), i)).collect();
+        let history: History<_> = (0..1000).map(|i| Record(copies.clone(), i)).collect();
+        // Construction's backend copies precede the wrapper operations under test.
+        copies.store(0, Ordering::Relaxed);
+        let hash_clone = hash.clone();
+        let ordered_clone = ordered.clone();
+        let history_clone = history.clone();
+        let key = Record(copies.clone(), 500);
+        assert!(hash.contains(&key));
+        assert!(ordered.contains(&key));
+        assert_eq!(hash.iter().count(), 1000);
+        assert_eq!((&hash_clone).into_iter().count(), 1000);
+        assert_eq!(ordered.iter().rev().count(), 1000);
+        assert_eq!((&ordered_clone).into_iter().count(), 1000);
+        assert_eq!(ordered.range(Record(copies.clone(), 400)..key).count(), 100);
+        assert_eq!(history.iter().rev().count(), 1000);
+        assert_eq!((&history_clone).into_iter().count(), 1000);
+        hash.clear();
+        ordered.clear();
+        assert_eq!(hash_clone.len(), 1000);
+        assert_eq!(ordered_clone.len(), 1000);
+        assert_eq!(copies.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn consuming_wrappers_preserve_backend_copy_counts() {
+        // Ownership and shared nodes affect backend copying. Compare both cases
+        // directly so an adapter cannot add a clone per yielded element.
+        for shared in [false, true] {
+            let copies = Arc::new(AtomicUsize::new(0));
+            let records = || (0..1000).map(|i| Record(copies.clone(), i));
+            let hash: HashSet<_> = records().collect();
+            let ordered: BTreeSet<_> = records().collect();
+            let raw_hash: imbl::HashSet<Record> = records().collect();
+            let raw_ordered: imbl::OrdSet<Record> = records().collect();
+            let owners = shared
+                .then(|| (hash.clone(), ordered.clone(), raw_hash.clone(), raw_ordered.clone()));
+            copies.store(0, Ordering::Relaxed);
+            assert_eq!(hash.into_iter().count(), 1000);
+            assert_eq!(ordered.into_iter().rev().count(), 1000);
+            let wrapped_copies = copies.swap(0, Ordering::Relaxed);
+            assert_eq!(raw_hash.into_iter().count(), 1000);
+            assert_eq!(raw_ordered.into_iter().rev().count(), 1000);
+            assert_eq!(copies.load(Ordering::Relaxed), wrapped_copies);
+            drop(owners);
         }
     }
     #[test]

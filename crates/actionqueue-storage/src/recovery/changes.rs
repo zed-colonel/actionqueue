@@ -22,6 +22,7 @@ use actionqueue_core::{
 ///
 /// `apply` clears the change before handling a frame, so a rejected frame leaves
 /// it empty with sequence 0. Hydration also leaves it empty.
+/// Identity sets use storage-owned, structurally shared collections.
 #[derive(Debug, Clone, Default)]
 pub struct ProjectionChange {
     /// WAL sequence of the applied frame, or 0 when the change is empty.

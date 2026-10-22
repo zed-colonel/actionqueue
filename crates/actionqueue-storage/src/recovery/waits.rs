@@ -118,6 +118,7 @@ impl WaitIndex {
             .map(|(_, id)| *id)
             .collect()
     }
+    /// Returns matching wait identities in a storage-owned ordered set.
     pub fn signal_waiters(&self, e: &SignalEnvelope) -> BTreeSet<WaitId> {
         let mut ids = BTreeSet::new();
         for correlation in std::iter::once(None).chain(e.correlation_id.clone().map(Some)) {
