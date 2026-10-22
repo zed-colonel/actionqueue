@@ -278,13 +278,7 @@ impl ReplayReducer {
                         return Err(bad);
                     }
                     if let Some(input) = s.assignment {
-                        let wake = self.waits.records().find(|w| {
-                            w.run_id == *run
-                                && w.resolution
-                                    .as_ref()
-                                    .is_some_and(|r| r.sequence == input.context_id.0)
-                        });
-                        if let Some(w) = wake {
+                        if let Some(w) = self.waits.resolved_wait(*run, input.context_id.0) {
                             let r = w.resolution.as_ref().unwrap();
                             if matches!(
                                 r.kind,

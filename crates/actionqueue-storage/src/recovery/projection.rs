@@ -472,8 +472,7 @@ impl ReplayReducer {
         });
         let started = std::time::Instant::now();
         r.rebuild_derived();
-        r.hydrate_waits(&s.waits, &s.pending_resumes, &s.key_reservations, &s.cancellations)
-            .map_err(invalid)?;
+        // Historical child evidence reads dispatch sequences while waits hydrate.
         for (run, seq) in s.dispatch_sequences {
             if seq == 0
                 || seq > r.latest_sequence
@@ -483,6 +482,8 @@ impl ReplayReducer {
                 return Err(invalid("invalid dispatch sequence"));
             }
         }
+        r.hydrate_waits(&s.waits, &s.pending_resumes, &s.key_reservations, &s.cancellations)
+            .map_err(invalid)?;
         r.hydrate_inspection_ownership();
         let produced: Vec<_> = r
             .attempt_history

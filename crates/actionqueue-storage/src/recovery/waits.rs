@@ -72,6 +72,10 @@ impl WaitIndex {
     pub(crate) fn resolved_wait(&self, run: RunId, sequence: u64) -> Option<&WaitRecord> {
         self.resolved.get(&(run, sequence)).and_then(|id| self.get(*id))
     }
+    /// A run's resolved waits in resolution order, without scanning history.
+    pub(crate) fn resolved_for_run(&self, run: RunId) -> impl Iterator<Item = &WaitRecord> {
+        self.resolved.range((run, 0)..=(run, u64::MAX)).filter_map(|(_, id)| self.get(*id))
+    }
     /// Active waits in exactly one namespace; historical waits do not consume capacity.
     pub fn active_count_for_tenant(&self, tenant: Option<TenantId>) -> usize {
         self.active_by_tenant.get(&tenant).copied().unwrap_or(0)
@@ -764,6 +768,7 @@ impl ReplayReducer {
             }
         }
         self.cancellations = cancellations.into_iter().collect();
+        let history = SignalHistory::new(self, records);
         for r in records {
             if r.sequence == 0
                 || r.sequence > self.latest_sequence
@@ -775,10 +780,8 @@ impl ReplayReducer {
                 return Err(E::InvalidIdentity);
             }
             self.validate_child_wait_ownership(r)?;
-            let attempt = self
-                .get_attempt_history(&r.run_id)
-                .and_then(|h| h.iter().find(|a| a.attempt_id() == r.attempt_id))
-                .ok_or(E::StaleAttempt)?;
+            let attempt =
+                self.attempt_entry_for_run(r.run_id, r.attempt_id).ok_or(E::StaleAttempt)?;
             if attempt.result() != Some(AttemptResultKind::Awaiting)
                 || attempt.finished_at() != Some(r.timestamp)
             {
@@ -803,12 +806,7 @@ impl ReplayReducer {
                         self.validate_historical_child_evidence(r, outcomes)?;
                     }
                     WaitResolutionKind::Signal(s) => {
-                        let selected = self.signals.records().find(|s| {
-                            s.wal_sequence() < res.sequence
-                                && s.retirement().is_none_or(|c| c.wal_sequence > res.sequence)
-                                && matches_signal(&r.spec, s.envelope(), s.sequence())
-                        });
-                        if selected.map(|r| r.sequence()) != Some(*s)
+                        if !history.earliest_retained_at(&r.spec, *s, res.sequence)
                             || self.signals.by_sequence(*s).is_none_or(|r| !r.is_retained())
                         {
                             return Err(E::InvalidSignal);
@@ -836,10 +834,7 @@ impl ReplayReducer {
                     return Err(E::StaleLease);
                 }
                 // An unresolved wait could not have permitted retirement of any eligible fact.
-                if self.signals.records().any(|s| {
-                    matches_signal(&r.spec, s.envelope(), s.sequence())
-                        && s.retirement().is_some_and(|c| c.wal_sequence > r.sequence)
-                }) {
+                if history.retired_after(&r.spec, r.sequence) {
                     return Err(E::InvalidSignal);
                 }
             }
@@ -876,19 +871,24 @@ impl ReplayReducer {
         }
         // Every successful wake is either pending, assigned to an immutable attempt,
         // or closed by cancellation. Superseded inputs remain in attempt history.
+        let assigned: std::collections::HashSet<_> = self
+            .attempt_history
+            .iter()
+            .flat_map(|(run, h)| {
+                h.iter().filter_map(|a| {
+                    a.accepted_start
+                        .as_ref()
+                        .and_then(|s| s.assignment)
+                        .map(|a| (*run, a.context_id.0))
+                })
+            })
+            .collect();
         for w in index.records() {
             if let Some(res) = &w.resolution {
                 if resumes(w)
                     && self.get_run_state(&w.run_id) != Some(&RunState::Canceled)
                     && index.pending_wait(w.run_id) != Some(w.spec.wait_id())
-                    && !self.get_attempt_history(&w.run_id).is_some_and(|h| {
-                        h.iter().any(|a| {
-                            a.accepted_start
-                                .as_ref()
-                                .and_then(|s| s.assignment)
-                                .is_some_and(|a| a.context_id.0 == res.sequence)
-                        })
-                    })
+                    && !assigned.contains(&(w.run_id, res.sequence))
                 {
                     return Err(E::InvalidState);
                 }
@@ -940,14 +940,117 @@ impl ReplayReducer {
         Ok(())
     }
 }
-fn matches_signal(w: &WaitSpec, e: &SignalEnvelope, s: SignalSequence) -> bool {
-    let Some(f) = w.filter() else { return false };
-    s > after(w)
-        && f.tenant_id == e.tenant_id
-        && f.namespace == e.namespace
-        && f.kind == e.kind
-        && f.correlation_id.as_ref().is_none_or(|c| Some(c) == e.correlation_id.as_ref())
-        && f.source_ref.as_ref().is_none_or(|v| Some(v) == e.source_ref.as_ref())
+/// Hydration-only view of every signal, retained or retired, under the match keys of
+/// the image's signal waits. Each historical check is a range query over one key, so
+/// hydration never rescans signal history per wait.
+struct SignalHistory {
+    keys: std::collections::HashMap<Key, KeyHistory>,
+}
+/// One key's signals in ascending signal sequence, which is also admission order.
+#[derive(Default)]
+struct KeyHistory {
+    sequences: Vec<SignalSequence>,
+    admitted: Vec<u64>,
+    /// Retirement WAL sequence, or `u64::MAX` while retained, with range maxima.
+    retired: MaxTree,
+    /// Latest retirement WAL sequence at or after each position, 0 when none.
+    later_retirement: Vec<u64>,
+}
+impl SignalHistory {
+    fn new(p: &ReplayReducer, records: &[WaitRecord]) -> Self {
+        let mut keys: std::collections::HashMap<Key, (KeyHistory, Vec<u64>)> = records
+            .iter()
+            .filter_map(|r| r.spec.filter())
+            .map(|f| (key(f), Default::default()))
+            .collect();
+        if !keys.is_empty() {
+            for s in p.signals.records() {
+                let e = s.envelope();
+                for correlation in std::iter::once(None).chain(e.correlation_id.clone().map(Some)) {
+                    for source in std::iter::once(None).chain(e.source_ref.clone().map(Some)) {
+                        let k = (
+                            e.tenant_id,
+                            e.namespace.clone(),
+                            e.kind.clone(),
+                            correlation.clone(),
+                            source,
+                        );
+                        if let Some((h, retired)) = keys.get_mut(&k) {
+                            h.sequences.push(s.sequence());
+                            h.admitted.push(s.wal_sequence());
+                            retired.push(s.retirement().map_or(u64::MAX, |c| c.wal_sequence));
+                        }
+                    }
+                }
+            }
+        }
+        let keys = keys
+            .into_iter()
+            .map(|(k, (mut h, retired))| {
+                h.later_retirement = retired.clone();
+                let mut later = 0;
+                for v in h.later_retirement.iter_mut().rev() {
+                    later = later.max(if *v == u64::MAX { 0 } else { *v });
+                    *v = later;
+                }
+                h.retired = MaxTree::new(retired);
+                (k, h)
+            })
+            .collect();
+        Self { keys }
+    }
+    /// The key's history and the first position eligible for `w`.
+    fn eligible(&self, w: &WaitSpec) -> Option<(&KeyHistory, usize)> {
+        let h = self.keys.get(&key(w.filter()?))?;
+        Some((h, h.sequences.partition_point(|s| *s <= after(w))))
+    }
+    /// Whether `selected` is the earliest signal eligible for `w` that was retained
+    /// when the frame at `at` committed, as live matching chose it.
+    fn earliest_retained_at(&self, w: &WaitSpec, selected: SignalSequence, at: u64) -> bool {
+        let Some((h, first)) = self.eligible(w) else { return false };
+        let Ok(position) = h.sequences.binary_search(&selected) else { return false };
+        position >= first
+            && h.admitted[position] < at
+            && h.retired.max(position..position + 1) > at
+            && h.retired.max(first..position) <= at
+    }
+    /// Whether a signal eligible for `w` was retired after the frame at `sequence`.
+    fn retired_after(&self, w: &WaitSpec, sequence: u64) -> bool {
+        self.eligible(w)
+            .is_some_and(|(h, first)| h.later_retirement.get(first).is_some_and(|v| *v > sequence))
+    }
+}
+/// Bottom-up segment tree of range maxima.
+#[derive(Default)]
+struct MaxTree(Vec<u64>);
+impl MaxTree {
+    fn new(values: Vec<u64>) -> Self {
+        let n = values.len();
+        let mut tree = vec![0; n];
+        tree.extend(values);
+        for i in (1..n).rev() {
+            tree[i] = tree[2 * i].max(tree[2 * i + 1]);
+        }
+        Self(tree)
+    }
+    /// The maximum over `range`, or 0 when it is empty.
+    fn max(&self, range: std::ops::Range<usize>) -> u64 {
+        let n = self.0.len() / 2;
+        let (mut l, mut r, mut max) = (range.start + n, range.end + n, 0);
+        while l < r {
+            if l % 2 == 1 {
+                max = max.max(self.0[l]);
+                l += 1;
+            }
+            if r % 2 == 1 {
+                r -= 1;
+                max = max.max(self.0[r]);
+            }
+            l /= 2;
+            r /= 2;
+        }
+        max
+    }
 }
 
 /// Whether this durable resolution supplies input to another attempt.

@@ -102,7 +102,7 @@ fn main() {
             .signals()
             .retained_candidates(&missing, actionqueue_core::ids::SignalSequence::new(0), 128)
             .is_empty());
-        assert_eq!(work::counts(), [0; 7]);
+        assert_eq!(work::counts(), [0; 8]);
         work::reset();
         assert_eq!(
             unmatched
@@ -117,7 +117,7 @@ fn main() {
                 .len(),
             1
         );
-        assert_eq!(work::counts(), [0, 0, 0, 1, 0, 0, 0]);
+        assert_eq!(work::counts(), [0, 0, 0, 1, 0, 0, 0, 0]);
         let envelope = engine::reference_signal(1).envelope(&Default::default(), 25);
         work::reset();
         assert_eq!(d.a().projection().waits().signal_waiters(&envelope).len(), n as usize);
@@ -136,7 +136,7 @@ fn main() {
             while remaining > 0 {
                 work::reset();
                 assert_eq!(d.a().projection().waits().matches(batch).len(), remaining.min(batch));
-                assert_eq!(work::counts(), [0, 0, remaining.min(batch), 0, 0, 0, 0]);
+                assert_eq!(work::counts(), [0, 0, remaining.min(batch), 0, 0, 0, 0, 0]);
                 work::reset();
                 d.reconcile_batch(25, batch);
                 // Preparation removes each matched candidate from its index exactly
@@ -152,7 +152,7 @@ fn main() {
         let empty_work = work::counts();
         assert_eq!(&empty_work[..4], &[0; 4]);
         assert!(empty_work[4] <= input["bounds"]["bucket_probes"].as_u64().unwrap() as usize);
-        assert_eq!(&empty_work[5..], &[0; 2]);
+        assert_eq!(&empty_work[5..], &[0; 3]);
         assert_eq!(d.a().projection().waits().active_count(), 0);
         assert_eq!(
             d.a().projection().waits().records().filter(|w| w.resolution.is_some()).count(),

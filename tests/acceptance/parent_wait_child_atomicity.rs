@@ -585,3 +585,70 @@ fn resolved_child_wait_keeps_historical_evidence_after_later_dependency_declarat
     assert_eq!(a.projection().pending_resume(r), Some(wake));
     parity(&a);
 }
+
+/// Snapshot hydration validates every retained wait, signal resolution, resume and
+/// Complete disposition with bounded work per record: no record rescans the whole
+/// wait, signal or task history.
+#[test]
+fn checkpoint_hydration_visits_retained_history_a_bounded_number_of_times_per_record() {
+    use actionqueue_storage::recovery::work;
+    use actionqueue_storage::snapshot::checkpoint::publish_checkpoint;
+    const N: u64 = 40;
+    const UNRESOLVED: u64 = 10;
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = s::open(dir.path());
+    let after = |n: u64| {
+        WaitSpec::new(
+            WaitId::new(),
+            s::filter(),
+            WaitMatchPolicy::FirstMatch,
+            SignalEligibility::After(SignalSequence::new(n)),
+            None,
+        )
+        .unwrap()
+    };
+    for i in 0..N {
+        // A parent waits for a required child, resumes with its outcome and completes.
+        let r = running(&mut a, 1000 + 3 * i, None, false);
+        let x = child(1001 + 3 * i, vec![], ChildLifecyclePolicy::Required, parent(&a, r));
+        let id = x.task_spec().id();
+        let d = child_disposition(&a, r, vec![x], vec![id], ChildWaitPolicy::AllTerminal);
+        put(&mut a, r, d, 20);
+        finish_child(&mut a, id, true, 30);
+        assert_eq!(reconcile(&mut a, 31).unwrap(), 1);
+        lease(&mut a, r, 32);
+        start(&mut a, r, 32);
+        put(&mut a, r, AttemptDisposition::complete(None), 33);
+        // A run waits for the next signal, resumes with it and completes.
+        let r = running(&mut a, 1002 + 3 * i, None, false);
+        establish_wait(&mut a, r, after(i));
+        let _ = s::submit(&mut a, s::envelope(i, 25)).unwrap();
+        assert_eq!(reconcile(&mut a, 30).unwrap(), 1);
+        lease(&mut a, r, 32);
+        start(&mut a, r, 32);
+        put(&mut a, r, AttemptDisposition::complete(None), 33);
+    }
+    for i in 0..UNRESOLVED {
+        let r = running(&mut a, 2000 + i, None, false);
+        establish_wait(&mut a, r, after(N));
+    }
+    let tasks = a.projection().task_count();
+    let waits = a.projection().waits().records().count();
+    let signals = a.projection().signals().records().count();
+    assert_eq!(waits as u64, 2 * N + UNRESOLVED);
+    assert_eq!(signals as u64, N);
+    let digest = a.projection().projection_digest().unwrap();
+    let candidate = a.capture_checkpoint(40).unwrap();
+    publish_checkpoint(candidate).unwrap();
+    drop(a);
+    let session = open_store(dir.path(), OpenOptions::ReadOnly).unwrap();
+    work::reset();
+    let recovered = recover_read_only(&session, RepairPolicy::Strict).unwrap();
+    let [wait_history, signal_history, .., task_history] = work::counts();
+    assert!(recovered.snapshot_loaded);
+    assert_eq!(recovered.projection.projection_digest().unwrap(), digest);
+    // Each count would grow with the square of N if any record rescanned history.
+    assert!(wait_history <= 2 * waits, "{wait_history} wait visits for {waits} waits");
+    assert!(signal_history <= 2 * signals, "{signal_history} signal visits for {signals} signals");
+    assert!(task_history <= tasks, "{task_history} task visits for {tasks} tasks");
+}

@@ -9,10 +9,11 @@ pub(crate) enum Visit {
     WaitBucket,
     Waiter,
     CandidateRemoval,
+    TaskHistory,
 }
 #[cfg(feature = "testing")]
 thread_local! {
-    static COUNTS: std::cell::Cell<[usize; 7]> = const { std::cell::Cell::new([0; 7]) };
+    static COUNTS: std::cell::Cell<[usize; 8]> = const { std::cell::Cell::new([0; 8]) };
 }
 #[inline]
 pub(crate) fn visit(kind: Visit) {
@@ -38,12 +39,12 @@ pub(crate) fn visit(kind: Visit) {
 /// Reset the calling thread's measured work, excluding fixture setup/replay costs.
 #[cfg(feature = "testing")]
 pub fn reset() {
-    COUNTS.with(|c| c.set([0; 7]));
+    COUNTS.with(|c| c.set([0; 8]));
 }
 /// Wait history, signal history, match candidates, signal candidates, bucket probes,
-/// waiter visits, and candidate removals, in that order.
+/// waiter visits, candidate removals, and task history, in that order.
 #[cfg(feature = "testing")]
-pub fn counts() -> [usize; 7] {
+pub fn counts() -> [usize; 8] {
     COUNTS.with(std::cell::Cell::get)
 }
 
@@ -77,7 +78,7 @@ thread_local! {
         })
     };
 }
-/// Reset only the calling thread's projection work; the seven iterator counters are separate.
+/// Reset only the calling thread's projection work; the eight iterator counters are separate.
 #[cfg(feature = "testing")]
 pub fn reset_projection_work() {
     PROJECTION_WORK.with(|c| c.set(ProjectionWork::default()));
@@ -154,7 +155,7 @@ mod tests {
         visit(Visit::WaitHistory);
         reset_projection_work();
         assert_eq!(projection_work(), ProjectionWork::default());
-        assert_eq!(counts(), [1, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(counts(), [1, 0, 0, 0, 0, 0, 0, 0]);
         reset();
     }
 }

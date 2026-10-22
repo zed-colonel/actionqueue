@@ -2,11 +2,13 @@
 use actionqueue_core::{
     continuation::*,
     ids::TaskId,
-    run::RunState,
+    mutation::CancelTarget,
+    run::{RunInstance, RunState},
     task::{run_policy::RunPolicy, task_spec::ChildLifecyclePolicy},
 };
 
 use super::reducer::ReplayReducer;
+use crate::mutation::wait::{CancelRecord, WaitResolutionKind};
 impl ReplayReducer {
     /// A drained cron window is not terminal while another occurrence can be derived.
     pub fn task_terminal_status(&self, id: TaskId) -> Option<TaskTerminalStatus> {
@@ -106,60 +108,76 @@ impl ReplayReducer {
         }
         (outcomes.len() == task_ids.len()).then_some(outcomes)
     }
-    /// Reconstruct terminal facts at a historical resolution. Immutable attempt records
-    /// and cancellation sequences disambiguate events sharing a timestamp.
+    /// Reconstruct a task's terminal status as of the frame at `sequence`, as live
+    /// preparation observed it before that frame. A run counts only if the frame that
+    /// ended it precedes `sequence`. Dispositions, wait resolutions and committed
+    /// cancellations record that frame's WAL sequence, so wall-clock timestamps, which
+    /// may step backwards, never decide those runs. Recovery and legacy transitions
+    /// record none: any recorded activity at or after `sequence` still proves such a
+    /// run unfinished, and otherwise `legacy_timestamp`, when given, excludes a run
+    /// whose last transition is later.
     pub(crate) fn task_terminal_status_at(
         &self,
         id: TaskId,
         sequence: u64,
-        timestamp: u64,
+        legacy_timestamp: Option<u64>,
     ) -> Option<TaskTerminalStatus> {
-        use actionqueue_core::mutation::CancelTarget;
-        if self
-            .cancellations
-            .get(&CancelTarget::Task(id))
-            .is_some_and(|c| c.sequence < sequence && c.timestamp <= timestamp)
-        {
+        let task_cancel = self.cancellations.get(&CancelTarget::Task(id));
+        if task_cancel.is_some_and(|c| c.sequence < sequence) {
             return Some(TaskTerminalStatus::Canceled);
         }
         for run in self.runs_for_task(id) {
-            if !run.state().is_terminal() || run.last_state_change_at() > timestamp {
+            if !run.state().is_terminal() {
                 return None;
             }
-            if self
-                .get_attempt_history(&run.id())
-                .into_iter()
-                .flatten()
-                .filter_map(|a| a.disposition.as_ref())
-                .any(|d| d.target_state.is_terminal() && d.sequence >= sequence)
-            {
-                return None;
-            }
-            if run.state() == RunState::Canceled
-                && [CancelTarget::Run(run.id()), CancelTarget::Task(id)]
-                    .iter()
-                    .any(|t| self.cancellations.get(t).is_some_and(|c| c.sequence >= sequence))
-            {
-                return None;
-            }
-            if self
-                .waits
-                .records()
-                .filter(|w| w.run_id == run.id())
-                .filter_map(|w| w.resolution.as_ref())
-                .any(|r| {
-                    r.sequence >= sequence
-                        && matches!(
-                            r.kind,
-                            crate::mutation::wait::WaitResolutionKind::Deadline
-                                | crate::mutation::wait::WaitResolutionKind::Canceled(_)
-                        )
-                })
+            let (last, recorded) = self.terminal_run_evidence(run, task_cancel);
+            if last >= sequence
+                || !recorded && legacy_timestamp.is_some_and(|t| run.last_state_change_at() > t)
             {
                 return None;
             }
         }
         self.task_runs_terminal_status(id)
+    }
+    /// The latest WAL sequence this image records for a terminal run, and whether the
+    /// frame that ended the run is among those records. Reads only the run's own
+    /// attempts and resolved waits.
+    fn terminal_run_evidence(
+        &self,
+        run: &RunInstance,
+        task_cancel: Option<&CancelRecord>,
+    ) -> (u64, bool) {
+        let mut last = self.dispatch_sequences.get(&run.id()).copied().unwrap_or(0);
+        let mut recorded = false;
+        for a in self.get_attempt_history(&run.id()).into_iter().flatten() {
+            last = last.max(a.accepted_start.as_ref().map_or(0, |s| s.sequence));
+            if let Some(d) = &a.disposition {
+                last = last.max(d.sequence);
+                recorded |= d.target_state.is_terminal();
+            }
+        }
+        for w in self.waits.resolved_for_run(run.id()) {
+            let Some(r) = &w.resolution else { continue };
+            last = last.max(r.sequence);
+            recorded |= match r.kind {
+                WaitResolutionKind::Canceled(_) => true,
+                WaitResolutionKind::Deadline => w
+                    .spec
+                    .deadline()
+                    .is_some_and(|d| d.policy != WaitTimeoutPolicy::ResumeWithTimeout),
+                _ => false,
+            };
+        }
+        if run.state() == RunState::Canceled {
+            // A run cancellation names its run; a task cancellation ended the runs
+            // still active when it committed.
+            let run_cancel = self.cancellations.get(&CancelTarget::Run(run.id()));
+            if let Some(c) = run_cancel.or(task_cancel.filter(|_| !recorded)) {
+                last = last.max(c.sequence);
+                recorded = true;
+            }
+        }
+        (last, recorded)
     }
     pub(crate) fn validate_historical_child_evidence(
         &self,
@@ -174,7 +192,7 @@ impl ReplayReducer {
         let mut expected: Vec<_> = task_ids
             .iter()
             .filter_map(|id| {
-                self.task_terminal_status_at(*id, resolution.sequence, resolution.timestamp)
+                self.task_terminal_status_at(*id, resolution.sequence, Some(resolution.timestamp))
                     .map(|status| ChildOutcome { task_id: *id, status })
             })
             .collect();
@@ -194,22 +212,26 @@ impl ReplayReducer {
         }
         Ok(())
     }
+    /// The rule live preparation applies to a Complete disposition: every Required
+    /// direct child admitted before it was terminal when it committed. Only the
+    /// parent's children are read. Unlike child-wait evidence, no outcome is selected
+    /// from the children, so a run ended by a frame without a recorded sequence counts
+    /// as terminal unless later recorded activity proves otherwise; its timestamp
+    /// might have stepped backwards.
     pub(crate) fn validate_historical_completion(
         &self,
         parent: TaskId,
         sequence: u64,
         timestamp: u64,
     ) -> bool {
-        self.task_records()
+        self.children_of(parent)
+            .filter_map(|id| self.get_task_record(&id))
             .filter(|t| {
-                t.task_spec().parent_task_id() == Some(parent)
-                    && t.task_spec().child_lifecycle_policy() == ChildLifecyclePolicy::Required
+                t.task_spec().child_lifecycle_policy() == ChildLifecyclePolicy::Required
                     && self
                         .task_admission(t.task_spec().id())
                         .map_or(t.created_at() <= timestamp, |a| a.sequence() < sequence)
             })
-            .all(|t| {
-                self.task_terminal_status_at(t.task_spec().id(), sequence, timestamp).is_some()
-            })
+            .all(|t| self.task_terminal_status_at(t.task_spec().id(), sequence, None).is_some())
     }
 }

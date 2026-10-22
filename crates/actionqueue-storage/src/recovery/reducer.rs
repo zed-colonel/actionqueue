@@ -638,7 +638,7 @@ impl ReplayReducer {
 
     /// Returns an iterator over task records with timestamp metadata.
     pub fn task_records(&self) -> impl Iterator<Item = &TaskRecord> {
-        self.tasks.values()
+        self.tasks.values().inspect(|_| super::work::visit(super::work::Visit::TaskHistory))
     }
 
     /// Durable signals and derived retained indexes.
