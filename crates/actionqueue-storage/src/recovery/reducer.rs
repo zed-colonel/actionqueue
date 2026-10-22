@@ -1847,13 +1847,14 @@ impl ReplayReducer {
         self.subscriptions.get(&subscription_id).is_some_and(|r| r.canceled_at.is_some())
     }
 
-    /// Returns an iterator over all actor records.
+    /// Returns control attributions recorded for control frames, keyed by WAL sequence.
     pub fn control_history(
         &self,
     ) -> &super::collections::BTreeMap<u64, actionqueue_core::control::ControlAttribution> {
         &self.control_history
     }
 
+    /// Returns an iterator over all actor records.
     pub fn actors(&self) -> impl Iterator<Item = (&ActorId, &ActorRecord)> {
         self.actors.iter()
     }

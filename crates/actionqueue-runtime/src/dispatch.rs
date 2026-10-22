@@ -268,11 +268,16 @@ pub struct DispatchLoop<
     snapshot_event_threshold: Option<u64>,
 
     /// DAG dependency gate — gates Scheduled → Ready promotion.
-    /// Built from the projection at bootstrap and kept in sync as runs complete.
+    /// Built from the projection at bootstrap. Afterwards only
+    /// `refresh_coordination` updates it, from the tasks the projection reports
+    /// as changed since `coordination_sequence`: declarations, prerequisite
+    /// outcomes and terminal task status.
     dependency_gate: DependencyGate,
     /// Hierarchy tracker — parent-child task tree for cascade cancellation.
-    /// Built from the projection at bootstrap and kept in sync as tasks are
-    /// created (via handler submissions) and reach terminal state.
+    /// Built from the projection at bootstrap. Afterwards only
+    /// `refresh_coordination` updates it, restoring parent links and terminal
+    /// facts for the tasks changed since `coordination_sequence`, whichever path
+    /// (handler submission, disposition or service) created or finished them.
     hierarchy_tracker: HierarchyTracker,
     /// In-memory budget state reconstructed from WAL events at bootstrap.
     /// Updated each tick as worker results arrive with consumption records.
@@ -309,7 +314,14 @@ pub struct DispatchLoop<
     /// InternalSubscriptionRegistry, CronScheduleCache). Populated when all runs for a
     /// task are terminal; drained each tick after cascades are complete.
     pending_gc_tasks: std::collections::HashSet<TaskId>,
+    /// Projection sequence up to which `dependency_gate`, `hierarchy_tracker` and
+    /// `pending_gc_tasks` have applied every task change. `refresh_coordination`
+    /// consumes `changed_tasks_since` this cursor and then advances it to the
+    /// latest sequence; it must only advance after those changes are applied.
     coordination_sequence: u64,
+    /// Projection sequence up to which `key_gate` reflects every run's concurrency
+    /// key claim. `refresh_key_gate` consumes `changed_runs_since` this cursor and
+    /// then advances it; a full key-gate rebuild also resets it.
     key_sequence: u64,
 }
 

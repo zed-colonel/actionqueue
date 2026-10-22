@@ -1,4 +1,7 @@
-//! Derived exact-reference lookup. Rebuilt by admission insertion on replay and hydration.
+//! Derived inspection indexes. Exact-reference lookup is rebuilt from admissions: by
+//! admission insertion on replay and in bulk on hydration. Control-target and
+//! attempt-owner associations are indexed per frame on replay; schema-10 checkpoints
+//! persist them, and bootstrap and full verification restore them after hydration.
 use super::collections::{BTreeSet, HashMap};
 
 use actionqueue_core::ids::{TaskId, TenantId};
@@ -96,7 +99,9 @@ impl super::reducer::ReplayReducer {
                 .or_else(|| self.task_admission(task).map(|a| a.sequence()))
         })
     }
-    /// False only for a standalone snapshot before retained-WAL indexes are restored.
+    /// False only for a projection hydrated from a logical image whose checkpoint
+    /// operation associations were not restored; its control-target sequences are
+    /// then unknown.
     pub fn control_targets_available(&self) -> bool {
         !self.inspection_index.history_unavailable
     }

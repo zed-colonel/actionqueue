@@ -72,6 +72,11 @@ pub struct DependencyGate {
     ///
     /// Only contains tasks with declared dependencies (not all tasks).
     prerequisites: HashMap<TaskId, HashSet<TaskId>>,
+    /// prerequisite task_id → set of task_ids that declare it.
+    ///
+    /// Always the exact inverse of `prerequisites`: every edge appears in both
+    /// maps and empty buckets are removed. `gc_task` and failure/success
+    /// propagation rely on this to find dependents without scanning every task.
     dependents: HashMap<TaskId, HashSet<TaskId>>,
 
     /// task_ids all of whose prerequisites have reached terminal success.

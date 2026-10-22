@@ -111,7 +111,7 @@ history remains available after hydration and equals the authoritative task hist
 
 ## Artifact inventory
 
-Run: `1964cff7-8fd0-46fe-9dbd-bfb4a7e6c25e`, under its `scratch/verification`:
+The measurement run produced these unpublished verification artifacts:
 
 - `aq-p3-baseline.log` and `.json`: fresh unchanged-AQ-P2 measurements.
 - `aq-p3-checkpoint-first.json`, `aq-p3-linear-benchmark.json`,

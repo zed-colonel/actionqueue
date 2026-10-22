@@ -2,15 +2,13 @@
 
 Status: **Accepted for design only** for AQ-P4 / AQ-PERF-1.
 
-Authority: the operator answered “Yes, for design only” to lossless terminal-run
-archival with a complete retained WAL. The design handoff records this guidance
-at `2026-10-21T05:54:04.109Z`; the implementation run's
-`plan/craftingtable-operator-decisions.json`,
-`decisions[0].designRecovery.instructions`, carries the same guidance with
-`recordedAt: 2026-10-21T05:55:41.277Z` (run
-`64b807ea-873a-4d8d-ad34-c24f50d7c1cb`, design recovery
-`2d142523-3c56-462c-bba4-9b74e86c486b`). This ADR records acceptance of that design
-direction; it is not an implementation or verification receipt for archival.
+Authority: on 2026-10-21 the operator accepted lossless terminal-run archival with
+a complete retained WAL as this direction, answering “Yes, for design only”:
+preserve complete logical history and logical-v9 digest semantics; retain the
+complete WAL and admission identities; begin with offline archival; and require
+versioned archive, snapshot and backup support in a separately scheduled
+follow-up. This ADR records acceptance of that design direction; it is not an
+implementation or verification receipt for archival.
 
 AQ-P4 delivers this ADR and its index entry. It changes no source code, WAL,
 snapshot, backup or digest format, release version, or frozen contract. The

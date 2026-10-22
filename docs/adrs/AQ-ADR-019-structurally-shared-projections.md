@@ -1,6 +1,7 @@
 # AQ-ADR-019: Structurally shared projections
 
-Status: Accepted for AQ-P2; performance acceptance requires the measurements below.
+Status: Accepted for AQ-P2. The repeated scale measurements that met its mutation
+budget are recorded in the [0.3.0 release notes](../releases/0.3.0.md#measured-budgets).
 
 AQ-P3 refines hydration with immutable bulk tables and persistent mutation deltas,
 while preserving shallow roots and bounded record copying. See
@@ -30,9 +31,9 @@ copying. Long-lived readers retain old paths and records until they drop their
 roots. Record copies and candidate visits are measured separately from shallow
 projection clones; wholesale copied run counts must remain zero.
 
-The measured spike below uses the retained-history workload from AQ-P1. Final
-scale observations and acceptance results follow the linked measurement protocol
-and remain run-local verification artifacts.
+The measured spike below uses the retained-history workload from AQ-P1. The final
+repeated scale measurements follow the linked measurement protocol; their medians
+and growth ratios are in the [0.3.0 release notes](../releases/0.3.0.md#measured-budgets).
 
 Runtime consumers use `ProjectionChange` for the last frame and sequence cursors
 for multi-frame services. The cursor indexes hold **one latest modification per
@@ -61,10 +62,10 @@ Record copies were 200 per admission batch and 1,000 per cancellation batch at b
 WAL-only bootstrap took 0.113 / 1.377 seconds; snapshot plus tail took
 0.889 / 7.778 seconds. This supports retaining staged mutation instead of an
 in-place or undo-journal rewrite. Final repeated scale measurements are recorded
-in the AQ-P2 performance report.
+in the [0.3.0 release notes](../releases/0.3.0.md#measured-budgets).
 
 The old full-projection and wholesale-run-copy counters no longer had increment
-sites after this conversion and were removed in review remediation (F-002).
+sites after this conversion and were removed.
 Structural assertions bound actual record materializations per mutation and count
 root clones; inspection of the persistent field types establishes that root cloning
 does not copy retained collections. A constant zero counter is not evidence of that.
@@ -82,7 +83,8 @@ visit for its one unfinished run. The final record-copy counts include this inde
 
 [Measurement protocol](../performance/retained-history-aq-p2.md) specifies the
 repeated scale run, runtime and daemon boundaries, and memory observations.
-Raw results and the final acceptance report are run-local verification artifacts.
+Raw results are verification artifacts and are not committed; the accepted
+measurements are in the [0.3.0 release notes](../releases/0.3.0.md#measured-budgets).
 The memory representation adds one `Arc` slot per map/history record plus shared
 tree nodes and derived indexes. Cursor-index space is bounded by task/run count;
 it does not grow with repeated mutations of the same objects. Whole-process RSS

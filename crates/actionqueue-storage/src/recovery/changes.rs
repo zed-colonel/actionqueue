@@ -9,13 +9,30 @@ use actionqueue_core::{
     subscription::SubscriptionId,
 };
 
-/// The latest successfully applied frame's complete compound effect.
+/// Coordination-relevant effects of the most recent successful
+/// [`ReplayReducer::apply`].
+///
+/// Run creation, every run state transition (including lease close and wait
+/// transitions) and run cancellation report the run and its task. Task creation and
+/// cancellation, dependency declarations and budget allocation, consumption,
+/// exhaustion and replenishment report the task. Frames that change neither run
+/// state nor task coordination, such as lease acquisition and heartbeats, attempt
+/// records, subscriptions, engine pause/resume, ledger and identity frames, report
+/// only their `sequence`.
+///
+/// `apply` clears the change before handling a frame, so a rejected frame leaves
+/// it empty with sequence 0. Hydration also leaves it empty.
 #[derive(Debug, Clone, Default)]
 pub struct ProjectionChange {
+    /// WAL sequence of the applied frame, or 0 when the change is empty.
     pub sequence: u64,
+    /// Tasks created by the frame.
     pub created_tasks: BTreeSet<TaskId>,
+    /// Tasks whose coordination state changed, including the tasks of changed runs.
     pub tasks: BTreeSet<TaskId>,
+    /// Runs created, transitioned or canceled by the frame.
     pub runs: BTreeSet<RunId>,
+    /// Waits resolved by the frame.
     pub resolved_waits: BTreeSet<WaitId>,
 }
 #[derive(Debug, Clone, Default)]
@@ -45,21 +62,34 @@ pub(crate) struct DerivedIndexes {
     runs_changed: BTreeMap<u64, BTreeSet<RunId>>,
 }
 impl ReplayReducer {
-    /// Clones share this proof until a state-changing entry point is called.
+    /// Returns true when both projections are clones of the same revision: neither
+    /// has had a state-changing entry point called since they were cloned. `true`
+    /// proves equal state; `false` proves nothing.
     pub fn shares_revision_with(&self, other: &Self) -> bool {
         std::sync::Arc::ptr_eq(&self.revision, &other.revision)
     }
+    /// Effects of the most recent successful apply; see [`ProjectionChange`].
     pub fn latest_change(&self) -> &ProjectionChange {
         &self.change
     }
-    /// Latest modifications since a consumer's cursor, including multi-frame services.
-    /// Space is bounded by current task count, rather than the number of mutations.
+    /// Tasks whose most recent recorded change has a sequence above `sequence`, in
+    /// ascending order of that change.
+    ///
+    /// A consumer that has applied every change up to its cursor can catch up across
+    /// many frames without an event queue. Each task appears once, at its latest
+    /// change, and only for the effects [`ProjectionChange::tasks`] reports.
+    /// Hydration marks every task as changed at the recovered sequence. Space is
+    /// bounded by task count, rather than the number of mutations.
     pub fn changed_tasks_since(&self, sequence: u64) -> impl Iterator<Item = TaskId> + '_ {
         self.derived
             .tasks_changed
             .range((std::ops::Bound::Excluded(sequence), std::ops::Bound::Unbounded))
             .flat_map(|(_, ids)| ids.iter().copied())
     }
+    /// Runs whose most recent recorded change has a sequence above `sequence`, in
+    /// ascending order of that change; the run counterpart of
+    /// [`Self::changed_tasks_since`], for the effects [`ProjectionChange::runs`]
+    /// reports.
     pub fn changed_runs_since(&self, sequence: u64) -> impl Iterator<Item = RunId> + '_ {
         self.derived
             .runs_changed

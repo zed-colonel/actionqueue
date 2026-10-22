@@ -3,12 +3,12 @@
 AQ-P2 uses structurally shared projections and derived coordination indexes;
 [AQ-ADR-019](../adrs/AQ-ADR-019-structurally-shared-projections.md) records the
 architecture and initial spike. The [instrumented 0.2.0 baseline](retained-history-0.2.0.md)
-remains unchanged. Run-local raw results, verification logs, resource measurements
-and the final acceptance report belong in the work item's `scratch/verification/`,
-as required by the implementation workflow. They are attached to the handoff,
-rather than committed as generated test output.
+remains unchanged. Raw results, verification logs and resource measurements are
+unpublished verification evidence, not committed test output. The accepted
+mutation medians and growth ratios are in the
+[0.3.0 release notes](../releases/0.3.0.md#measured-budgets).
 
-Run from the workspace root with the supplied `TMPDIR` and `CARGO_TARGET_DIR`:
+Run from the workspace root with any writable `TMPDIR`:
 
 ```sh
 cargo bench --locked --bench retained_history -- \
@@ -62,7 +62,7 @@ post-publication rollback, hydration indexes, and incremental coordination versu
 reconstruction. The existing crash suites and independent canonical digest vector
 retain their assertions. Mutation probes for publication rollback, hydration index
 reconstruction and active-run selection must fail through assertions, with source
-restored before the final checks. Independent review remains a controller step.
+restored before the final checks.
 
 AQ-P3 can use the measured WAL-only and snapshot-plus-tail bootstrap observations.
 AQ-P2 intentionally retains complete WAL verification and snapshot schema 9.

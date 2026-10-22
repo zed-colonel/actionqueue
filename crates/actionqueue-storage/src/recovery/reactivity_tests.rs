@@ -1,4 +1,6 @@
-//! F-001: lease closure must preserve pre-AQ-P2 subscription evidence and digests.
+//! A lease release or expiry that returns a run to Ready must match a Ready
+//! subscription created while the run was leased, exactly as the pre-AQ-P2 reducer
+//! did, in live, hydrated and replayed projections with the same canonical digest.
 use crate::{
     recovery::{projection::ProjectionImageV8, reducer::ReplayReducer, replay::ReplayDriver},
     snapshot::build::build_snapshot_from_projection,
@@ -20,7 +22,7 @@ use actionqueue_core::{
 };
 
 fn lease_close_replay(released: bool) {
-    // These identities, payloads and timestamps reproduce the review's serialized
+    // These identities, payloads and timestamps reproduce a fixed serialized
     // seven-event stream. The fixed digest was measured with aq-perf-1 0ab8196,
     // whose reducer still observed every unmatched subscription around each event.
     let task_id: TaskId = "32442bf3-8ea9-4755-a7fa-9fc7e66e0c9d".parse().unwrap();
