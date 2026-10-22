@@ -226,3 +226,128 @@ fn sc_c_missing_snapshot_uses_wal_only() {
 
     let _ = std::fs::remove_dir_all(&data_dir);
 }
+
+// ---------------------------------------------------------------------------
+// Test SC-F: A checkpoint the runtime publishes always loads at startup, even
+// when the wall clock steps backwards between a required child's cancellation
+// and its parent's completion. Live operation accepts that completion; startup
+// must accept the checkpoint that contains it.
+// ---------------------------------------------------------------------------
+mod backward_clock {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{mpsc, Arc, Mutex};
+
+    use actionqueue_core::ids::TaskId;
+    use actionqueue_core::run::state::RunState;
+    use actionqueue_core::task::run_policy::RunPolicy;
+    use actionqueue_core::task::task_spec::{ChildLifecyclePolicy, TaskPayload, TaskSpec};
+    use actionqueue_executor_local::handler::{
+        AttemptDisposition, ExecutorContext, ExecutorHandler,
+    };
+    use actionqueue_runtime::config::RuntimeConfig;
+    use actionqueue_runtime::engine::ActionQueueEngine;
+    use actionqueue_storage::recovery::bootstrap::load_existing_projection;
+    use actionqueue_storage::store::{open_store, verify_store, OpenOptions};
+
+    #[derive(Clone)]
+    struct SharedClock(Arc<AtomicU64>);
+    impl actionqueue_core::time::clock::Clock for SharedClock {
+        fn now(&self) -> u64 {
+            self.0.load(Ordering::SeqCst)
+        }
+    }
+
+    /// Holds the parent's attempt open until the test releases it.
+    #[derive(Clone)]
+    struct ParentGate(Arc<Mutex<mpsc::Receiver<()>>>);
+    impl ExecutorHandler for ParentGate {
+        fn execute(&self, ctx: ExecutorContext) -> AttemptDisposition {
+            if ctx.input.payload == b"parent" {
+                self.0.lock().unwrap().recv().unwrap();
+            }
+            AttemptDisposition::complete(None)
+        }
+    }
+
+    fn spec(payload: &[u8]) -> TaskSpec {
+        TaskSpec::new(
+            TaskId::new(),
+            TaskPayload::new(payload.to_vec()),
+            RunPolicy::Once,
+            Default::default(),
+            Default::default(),
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn sc_f_checkpoint_after_backward_clock_step_loads_at_startup() {
+        let data_dir = super::support::unique_data_dir("snapshot-corruption-sc-f");
+        let clock = SharedClock(Arc::new(AtomicU64::new(1000)));
+        let (release, gate) = mpsc::channel();
+        // Publish a checkpoint whenever any durable progress is pending.
+        let config = RuntimeConfig {
+            data_dir: data_dir.clone(),
+            snapshot_event_threshold: Some(1),
+            ..RuntimeConfig::default()
+        };
+        let mut engine = ActionQueueEngine::new(config, ParentGate(Arc::new(Mutex::new(gate))))
+            .bootstrap_with_clock(clock.clone())
+            .unwrap()
+            .with_host(actionqueue_core::control::HostControlContext {
+                actor_id: None,
+                scope: actionqueue_core::control::ControlScope::SingleTenant,
+                attribution: actionqueue_core::causal::ControlMutationContext::new(
+                    actionqueue_core::bounded::OpaqueRef::new("sc-f").unwrap(),
+                ),
+            });
+        let state =
+            |e: &actionqueue_runtime::engine::BootstrappedEngine<ParentGate, SharedClock>,
+             task: TaskId| {
+                e.projection().run_instances().find(|r| r.task_id() == task).map(|r| r.state())
+            };
+        let parent = spec(b"parent");
+        let parent_id = parent.id();
+        engine.submit_task(parent).unwrap();
+        for _ in 0..20 {
+            let _ = engine.tick().await.unwrap();
+            if state(&engine, parent_id) == Some(RunState::Running) {
+                break;
+            }
+        }
+        assert_eq!(state(&engine, parent_id), Some(RunState::Running));
+        let child = spec(b"child").with_parent_policy(parent_id, ChildLifecyclePolicy::Required);
+        let child_id = child.id();
+        engine.submit_task(child).unwrap();
+        clock.0.store(1050, Ordering::SeqCst);
+        engine.cancel_task(child_id).unwrap();
+        assert_eq!(state(&engine, child_id), Some(RunState::Canceled));
+        // The clock steps back ten seconds before the parent's result commits.
+        clock.0.store(1040, Ordering::SeqCst);
+        release.send(()).unwrap();
+        for _ in 0..100 {
+            let _ = engine.tick().await.unwrap();
+            if state(&engine, parent_id) == Some(RunState::Completed) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(state(&engine, parent_id), Some(RunState::Completed));
+        let _ = engine.tick().await.unwrap();
+        let latest = engine.projection().latest_sequence();
+        let digest = engine.projection().projection_digest().unwrap();
+        engine.shutdown().unwrap();
+
+        // Writable startup, snapshot startup and full verification all load it.
+        drop(open_store(&data_dir, OpenOptions::ReadWrite).unwrap().into_authority().unwrap());
+        let recovered = load_existing_projection(&data_dir).unwrap();
+        assert!(recovered.snapshot_loaded);
+        assert_eq!(recovered.snapshot_sequence, latest);
+        assert_eq!(recovered.projection.projection_digest().unwrap(), digest);
+        drop(recovered);
+        let verified = verify_store(&data_dir).unwrap();
+        assert_eq!(verified.snapshot_sequence, latest);
+        assert_eq!(verified.projection_digest, digest);
+        let _ = std::fs::remove_dir_all(&data_dir);
+    }
+}

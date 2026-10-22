@@ -107,7 +107,7 @@ pub(crate) fn recover(
         match crate::snapshot::loader::load_checkpoint(session) {
             Ok(c) => c,
             Err(e) if e.physical_damage() => None,
-            Err(e) => return Err(invalid(e)),
+            Err(e) => return Err(unusable_checkpoint(session, e)),
         }
     } else {
         None
@@ -118,9 +118,10 @@ pub(crate) fn recover(
     let start = Instant::now();
     let (mut projection, mut reader) = if let Some(c) = checkpoint {
         let reader = WalFsReader::from_checkpoint(session, c.binding.cursor)?;
-        let mut p = ReplayReducer::from_projection_image(ProjectionImageV8(c.snapshot))?;
+        let mut p = ReplayReducer::from_projection_image(ProjectionImageV8(c.snapshot))
+            .map_err(|e| unusable_checkpoint(session, e))?;
         let index_started = Instant::now();
-        p.restore_inspection(c.inspection)?;
+        p.restore_inspection(c.inspection).map_err(|e| unusable_checkpoint(session, e))?;
         super::work::snapshot_phase(|w| {
             w.inspection_index_seconds += index_started.elapsed().as_secs_f64()
         });
@@ -177,6 +178,17 @@ pub(crate) fn recover(
         observed_wal_len: std::fs::metadata(session.wal_path())?.len(),
         phases,
     })
+}
+/// A checkpoint startup cannot load names its file and the remedy. The WAL alone is
+/// complete, so ordinary startup recovers the same state without the checkpoint.
+fn unusable_checkpoint(session: &StoreSession, e: impl std::fmt::Display) -> StoreError {
+    let path = session.snapshot_path();
+    invalid(format!(
+        "snapshot checkpoint {path} cannot be loaded: {e}; the WAL is complete: stop the \
+         process, move {path} out of the store (keep it for diagnosis) and restart to \
+         recover from the WAL alone",
+        path = path.display()
+    ))
 }
 pub(crate) fn validate_replay_event(
     session: &StoreSession,

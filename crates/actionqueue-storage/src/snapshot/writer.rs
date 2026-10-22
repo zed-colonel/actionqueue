@@ -167,19 +167,28 @@ impl SnapshotFsWriter {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn write_checkpoint(
         &mut self,
         c: &super::wire_v10::Checkpoint,
-    ) -> Result<Vec<(String, u64)>, SnapshotWriterError> {
+    ) -> Result<(), SnapshotWriterError> {
+        let bytes =
+            super::envelope::encode_checkpoint(c).map_err(SnapshotWriterError::EncodeError)?;
+        self.write_encoded(&bytes, c.binding.cursor.sequence)
+    }
+    /// Stages a complete checkpoint frame covering the WAL through `sequence`.
+    pub(crate) fn write_encoded(
+        &mut self,
+        bytes: &[u8],
+        sequence: u64,
+    ) -> Result<(), SnapshotWriterError> {
         self.ready_to_publish = false;
-        let (bytes, sections) = super::envelope::encode_checkpoint_measured(c)
-            .map_err(SnapshotWriterError::EncodeError)?;
         self.seek_to_beginning()?;
         self.file.set_len(0).map_err(|e| SnapshotWriterError::IoError(e.to_string()))?;
-        self.file.write_all(&bytes).map_err(|e| SnapshotWriterError::IoError(e.to_string()))?;
-        self.sequence = c.binding.cursor.sequence;
+        self.file.write_all(bytes).map_err(|e| SnapshotWriterError::IoError(e.to_string()))?;
+        self.sequence = sequence;
         self.ready_to_publish = true;
-        Ok(sections)
+        Ok(())
     }
     /// Seeks to the beginning of the file for writing.
     fn seek_to_beginning(&mut self) -> Result<(), SnapshotWriterError> {
@@ -217,7 +226,10 @@ impl SnapshotWriter for SnapshotFsWriter {
         let bytes = if let Some(session) = &self.session {
             let c = crate::recovery::bootstrap::validate_snapshot_for_session(session, snapshot)
                 .map_err(|e| SnapshotWriterError::EncodeError(e.to_string()))?;
-            super::envelope::encode_checkpoint(&c)
+            super::envelope::encode_checkpoint(&c).and_then(|bytes| {
+                super::envelope::verify_encoded_checkpoint(&bytes, session)?;
+                Ok(bytes)
+            })
         } else {
             super::envelope::encode(snapshot, uuid::Uuid::nil())
         }

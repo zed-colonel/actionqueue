@@ -5,6 +5,18 @@ use super::{loader::SnapshotLoaderError, model::Snapshot};
 use crate::recovery::projection::{snapshot_digest, ProjectionDigest};
 pub const MAGIC: &[u8; 8] = b"AQCONT1S";
 pub const MAX_SNAPSHOT_BYTES: usize = 256 * 1024 * 1024;
+#[cfg(test)]
+thread_local! {
+    /// Unit tests lower the encode-side frame bound to build oversized images cheaply.
+    pub(crate) static TEST_ENCODE_LIMIT: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(MAX_SNAPSHOT_BYTES) };
+}
+fn encode_limit() -> usize {
+    #[cfg(test)]
+    return TEST_ENCODE_LIMIT.with(std::cell::Cell::get);
+    #[cfg(not(test))]
+    MAX_SNAPSHOT_BYTES
+}
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ReservedSections {
@@ -110,7 +122,7 @@ pub(crate) fn encode_checkpoint_measured(
 ) -> Result<super::wire_v10::EncodedCheckpoint, String> {
     use sha2::{Digest, Sha256};
     let (mut payload, mut sections) = super::wire_v10::encode_measured(c)?;
-    if payload.len().checked_add(32).is_none_or(|n| n > MAX_SNAPSHOT_BYTES) {
+    if payload.len().checked_add(32).is_none_or(|n| n > encode_limit()) {
         return Err("snapshot exceeds maximum size".into());
     }
     let mut hash = Sha256::new();
@@ -122,11 +134,25 @@ pub(crate) fn encode_checkpoint_measured(
     bytes.extend((payload.len() as u32).to_le_bytes());
     bytes.extend(crc32fast::hash(&payload).to_le_bytes());
     bytes.extend(payload);
-    if bytes.len() > MAX_SNAPSHOT_BYTES {
+    if bytes.len() > encode_limit() {
         return Err("complete checkpoint exceeds maximum size".into());
     }
     sections.push(("framing_integrity".into(), 52));
     Ok((bytes, sections))
+}
+/// Publication must pass the same decoding and domain validation as loading. Decodes
+/// a complete frame from [`encode_checkpoint`] as startup reads it, then hydrates its
+/// image and restores its inspection index.
+pub(crate) fn verify_encoded_checkpoint(
+    bytes: &[u8],
+    session: &crate::store::StoreSession,
+) -> Result<(), String> {
+    let c = decode_checkpoint(&bytes[20..], Some(session)).map_err(|e| e.to_string())?;
+    let mut hydrated = crate::recovery::reducer::ReplayReducer::from_projection_image(
+        crate::recovery::projection::ProjectionImageV8(c.snapshot),
+    )
+    .map_err(|e| e.to_string())?;
+    hydrated.restore_inspection(c.inspection).map_err(|e| e.to_string())
 }
 pub(crate) fn decode_checkpoint(
     payload: &[u8],

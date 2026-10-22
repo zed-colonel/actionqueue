@@ -104,4 +104,4 @@ pub mod verify;
 pub use verify::{verify_store, StoreVerification};
 
 pub mod upgrade;
-pub use upgrade::upgrade_store;
+pub use upgrade::{upgrade_store, StoreUpgrade};

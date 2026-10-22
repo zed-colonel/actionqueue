@@ -642,8 +642,10 @@ fn schema9_upgrade_preserves_source_identity_history_and_requires_explicit_desti
     assert_eq!(tree(&source), before);
     assert_no_staging(dir.path());
     let verified = upgrade_store(&source, &dest).unwrap();
-    assert_eq!(verified.store_id, manifest.store_id);
-    assert_eq!(verified.projection_digest, expected);
+    assert_eq!(verified.verification.store_id, manifest.store_id);
+    assert_eq!(verified.verification.projection_digest, expected);
+    assert_eq!(verified.dropped_tail_bytes, 0);
+    assert_eq!(verified.checkpoint_omitted, None);
     assert_eq!(fs::read(source.join("manifest.json")).unwrap(), before_manifest);
     assert_eq!(fs::read(&wal_path).unwrap(), wal);
     assert_eq!(fs::read(source.join("snapshots/snapshot.bin")).unwrap(), snapshot);
@@ -677,7 +679,10 @@ fn schema9_upgrade_preserves_source_identity_history_and_requires_explicit_desti
     assert!(upgrade_store(&source, &dest).is_err());
     fs::remove_file(source.join("snapshots/snapshot.bin")).unwrap();
     assert_eq!(
-        upgrade_store(&source, &dir.path().join("wal-only")).unwrap().projection_digest,
+        upgrade_store(&source, &dir.path().join("wal-only"))
+            .unwrap()
+            .verification
+            .projection_digest,
         expected
     );
     // Damaged snapshots need actionable diagnostics; the source stays unchanged.
@@ -701,7 +706,10 @@ fn schema9_upgrade_preserves_source_identity_history_and_requires_explicit_desti
     }
     fs::remove_file(source.join("snapshots/snapshot.bin")).unwrap();
     assert_eq!(
-        upgrade_store(&source, &dir.path().join("repaired-upgrade")).unwrap().projection_digest,
+        upgrade_store(&source, &dir.path().join("repaired-upgrade"))
+            .unwrap()
+            .verification
+            .projection_digest,
         expected
     );
 }
@@ -971,4 +979,191 @@ fn full_verification_and_arbitrary_writes_reject_run_reordering_with_an_equal_di
     drop(writer);
     rewrite(session, &c);
     assert!(crate::store::verify::verify_session(session, false).is_err());
+}
+
+/// Rewrites a closed schema-10 store as the released schema-9 format, binding its
+/// first frame to the schema-9 manifest. Returns the manifest and WAL path.
+fn into_schema9(root: &std::path::Path, a: Authority) -> (StoreManifest, std::path::PathBuf) {
+    let mut manifest = a.store_session().unwrap().manifest().clone();
+    let wal_path = a.store_session().unwrap().wal_path();
+    drop(a);
+    manifest.snapshot_schema = 9;
+    fs::write(root.join("manifest.json"), serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
+    let old = fs::read(&wal_path).unwrap();
+    let first_len =
+        crate::wal::tail_validation::parse_record_at(&old, 0).unwrap().unwrap().record_len;
+    let mut wal = codec::encode_for_store(
+        &WalEvent::new(1, E::StoreInitialized { manifest_digest: manifest.digest() }),
+        manifest.store_id,
+    )
+    .unwrap();
+    wal.extend_from_slice(&old[first_len..]);
+    fs::write(&wal_path, &wal).unwrap();
+    (manifest, wal_path)
+}
+fn after_first_frame(wal: &[u8]) -> &[u8] {
+    &wal[crate::wal::tail_validation::parse_record_at(wal, 0).unwrap().unwrap().record_len..]
+}
+/// Part of the frame a crash during the next append would leave.
+fn torn_frame(sequence: u64, store_id: uuid::Uuid) -> Vec<u8> {
+    let next = WalEvent::new(sequence, E::EnginePaused { timestamp: 50 });
+    let mut bytes = codec::encode_for_store(&next, store_id).unwrap();
+    bytes.truncate(bytes.len() / 2);
+    bytes
+}
+
+#[test]
+fn publication_refuses_bytes_startup_cannot_load_and_keeps_the_installed_checkpoint() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = authority(dir.path());
+    let task = admit(&mut a);
+    publish(&mut a);
+    let session = a.store_session().unwrap().clone();
+    let installed = fs::read(session.snapshot_path()).unwrap();
+    let c = load_checkpoint(&session).unwrap().unwrap();
+    let run = a.projection().run_ids_for_task(task)[0];
+    // The encoder accepts this projection, but hydration rejects its image.
+    let mut projection =
+        ReplayReducer::from_projection_image(ProjectionImageV8(c.snapshot.clone())).unwrap();
+    projection.dispatch_sequences.insert(run, 0);
+    let candidate = CheckpointCandidate::new(session.clone(), projection, c.binding.cursor, 20);
+    let error = publish_checkpoint(candidate).unwrap_err().to_string();
+    assert!(error.contains("checkpoint failed its pre-publication load"), "{error}");
+    assert_eq!(fs::read(session.snapshot_path()).unwrap(), installed);
+    assert_eq!(fs::read_dir(session.snapshot_path().parent().unwrap()).unwrap().count(), 1);
+    assert_eq!(session.published_sequence(), c.binding.cursor.sequence);
+    assert!(recover_read_only(&session, RepairPolicy::Strict).unwrap().snapshot_loaded);
+    // A checkpoint installed by other means names its file and the remedy at startup.
+    let mut unloadable = c;
+    unloadable.snapshot.dispatch_sequences.push((run, 0));
+    rewrite(&session, &unloadable);
+    let error = recover_read_only(&session, RepairPolicy::Strict).unwrap_err().to_string();
+    let path = session.snapshot_path();
+    assert!(error.contains(&format!("snapshot checkpoint {} cannot be loaded", path.display())));
+    assert!(error.contains("the WAL is complete"), "{error}");
+    assert!(error.contains("recover from the WAL alone"), "{error}");
+    fs::write(&path, &installed).unwrap();
+    drop(a);
+    drop(session);
+    assert!(verify_store(dir.path()).is_ok());
+}
+
+#[test]
+fn upgrade_without_a_publishable_checkpoint_completes_from_the_complete_wal() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source");
+    let mut a = authority(&source);
+    admit(&mut a);
+    toggle(&mut a);
+    let expected = a.projection().projection_digest().unwrap();
+    let sequence = a.projection().latest_sequence();
+    into_schema9(&source, a);
+    let before = tree(&source);
+    let dest = dir.path().join("upgraded");
+    // This image is larger than the checkpoint frame bound in effect.
+    envelope::TEST_ENCODE_LIMIT.with(|limit| limit.set(64));
+    let upgraded = upgrade_store(&source, &dest);
+    envelope::TEST_ENCODE_LIMIT.with(|limit| limit.set(envelope::MAX_SNAPSHOT_BYTES));
+    let upgraded = upgraded.unwrap();
+    let reason = upgraded.checkpoint_omitted.as_deref().unwrap();
+    assert!(reason.contains("exceeds maximum size"), "{reason}");
+    assert_eq!(upgraded.verification.sequence, sequence);
+    assert_eq!(upgraded.verification.snapshot_sequence, 0);
+    assert_eq!(upgraded.verification.projection_digest, expected);
+    assert_eq!(upgraded.dropped_tail_bytes, 0);
+    assert!(!dest.join("snapshots/snapshot.bin").exists());
+    assert_eq!(tree(&source), before);
+    assert_no_staging(dir.path());
+    let recovered = load_existing_projection(&dest).unwrap();
+    assert!(!recovered.snapshot_loaded);
+    assert_eq!(recovered.projection.projection_digest().unwrap(), expected);
+    drop(recovered);
+    // The upgraded store publishes once its state fits again.
+    let mut a = open_store(&dest, OpenOptions::ReadWrite).unwrap().into_authority().unwrap();
+    publish(&mut a);
+    drop(a);
+    assert_eq!(verify_store(&dest).unwrap().snapshot_sequence, sequence);
+}
+
+#[test]
+fn upgrade_leaves_out_and_reports_an_incomplete_final_source_frame() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source");
+    let mut a = authority(&source);
+    admit(&mut a);
+    toggle(&mut a);
+    let expected = a.projection().projection_digest().unwrap();
+    let sequence = a.projection().latest_sequence();
+    let (manifest, wal_path) = into_schema9(&source, a);
+    let complete = fs::read(&wal_path).unwrap();
+    let torn = torn_frame(sequence + 1, manifest.store_id);
+    fs::OpenOptions::new().append(true).open(&wal_path).unwrap().write_all(&torn).unwrap();
+    let before = tree(&source);
+    let dest = dir.path().join("upgraded");
+    let upgraded = upgrade_store(&source, &dest).unwrap();
+    assert_eq!(upgraded.dropped_tail_bytes, torn.len() as u64);
+    assert_eq!(upgraded.checkpoint_omitted, None);
+    assert_eq!(upgraded.verification.sequence, sequence);
+    assert_eq!(upgraded.verification.snapshot_sequence, sequence);
+    assert_eq!(upgraded.verification.projection_digest, expected);
+    // The source keeps its torn frame; the destination holds exactly the complete ones.
+    assert_eq!(tree(&source), before);
+    let upgraded_wal = fs::read(dest.join("wal/actionqueue.wal")).unwrap();
+    assert_eq!(after_first_frame(&upgraded_wal), after_first_frame(&complete));
+    assert_eq!(verify_store(&dest).unwrap().projection_digest, expected);
+    // Damage inside a complete frame is corruption, not an interrupted append.
+    let mut damaged = complete.clone();
+    let last = damaged.len() - 1;
+    damaged[last] ^= 1;
+    fs::write(&wal_path, &damaged).unwrap();
+    let failed = dir.path().join("damaged");
+    assert!(upgrade_store(&source, &failed).is_err());
+    assert!(!failed.exists());
+    assert_no_staging(dir.path());
+}
+
+#[test]
+fn torn_final_frame_after_an_installed_checkpoint_is_repaired_and_the_checkpoint_reloads() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = authority(dir.path());
+    for _ in 0..4 {
+        toggle(&mut a);
+    }
+    publish(&mut a);
+    let checkpoint = a.projection().latest_sequence();
+    for _ in 0..3 {
+        toggle(&mut a);
+    }
+    let sequence = a.projection().latest_sequence();
+    let expected = a.projection().projection_digest().unwrap();
+    let store_id = a.store_session().unwrap().manifest().store_id;
+    let path = a.store_session().unwrap().wal_path();
+    drop(a);
+    let complete = fs::read(&path).unwrap();
+    let torn = torn_frame(sequence + 1, store_id);
+    fs::OpenOptions::new().append(true).open(&path).unwrap().write_all(&torn).unwrap();
+    let damaged = fs::read(&path).unwrap();
+    // Inspection reports the incomplete tail without repairing it.
+    let inspection = inspect_store(dir.path()).unwrap();
+    assert_eq!(inspection.tail_health, "incomplete_final_frame");
+    assert_eq!(inspection.sequence, sequence);
+    assert_eq!(inspection.projection_digest, expected);
+    assert_eq!(fs::read(&path).unwrap(), damaged);
+    let session = open_store(dir.path(), OpenOptions::ReadWrite).unwrap();
+    assert!(recover_read_only(&session, RepairPolicy::Strict).is_err());
+    assert_eq!(fs::read(&path).unwrap(), damaged);
+    // Repair proves the checkpoint's prefix, then truncates exactly the torn bytes.
+    drop(WalFsWriter::new_with_repair(session, RepairPolicy::TruncatePartial).unwrap());
+    assert_eq!(fs::read(&path).unwrap(), complete);
+    let recovered = load_existing_projection(dir.path()).unwrap();
+    assert!(recovered.snapshot_loaded);
+    assert_eq!(recovered.snapshot_sequence, checkpoint);
+    assert_eq!(recovered.projection.latest_sequence(), sequence);
+    assert_eq!(recovered.projection.projection_digest().unwrap(), expected);
+    drop(recovered);
+    let verified = verify_store(dir.path()).unwrap();
+    assert_eq!(verified.snapshot_sequence, checkpoint);
+    assert_eq!(verified.sequence, sequence);
+    assert_eq!(verified.projection_digest, expected);
+    assert_eq!(inspect_store(dir.path()).unwrap().tail_health, "clean");
 }
