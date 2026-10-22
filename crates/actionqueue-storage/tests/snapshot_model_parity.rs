@@ -272,6 +272,7 @@ fn d06_t_n1_mapping_boundary_rejects_duplicate_run_ids() {
         .expect("run should build");
 
     let snapshot = Snapshot {
+        terminal_sequences: Vec::new(),
         control_history: vec![],
         dispatch_sequences: Vec::new(),
         administrative_wakes: Vec::new(),
@@ -392,6 +393,7 @@ fn d06_t_n3_schema_migration_guard_rejects_unknown_schema_version() {
     let run = run_with_state(task_id, 0xB300, RunState::Scheduled);
 
     let snapshot = Snapshot {
+        terminal_sequences: Vec::new(),
         control_history: vec![],
         dispatch_sequences: Vec::new(),
         administrative_wakes: Vec::new(),
@@ -529,6 +531,7 @@ fn d06_t_n6_mapping_rejects_attempt_history_count_mismatch() {
 fn p6_011_t_n3_mapping_rejects_task_canceled_at_before_created_at() {
     let task_id = TaskId::from_uuid(uuid::Uuid::from_u128(0xA700));
     let snapshot = Snapshot {
+        terminal_sequences: Vec::new(),
         control_history: vec![],
         dispatch_sequences: Vec::new(),
         administrative_wakes: Vec::new(),
@@ -580,6 +583,7 @@ fn p6_011_t_n3_mapping_rejects_task_canceled_at_before_created_at() {
 fn p6_013_t_n5_mapping_rejects_engine_paused_without_paused_at() {
     let task_id = TaskId::from_uuid(uuid::Uuid::from_u128(0xA800));
     let snapshot = Snapshot {
+        terminal_sequences: Vec::new(),
         control_history: vec![],
         dispatch_sequences: Vec::new(),
         administrative_wakes: Vec::new(),
@@ -620,6 +624,7 @@ fn p6_013_t_n5_mapping_rejects_engine_paused_without_paused_at() {
 fn p6_013_t_n6_mapping_rejects_engine_pause_resume_ordering() {
     let task_id = TaskId::from_uuid(uuid::Uuid::from_u128(0xA801));
     let snapshot = Snapshot {
+        terminal_sequences: Vec::new(),
         control_history: vec![],
         dispatch_sequences: Vec::new(),
         administrative_wakes: Vec::new(),
@@ -718,6 +723,7 @@ fn dependency_declarations_survive_snapshot_roundtrip() {
     let path = temp_snapshot_path();
 
     let snapshot = Snapshot {
+        terminal_sequences: Vec::new(),
         control_history: vec![],
         dispatch_sequences: Vec::new(),
         administrative_wakes: Vec::new(),
@@ -815,6 +821,7 @@ fn budget_entries_roundtrip_through_snapshot() {
     let path = temp_snapshot_path();
 
     let snapshot = Snapshot {
+        terminal_sequences: Vec::new(),
         control_history: vec![],
         dispatch_sequences: Vec::new(),
         administrative_wakes: Vec::new(),
@@ -883,6 +890,7 @@ fn subscription_entries_roundtrip_through_snapshot() {
     let path = temp_snapshot_path();
 
     let snapshot = Snapshot {
+        terminal_sequences: Vec::new(),
         control_history: vec![],
         dispatch_sequences: Vec::new(),
         administrative_wakes: Vec::new(),
@@ -981,6 +989,7 @@ fn suspended_run_state_in_snapshot_history() {
     };
 
     let snapshot = Snapshot {
+        terminal_sequences: Vec::new(),
         control_history: vec![],
         dispatch_sequences: Vec::new(),
         administrative_wakes: Vec::new(),

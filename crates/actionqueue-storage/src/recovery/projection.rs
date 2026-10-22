@@ -239,7 +239,10 @@ impl ReplayReducer {
     /// Canonical hashing sorts runs by identity; operational per-task order is
     /// validated separately so an equal digest cannot hide a reordered checkpoint.
     pub(crate) fn same_operational_order(&self, other: &Self) -> bool {
-        self.runs_by_task.len() == other.runs_by_task.len()
+        // Auxiliary schema-10 evidence is outside the frozen logical-v9 digest;
+        // explicit verification must still compare it with the complete WAL.
+        self.terminal_sequences.iter().eq(other.terminal_sequences.iter())
+            && self.runs_by_task.len() == other.runs_by_task.len()
             && self
                 .runs_by_task
                 .iter()
@@ -472,6 +475,21 @@ impl ReplayReducer {
         });
         let started = std::time::Instant::now();
         r.rebuild_derived();
+        for (run, sequence) in s.terminal_sequences {
+            if sequence == 0
+                || sequence > r.latest_sequence
+                || !r.runs.get(&run).is_some_and(|s| s.is_terminal())
+                || r.terminal_sequences.insert(run, sequence).is_some()
+            {
+                return Err(invalid("invalid terminal sequence"));
+            }
+        }
+        if r.runs
+            .iter()
+            .any(|(run, state)| state.is_terminal() && !r.terminal_sequences.contains_key(run))
+        {
+            return Err(invalid("missing terminal sequence"));
+        }
         // Historical child evidence reads dispatch sequences while waits hydrate.
         for (run, seq) in s.dispatch_sequences {
             if seq == 0
@@ -484,6 +502,9 @@ impl ReplayReducer {
         }
         r.hydrate_waits(&s.waits, &s.pending_resumes, &s.key_reservations, &s.cancellations)
             .map_err(invalid)?;
+        if !r.validate_terminal_sequences() {
+            return Err(invalid("terminal sequence conflicts with retained history"));
+        }
         r.hydrate_inspection_ownership();
         let produced: Vec<_> = r
             .attempt_history

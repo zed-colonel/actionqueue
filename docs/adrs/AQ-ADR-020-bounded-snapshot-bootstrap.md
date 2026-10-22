@@ -54,6 +54,13 @@ versioned logical-v9 JSON subcodec inside length-delimited sections because thei
 validated tagged deserializers require it. This avoids inventing another
 continuation format while removing the whole-image JSON tree. Field order and
 numeric tags are frozen by `checkpoint-v9.hex` and `checkpoint-v10.hex` fixtures.
+Schema 10 also records the WAL sequence of every terminal run transition, including
+recovery and legacy controls. Historical child-wait evidence uses these sequences
+instead of wall-clock timestamps. This auxiliary evidence is encoded in the binary
+checkpoint and covered by its integrity checks, outside the unchanged logical-v9
+JSON image and digest. Full verification compares it with complete WAL replay.
+Hydration checks each Required child at the first parent completion after its
+admission; later completions reuse that proof because task terminality is monotonic.
 The encoder reports the actual byte count of each section, including indexes and
 framing. Canonical v9 hashing sorts references without changing operational run
 order and streams one logical record at a time to SHA-256.

@@ -97,7 +97,12 @@ impl ReplayReducer {
             .flat_map(|(_, ids)| ids.iter().copied())
     }
     pub fn children_of(&self, parent: TaskId) -> impl Iterator<Item = TaskId> + '_ {
-        self.derived.children.get(&parent).into_iter().flat_map(|ids| ids.iter().copied())
+        self.derived.children.get(&parent).into_iter().flat_map(|ids| ids.iter().copied()).inspect(
+            |_| {
+                #[cfg(feature = "testing")]
+                super::work::child_history_visit();
+            },
+        )
     }
     pub fn prerequisites_of(&self, task: TaskId) -> impl Iterator<Item = TaskId> + '_ {
         self.dependency_declarations.get(&task).into_iter().flat_map(|ids| ids.iter().copied())
@@ -172,6 +177,11 @@ impl ReplayReducer {
             }
         }
         for id in &self.change.runs {
+            // Every terminal transition, including recovery and legacy controls, is
+            // ordered by its WAL frame. Wall time is not a historical ordering key.
+            if self.runs.get(id).is_some_and(|s| s.is_terminal()) {
+                self.terminal_sequences.entry(*id).or_insert(sequence);
+            }
             if let Some(old) = self.derived.run_sequence.insert(*id, sequence) {
                 let bucket = self.derived.runs_changed.get_mut(&old).expect("run revision");
                 bucket.remove(id);

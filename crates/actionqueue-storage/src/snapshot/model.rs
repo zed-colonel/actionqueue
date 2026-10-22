@@ -24,6 +24,10 @@ use crate::recovery::reducer::{AttemptHistoryEntry, LeaseMetadata, RunStateHisto
 pub struct Snapshot {
     pub control_history: Vec<(u64, actionqueue_core::control::ControlAttribution)>,
     pub dispatch_sequences: Vec<(RunId, u64)>,
+    /// WAL frame ending each terminal run. Schema-10 validation evidence, encoded
+    /// separately from the unchanged logical-v9 JSON image and digest.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub terminal_sequences: Vec<(RunId, u64)>,
     pub administrative_wakes: Vec<crate::recovery::resume::AdministrativeWake>,
     pub administrative_pending: Vec<(RunId, actionqueue_core::continuation::ResumeContextId)>,
     pub waits: Vec<crate::mutation::wait::WaitRecord>,

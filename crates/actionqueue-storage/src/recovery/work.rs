@@ -63,6 +63,7 @@ pub struct ProjectionWork {
     pub record_copies: usize,
     pub subscription_candidates: usize,
     pub cancellation_run_candidates: usize,
+    pub child_history_visits: usize,
     /// Entries into `ReplayReducer::apply`, including nested and rejected applications.
     pub reducer_event_visits: usize,
 }
@@ -74,6 +75,7 @@ thread_local! {
             record_copies: 0,
             subscription_candidates: 0,
             cancellation_run_candidates: 0,
+            child_history_visits: 0,
             reducer_event_visits: 0,
         })
     };
@@ -188,6 +190,15 @@ pub(crate) fn cancellation_candidate() {
     PROJECTION_WORK.with(|c| {
         let mut w = c.get();
         w.cancellation_run_candidates += 1;
+        c.set(w);
+    });
+}
+
+#[cfg(feature = "testing")]
+pub(crate) fn child_history_visit() {
+    PROJECTION_WORK.with(|c| {
+        let mut w = c.get();
+        w.child_history_visits += 1;
         c.set(w);
     });
 }

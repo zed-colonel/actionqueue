@@ -848,6 +848,7 @@ fn test_snapshot_plus_wal_tail_equivalence() {
 
     // Persist a snapshot at sequence 3 (after Scheduled -> Ready).
     let snapshot = Snapshot {
+        terminal_sequences: Vec::new(),
         control_history: vec![],
         dispatch_sequences: Vec::new(),
         administrative_wakes: Vec::new(),

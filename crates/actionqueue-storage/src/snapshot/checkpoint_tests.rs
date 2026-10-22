@@ -836,10 +836,63 @@ fn snapshot_wire_fixtures_freeze_schema9_schema10_and_canonical_v9() {
     let decoded = envelope::decode_checkpoint(&v10[20..], None).unwrap();
     assert_eq!(decoded.snapshot, c.snapshot);
     assert_eq!(decoded.inspection, c.inspection);
+    let mut logical_v9 = c.snapshot.clone();
+    logical_v9.terminal_sequences.clear();
     assert_eq!(
         envelope::decode(&v9[20..], Some(uuid::Uuid::from_bytes(c.binding.store))).unwrap(),
-        c.snapshot
+        logical_v9
     );
+}
+
+#[test]
+fn terminal_sequence_evidence_is_validated_and_full_verification_checks_it_against_wal() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = authority(dir.path());
+    let task = admit(&mut a);
+    let run = a.projection().run_ids_for_task(task)[0];
+    let sequence = a.projection().latest_sequence() + 1;
+    let host = HostControlContext {
+        scope: ControlScope::SingleTenant,
+        ..a.control_context().unwrap().clone()
+    };
+    let _ = a
+        .with_control_context(&host, |a| {
+            a.submit_command(
+                MutationCommand::Cancel(CancelCommand {
+                    expected_sequence: sequence,
+                    target: CancelTarget::Run(run),
+                    tenant_id: None,
+                    control_context: None,
+                    timestamp: 20,
+                }),
+                DurabilityPolicy::Immediate,
+            )
+        })
+        .unwrap();
+    toggle(&mut a);
+    publish(&mut a);
+    let session = a.store_session().unwrap().clone();
+    let original = load_checkpoint(&session).unwrap().unwrap();
+    assert_eq!(original.snapshot.terminal_sequences, vec![(run, sequence)]);
+    for records in
+        [vec![], vec![(run, 0)], vec![(run, sequence), (run, sequence)], vec![(run, sequence + 10)]]
+    {
+        let mut bad = original.snapshot.clone();
+        bad.terminal_sequences = records;
+        assert!(ReplayReducer::from_projection_image(ProjectionImageV8(bad)).is_err());
+    }
+    // This is structurally valid and has the same v9 digest, but lies about the
+    // frame that canceled the run. Full verification must compare the auxiliary map.
+    let mut forged = original;
+    forged.snapshot.terminal_sequences[0].1 += 1;
+    assert_eq!(
+        crate::recovery::projection::snapshot_digest(&forged.snapshot).unwrap(),
+        a.projection().projection_digest().unwrap(),
+    );
+    rewrite(&session, &forged);
+    drop(a);
+    drop(session);
+    assert!(verify_store(dir.path()).unwrap_err().to_string().contains("complete WAL prefix"));
 }
 
 #[test]

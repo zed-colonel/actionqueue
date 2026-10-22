@@ -351,6 +351,10 @@ pub(crate) fn encode_measured(c: &Checkpoint) -> Result<EncodedCheckpoint, Strin
     for v in &s.dispatch_sequences {
         record(&mut out, &serde_json::to_vec(v).map_err(err)?)?;
     }
+    count(&mut out, s.terminal_sequences.len())?;
+    for (run, sequence) in &s.terminal_sequences {
+        record(&mut out, &(*run.as_uuid().as_bytes(), *sequence))?;
+    }
     count(&mut out, s.administrative_wakes.len())?;
     for v in &s.administrative_wakes {
         record(&mut out, &serde_json::to_vec(v).map_err(err)?)?;
@@ -509,6 +513,9 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Checkpoint, String> {
         let bytes: Vec<u8> = input.record()?;
         dispatch_sequences.push(serde_json::from_slice(&bytes).map_err(err)?);
     }
+    let terminal_sequences = input.records(|(run, sequence): ([u8; 16], u64)| {
+        Ok((RunId::from_uuid(uuid::Uuid::from_bytes(run)), sequence))
+    })?;
     let mut administrative_wakes = Vec::new();
     for _ in 0..input.count()? {
         let bytes: Vec<u8> = input.record()?;
@@ -609,6 +616,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Checkpoint, String> {
         engine: SnapshotEngineControl { paused, paused_at, resumed_at },
         last_signal_sequence,
         dispatch_sequences,
+        terminal_sequences,
         administrative_wakes,
         administrative_pending,
         waits,

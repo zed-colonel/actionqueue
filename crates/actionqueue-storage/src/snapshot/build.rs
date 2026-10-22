@@ -188,6 +188,7 @@ pub fn build_snapshot_from_projection(
             c
         },
         dispatch_sequences: reducer.dispatch_sequences.iter().map(|(r, s)| (*r, *s)).collect(),
+        terminal_sequences: reducer.terminal_sequences.iter().map(|(r, s)| (*r, *s)).collect(),
         administrative_wakes: reducer.administrative_wakes.values().cloned().collect(),
         administrative_pending: reducer
             .administrative_pending

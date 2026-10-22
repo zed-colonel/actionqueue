@@ -298,6 +298,7 @@ pub struct ReplayReducer {
     pub(crate) control_history:
         super::collections::BTreeMap<u64, actionqueue_core::control::ControlAttribution>,
     pub(crate) dispatch_sequences: super::collections::BTreeMap<RunId, u64>,
+    pub(crate) terminal_sequences: super::collections::BTreeMap<RunId, u64>,
     pub(crate) checkpoints: super::collections::BTreeMap<
         actionqueue_core::ids::CheckpointId,
         super::checkpoints::CheckpointRecord,
@@ -381,6 +382,7 @@ impl Clone for ReplayReducer {
             inspection_index: self.inspection_index.clone(),
             control_history: self.control_history.clone(),
             dispatch_sequences: self.dispatch_sequences.clone(),
+            terminal_sequences: self.terminal_sequences.clone(),
             checkpoints: self.checkpoints.clone(),
             administrative_wakes: self.administrative_wakes.clone(),
             administrative_pending: self.administrative_pending.clone(),
@@ -429,6 +431,7 @@ impl ReplayReducer {
             administrative_wakes: Default::default(),
             administrative_pending: Default::default(),
             dispatch_sequences: Default::default(),
+            terminal_sequences: Default::default(),
             waits: Default::default(),
             cancellations: HashMap::new(),
             key_reservations: Default::default(),
